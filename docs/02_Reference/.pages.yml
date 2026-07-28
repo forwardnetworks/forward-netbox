@@ -2,6 +2,7 @@ nav:
   - README.md
   - architecture-flow.md
   - built-in-nqe-maps.md
+  - fast-baseline-load-evidence.md
   - device-type-alias-data-file.md
   - feature-tag-rules-data-file.md
   - model-mapping-matrix.md

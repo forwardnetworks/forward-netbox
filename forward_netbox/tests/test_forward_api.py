@@ -7,6 +7,7 @@ import httpx
 
 from forward_netbox.exceptions import ForwardClientError
 from forward_netbox.exceptions import ForwardConnectivityError
+from forward_netbox.exceptions import ForwardFetchBudgetExceededError
 from forward_netbox.utilities import forward_api_impl
 from forward_netbox.utilities.crypto import encrypt_secret
 from forward_netbox.utilities.forward_api import ForwardClient
@@ -58,6 +59,47 @@ class ForwardClientTest(TestCase):
         response = Mock()
         response.json.return_value = data
         return response
+
+    def test_snapshot_data_file_hashes_are_snapshot_correct_and_cached(self):
+        self.client._request = Mock(
+            return_value=self._response(
+                [
+                    {
+                        "dataFileName": "netbox_feature_tag_rules.json",
+                        "contentMd5Hex": "A1B2C3",
+                    },
+                    {
+                        "dataFileName": "netbox_device_type_aliases.json",
+                        "contentMd5Hex": "D4E5F6",
+                    },
+                ]
+            )
+        )
+
+        first = self.client.get_snapshot_data_file_hashes(
+            "network-1",
+            "snapshot-1",
+        )
+        second = self.client.get_snapshot_data_file_hashes(
+            "network-1",
+            "snapshot-1",
+        )
+
+        self.assertEqual(
+            first,
+            {
+                "netbox_feature_tag_rules": "md5:a1b2c3",
+                "netbox_feature_tag_rules.json": "md5:a1b2c3",
+                "netbox_device_type_aliases": "md5:d4e5f6",
+                "netbox_device_type_aliases.json": "md5:d4e5f6",
+            },
+        )
+        self.assertEqual(second, first)
+        self.client._request.assert_called_once_with(
+            "GET",
+            "/networks/network-1/data-files",
+            params={"view": "snapshot", "snapshotId": "snapshot-1"},
+        )
 
     def test_get_latest_collected_snapshot_id_skips_backfilled_newest_first(self):
         self.client.get_snapshots = Mock(
@@ -408,6 +450,59 @@ class ForwardClientTest(TestCase):
 
         self.assertEqual(result, response)
         self.assertEqual(throttle.call_count, 2)
+
+    def test_request_deadline_bounds_the_http_client_timeout(self):
+        response = Mock()
+        client = Mock()
+        client.request.return_value = response
+        client_context = Mock()
+        client_context.__enter__ = Mock(return_value=client)
+        client_context.__exit__ = Mock(return_value=None)
+
+        with (
+            patch(
+                "forward_netbox.utilities.forward_api_impl.httpx.Client",
+                return_value=client_context,
+            ) as http_client,
+            patch.object(self.client, "_throttle_request"),
+            patch(
+                "forward_netbox.utilities.forward_api_impl.time.monotonic",
+                return_value=100.0,
+            ),
+        ):
+            result = self.client._request(
+                "GET",
+                "/networks",
+                deadline=105.0,
+            )
+
+        self.assertEqual(result, response)
+        self.assertEqual(http_client.call_args.kwargs["timeout"], 5.0)
+
+    def test_deadline_limited_http_timeout_raises_fetch_budget_error(self):
+        client = Mock()
+        client.request.side_effect = httpx.ReadTimeout("bounded timeout")
+        client_context = Mock()
+        client_context.__enter__ = Mock(return_value=client)
+        client_context.__exit__ = Mock(return_value=None)
+
+        with (
+            patch(
+                "forward_netbox.utilities.forward_api_impl.httpx.Client",
+                return_value=client_context,
+            ),
+            patch.object(self.client, "_throttle_request"),
+            patch(
+                "forward_netbox.utilities.forward_api_impl.time.monotonic",
+                return_value=100.0,
+            ),
+            self.assertRaises(ForwardFetchBudgetExceededError),
+        ):
+            self.client._request(
+                "GET",
+                "/networks",
+                deadline=105.0,
+            )
 
     def test_request_uses_netbox_proxy_routers(self):
         response = Mock()
@@ -1144,6 +1239,44 @@ class ForwardClientTest(TestCase):
         self.assertAlmostEqual(sleep_args[1], 0.2)
         self.assertAlmostEqual(sleep_args[2], 0.4)
         self.assertAlmostEqual(sleep_args[3], 0.8)
+
+    def test_run_nqe_query_async_default_poll_backoff_reaches_five_second_ceiling(
+        self,
+    ):
+        client = ForwardClient(
+            SimpleNamespace(
+                url="https://fwd.app",
+                parameters={
+                    "username": "user@example.com",
+                    "password": encrypt_secret("secret"),
+                    "nqe_async_max_polls": 12,
+                },
+            )
+        )
+        client._request = Mock(
+            side_effect=[
+                self._response({"executionKey": "X_1", "status": "SUBMITTED"}),
+                *[self._response({"status": "EXECUTING"}) for _ in range(8)],
+                self._response({"status": "COMPLETED", "outcome": "OK"}),
+                self._response({"items": [], "totalNumItems": 0}),
+            ]
+        )
+
+        with patch(
+            "forward_netbox.utilities.forward_api_impl.time.sleep"
+        ) as mock_sleep:
+            client.run_nqe_query(
+                query_id="Q_devices",
+                network_id="network-1",
+                snapshot_id="snapshot-1",
+            )
+
+        sleep_args = [call.args[0] for call in mock_sleep.call_args_list]
+        self.assertEqual(
+            sleep_args,
+            [0.1, 0.2, 0.4, 0.8, 1.6, 3.2, 5.0, 5.0, 5.0],
+        )
+        self.assertNotEqual(sleep_args[-1], 1.0)
 
     def test_run_nqe_query_async_poll_backoff_caps_at_ceiling(self):
         client = ForwardClient(
@@ -2151,6 +2284,51 @@ class ForwardClientTest(TestCase):
             json_body={"sourceCode": "select {}"},
         )
 
+    def test_nqe_library_write_permission_accepts_org_admin(self):
+        self.client._request = Mock(
+            return_value=self._response(
+                {
+                    "roles": {
+                        "org": ["ADMIN"],
+                        "network": {},
+                    }
+                }
+            )
+        )
+
+        self.assertTrue(self.client.has_nqe_library_write_permission())
+        self.client._request.assert_called_once_with("GET", "/users/current")
+
+    def test_nqe_library_write_permission_accepts_selected_network_operator(self):
+        self.client.source.parameters["network_id"] = "network-1"
+        self.client._request = Mock(
+            return_value=self._response(
+                {
+                    "roles": {
+                        "org": [],
+                        "network": {"network-1": "OPERATOR"},
+                    }
+                }
+            )
+        )
+
+        self.assertTrue(self.client.has_nqe_library_write_permission())
+
+    def test_nqe_library_write_permission_rejects_read_only_role(self):
+        self.client.source.parameters["network_id"] = "network-1"
+        self.client._request = Mock(
+            return_value=self._response(
+                {
+                    "roles": {
+                        "org": [],
+                        "network": {"network-1": "OBSERVER"},
+                    }
+                }
+            )
+        )
+
+        self.assertFalse(self.client.has_nqe_library_write_permission())
+
     def test_edit_org_nqe_query_uses_existing_query_basis(self):
         self.client._request = Mock(return_value=self._response({}))
 
@@ -2539,6 +2717,20 @@ class ForwardClientTest(TestCase):
             {"queryId", "commitId", "options"},
         )
 
+    def test_run_nqe_diff_plumbs_deadline_to_first_page_request(self):
+        self.client._request = Mock(
+            return_value=self._response({"rows": [], "totalNumRows": 0})
+        )
+
+        self.client.run_nqe_diff(
+            query_id="Q_sites",
+            before_snapshot_id="snapshot-before",
+            after_snapshot_id="snapshot-after",
+            deadline=123.0,
+        )
+
+        self.assertEqual(self.client._request.call_args.kwargs["deadline"], 123.0)
+
 
 class RetryBackoffHelperTest(TestCase):
     def test_parse_retry_after_reads_delta_seconds(self):
@@ -2577,8 +2769,10 @@ class WorkloadFetchBudgetTest(TestCase):
     """A slow workload cannot silently hang a multi-hour sync."""
 
     def test_budget_error_is_not_transient(self):
-        from forward_netbox.exceptions import ForwardConnectivityError
-        from forward_netbox.exceptions import ForwardFetchBudgetExceededError
+        from forward_netbox.exceptions import (
+            ForwardConnectivityError,
+            ForwardFetchBudgetExceededError,
+        )
         from forward_netbox.utilities.query_fetch_execution import (
             _is_transient_fetch_error,
         )
@@ -2595,8 +2789,6 @@ class WorkloadFetchBudgetTest(TestCase):
 
         from forward_netbox.utilities.query_fetch_execution import (
             DEFAULT_WORKLOAD_FETCH_TIMEOUT_SECONDS,
-        )
-        from forward_netbox.utilities.query_fetch_execution import (
             ForwardQueryFetcher,
         )
 

@@ -1,4 +1,5 @@
 import hashlib
+import json
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -13,7 +14,13 @@ from forward_netbox.models import ForwardSync
 from forward_netbox.models import ForwardWorkloadState
 from forward_netbox.utilities.branch_budget import BranchWorkload
 from forward_netbox.utilities.workload_state import apply_durable_workload_deltas
+from forward_netbox.utilities.workload_state import (
+    canonical_identity_hash_scheme_errors,
+)
 from forward_netbox.utilities.workload_state import canonical_row_identity
+from forward_netbox.utilities.workload_state import canonical_row_identity_hash
+from forward_netbox.utilities.workload_state import CANONICAL_ROW_IDENTITY_HASH_SCHEME
+from forward_netbox.utilities.workload_state import compare_canonical_delete_identities
 from forward_netbox.utilities.workload_state import decode_state_entries
 from forward_netbox.utilities.workload_state import encode_state_entries
 from forward_netbox.utilities.workload_state import promote_workload_states_locked
@@ -93,6 +100,34 @@ class DurableWorkloadStateTest(TestCase):
         with self.assertRaisesMessage(ForwardQueryError, "payload is invalid"):
             decode_state_entries(truncated, hashlib.sha256(truncated).hexdigest())
 
+    def test_fhrp_durable_identity_preserves_each_participant(self):
+        group = {
+            "protocol": "hsrp",
+            "group_id": 10,
+            "address": "192.0.2.1/32",
+            "vrf": None,
+        }
+        first = canonical_row_identity(
+            "ipam.fhrpgroup",
+            {
+                **group,
+                "device": "router-a",
+                "interface": "Vlan10",
+            },
+            [["protocol", "group_id", "address", "vrf"]],
+        )
+        second = canonical_row_identity(
+            "ipam.fhrpgroup",
+            {
+                **group,
+                "device": "router-b",
+                "interface": "Vlan10",
+            },
+            [["protocol", "group_id", "address", "vrf"]],
+        )
+
+        self.assertNotEqual(first, second)
+
     def test_cable_identity_is_direction_independent(self):
         left = {
             "device": "a",
@@ -111,6 +146,90 @@ class DurableWorkloadStateTest(TestCase):
             canonical_row_identity("dcim.cable", left, []),
             canonical_row_identity("dcim.cable", right, []),
         )
+
+    def test_oracle_hash_is_sha256_of_production_canonical_identity(self):
+        row = {"device": "router-1", "name": "Ethernet1"}
+        canonical = canonical_row_identity("dcim.interface", row, [["device", "name"]])
+
+        self.assertEqual(
+            canonical_row_identity_hash("dcim.interface", row, [["device", "name"]]),
+            hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        )
+
+    def test_oracle_hash_rejects_legacy_identity_namespace(self):
+        row = {"device": "router-1", "name": "Ethernet1"}
+        legacy = json.dumps(
+            {
+                "model": "dcim.interface",
+                "fields": ("device", "name"),
+                "values": ["router-1", "Ethernet1"],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+        legacy_hash = hashlib.sha256(legacy.encode("utf-8")).hexdigest()
+
+        self.assertNotEqual(
+            canonical_row_identity_hash("dcim.interface", row, [["device", "name"]]),
+            legacy_hash,
+        )
+        self.assertEqual(
+            canonical_identity_hash_scheme_errors(
+                {
+                    "before_full": CANONICAL_ROW_IDENTITY_HASH_SCHEME,
+                    "after_full": "legacy_model_fields_values_v0",
+                    "captured_diff_deletes": "",
+                }
+            ),
+            [
+                "identity_scheme_mismatch:after_full:legacy_model_fields_values_v0",
+                "identity_scheme_mismatch:captured_diff_deletes:missing",
+            ],
+        )
+
+    def test_oracle_hash_uses_prefix_blank_vrf_identity_contract(self):
+        row = {"prefix": "192.0.2.0/24", "vrf": None}
+
+        identity_hash = canonical_row_identity_hash(
+            "ipam.prefix", row, [["prefix", "vrf"]]
+        )
+
+        self.assertEqual(len(identity_hash), 64)
+
+    def test_delete_comparator_accepts_only_exact_canonical_match(self):
+        comparison = compare_canonical_delete_identities(
+            {"same", "removed"},
+            {"same", "added"},
+            {"removed"},
+        )
+
+        self.assertTrue(comparison["exact_match"])
+        self.assertEqual(comparison["matched_delete_count"], 1)
+        self.assertEqual(comparison["spurious_delete_count"], 0)
+        self.assertEqual(comparison["missing_delete_count"], 0)
+
+    def test_delete_comparator_fails_spurious_delete(self):
+        comparison = compare_canonical_delete_identities(
+            {"same"},
+            {"same"},
+            {"still-present"},
+        )
+
+        self.assertFalse(comparison["exact_match"])
+        self.assertEqual(comparison["spurious_delete_count"], 1)
+        self.assertEqual(comparison["missing_delete_count"], 0)
+
+    def test_delete_comparator_fails_missing_delete(self):
+        comparison = compare_canonical_delete_identities(
+            {"removed"},
+            set(),
+            set(),
+        )
+
+        self.assertFalse(comparison["exact_match"])
+        self.assertEqual(comparison["spurious_delete_count"], 0)
+        self.assertEqual(comparison["missing_delete_count"], 1)
 
     def test_seed_then_unchanged_full_workload_stages_no_rows(self):
         rows = [{"device": "router-1", "name": "Ethernet1", "enabled": True}]

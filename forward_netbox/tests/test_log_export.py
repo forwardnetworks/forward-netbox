@@ -288,6 +288,71 @@ class ForwardIngestionLogExportViewTest(TestCase):
         self.assertNotIn(sentinel, export_response.content.decode())
         self.assertContains(log_response, "The operation failed")
 
+    def test_sync_support_bundle_exposes_only_job_error_type(self):
+        sentinel = "sentinel-private-job-detail"
+        self.job.error = "Forward sync failed (ForwardSyncError)."
+        self.job.data = {**self.job.data, "error": sentinel}
+        self.job.save(update_fields=["error", "data"])
+        self.merge_job.error = sentinel
+        self.merge_job.save(update_fields=["error"])
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_support_bundle",
+                kwargs={"pk": self.sync.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = json.loads(response.content)
+        self.assertEqual(
+            payload["latest_ingestion"]["job"]["error"],
+            "Job failed (ForwardSyncError).",
+        )
+        self.assertEqual(
+            payload["latest_ingestion"]["merge_job"]["error"],
+            "<redacted diagnostic>",
+        )
+        self.assertNotIn(sentinel, response.content.decode())
+
+    def test_sync_support_bundle_reports_type_only_diff_fallback_reason(self):
+        sentinel = "customer-query-path"
+        self.ingestion.model_results = [
+            {
+                "model": "dcim.interface",
+                "fetch_parameters": {
+                    "fallback_reason": (
+                        "diff_budget_exceeded:ForwardFetchBudgetExceededError"
+                    ),
+                    "forward_netbox_shard_keys": [sentinel],
+                },
+            }
+        ]
+        self.ingestion.save(update_fields=["model_results"])
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_support_bundle",
+                kwargs={"pk": self.sync.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        data = json.loads(response.content)
+        self.assertEqual(
+            data["latest_ingestion"]["diff_fallbacks"],
+            [
+                {
+                    "model": "dcim.interface",
+                    "reason": ("diff_budget_exceeded:ForwardFetchBudgetExceededError"),
+                    "count": 1,
+                }
+            ],
+        )
+        self.assertNotIn(sentinel, response.content.decode())
+
     def test_support_bundle_password_is_post_only(self):
         url = reverse(
             "plugins:forward_netbox:forwardsync_support_bundle_zip",

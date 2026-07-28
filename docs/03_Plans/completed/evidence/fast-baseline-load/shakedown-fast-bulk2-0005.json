@@ -1,0 +1,467 @@
+{
+  "engine": "fast",
+  "fixture": {
+    "actual_model_counts": {
+      "dcim.cable": 23083,
+      "dcim.device": 3400,
+      "dcim.interface": 535777,
+      "dcim.inventoryitem": 82572,
+      "dcim.macaddress": 277915,
+      "ipam.ipaddress": 51944,
+      "ipam.prefix": 34388,
+      "netbox_dlm.vulnerability": 70230
+    },
+    "basis": "deterministic anonymized customer-shaped baseline",
+    "logical_change_denominator": 5868,
+    "reference_counts": {
+      "dcim.devicerole": 1,
+      "dcim.devicetype": 1,
+      "dcim.manufacturer": 1,
+      "dcim.platform": 1,
+      "dcim.site": 1
+    },
+    "requested_model_counts": {
+      "dcim.cable": 115,
+      "dcim.device": 17,
+      "dcim.interface": 2679,
+      "dcim.inventoryitem": 413,
+      "dcim.macaddress": 1390,
+      "ipam.ipaddress": 260,
+      "ipam.prefix": 172,
+      "netbox_dlm.vulnerability": 351
+    },
+    "source_rows": 5402
+  },
+  "measurement": {
+    "baseline_rss_mib": 188.59375,
+    "incremental_peak_rss_mib": 178.67578125,
+    "peak_rss_mib": 367.26953125,
+    "phases": {
+      "eligibility": "eligible_empty_baseline"
+    },
+    "python_system_seconds": 0.19785899999999998,
+    "python_user_seconds": 3.797403,
+    "rate_samples": [
+      {
+        "applied": 2873,
+        "elapsed_seconds": 3.8255016619805247,
+        "interval_rows_per_second": 751.0126132091656,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 751.0126132091656,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 3286,
+        "elapsed_seconds": 3.948000703996513,
+        "interval_rows_per_second": 3371.4549371422504,
+        "model": "dcim.inventoryitem",
+        "overall_rows_per_second": 832.3200136903781,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 4936,
+        "elapsed_seconds": 4.196776373020839,
+        "interval_rows_per_second": 6632.4814097421195,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 1176.1408188750042,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 5051,
+        "elapsed_seconds": 4.312315254996065,
+        "interval_rows_per_second": 995.3359253091816,
+        "model": "dcim.cable",
+        "overall_rows_per_second": 1171.2965544780443,
+        "phase": "fast_load"
+      }
+    ],
+    "rows_per_second": 1263.0787793308425,
+    "sql_by_verb": {
+      "INSERT": 44,
+      "LOCK": 1,
+      "RELEASE": 62,
+      "SAVEPOINT": 62,
+      "SELECT": 349,
+      "UPDATE": 19
+    },
+    "statements": 537,
+    "statements_per_change": 0.09151329243353783,
+    "wal_bytes": 7137680,
+    "wall_seconds": 4.645790979964659
+  },
+  "remedy": "none",
+  "scale": 0.005,
+  "schema_version": 1,
+  "verification": {
+    "applied_changes": 0,
+    "baseline_ready": true,
+    "branch_id": null,
+    "change_diffs": 0,
+    "durable_state_counts": {
+      "contributor_baselines": 0,
+      "current_workload_states": 0,
+      "device_identities": 17,
+      "workload_states": 0
+    },
+    "fast_baseline_attestation": {
+      "eligibility_reason": "eligible_empty_baseline",
+      "engine": "direct_main_bulk_apply",
+      "model_engines": {
+        "dcim.cable": "fast_baseline_set_based",
+        "dcim.device": "normal_apply_engine",
+        "dcim.devicerole": "normal_apply_engine",
+        "dcim.devicetype": "normal_apply_engine",
+        "dcim.interface": "fast_baseline_set_based",
+        "dcim.inventoryitem": "fast_baseline_set_based",
+        "dcim.macaddress": "fast_baseline_set_based",
+        "dcim.manufacturer": "normal_apply_engine",
+        "dcim.platform": "normal_apply_engine",
+        "dcim.site": "normal_apply_engine",
+        "ipam.ipaddress": "fast_baseline_set_based",
+        "ipam.prefix": "fast_baseline_set_based",
+        "netbox_dlm.vulnerability": "fast_baseline_set_based"
+      },
+      "model_specs": {
+        "dcim.cable": 2,
+        "dcim.device": 1,
+        "dcim.devicerole": 1,
+        "dcim.devicetype": 1,
+        "dcim.interface": 2,
+        "dcim.inventoryitem": 2,
+        "dcim.macaddress": 2,
+        "dcim.manufacturer": 1,
+        "dcim.platform": 1,
+        "dcim.site": 1,
+        "ipam.ipaddress": 2,
+        "ipam.prefix": 2,
+        "netbox_dlm.vulnerability": 2
+      },
+      "omitted_evidence": [
+        "branch",
+        "branch_event",
+        "source_object_change",
+        "source_change_diff",
+        "destination_object_change",
+        "applied_change",
+        "branch_rollback"
+      ],
+      "runtime": {
+        "branching": "1.1.1",
+        "forward_netbox": "2.6.1",
+        "netbox": "4.6.5",
+        "optional_plugins": {
+          "netbox-cisco-aci": "0.4.0",
+          "netbox-dlm": "0.4.1",
+          "netbox-peering-manager": "0.3.0",
+          "netbox-routing": "0.4.3"
+        },
+        "plugin_apps": [
+          "forward_netbox",
+          "netbox_branching",
+          "netbox_cisco_aci",
+          "netbox_dlm",
+          "netbox_peering_manager",
+          "netbox_routing"
+        ]
+      },
+      "spec_version": 1,
+      "staged_workload_state_count": 0,
+      "statistics": {
+        "applied": 5402,
+        "failed": 0,
+        "models": {
+          "dcim.cable": {
+            "applied": 115,
+            "current": 115,
+            "failed": 0,
+            "skipped": 0,
+            "total": 115,
+            "unchanged": 0
+          },
+          "dcim.device": {
+            "applied": 17,
+            "current": 17,
+            "failed": 0,
+            "skipped": 0,
+            "total": 17,
+            "unchanged": 0
+          },
+          "dcim.devicerole": {
+            "applied": 1,
+            "current": 1,
+            "failed": 0,
+            "skipped": 0,
+            "total": 1,
+            "unchanged": 0
+          },
+          "dcim.devicetype": {
+            "applied": 1,
+            "current": 1,
+            "failed": 0,
+            "skipped": 0,
+            "total": 1,
+            "unchanged": 0
+          },
+          "dcim.interface": {
+            "applied": 2679,
+            "current": 2679,
+            "failed": 0,
+            "skipped": 0,
+            "total": 2679,
+            "unchanged": 0
+          },
+          "dcim.inventoryitem": {
+            "applied": 413,
+            "current": 413,
+            "failed": 0,
+            "skipped": 0,
+            "total": 413,
+            "unchanged": 0
+          },
+          "dcim.macaddress": {
+            "applied": 1390,
+            "current": 1390,
+            "failed": 0,
+            "skipped": 0,
+            "total": 1390,
+            "unchanged": 0
+          },
+          "dcim.manufacturer": {
+            "applied": 1,
+            "current": 2,
+            "failed": 0,
+            "skipped": 0,
+            "total": 1,
+            "unchanged": 1
+          },
+          "dcim.platform": {
+            "applied": 1,
+            "current": 1,
+            "failed": 0,
+            "skipped": 0,
+            "total": 1,
+            "unchanged": 0
+          },
+          "dcim.site": {
+            "applied": 1,
+            "current": 1,
+            "failed": 0,
+            "skipped": 0,
+            "total": 1,
+            "unchanged": 0
+          },
+          "ipam.ipaddress": {
+            "applied": 260,
+            "current": 260,
+            "failed": 0,
+            "skipped": 0,
+            "total": 260,
+            "unchanged": 0
+          },
+          "ipam.prefix": {
+            "applied": 172,
+            "current": 172,
+            "failed": 0,
+            "skipped": 0,
+            "total": 172,
+            "unchanged": 0
+          },
+          "netbox_dlm.vulnerability": {
+            "applied": 351,
+            "current": 351,
+            "failed": 0,
+            "skipped": 0,
+            "total": 351,
+            "unchanged": 0
+          }
+        },
+        "skipped": 0,
+        "unchanged": 1
+      }
+    },
+    "ingestion_change_totals": {
+      "applied": 5402,
+      "created": 5402,
+      "deleted": 0,
+      "failed": 0,
+      "updated": 0
+    },
+    "issues": 0,
+    "model_results": [
+      {
+        "model": "dcim.site",
+        "row_count": 1,
+        "sync_mode": "full"
+      },
+      {
+        "model": "dcim.manufacturer",
+        "row_count": 1,
+        "sync_mode": "full"
+      },
+      {
+        "model": "dcim.devicerole",
+        "row_count": 1,
+        "sync_mode": "full"
+      },
+      {
+        "model": "dcim.platform",
+        "row_count": 1,
+        "sync_mode": "full"
+      },
+      {
+        "model": "dcim.devicetype",
+        "row_count": 1,
+        "sync_mode": "full"
+      },
+      {
+        "model": "ipam.prefix",
+        "row_count": 172,
+        "sync_mode": "full"
+      },
+      {
+        "model": "dcim.device",
+        "row_count": 17,
+        "sync_mode": "full"
+      },
+      {
+        "model": "dcim.interface",
+        "row_count": 2679,
+        "sync_mode": "full"
+      },
+      {
+        "model": "dcim.inventoryitem",
+        "row_count": 413,
+        "sync_mode": "full"
+      },
+      {
+        "model": "ipam.ipaddress",
+        "row_count": 260,
+        "sync_mode": "full"
+      },
+      {
+        "model": "dcim.macaddress",
+        "row_count": 1390,
+        "sync_mode": "full"
+      },
+      {
+        "model": "dcim.cable",
+        "row_count": 115,
+        "sync_mode": "full"
+      },
+      {
+        "model": "netbox_dlm.vulnerability",
+        "row_count": 351,
+        "sync_mode": "full"
+      }
+    ],
+    "object_changes": 0,
+    "passed": true,
+    "semantic_fingerprints": {
+      "cable": {
+        "count": 115,
+        "sha256": "0c59122899deb9215133a556489f1632a8ec930eba9d0cce287e693c788d4df4"
+      },
+      "cable_path": {
+        "count": 230,
+        "sha256": "7453005d674b096ab5f31991b489d4cca38d22f064639ca8d7391eb9bbe008d3"
+      },
+      "cable_termination": {
+        "count": 230,
+        "sha256": "9e82812ed7d607c6bb1b45e6a0b6f7700e3a0eb31ed23a900d3609a13b1e3de4"
+      },
+      "cached_value": {
+        "count": 1493,
+        "sha256": "fd96c1999f842fa3e32018fe8272b0b577260adce92587c8036046ac11408bf9"
+      },
+      "cve": {
+        "count": 110,
+        "sha256": "7edaf292e025ef343120aec353f08a9bb10fb613630d5f6fe4a317d3314f1f0b"
+      },
+      "cve_affected_software": {
+        "count": 344,
+        "sha256": "7b5e765be90b74dc67a481ebc4a2f0a701be1ef109d4e85513ba69bc83a063c6"
+      },
+      "device": {
+        "count": 17,
+        "sha256": "f348c2954c7f105c99c733dfad7ad81f069a1b9d3f51918620ee4c59d45d83a2"
+      },
+      "device_role": {
+        "count": 1,
+        "sha256": "bf1580380d3e0b48ef2dc3a1519b1b846cb58014016af769936ea8149d386487"
+      },
+      "device_software": {
+        "count": 17,
+        "sha256": "28c50c339cb37fc4d46d94c2022bf6266168fbc45f3fa2784399d1ff4f3bc0cf"
+      },
+      "device_type": {
+        "count": 1,
+        "sha256": "d926ab364efce19159a62a4570ec63df4211816b7799bc42327e8203ae421ef0"
+      },
+      "interface": {
+        "count": 2679,
+        "sha256": "38ccaed9d25526d1f0c15627770ac2b1d497419a6a2d31729b3710ccb99074a6"
+      },
+      "inventory": {
+        "count": 413,
+        "sha256": "2dbccb69b391830c19975d109f12fc60b51457cd83d1b8e44f71f94a480681c1"
+      },
+      "inventory_role": {
+        "count": 5,
+        "sha256": "6aba2785d1c07f5b859b000e9a7e5075ff89f8f6c97a8c559887f505c077bec6"
+      },
+      "ip_address": {
+        "count": 260,
+        "sha256": "4b09a4666d20c64d3134ca74b63547f32c4e98aa859a2e6f5130db683d71c612"
+      },
+      "mac": {
+        "count": 1390,
+        "sha256": "86f170734f2e1ffe1ea32ebad21e2e03ceb9ad947faec1d7caf575c3aeae6869"
+      },
+      "manufacturer": {
+        "count": 1,
+        "sha256": "535a4c1fe73dd4b71da31f1bc6bd12e5403322ec93983b59e2b4a544d6f014be"
+      },
+      "platform": {
+        "count": 1,
+        "sha256": "e68e7414186db346bf4988e4d012b12cde1de0fa0423ef91d3063a4000edb60b"
+      },
+      "prefix": {
+        "count": 172,
+        "sha256": "2b8bee6415b8cad202ef447bc4043297d532699edfe7fa819d7794c938d0fb85"
+      },
+      "site": {
+        "count": 1,
+        "sha256": "b3df52b1c4ddb3f0ecd00fb10f3880cb1f5725e1e89ac69fb841a4e1d3d3ad6d"
+      },
+      "software_version": {
+        "count": 10,
+        "sha256": "aa3a93ae01b9733bd5fc5169fd4dc3db39139d2f088a0c0ff30110e54f49b94c"
+      },
+      "vulnerability": {
+        "count": 351,
+        "sha256": "53301e41b3573dd2a2b10c56f1bfc0a687339a6c6d88c957e55637add39a6cb3"
+      }
+    },
+    "side_counts": {
+      "dcim.cablepath": 230,
+      "dcim.cabletermination": 230,
+      "dcim.inventoryitemrole": 5,
+      "extras.cachedvalue": 1493,
+      "netbox_dlm.cve": 110,
+      "netbox_dlm.cve_affected_software": 344,
+      "netbox_dlm.devicesoftware": 17,
+      "netbox_dlm.softwareversion": 10
+    },
+    "sync_status": "completed",
+    "target_counts": {
+      "dcim.cable": 115,
+      "dcim.interface": 2679,
+      "dcim.inventoryitem": 413,
+      "dcim.macaddress": 1390,
+      "dcim.site": 1,
+      "ipam.ipaddress": 260,
+      "ipam.prefix": 172,
+      "netbox_dlm.vulnerability": 351
+    }
+  }
+}

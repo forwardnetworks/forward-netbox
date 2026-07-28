@@ -50,6 +50,42 @@ class DeviceGenericRelationGuardMigrationTest(TransactionTestCase):
             )
 
 
+class ForwardDiffContractMigrationTest(TransactionTestCase):
+    def tearDown(self):
+        _migrate_to(_head_migration())
+
+    def test_existing_maps_upgrade_full_only(self):
+        executor = _migrate_to("0042_device_generic_relation_guards")
+        state = executor.loader.project_state(
+            (APP, "0042_device_generic_relation_guards")
+        )
+        HistoricalMap = state.apps.get_model(APP, "ForwardNQEMap")
+        HistoricalContentType = state.apps.get_model(
+            "contenttypes",
+            "ContentType",
+        )
+        site_type = HistoricalContentType.objects.get(
+            app_label="dcim",
+            model="site",
+        )
+        query_map = HistoricalMap.objects.create(
+            name="Diff Contract Upgrade Probe",
+            netbox_model_id=site_type.pk,
+            query_id="Q_legacy_sites",
+            commit_id="legacy-parameterized-commit",
+            parameters={"forward_netbox_shard_keys": []},
+        )
+
+        _migrate_to(_head_migration())
+
+        from forward_netbox.models import ForwardNQEMap
+
+        upgraded = ForwardNQEMap.objects.get(pk=query_map.pk)
+        self.assertEqual(upgraded.diff_commit_id, "")
+        self.assertEqual(upgraded.full_source_sha256, "")
+        self.assertEqual(upgraded.diff_source_sha256, "")
+
+
 class ForwardUpgradeMigrationTest(TransactionTestCase):
     """In-place upgrade on a POPULATED database must preserve the core
     ForwardSource config across the destructive migrations — the path an operator

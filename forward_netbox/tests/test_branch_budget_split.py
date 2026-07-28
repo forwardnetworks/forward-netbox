@@ -103,3 +103,20 @@ class BranchBudgetSplitTest(SimpleTestCase):
             build_branch_plan(workloads, max_changes_per_staging_item=None),
         )
         self.assertEqual(len(build_branch_plan(workloads)), 1)
+
+    def test_derived_delete_proof_is_rescoped_to_each_plan_item(self):
+        workload = BranchWorkload(
+            model_string="netbox_dlm.cve",
+            label="CVE tombstones",
+            delete_rows=[{"cve_id": f"CVE-2026-{index:04d}"} for index in range(5)],
+            coalesce_fields=[["cve_id"]],
+            derived_delete_contract="cve_without_in_scope_vulnerability_v1",
+            derived_delete_count=5,
+        )
+
+        plan = build_branch_plan([workload], max_changes_per_staging_item=2)
+
+        self.assertEqual(sum(item.derived_delete_count for item in plan), 5)
+        self.assertTrue(
+            all(item.derived_delete_count == len(item.delete_rows) for item in plan)
+        )

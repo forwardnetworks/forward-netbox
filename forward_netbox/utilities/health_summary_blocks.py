@@ -138,6 +138,9 @@ def query_map_summary(query_map):
         "query_path": query_map.query_path or "",
         "has_query_id": bool(query_map.query_id),
         "has_commit_id": bool(query_map.commit_id),
+        "has_diff_commit_id": bool(getattr(query_map, "diff_commit_id", "")),
+        "has_full_source_hash": bool(getattr(query_map, "full_source_sha256", "")),
+        "has_diff_source_hash": bool(getattr(query_map, "diff_source_sha256", "")),
         "built_in": bool(query_map.built_in),
     }
 

@@ -11,6 +11,8 @@ from .diagnostics import safe_operation_failure
 from .forward_api import LATEST_COLLECTED_SNAPSHOT
 from .ingestion_merge import suppress_ingest_side_effect_signals
 from .model_contracts import architecture_default_coalesce_fields_for_model
+from .query_execution_contract import _model_contract_issue_rows
+from .query_execution_contract import resolve_execution_contract
 from .query_registry import get_query_specs
 from .query_registry import resolve_query_specs_for_client
 from .sync_contracts import validate_row_shape_for_model
@@ -103,7 +105,8 @@ def run_sync_stage(runner):
     with suppress_ingest_side_effect_signals():
         for model_string in runner.sync.get_model_strings():
             runner.logger.log_info(
-                f"Starting model ingestion for {model_string}.", obj=runner.sync
+                f"Resolving execution contracts for {model_string} before ingestion.",
+                obj=runner.sync,
             )
             try:
                 specs = get_query_specs(model_string, maps=maps)
@@ -116,6 +119,34 @@ def run_sync_stage(runner):
                     runner._model_coalesce_fields[model_string] = (
                         architecture_default_coalesce_fields_for_model(model_string)
                     )
+                resolved_contracts = [
+                    resolve_execution_contract(
+                        spec,
+                        effective_parameters=spec.merged_parameters(query_parameters),
+                    )
+                    for spec in specs
+                ]
+                preflight_issues = [
+                    (contract.query_name, contract.map_id, issue)
+                    for contract in resolved_contracts
+                    for issue in _model_contract_issue_rows(contract)
+                ]
+                if preflight_issues:
+                    runner.logger.log_warning(
+                        f"Execution contract preflight found {len(preflight_issues)} incompatible map(s) for {model_string}: "
+                        + "; ".join(
+                            f"{name}[{map_id}]: {issue}"
+                            for name, map_id, issue in preflight_issues
+                        ),
+                        obj=runner.sync,
+                    )
+                model_diff_eligible = bool(resolved_contracts) and all(
+                    contract.diff_eligible for contract in resolved_contracts
+                )
+                runner.logger.log_info(
+                    f"Starting model ingestion for {model_string}.",
+                    obj=runner.sync,
+                )
                 runner.logger.init_statistics(model_string, 0)
                 model_delete_rows = pending_deletes.setdefault(model_string, [])
                 latest_baseline = runner.sync.latest_baseline_ingestion(
@@ -127,6 +158,30 @@ def run_sync_stage(runner):
                     exclude_ingestion_id=runner.ingestion.pk,
                     client=runner.client,
                 )
+                if model_baseline is not None and not model_diff_eligible:
+                    reason = next(
+                        (
+                            contract.reason_code
+                            for contract in resolved_contracts
+                            if not contract.diff_eligible
+                        ),
+                        "no_maps",
+                    )
+                    if (runner.sync.parameters or {}).get(
+                        "diff_fallback_mode",
+                        ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
+                    ) == ForwardDiffFallbackModeChoices.REQUIRE_DIFF:
+                        raise ForwardQueryError(
+                            "Diff execution is required, but the resolved execution "
+                            f"contract for {model_string} is full-only ({reason})."
+                        )
+                    runner.logger.log_info(
+                        "The resolved execution contract for "
+                        f"{model_string} is full-only ({reason}); running full "
+                        "query execution instead.",
+                        obj=runner.sync,
+                    )
+                    model_baseline = None
                 if (
                     latest_baseline is not None
                     and latest_baseline.snapshot_id == snapshot_id
@@ -138,70 +193,59 @@ def run_sync_stage(runner):
                         f"so running full query execution for {model_string} instead.",
                         obj=runner.sync,
                     )
-                for spec in specs:
+                for spec, contract in zip(
+                    specs,
+                    resolved_contracts,
+                    strict=True,
+                ):
                     rows = []
                     delete_rows = []
-                    effective_parameters = spec.merged_parameters(query_parameters)
-                    if model_baseline is not None and spec.run_query_id:
-                        if effective_parameters:
-                            if (runner.sync.parameters or {}).get(
-                                "diff_fallback_mode",
-                                ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
-                            ) == ForwardDiffFallbackModeChoices.REQUIRE_DIFF:
-                                raise ForwardQueryError(
-                                    "Diff execution is required, but Forward NQE diffs "
-                                    "do not accept runtime query parameters for "
-                                    f"{model_string} using `{spec.execution_value}`. "
-                                    "Use Allow full fallback for parameterized maps."
-                                )
+                    effective_parameters = dict(contract.full_effective_parameters)
+                    if model_baseline is not None:
+                        if not contract.diff_eligible:
+                            raise ForwardQueryError(
+                                "Diff execution is not allowed by the resolved "
+                                f"contract for {model_string}: {contract.reason_code}."
+                            )
+                        try:
                             runner.logger.log_info(
-                                "Forward NQE diffs do not accept runtime query "
-                                f"parameters for {model_string} using "
-                                f"`{spec.execution_value}`; running full async "
-                                "query execution instead.",
+                                f"Running Forward NQE diff `{spec.execution_value}` for {model_string} "
+                                f"between snapshots `{model_baseline.snapshot_id}` and `{snapshot_id}`.",
+                                obj=runner.sync,
+                            )
+                            diff_rows = runner.client.run_nqe_diff(
+                                query_id=contract.diff_revision.query_id,
+                                commit_id=contract.diff_revision.commit_id,
+                                before_snapshot_id=model_baseline.snapshot_id,
+                                after_snapshot_id=snapshot_id,
+                                fetch_all=True,
+                            )
+                            rows, delete_rows = runner._split_diff_rows(
+                                model_string, diff_rows
+                            )
+                            used_diff = True
+                            runner.logger.log_info(
+                                f"Fetched {len(diff_rows)} diff rows for {model_string} from query_id `{spec.execution_value}`.",
+                                obj=runner.sync,
+                            )
+                        except (
+                            ForwardClientError,
+                            ForwardConnectivityError,
+                        ) as exc:
+                            runner.logger.log_warning(
+                                safe_operation_failure(
+                                    f"Forward NQE diff for {model_string}", exc
+                                )
+                                + " Falling back to full query execution.",
                                 obj=runner.sync,
                             )
                             model_baseline = None
-                        else:
-                            try:
-                                runner.logger.log_info(
-                                    f"Running Forward NQE diff `{spec.execution_value}` for {model_string} "
-                                    f"between snapshots `{model_baseline.snapshot_id}` and `{snapshot_id}`.",
-                                    obj=runner.sync,
-                                )
-                                diff_rows = runner.client.run_nqe_diff(
-                                    query_id=spec.run_query_id,
-                                    commit_id=spec.commit_id,
-                                    before_snapshot_id=model_baseline.snapshot_id,
-                                    after_snapshot_id=snapshot_id,
-                                    fetch_all=True,
-                                )
-                                rows, delete_rows = runner._split_diff_rows(
-                                    model_string, diff_rows
-                                )
-                                used_diff = True
-                                runner.logger.log_info(
-                                    f"Fetched {len(diff_rows)} diff rows for {model_string} from query_id `{spec.execution_value}`.",
-                                    obj=runner.sync,
-                                )
-                            except (
-                                ForwardClientError,
-                                ForwardConnectivityError,
-                            ) as exc:
-                                runner.logger.log_warning(
-                                    safe_operation_failure(
-                                        f"Forward NQE diff for {model_string}", exc
-                                    )
-                                    + " Falling back to full query execution.",
-                                    obj=runner.sync,
-                                )
-                                model_baseline = None
 
-                    if model_baseline is None or not spec.run_query_id:
-                        if model_baseline is not None and not spec.run_query_id:
-                            runner.logger.log_warning(
-                                f"Forward diffs require a query_id; `{spec.execution_value}` is still raw query text, so running a full query for {model_string} instead.",
-                                obj=runner.sync,
+                    if model_baseline is None:
+                        if not contract.full_eligible:
+                            raise ForwardQueryError(
+                                "Full execution is not allowed by the resolved "
+                                f"contract for {model_string}: {contract.full_reason_code}."
                             )
                         runner.logger.log_info(
                             f"Running Forward {spec.execution_mode} `{spec.execution_value}` for {model_string}.",
@@ -209,8 +253,8 @@ def run_sync_stage(runner):
                         )
                         rows = runner.client.run_nqe_query(
                             query=spec.query,
-                            query_id=spec.run_query_id,
-                            commit_id=spec.commit_id,
+                            query_id=contract.full_revision.query_id or None,
+                            commit_id=contract.full_revision.commit_id or None,
                             network_id=network_id,
                             snapshot_id=snapshot_id,
                             parameters=effective_parameters,

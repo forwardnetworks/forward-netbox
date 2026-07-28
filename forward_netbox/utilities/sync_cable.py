@@ -13,6 +13,31 @@ def _cable_between_cache_key(interface, remote_interface):
     return tuple(sorted((interface_id, remote_interface_id)))
 
 
+def _termination_cables_for_interfaces(interfaces):
+    """Resolve authoritative cable terminations when endpoint caches are absent.
+
+    NetBox Branching does not retain the signal-derived ``Interface.cable``
+    cache when CableTermination rows are merged.  The termination rows are the
+    durable relationship, so existing-cable detection must not depend solely
+    on that optional cache.
+    """
+    from dcim.models import CableTermination
+
+    interface_ids = {
+        interface.pk for interface in interfaces if getattr(interface, "pk", None)
+    }
+    if not interface_ids:
+        return {}
+    terminations = CableTermination.objects.filter(
+        termination_type__app_label="dcim",
+        termination_type__model="interface",
+        termination_id__in=interface_ids,
+    ).select_related("cable")
+    return {
+        termination.termination_id: termination.cable for termination in terminations
+    }
+
+
 def remember_cable_between(runner, interface, remote_interface, cable):
     cache_key = _cable_between_cache_key(interface, remote_interface)
     if cache_key is None:
@@ -38,6 +63,14 @@ def lookup_cable_between(runner, interface, remote_interface):
         if cable is not None:
             remember_cable_between(runner, interface, remote_interface, cable)
             return cable
+    termination_cables = _termination_cables_for_interfaces(
+        (interface, remote_interface)
+    )
+    cable = termination_cables.get(interface.pk)
+    remote_cable = termination_cables.get(remote_interface.pk)
+    if cable is not None and cable.pk == getattr(remote_cable, "pk", None):
+        remember_cable_between(runner, interface, remote_interface, cable)
+        return cable
     return None
 
 
@@ -178,7 +211,15 @@ def apply_dcim_cable(runner, row):
 
     interface.refresh_from_db(fields=["cable"])
     remote_interface.refresh_from_db(fields=["cable"])
-    if interface.cable_id or remote_interface.cable_id:
+    termination_cables = _termination_cables_for_interfaces(
+        (interface, remote_interface)
+    )
+    if (
+        interface.cable_id
+        or remote_interface.cable_id
+        or termination_cables.get(interface.pk) is not None
+        or termination_cables.get(remote_interface.pk) is not None
+    ):
         if runner._conflict_policy("dcim.cable") == "skip_warn_aggregate":
             runner._record_aggregated_conflict_warning(
                 model_string="dcim.cable",

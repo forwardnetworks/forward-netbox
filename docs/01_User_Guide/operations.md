@@ -279,8 +279,12 @@ python manage.py forward_stuck_job_recover --apply    # act
 ```
 
 A wedged `MERGING` sync whose worker is dead (no live RQ execution, past a
-15-minute grace) is re-enqueued for merge — idempotent, resuming the unmerged
-suffix — up to 4 attempts, after which it is failed with an issue recorded. A
+15-minute grace) is re-enqueued for merge — idempotently re-collapsing the
+complete logical branch and converging rows already committed by bounded merge
+sub-batches before continuing — up to 4 attempts, after which it is failed with
+an issue recorded. Ingestion change counters are finalized only after the whole
+logical branch has been processed; Branching audit rows are the durable
+row-level resume evidence during an interrupted attempt. A
 dead sync-run is failed cleanly so its schedule resumes. Never touches a
 live merge or a `ready_to_merge` (operator review) sync. Cron `--apply` for
 hands-off recovery.
@@ -383,6 +387,70 @@ with each sync run that has the Vulnerability map enabled.
 - **Validate** runs query validation without applying.
 - **Export Support Bundle** / **Export ZIP** collects diagnostics (live source
   health, query drift, data-file checks) for support.
+
+### Fast first-baseline procedure
+
+The fast baseline is a disabled-by-default exception for a new, empty NetBox
+inventory. It is not an alternate incremental engine. Every later run uses the
+ordinary single-branch workflow.
+
+Before starting the sync, enable **Auto merge**, **Use safe bulk ORM models**,
+and **Use fast first-baseline load** on the sync, verify a PostgreSQL backup,
+stop other inventory writers, then run the complete read-only preflight:
+
+```bash
+python manage.py forward_fast_baseline_preflight \
+  --sync <sync-id> --fail-on-ineligible
+```
+
+The preflight executes the configured Forward NQE workload so it can prove the
+actual full/delete semantics and row shapes. It creates no ingestion, Branch,
+ObjectChange, ChangeDiff, AppliedChange, or target inventory row. Its JSON
+reports `eligible`, one exact `reason_code`, diagnostic `context`, the resolved
+snapshot, model set, workload count, and estimated change count. Eligibility
+can change after the command returns, so the real load repeats every mutable
+check under the transaction advisory lock and target/side/control-table locks.
+Do not bypass a rejection.
+
+The standalone preflight must inspect the complete workload; a bounded row
+sample cannot prove that a later relationship or identity is valid. To avoid
+executing that workload twice, also enable **Abort unless the fast baseline is
+eligible** and run the sync directly. That single-pass mode proves the already
+fetched in-memory workload and aborts without branch provisioning or target
+mutation if ineligible; the normal sync failure path records one failed
+ingestion with the rejection reason. It is not a read-only preflight when
+eligible: eligibility immediately leads to the direct baseline transaction.
+
+The fast path applies only when all of these conditions pass:
+
+- explicit opt-in, bulk ORM, and auto-merge are enabled;
+- every returned workload is full, the primary-IP overlay is disabled, and any
+  delete is the exact normalization-stamped out-of-scope CVE tombstone contract;
+- the exact pinned NetBox, Branching, Forward NetBox, optional-plugin, and
+  configured-application tuple is present;
+- every model and actual row shape is in the versioned allowlist;
+- every selected target and owned side table is empty;
+- there is no earlier ingestion, workload baseline, contributor baseline, or
+  device identity, and no competing nonterminal Branching branch;
+- there is no unproved admitted-model custom field, enabled event rule, custom
+  validator, or protection rule.
+
+A successful load still produces ingestion statistics and issues, model
+results, workload and contributor baseline state, device identities, ownership
+and catch-up inputs, completed/baseline-ready lifecycle state, and a durable
+attestation. It intentionally produces no Branch, BranchEvent, source or
+destination ObjectChange, ChangeDiff, AppliedChange, or branch rollback point.
+The ingestion page displays the **Fast Baseline Attestation**; the ingestion API,
+log export, and support bundle expose the same persisted record for later audit.
+
+This is the safety trade: failure during direct DML or finalization rolls back
+the entire transaction, and a pre-DML rejection uses the ordinary branch path,
+but a successful fast load has no branch rollback. Recovery after success is a
+database restore or full reseed. Verify `baseline_ready`, zero unexpected
+issues/failures, expected target and side-table counts, promoted workload and
+contributor state, device identities, ownership/catch-up completion, and the
+attestation before enabling scheduled or webhook runs. Disable the opt-in
+afterward.
 
 ## Push-triggered sync (webhooks)
 

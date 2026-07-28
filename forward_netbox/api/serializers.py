@@ -99,6 +99,9 @@ class ForwardNQEMapSerializer(NestedGroupModelSerializer):
             "query_path",
             "query",
             "commit_id",
+            "diff_commit_id",
+            "full_source_sha256",
+            "diff_source_sha256",
             "parameters",
             "coalesce_fields",
             "execution_mode",
@@ -108,6 +111,11 @@ class ForwardNQEMapSerializer(NestedGroupModelSerializer):
             "weight",
             "created",
             "last_updated",
+        )
+        read_only_fields = (
+            "diff_commit_id",
+            "full_source_sha256",
+            "diff_source_sha256",
         )
         brief_fields = (
             "id",
@@ -321,6 +329,7 @@ class ForwardIngestionSerializer(NestedGroupModelSerializer):
     analysis_summary = serializers.SerializerMethodField(read_only=True)
     workload_summary = serializers.SerializerMethodField(read_only=True)
     advisory_summary = serializers.SerializerMethodField(read_only=True)
+    fast_baseline_attestation = serializers.SerializerMethodField(read_only=True)
 
     class Meta:
         model = ForwardIngestion
@@ -334,6 +343,7 @@ class ForwardIngestionSerializer(NestedGroupModelSerializer):
             "analysis_summary",
             "workload_summary",
             "advisory_summary",
+            "fast_baseline_attestation",
             "snapshot_selector",
             "snapshot_id",
             "snapshot_info",
@@ -356,6 +366,9 @@ class ForwardIngestionSerializer(NestedGroupModelSerializer):
 
     def get_advisory_summary(self, obj):
         return obj.get_advisory_summary()
+
+    def get_fast_baseline_attestation(self, obj):
+        return dict((obj.snapshot_info or {}).get("fast_baseline_load") or {})
 
 
 class ForwardIngestionIssueSerializer(NestedGroupModelSerializer):

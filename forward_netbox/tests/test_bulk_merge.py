@@ -970,6 +970,100 @@ class BulkMergeIntegrationTest(CleanTransactionTestCase):
             SoftwareVersion.objects.filter(pk=software_version.pk).exists()
         )
 
+    def test_dlm_protected_version_delete_follows_destination_fk_reassignment(self):
+        from django.apps import apps
+        from netbox_branching.merge_strategies.squash import SquashMergeStrategy
+
+        from forward_netbox.utilities.logging import SyncLogging
+        from forward_netbox.utilities.sync import ForwardSyncRunner
+        from forward_netbox.utilities.sync_dlm import apply_netbox_dlm_devicesoftware
+        from forward_netbox.utilities.sync_dlm import delete_netbox_dlm_softwareversion
+
+        DeviceSoftware = apps.get_model("netbox_dlm", "DeviceSoftware")
+        SoftwareVersion = apps.get_model("netbox_dlm", "SoftwareVersion")
+        manufacturer = Manufacturer.objects.create(
+            name="DLM Reassignment Manufacturer",
+            slug="dlm-reassignment-manufacturer",
+        )
+        device_type = DeviceType.objects.create(
+            manufacturer=manufacturer,
+            model="DLM Reassignment Device Type",
+            slug="dlm-reassignment-device-type",
+        )
+        role = DeviceRole.objects.create(
+            name="DLM Reassignment Role",
+            slug="dlm-reassignment-role",
+        )
+        site = Site.objects.create(
+            name="DLM Reassignment Site",
+            slug="dlm-reassignment-site",
+        )
+        platform = Platform.objects.create(
+            name="DLM Reassignment OS",
+            slug="dlm-reassignment-os",
+        )
+        device = Device.objects.create(
+            name="dlm-reassignment-device",
+            device_type=device_type,
+            role=role,
+            site=site,
+            platform=platform,
+        )
+        retiring = SoftwareVersion.objects.create(platform=platform, version="1.0")
+        replacement = SoftwareVersion.objects.create(platform=platform, version="2.0")
+        device_software = DeviceSoftware.objects.create(
+            device=device,
+            software_version=retiring,
+        )
+        branch = provision_branch(user=self.user, name="DLM Protected Reassignment")
+        ingestion = self._ingestion_for_branch(branch, "dlm-protected-reassignment")
+        runner = ForwardSyncRunner(
+            ingestion.sync,
+            ingestion,
+            None,
+            SyncLogging(),
+        )
+
+        with activate_branch(branch), event_tracking(self.request):
+            self.request.id = uuid.uuid4()
+            apply_netbox_dlm_devicesoftware(
+                runner,
+                {
+                    "name": device.name,
+                    "platform": platform.name,
+                    "platform_slug": platform.slug,
+                    "version": replacement.version,
+                },
+            )
+            self.assertTrue(
+                delete_netbox_dlm_softwareversion(
+                    runner,
+                    {
+                        "platform_slug": platform.slug,
+                        "version": retiring.version,
+                    },
+                )
+            )
+
+        collapsed, _ = SquashMergeStrategy._collapse_changes(
+            branch.get_unmerged_changes().order_by("time"),
+            self.logger,
+        )
+        update = collapsed[("netbox_dlm.devicesoftware", device_software.pk)]
+        # Exact production condition: the branch update has no usable old FK,
+        # even though main is still protected by that relation.
+        self.assertNotEqual(
+            (update.prechange_data or {}).get("software_version"),
+            retiring.pk,
+        )
+
+        merge_branch(ingestion, user=self.user)
+
+        device_software.refresh_from_db()
+        self.assertEqual(device_software.software_version_id, replacement.pk)
+        self.assertFalse(SoftwareVersion.objects.filter(pk=retiring.pk).exists())
+        self.assertFalse(ingestion.issues.filter(phase="merge").exists())
+
     def test_bulk_create_resume_does_not_resurrect_deleted_row(self):
         branch = provision_branch(user=self.user, name="Deleted Create Resume")
         with activate_branch(branch), event_tracking(self.request):
@@ -3137,6 +3231,162 @@ class SingleBranchExecutorTest(CleanTransactionTestCase):
         # All 15 sites merged into main.
         self.assertEqual(Site.objects.filter(slug__startswith="sbe-site-").count(), 15)
         self.assertTrue(ingestions[0].baseline_ready)
+
+    def test_fresh_database_seeded_core_sync_fetches_validates_and_merges(self):
+        from forward_netbox.choices import forward_configured_models
+        from forward_netbox.models import ForwardNQEMap
+        from forward_netbox.models import ForwardValidationRun
+        from forward_netbox.models import ForwardWorkloadState
+        from forward_netbox.signals import seed_builtin_nqe_maps
+        from forward_netbox.utilities.query_fetch import ForwardQueryFetcher
+        from forward_netbox.utilities.query_fetch_execution import ForwardQueryContext
+        from forward_netbox.utilities.single_branch_executor import (
+            ForwardSingleBranchExecutor,
+        )
+
+        # Reproduce a clean install: no persisted maps, sync generations, durable
+        # workload state, inventory, or branches exist before post-migrate seeding.
+        ForwardNQEMap.objects.all().delete()
+        self.assertFalse(ForwardIngestion.objects.exists())
+        self.assertFalse(ForwardWorkloadState.objects.exists())
+        self.assertFalse(Branch.objects.exists())
+        self.assertFalse(Device.objects.filter(name="fresh-router").exists())
+        seed_builtin_nqe_maps(type("Sender", (), {"label": "forward_netbox"}))
+
+        enabled_models = {
+            "dcim.site",
+            "dcim.manufacturer",
+            "dcim.devicerole",
+            "dcim.platform",
+            "dcim.devicetype",
+            "dcim.device",
+        }
+        enabled_map_names = {
+            "Forward Locations",
+            "Forward Device Vendors",
+            "Forward Device Types",
+            "Forward Platforms",
+            "Forward Device Models",
+            "Forward Devices",
+        }
+        ForwardNQEMap.objects.update(enabled=False)
+        ForwardNQEMap.objects.filter(
+            name__in=enabled_map_names,
+            built_in=True,
+        ).update(enabled=True)
+        query_maps = list(ForwardNQEMap.objects.filter(enabled=True).order_by("pk"))
+        self.assertEqual(
+            {query_map.model_string for query_map in query_maps},
+            enabled_models,
+        )
+        self.assertTrue(all(query_map.query for query_map in query_maps))
+        self.assertTrue(all(not query_map.query_id for query_map in query_maps))
+
+        self.sync.parameters = {
+            model_string: model_string in enabled_models
+            for model_string in forward_configured_models()
+        }
+        self.sync.parameters.update(
+            {
+                "snapshot_id": "latestProcessed",
+                "enable_bulk_orm": True,
+            }
+        )
+        self.sync.save(update_fields=["parameters"])
+
+        rows_by_intent = {
+            "@intent Forward Locations": [{"name": "fresh site", "slug": "fresh-site"}],
+            "@intent Device Vendors found by Forward": [
+                {"name": "Acme", "slug": "acme"}
+            ],
+            "@intent Device Types found by Forward": [
+                {"name": "Router", "slug": "router", "color": "9e9e9e"}
+            ],
+            "@intent Forward Platforms": [
+                {
+                    "name": "NXOS",
+                    "slug": "nxos",
+                    "manufacturer": "Acme",
+                    "manufacturer_slug": "acme",
+                }
+            ],
+            "@intent Device models found by Forward": [
+                {
+                    "manufacturer": "Acme",
+                    "manufacturer_slug": "acme",
+                    "model": "Router 1",
+                    "slug": "router-1",
+                    "part_number": "Router 1",
+                }
+            ],
+            "@intent Devices collected by Forward": [
+                {
+                    "name": "fresh-router",
+                    "manufacturer": "Acme",
+                    "manufacturer_slug": "acme",
+                    "device_type": "Router 1",
+                    "device_type_slug": "router-1",
+                    "site": "fresh site",
+                    "site_slug": "fresh-site",
+                    "role": "Router",
+                    "role_slug": "router",
+                    "role_color": "9e9e9e",
+                    "platform": "NXOS",
+                    "platform_slug": "nxos",
+                    "status": "active",
+                }
+            ],
+        }
+
+        client = Mock()
+
+        def run_nqe_query(**kwargs):
+            query = str(kwargs.get("query") or "")
+            self.assertFalse(kwargs.get("query_id"))
+            for intent, rows in rows_by_intent.items():
+                if intent in query:
+                    return rows
+            self.fail("Fresh-install sync executed an unexpected NQE query.")
+
+        client.run_nqe_query.side_effect = run_nqe_query
+        context = ForwardQueryContext(
+            network_id="net-1",
+            snapshot_selector="latestProcessed",
+            snapshot_id="fresh-snapshot",
+            maps=query_maps,
+        )
+        logger = Mock()
+        self.sync.logger = logger
+
+        with patch.object(
+            ForwardQueryFetcher,
+            "resolve_context",
+            return_value=context,
+        ):
+            ingestions = ForwardSingleBranchExecutor(
+                self.sync,
+                client,
+                logger,
+                user=self.user,
+            ).run()
+
+        self.assertEqual(client.run_nqe_query.call_count, len(enabled_models))
+        platform_call = next(
+            call
+            for call in client.run_nqe_query.call_args_list
+            if "@intent Forward Platforms" in str(call.kwargs.get("query") or "")
+        )
+        self.assertIn(
+            "if isPresent(device.platform.osVersion)",
+            platform_call.kwargs["query"],
+        )
+        self.assertTrue(ingestions[0].baseline_ready)
+        self.assertTrue(
+            ForwardValidationRun.objects.filter(sync=self.sync, allowed=True).exists()
+        )
+        self.assertTrue(ForwardWorkloadState.objects.filter(sync=self.sync).exists())
+        self.assertTrue(Platform.objects.filter(slug="nxos").exists())
+        self.assertTrue(Device.objects.filter(name="fresh-router").exists())
 
     def test_single_branch_repeat_run_applies_delete_phase(self):
         from forward_netbox.utilities.branch_budget import BranchWorkload

@@ -5,11 +5,13 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import replace
+from threading import Lock
 from typing import Any
 
 from django.db import close_old_connections
 from django.db import connection
 from django.db import connections
+from django.db import DatabaseError
 from django.utils.text import slugify
 from rq.timeouts import JobTimeoutException
 
@@ -26,6 +28,15 @@ from .branch_budget import BranchWorkload
 from .branch_budget import DEVICE_SHARD_MODELS
 from .branch_budget import row_shard_key
 from .branch_budget import shard_fetch_contract
+from .contributor_baseline import compatible_current_relation
+from .contributor_baseline import ContributorBaselineExpectation
+from .contributor_baseline import ContributorBaselineUnavailable
+from .contributor_baseline import ContributorRelationContract
+from .contributor_baseline import ContributorRelationSeed
+from .contributor_baseline import ContributorWorkRelation
+from .contributor_baseline import decode_scope_payload
+from .contributor_baseline import stage_contributor_baseline
+from .diagnostics import safe_operation_failure
 from .forward_api import build_device_tag_scope_where
 from .forward_api import build_endpoint_device_eligibility_where
 from .forward_api import build_endpoint_tag_scope_where
@@ -50,13 +61,32 @@ from .query_diagnostics import (
 from .query_diagnostics import (
     summarize_unassignable_ipaddress_rows as sync_summarize_unassignable_ipaddress_rows,
 )
+from .query_execution_contract import canonical_sha256
+from .query_execution_contract import compatible_baseline_evidence
+from .query_execution_contract import diff_artifact_key
+from .query_execution_contract import DiffArtifact
+from .query_execution_contract import DiffArtifactStore
+from .query_execution_contract import resolve_execution_contract
+from .query_execution_contract import resolve_model_execution_contract
+from .query_execution_contract import ResolvedExecutionContract
+from .query_execution_contract import scope_config_fingerprint
+from .query_execution_contract import scope_membership_fingerprint
 from .query_registry import ensure_unique_query_spec_executions
 from .query_registry import get_query_specs
+from .query_registry import only_legacy_safe_default_parameters
 from .query_registry import optional_builtin_query_names_for_model
+from .query_registry import QuerySpec
 from .query_registry import resolve_query_specs_for_client
 from .sync import ForwardSyncRunner
 from .sync_contracts import validate_row_shape_for_model
 from .sync_facade import effective_scope_endpoints_by_include_tags
+from .tier3_reducers import contributor_target_key
+from .tier3_reducers import diff_normalized_model_rows
+from .tier3_reducers import is_tier3_reducer
+from .tier3_reducers import reduce_contributor_rows
+from .tier3_reducers import scope_side_from_context
+from .tier3_reducers import scope_side_from_payload
+from .tier3_reducers import scope_state_from_context
 from .workload_normalization import normalize_dependency_workloads
 from .workload_state import apply_durable_workload_deltas
 
@@ -84,6 +114,11 @@ DEVICE_NAME_SCOPED_MODELS = DEVICE_SHARD_MODELS | {
 DEFAULT_WORKLOAD_FETCH_RETRY_ATTEMPTS = 2
 DEFAULT_WORKLOAD_FETCH_RETRY_BACKOFF_SECONDS = 3.0
 DEFAULT_WORKLOAD_FETCH_TIMEOUT_SECONDS = 0
+DEFAULT_DIFF_FETCH_TIMEOUT_SECONDS = 60
+DEFAULT_DIFF_TIMEOUT_CIRCUIT_BREAKER_THRESHOLD = 1
+MAX_DIFF_TIMEOUT_CIRCUIT_BREAKER_THRESHOLD = 100
+DIFF_BUDGET_FALLBACK_REASON = "diff_budget_exceeded:ForwardFetchBudgetExceededError"
+DIFF_CIRCUIT_OPEN_FALLBACK_REASON = "diff_circuit_open:ForwardFetchBudgetExceededError"
 _TRANSIENT_FETCH_ERROR_TOKENS = (
     "timeout",
     "timed out",
@@ -147,6 +182,8 @@ class ForwardQueryContext:
     # Forward tags the operator selected to sync as NetBox device tags (feeds the
     # sync_device_tags query parameter of the device-tag sync query).
     sync_device_tags: list[str] = field(default_factory=list)
+    # Opt-in: apply the matched include tags to their NetBox devices.
+    apply_device_scope_tags: bool = False
     # Opt-in: import Forward SNMP endpoints (e.g. Avocent) as NetBox devices.
     sync_endpoints: bool = False
     # Broad MIB-2-only endpoint import. False keeps endpoint import limited to
@@ -174,6 +211,7 @@ class ForwardQueryContext:
             "device_tag_include_match": self.device_tag_include_match,
             "device_tag_prune_out_of_scope": self.device_tag_prune_out_of_scope,
             "sync_device_tags": self.sync_device_tags,
+            "apply_device_scope_tags": self.apply_device_scope_tags,
             "sync_endpoints": self.sync_endpoints,
             "sync_generic_endpoints": self.sync_generic_endpoints,
             "scope_endpoints_by_include_tags": self.scope_endpoints_by_include_tags,
@@ -280,6 +318,10 @@ class ForwardModelResult:
     fetch_parameters: dict[str, Any] = field(default_factory=dict)
     query_parameters: dict[str, Any] = field(default_factory=dict)
     query_path_resolution: dict[str, Any] = field(default_factory=dict)
+    execution_contract_fingerprint: str = ""
+    map_set_fingerprint: str = ""
+    scope_config_fingerprint: str = ""
+    scope_membership_fingerprint: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -303,6 +345,10 @@ class ForwardModelResult:
             "fetch_parameters": self.fetch_parameters,
             "query_parameters": self.query_parameters,
             "query_path_resolution": self.query_path_resolution,
+            "execution_contract_fingerprint": (self.execution_contract_fingerprint),
+            "map_set_fingerprint": self.map_set_fingerprint,
+            "scope_config_fingerprint": self.scope_config_fingerprint,
+            "scope_membership_fingerprint": self.scope_membership_fingerprint,
         }
 
 
@@ -317,7 +363,21 @@ class ForwardQueryFetcher:
         self._incremental_baseline_cache: dict[tuple[Any, ...], Any] = {}
         self._query_path_resolution_cache: dict[str, dict[str, Any]] = {}
         self._resolved_context_cache: dict[tuple[Any, ...], ForwardQueryContext] = {}
+        self._snapshot_scope_context_cache: dict[
+            tuple[Any, ...], ForwardQueryContext
+        ] = {}
+        self._diff_artifacts = DiffArtifactStore()
+        self._diff_timeout_lock = Lock()
+        self._diff_timeout_counts: dict[str, int] = {}
         self.pending_workload_states = []
+        self._contributor_lock = Lock()
+        self._pending_contributor_seeds: dict[str, ContributorRelationSeed] = {}
+        self._pending_contributor_work_relations: list[ContributorWorkRelation] = []
+        self._expected_contributor_contracts: dict[str, ContributorRelationContract] = (
+            {}
+        )
+        self._contributor_map_set_fingerprint = ""
+        self._contributor_staging_blocked = False
 
     def resolve_context(self) -> ForwardQueryContext:
         network_id = self.sync.get_network_id()
@@ -349,6 +409,7 @@ class ForwardQueryFetcher:
         sync_device_tags = sorted(
             {str(tag).strip() for tag in sync_device_tags if str(tag).strip()}
         )
+        apply_device_scope_tags = bool(source_parameters.get("apply_device_scope_tags"))
         sync_endpoints = bool(source_parameters.get("sync_endpoints"))
         sync_generic_endpoints = bool(source_parameters.get("sync_generic_endpoints"))
         scope_endpoints_by_include_tags = effective_scope_endpoints_by_include_tags(
@@ -362,6 +423,8 @@ class ForwardQueryFetcher:
             tuple(exclude_tags),
             include_match,
             prune_out_of_scope,
+            tuple(sync_device_tags),
+            apply_device_scope_tags,
             sync_endpoints,
             sync_generic_endpoints,
             scope_endpoints_by_include_tags,
@@ -379,7 +442,7 @@ class ForwardQueryFetcher:
             snapshot_metrics = self.client.get_snapshot_metrics(snapshot_id)
         except JobTimeoutException:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - metrics are best-effort
             self.logger.log_warning(
                 "Unable to fetch Forward snapshot metrics for the selected snapshot: "
                 f"{_safe_exception_summary(exc)}",
@@ -418,6 +481,7 @@ class ForwardQueryFetcher:
             device_tag_include_match=include_match,
             device_tag_prune_out_of_scope=prune_out_of_scope,
             sync_device_tags=sync_device_tags,
+            apply_device_scope_tags=apply_device_scope_tags,
             sync_endpoints=sync_endpoints,
             sync_generic_endpoints=sync_generic_endpoints,
             scope_endpoints_by_include_tags=scope_endpoints_by_include_tags,
@@ -759,8 +823,10 @@ class ForwardQueryFetcher:
         unsupported version. Skip it before query execution so health reporting
         and runtime behavior enforce the same registry decision.
         """
-        from .plugin_integrations.registry import integration_capability
-        from .plugin_integrations.registry import optional_integration_for_model
+        from .plugin_integrations.registry import (
+            integration_capability,
+            optional_integration_for_model,
+        )
 
         kept = []
         capabilities = {}
@@ -940,14 +1006,29 @@ class ForwardQueryFetcher:
         }
         if not cable_device_names:
             return {}
-        from dcim.models import Interface
+        from dcim.models import CableTermination, Interface
 
+        # CableTermination is the authoritative relationship. Branch merge
+        # does not retain Interface's signal-derived cable cache, so a
+        # populated baseline can legitimately have null Interface.cable_id for
+        # every connected endpoint.
+        cable_id_by_interface_id = {
+            int(interface_id): int(cable_id)
+            for interface_id, cable_id in CableTermination.objects.filter(
+                termination_type__app_label="dcim",
+                termination_type__model="interface",
+                _device__name__in=cable_device_names,
+            ).values_list("termination_id", "cable_id")
+        }
+        if not cable_id_by_interface_id:
+            return {}
         return {
-            (str(device_name), str(interface_name)): int(cable_id)
-            for device_name, interface_name, cable_id in Interface.objects.filter(
-                device__name__in=cable_device_names,
-                cable_id__isnull=False,
-            ).values_list("device__name", "name", "cable_id")
+            (str(device_name), str(interface_name)): cable_id_by_interface_id[
+                int(interface_id)
+            ]
+            for interface_id, device_name, interface_name in Interface.objects.filter(
+                pk__in=cable_id_by_interface_id
+            ).values_list("pk", "device__name", "name")
         }
 
     def _record_workload_normalization_summaries(self, summaries):
@@ -1079,6 +1160,63 @@ class ForwardQueryFetcher:
             timeout = DEFAULT_WORKLOAD_FETCH_TIMEOUT_SECONDS
         return max(0, timeout)
 
+    def _diff_fetch_timeout_seconds(self):
+        source = getattr(self.sync, "source", None)
+        parameters = dict(getattr(source, "parameters", {}) or {})
+        try:
+            timeout = int(
+                parameters.get(
+                    "diff_fetch_timeout_seconds",
+                    DEFAULT_DIFF_FETCH_TIMEOUT_SECONDS,
+                )
+            )
+        except (TypeError, ValueError):
+            timeout = DEFAULT_DIFF_FETCH_TIMEOUT_SECONDS
+        return max(1, timeout)
+
+    def _diff_timeout_circuit_breaker_threshold(self):
+        source = getattr(self.sync, "source", None)
+        parameters = dict(getattr(source, "parameters", {}) or {})
+        try:
+            threshold = int(
+                parameters.get(
+                    "diff_timeout_circuit_breaker_threshold",
+                    DEFAULT_DIFF_TIMEOUT_CIRCUIT_BREAKER_THRESHOLD,
+                )
+            )
+        except (TypeError, ValueError):
+            threshold = DEFAULT_DIFF_TIMEOUT_CIRCUIT_BREAKER_THRESHOLD
+        return max(
+            1,
+            min(MAX_DIFF_TIMEOUT_CIRCUIT_BREAKER_THRESHOLD, threshold),
+        )
+
+    def _diff_deadline(self, workload_deadline=None):
+        deadline = time.monotonic() + self._diff_fetch_timeout_seconds()
+        if workload_deadline is not None:
+            deadline = min(deadline, workload_deadline)
+        return deadline
+
+    def _diff_circuit_key(self, contract):
+        return str(getattr(contract, "fingerprint", "") or "")
+
+    def _diff_circuit_is_open(self, contract) -> bool:
+        key = self._diff_circuit_key(contract)
+        if not key:
+            return False
+        with self._diff_timeout_lock:
+            count = self._diff_timeout_counts.get(key, 0)
+        return count >= self._diff_timeout_circuit_breaker_threshold()
+
+    def _record_diff_timeout(self, contract) -> bool:
+        key = self._diff_circuit_key(contract)
+        if not key:
+            return False
+        with self._diff_timeout_lock:
+            count = self._diff_timeout_counts.get(key, 0) + 1
+            self._diff_timeout_counts[key] = count
+        return count >= self._diff_timeout_circuit_breaker_threshold()
+
     def _query_diagnostics_enabled(self) -> bool:
         source = getattr(self.sync, "source", None)
         parameters = dict(getattr(source, "parameters", {}) or {})
@@ -1114,6 +1252,7 @@ class ForwardQueryFetcher:
         shard_scope=None,
     ):
         jobs = []
+        contract_preflight_blocked = False
         enabled_models = self._drop_unavailable_integration_models(
             list(model_strings or self.sync.get_model_strings())
         )
@@ -1140,7 +1279,6 @@ class ForwardQueryFetcher:
                         self._missing_query_specs_message(model_string)
                     )
                 coalesce_fields = self._coalesce_fields(model_string, specs)
-                baseline = self._incremental_baseline_for_specs(context, specs)
                 scoped_specs = [
                     (
                         spec,
@@ -1159,24 +1297,66 @@ class ForwardQueryFetcher:
                     )
                     for spec, scope in scoped_specs
                 ]
-                ensure_unique_query_spec_executions(effective_specs)
-                has_runtime_parameters = any(
-                    bool(spec.parameters) for spec in effective_specs
+                effective_specs = self._hydrate_snapshot_data_file_hashes(
+                    effective_specs,
+                    context,
                 )
-                if baseline is not None and has_runtime_parameters:
-                    if self._require_diff_execution():
-                        raise ForwardQueryError(
-                            "Diff execution is required, but Forward NQE diffs do "
-                            "not accept runtime query parameters for "
-                            f"{model_string}. Use Allow full fallback for "
-                            "parameterized maps."
-                        )
-                    baseline = None
-                    self.logger.log_info(
-                        f"Using full execution for every {model_string} map because "
-                        "at least one map has runtime parameters and Forward NQE "
-                        "diffs are parameterless.",
-                        obj=self.sync,
+                ensure_unique_query_spec_executions(effective_specs)
+                contracts = [
+                    resolve_execution_contract(
+                        effective_spec,
+                        effective_parameters=effective_spec.parameters,
+                    )
+                    for (_spec, _scope), effective_spec in zip(
+                        scoped_specs,
+                        effective_specs,
+                        strict=True,
+                    )
+                ]
+                model_contract = resolve_model_execution_contract(
+                    model_string,
+                    contracts,
+                    context=context,
+                )
+                self._report_contract_compatibility_issues(
+                    model_string,
+                    model_contract.maps,
+                )
+                unsafe_full_contract = next(
+                    (
+                        contract
+                        for contract in model_contract.maps
+                        if not contract.full_eligible
+                    ),
+                    None,
+                )
+                if unsafe_full_contract is not None:
+                    contract_preflight_blocked = True
+                    raise ForwardQueryError(
+                        "Execution contract preflight rejected an unsafe full "
+                        f"contract for {model_string}: "
+                        f"{unsafe_full_contract.full_reason_code}."
+                    )
+                self._register_expected_contributor_contracts(model_contract)
+                if self._require_diff_execution() and not model_contract.diff_eligible:
+                    raise ForwardQueryError(
+                        "Diff execution is required, but the resolved execution "
+                        f"contract for {model_string} is full-only "
+                        f"({model_contract.reason_code})."
+                    )
+                baseline = (
+                    self._incremental_baseline_for_specs(
+                        context,
+                        model_contract,
+                    )
+                    if model_contract.diff_eligible
+                    else None
+                )
+                if self._require_diff_execution() and baseline is None:
+                    raise ForwardQueryError(
+                        "Diff execution is required, but no compatible baseline "
+                        f"with complete contract and before-scope provenance exists "
+                        f"for {model_string}."
                     )
             except ForwardQueryError as exc:
                 self._record_model_failure(
@@ -1193,16 +1373,39 @@ class ForwardQueryFetcher:
                     f"on snapshot `{baseline.snapshot_id}` for {model_string}.",
                     obj=self.sync,
                 )
-            for spec, scope in scoped_specs:
+            scopes_by_contract = {
+                contract.fingerprint: scope
+                for contract, (_spec, scope) in zip(
+                    contracts,
+                    scoped_specs,
+                    strict=True,
+                )
+            }
+            for contract in model_contract.maps:
                 jobs.append(
                     (
                         model_string,
-                        spec,
+                        contract,
                         baseline,
                         coalesce_fields,
-                        scope,
+                        scopes_by_contract.get(contract.fingerprint),
+                        model_contract,
                     )
                 )
+        if contract_preflight_blocked:
+            self.logger.log_warning(
+                "Execution contract preflight blocked all Forward workload "
+                "execution because at least one enabled map has an unsafe full "
+                "contract. No NQE workload request was scheduled.",
+                obj=self.sync,
+            )
+            return []
+        with self._contributor_lock:
+            self._contributor_map_set_fingerprint = canonical_sha256(
+                {
+                    "contracts": sorted(self._expected_contributor_contracts),
+                }
+            )
         return jobs
 
     def _resolved_specs_for_model(self, *, model_string: str, maps):
@@ -1247,6 +1450,7 @@ class ForwardQueryFetcher:
                     raise
                 except Exception as exc:
                     spec_errors[model_string] = exc
+                    self._log_spec_resolution_error(model_string, exc)
                     continue
                 self._resolved_specs_cache[model_string] = resolved
                 resolved_specs[model_string] = resolved
@@ -1286,6 +1490,7 @@ class ForwardQueryFetcher:
         for model_string, resolved, exc in indexed_results:
             if exc is not None:
                 spec_errors[model_string] = exc
+                self._log_spec_resolution_error(model_string, exc)
                 continue
             if resolved is None:
                 continue
@@ -1300,14 +1505,33 @@ class ForwardQueryFetcher:
         )
         return resolved_specs, spec_errors
 
+    def _log_spec_resolution_error(
+        self,
+        model_string: str,
+        exc: Exception,
+    ) -> None:
+        # This is intentionally an info-level diagnostic classifier. Support-bundle
+        # redaction replaces warning/error message bodies, while this helper emits
+        # only the model contract and exception class, never exception content.
+        self.logger.log_info(
+            safe_operation_failure(
+                f"Forward query spec resolution for {model_string}",
+                exc,
+            ),
+            obj=self.sync,
+        )
+
     def _incremental_baseline_for_specs(
-        self, context: ForwardQueryContext, specs: list[Any]
+        self, context: ForwardQueryContext, model_contract
     ):
         if context.snapshot_selector != LATEST_PROCESSED_SNAPSHOT:
             return None
-        if not specs or any(not getattr(spec, "diff_query_id", None) for spec in specs):
+        if not getattr(model_contract, "diff_eligible", False):
             return None
         cache_key = (
+            model_contract.model_string,
+            model_contract.map_set_fingerprint,
+            model_contract.scope_config_fingerprint,
             context.snapshot_selector,
             context.snapshot_id,
             getattr(context, "ingestion_id", None),
@@ -1315,7 +1539,7 @@ class ForwardQueryFetcher:
         if cache_key in self._incremental_baseline_cache:
             return self._incremental_baseline_cache[cache_key]
         baseline = self.sync.incremental_diff_baseline(
-            specs=specs,
+            model_contract=model_contract,
             current_snapshot_id=context.snapshot_id,
             exclude_ingestion_id=getattr(context, "ingestion_id", None),
             client=self.client,
@@ -1323,12 +1547,194 @@ class ForwardQueryFetcher:
         self._incremental_baseline_cache[cache_key] = baseline
         return baseline
 
+    @staticmethod
+    def _model_contract_issue_rows(contract):
+        issues = []
+        if not contract.full_eligible:
+            issues.append(f"full:{contract.full_reason_code}")
+        if not contract.diff_eligible:
+            issues.append(f"diff:{contract.diff_reason_code}")
+        return issues
+
+    def _report_contract_compatibility_issues(self, model_string, contracts):
+        issue_rows = [
+            (
+                contract.query_name or model_string,
+                contract.map_id,
+                "; ".join(self._model_contract_issue_rows(contract)),
+            )
+            for contract in contracts
+            if not contract.full_eligible or not contract.diff_eligible
+        ]
+        if not issue_rows:
+            return
+        self.logger.log_warning(
+            f"Execution contract preflight found {len(issue_rows)} incompatible map(s) for "
+            f"{model_string}: "
+            + "; ".join(
+                f"{name}[{map_id}]: {issues}" for name, map_id, issues in issue_rows
+            ),
+            obj=self.sync,
+        )
+
     def _resolve_query_specs(self, model_string: str, specs):
         resolved_specs = resolve_query_specs_for_client(specs, self.client)
         self._query_path_resolution_cache[model_string] = (
             self._build_query_path_resolution_summary(model_string, specs)
         )
         return resolved_specs
+
+    def _hydrate_snapshot_data_file_hashes(self, specs, context):
+        required = {
+            name
+            for spec in specs
+            for name in getattr(spec, "required_data_files", ()) or ()
+        }
+        if not required:
+            return specs
+        try:
+            available = self.client.get_snapshot_data_file_hashes(
+                context.network_id,
+                context.snapshot_id,
+            )
+        except JobTimeoutException:
+            raise
+        except Exception as exc:  # noqa: BLE001 - missing hashes fail closed
+            self.logger.log_warning(
+                safe_operation_failure("Snapshot data-file fingerprint lookup", exc),
+                obj=self.sync,
+            )
+            available = {}
+        return [
+            replace(
+                spec,
+                data_file_hashes={
+                    name: available[name]
+                    for name in getattr(spec, "required_data_files", ()) or ()
+                    if name in available
+                },
+            )
+            for spec in specs
+        ]
+
+    @staticmethod
+    def _contributor_relation_contract(contract):
+        diff_revision = contract.diff_revision
+        if diff_revision is None:
+            raise ContributorBaselineUnavailable(
+                "Tier 3 contributor execution requires a verified diff revision."
+            )
+        return ContributorRelationContract(
+            model_string=contract.model_string,
+            map_id=contract.map_id,
+            contract_key=contract.contract_key,
+            query_path=(diff_revision.query_path or contract.full_revision.query_path),
+            query_id=contract.full_revision.query_id,
+            full_commit_id=contract.full_revision.commit_id,
+            full_source_sha256=contract.full_revision.source_sha256,
+            diff_query_id=diff_revision.query_id,
+            diff_commit_id=diff_revision.commit_id,
+            diff_source_sha256=diff_revision.source_sha256,
+            contract_fingerprint=contract.fingerprint,
+            reducer_id=contract.reducer_id,
+            reducer_version=contract.reducer_version,
+            normalization_version=contract.normalization_version,
+            identity_version=contract.identity_version,
+        )
+
+    def _register_expected_contributor_contracts(self, model_contract):
+        with self._contributor_lock:
+            for contract in model_contract.maps:
+                if (
+                    contract.diff_eligible
+                    and contract.diff_ownership_mode == "contributor_relation"
+                    and is_tier3_reducer(contract.reducer_id)
+                ):
+                    relation_contract = self._contributor_relation_contract(contract)
+                    self._expected_contributor_contracts[contract.fingerprint] = (
+                        relation_contract
+                    )
+
+    def _register_contributor_seed(
+        self,
+        contract,
+        rows,
+        *,
+        work_relation=None,
+    ):
+        relation_contract = self._contributor_relation_contract(contract)
+        reducer_id = contract.reducer_id
+        seed = ContributorRelationSeed(
+            contract=relation_contract,
+            rows=rows,
+            target_key=lambda row, reducer_id=reducer_id: contributor_target_key(
+                reducer_id,
+                row,
+            ),
+        )
+        with self._contributor_lock:
+            existing = self._pending_contributor_seeds.get(contract.fingerprint)
+            if existing is not None:
+                self._contributor_staging_blocked = True
+                raise ContributorBaselineUnavailable(
+                    "Tier 3 contributor relation was produced more than once."
+                )
+            self._pending_contributor_seeds[contract.fingerprint] = seed
+            if work_relation is not None:
+                self._pending_contributor_work_relations.append(work_relation)
+
+    def _block_contributor_staging(self):
+        with self._contributor_lock:
+            self._contributor_staging_blocked = True
+
+    def close_pending_contributor_relations(self):
+        with self._contributor_lock:
+            work_relations = list(self._pending_contributor_work_relations)
+            self._pending_contributor_work_relations = []
+            self._pending_contributor_seeds = {}
+        for work_relation in work_relations:
+            work_relation.close()
+
+    def stage_pending_contributor_baseline(self, ingestion, context) -> int:
+        with self._contributor_lock:
+            expected = dict(self._expected_contributor_contracts)
+            seeds = dict(self._pending_contributor_seeds)
+            blocked = self._contributor_staging_blocked
+            map_set_fingerprint = self._contributor_map_set_fingerprint
+        if not expected:
+            self.close_pending_contributor_relations()
+            return 0
+        if blocked or set(seeds) != set(expected):
+            self.logger.log_warning(
+                "Contributor baseline staging was skipped because the complete "
+                "eligible Tier 3 relation set was not produced.",
+                obj=ingestion,
+            )
+            self.close_pending_contributor_relations()
+            return 0
+        try:
+            stage_contributor_baseline(
+                ingestion,
+                [seeds[key] for key in sorted(seeds)],
+                network_fingerprint=canonical_sha256(
+                    {"network_id": str(context.network_id or "")}
+                ),
+                map_set_fingerprint=map_set_fingerprint,
+                scope_config_fingerprint=scope_config_fingerprint(context),
+                scope_membership_fingerprint=scope_membership_fingerprint(context),
+                scope_state=scope_state_from_context(context),
+            )
+        except JobTimeoutException:
+            raise
+        except (ContributorBaselineUnavailable, DatabaseError) as exc:
+            self.logger.log_warning(
+                safe_operation_failure("Contributor baseline staging", exc),
+                obj=ingestion,
+            )
+            return 0
+        finally:
+            self.close_pending_contributor_relations()
+        return len(seeds)
 
     def _build_query_path_resolution_summary(
         self, model_string: str, specs
@@ -1350,7 +1756,84 @@ class ForwardQueryFetcher:
 
     def _run_workload_job(self, payload):
         context, validate_rows, job = payload
-        model_string, spec, baseline, coalesce_fields, shard_scope = job
+        if len(job) != 6:
+            return self._execute_workload_job(payload)
+        (
+            model_string,
+            requested_contract,
+            baseline,
+            coalesce_fields,
+            _shard_scope,
+            model_contract,
+        ) = job
+        if baseline is None or not model_contract.diff_eligible:
+            return self._execute_workload_job(payload)
+        baseline_evidence = compatible_baseline_evidence(baseline, model_contract)
+        if baseline_evidence is None:
+            return self._execute_workload_job(payload)
+        artifact_key = diff_artifact_key(
+            model_contract,
+            before_snapshot_id=baseline.snapshot_id,
+            after_snapshot_id=context.snapshot_id,
+            before_scope_membership_fingerprint=(
+                baseline_evidence.scope_membership_fingerprint
+            ),
+        )
+
+        def build_artifact():
+            map_results = []
+            for contract in model_contract.maps:
+                result, workload = self._execute_workload_job(
+                    (
+                        context,
+                        validate_rows,
+                        (
+                            model_string,
+                            contract,
+                            baseline,
+                            coalesce_fields,
+                            None,
+                            model_contract,
+                        ),
+                    )
+                )
+                map_results.append((contract.fingerprint, result, workload))
+            return DiffArtifact(key=artifact_key, map_results=tuple(map_results))
+
+        artifact = self._diff_artifacts.get_or_build(artifact_key, build_artifact)
+        for contract_fingerprint, result, workload in artifact.map_results:
+            if contract_fingerprint == requested_contract.fingerprint:
+                return result, workload
+        raise ForwardQueryError(
+            f"Diff artifact for {model_string} omitted a resolved map contract."
+        )
+
+    def _execute_workload_job(self, payload):
+        context, validate_rows, job = payload
+        model_string, spec_or_contract, baseline, coalesce_fields, shard_scope = job[:5]
+        model_contract = job[5] if len(job) == 6 else None
+        if isinstance(spec_or_contract, ResolvedExecutionContract):
+            contract = spec_or_contract
+            spec = contract.spec
+        elif not callable(getattr(spec_or_contract, "merged_parameters", None)):
+            contract = spec_or_contract
+            spec = spec_or_contract
+            model_contract = None
+        else:
+            spec = spec_or_contract
+            contract = resolve_execution_contract(
+                spec,
+                effective_parameters=self._query_parameters_for_scope(
+                    spec,
+                    context,
+                    shard_scope,
+                ),
+            )
+            model_contract = resolve_model_execution_contract(
+                model_string,
+                [contract],
+                context=context,
+            )
         baseline_snapshot_id = getattr(baseline, "snapshot_id", "") or ""
         started = time.perf_counter()
         budget = self._workload_fetch_timeout_seconds()
@@ -1360,7 +1843,7 @@ class ForwardQueryFetcher:
             try:
                 rows, delete_rows, sync_mode, fetch_meta = self._fetch_spec_rows(
                     model_string,
-                    spec,
+                    contract,
                     baseline,
                     context,
                     coalesce_fields,
@@ -1439,6 +1922,24 @@ class ForwardQueryFetcher:
             query_parameters=dict(fetch_meta.get("query_parameters") or {}),
             query_path_resolution=dict(
                 self._query_path_resolution_cache.get(model_string) or {}
+            ),
+            scope_membership_fingerprint=(
+                model_contract.after_scope_membership_fingerprint
+                if model_contract is not None
+                else ""
+            ),
+            execution_contract_fingerprint=(
+                model_contract.execution_contract_fingerprint
+                if model_contract is not None
+                else ""
+            ),
+            map_set_fingerprint=(
+                model_contract.map_set_fingerprint if model_contract is not None else ""
+            ),
+            scope_config_fingerprint=(
+                model_contract.scope_config_fingerprint
+                if model_contract is not None
+                else ""
             ),
         )
         workload = None
@@ -1730,6 +2231,190 @@ class ForwardQueryFetcher:
             return self.client.get_latest_processed_snapshot(network_id)
         return {}
 
+    def _run_nqe_provenance_query(
+        self,
+        *,
+        contract,
+        context,
+        deadline=None,
+    ):
+        diff_revision = contract.diff_revision
+        if diff_revision is None:
+            raise ContributorBaselineUnavailable(
+                "Tier 3 full provenance requires a verified diff revision."
+            )
+        return self.client.run_nqe_query(
+            query_id=diff_revision.query_id,
+            commit_id=diff_revision.commit_id,
+            network_id=context.network_id,
+            snapshot_id=context.snapshot_id,
+            parameters={},
+            fetch_all=True,
+            deadline=deadline,
+        )
+
+    def _fetch_tier3_contributor_rows(
+        self,
+        *,
+        model_string,
+        contract,
+        baseline,
+        context,
+        coalesce_fields,
+        deadline,
+    ):
+        relation_contract = self._contributor_relation_contract(contract)
+        after_scope = scope_side_from_context(context)
+        fallback_reason = "cache_miss"
+        work_relation = None
+        if baseline is not None and not self._diff_circuit_is_open(contract):
+            before_scope_fingerprint = self._baseline_scope_membership_fingerprint(
+                baseline,
+                model_string,
+            )
+            if before_scope_fingerprint:
+                expectation = ContributorBaselineExpectation(
+                    before_snapshot_id=str(baseline.snapshot_id or ""),
+                    network_fingerprint=canonical_sha256(
+                        {"network_id": str(context.network_id or "")}
+                    ),
+                    map_set_fingerprint=self._contributor_map_set_fingerprint,
+                    scope_config_fingerprint=scope_config_fingerprint(context),
+                    scope_membership_fingerprint=before_scope_fingerprint,
+                    contract=relation_contract,
+                )
+                relation, fallback_reason = compatible_current_relation(
+                    self.sync,
+                    expectation,
+                )
+                if relation is not None:
+                    try:
+                        before_scope = scope_side_from_payload(
+                            decode_scope_payload(relation.baseline)
+                        )
+                        work_relation = ContributorWorkRelation(relation)
+                        before_rows = reduce_contributor_rows(
+                            contract.reducer_id,
+                            work_relation.iter_rows(),
+                            before_scope,
+                        )
+                        diff_rows = self._run_nqe_diff(
+                            spec=contract.spec,
+                            contract=contract,
+                            context=context,
+                            before_snapshot_id=baseline.snapshot_id,
+                            deadline=self._diff_deadline(deadline),
+                        )
+                        work_relation.apply_diff(
+                            diff_rows,
+                            target_key=lambda row: contributor_target_key(
+                                contract.reducer_id,
+                                row,
+                            ),
+                        )
+                        after_rows = reduce_contributor_rows(
+                            contract.reducer_id,
+                            work_relation.iter_rows(),
+                            after_scope,
+                        )
+                        upserts, deletes = diff_normalized_model_rows(
+                            model_string,
+                            before_rows,
+                            after_rows,
+                            coalesce_fields,
+                        )
+                        self._register_contributor_seed(
+                            contract,
+                            work_relation.iter_rows(),
+                            work_relation=work_relation,
+                        )
+                        return (
+                            upserts,
+                            deletes,
+                            "diff",
+                            {
+                                "contributor_before_rows": relation.row_count,
+                                "contributor_diff_rows": len(diff_rows),
+                                "reduced_before_rows": len(before_rows),
+                                "reduced_after_rows": len(after_rows),
+                            },
+                        )
+                    except JobTimeoutException:
+                        if work_relation is not None:
+                            work_relation.close()
+                        raise
+                    except (
+                        ContributorBaselineUnavailable,
+                        ForwardClientError,
+                        ForwardConnectivityError,
+                    ) as exc:
+                        if work_relation is not None:
+                            work_relation.close()
+                            work_relation = None
+                        if isinstance(exc, ForwardFetchBudgetExceededError):
+                            circuit_open = self._record_diff_timeout(contract)
+                            fallback_reason = DIFF_BUDGET_FALLBACK_REASON
+                            if self._require_diff_execution():
+                                raise ForwardQueryError(
+                                    "Diff execution is required and the bounded "
+                                    f"Tier 3 diff budget was exceeded for {model_string}."
+                                ) from exc
+                            self.logger.log_warning(
+                                "Bounded Tier 3 contributor diff execution exceeded "
+                                f"its budget for {model_string}; falling back to full "
+                                "provenance execution."
+                                + (
+                                    " The per-contract diff circuit is now open "
+                                    "for this run."
+                                    if circuit_open
+                                    else ""
+                                ),
+                                obj=self.sync,
+                            )
+                        else:
+                            fallback_reason = exc.__class__.__name__
+                            if self._require_diff_execution():
+                                raise ForwardQueryError(
+                                    "Diff execution is required and Tier 3 "
+                                    f"reconstruction failed for {model_string}."
+                                ) from exc
+                            self.logger.log_warning(
+                                "Tier 3 contributor reconstruction failed closed "
+                                f"for {model_string}; running full provenance "
+                                f"execution ({exc.__class__.__name__}).",
+                                obj=self.sync,
+                            )
+        elif baseline is not None:
+            fallback_reason = DIFF_CIRCUIT_OPEN_FALLBACK_REASON
+            if self._require_diff_execution():
+                raise ForwardQueryError(
+                    "Diff execution is required, but the Tier 3 diff circuit is open "
+                    f"for {model_string}."
+                )
+
+        provenance_rows = self._run_nqe_provenance_query(
+            contract=contract,
+            context=context,
+            deadline=deadline,
+        )
+        reduced_rows = reduce_contributor_rows(
+            contract.reducer_id,
+            provenance_rows,
+            after_scope,
+        )
+        self._register_contributor_seed(contract, provenance_rows)
+        return (
+            reduced_rows,
+            [],
+            "full",
+            {
+                "fallback_reason": fallback_reason,
+                "contributor_after_rows": len(provenance_rows),
+                "reduced_after_rows": len(reduced_rows),
+                "authoritative_full_state": True,
+            },
+        )
+
     def _fetch_spec_rows(
         self,
         model_string,
@@ -1743,6 +2428,20 @@ class ForwardQueryFetcher:
         deadline=None,
     ):
         original_shard_scope = dict(shard_scope or {}) if shard_scope else None
+        if isinstance(spec, ResolvedExecutionContract):
+            contract = spec
+            spec = contract.spec
+        elif isinstance(spec, QuerySpec):
+            contract = resolve_execution_contract(
+                spec,
+                effective_parameters=self._query_parameters_for_scope(
+                    spec,
+                    context,
+                    shard_scope,
+                ),
+            )
+        else:
+            contract = None
 
         def _return(rows, delete_rows, sync_mode, metadata):
             metadata = dict(metadata or {})
@@ -1771,31 +2470,106 @@ class ForwardQueryFetcher:
             requested_fetch_mode = metadata_shard_scope.get("fetch_mode") or "model"
             fetch_key_family = metadata_shard_scope.get("fetch_key_family") or ""
             fetch_parameters = dict(metadata_shard_scope.get("fetch_parameters") or {})
-        parameters = spec.merged_parameters(context.query_parameters)
+        parameters = (
+            dict(contract.full_effective_parameters)
+            if contract is not None
+            else self._query_parameters_for_scope(spec, context, shard_scope)
+        )
         if metadata_shard_scope:
-            if metadata_shard_scope.get("fetch_mode") == "nqe_parameters":
-                parameters = {
-                    **parameters,
-                    **(metadata_shard_scope.get("fetch_parameters") or {}),
-                }
-            if metadata_shard_scope.get("query_parameters"):
-                parameters = {
-                    **parameters,
-                    **(metadata_shard_scope.get("query_parameters") or {}),
-                }
             if metadata_shard_scope.get("fetch_mode") != "model":
                 self.logger.log_info(
                     f"Fetching {model_string} shard using {metadata_shard_scope['fetch_mode']} scope.",
                     obj=self.sync,
                 )
-        parameters = self._apply_context_tag_parameters(spec, parameters, context)
-        parameters = self._validate_query_parameters(model_string, spec, parameters)
         query_parameters = dict(parameters)
+        ownership_mode = (
+            contract.diff_ownership_mode if contract is not None else "global"
+        )
+        if (
+            contract is not None
+            and contract.diff_eligible
+            and ownership_mode == "contributor_relation"
+            and is_tier3_reducer(contract.reducer_id)
+        ):
+            try:
+                rows, delete_rows, sync_mode, tier3_metadata = (
+                    self._fetch_tier3_contributor_rows(
+                        model_string=model_string,
+                        contract=contract,
+                        baseline=baseline,
+                        context=context,
+                        coalesce_fields=coalesce_fields,
+                        deadline=deadline,
+                    )
+                )
+            except JobTimeoutException:
+                self._block_contributor_staging()
+                raise
+            except (
+                ContributorBaselineUnavailable,
+                ForwardClientError,
+                ForwardConnectivityError,
+                ForwardQueryError,
+                DatabaseError,
+            ):
+                self._block_contributor_staging()
+                raise
+            if original_shard_scope:
+                rows, delete_rows = self._filter_rows_to_shard(
+                    model_string,
+                    rows,
+                    delete_rows,
+                    coalesce_fields,
+                    original_shard_scope,
+                )
+            return _return(
+                rows,
+                delete_rows,
+                sync_mode,
+                {
+                    "fetch_mode": (
+                        "tier3_diff" if sync_mode == "diff" else "full_provenance"
+                    ),
+                    "fetch_key_family": fetch_key_family,
+                    "fetch_parameters": {
+                        **fetch_parameters,
+                        **tier3_metadata,
+                    },
+                    "query_parameters": query_parameters,
+                },
+            )
+        before_scoped_devices: set[str] = set()
+        diff_block_reason = ""
+        if (
+            baseline is not None
+            and contract is not None
+            and contract.diff_eligible
+            and ownership_mode != "global"
+        ):
+            (
+                verified_before_devices,
+                diff_block_reason,
+            ) = self._verified_tier2_before_scope(
+                model_string=model_string,
+                baseline=baseline,
+                context=context,
+            )
+            if verified_before_devices is not None:
+                before_scoped_devices = verified_before_devices
+        if (
+            baseline is not None
+            and contract is not None
+            and contract.diff_eligible
+            and not diff_block_reason
+            and self._diff_circuit_is_open(contract)
+        ):
+            diff_block_reason = DIFF_CIRCUIT_OPEN_FALLBACK_REASON
         if (
             baseline is not None
             and spec.run_query_id
             and context.device_tag_prune_out_of_scope
             and context.scoped_device_names
+            and ownership_mode == "global"
         ):
             if self._require_diff_execution():
                 raise ForwardQueryError(
@@ -1807,38 +2581,33 @@ class ForwardQueryFetcher:
                 "to compute out-of-scope deletions.",
                 obj=self.sync,
             )
-        elif baseline is not None and spec.run_query_id and parameters:
-            message = (
-                "Forward NQE diffs do not accept runtime query parameters; "
-                f"{model_string} requires parameterized execution for "
-                f"`{spec.execution_value}`."
-            )
-            if self._require_diff_execution():
-                raise ForwardQueryError(
-                    f"Diff execution is required, but {message} "
-                    "Use Allow full fallback for parameterized maps."
-                )
-            self.logger.log_info(
-                f"{message} Running full async query execution instead.",
-                obj=self.sync,
-            )
-            fallback_parameters = dict(fetch_parameters)
-            fallback_parameters["fallback_reason"] = "parameterized_query"
-            fetch_parameters = fallback_parameters
-            requested_fetch_mode = "diff_fallback"
-        elif baseline is not None and spec.run_query_id:
+        elif (
+            baseline is not None
+            and contract is not None
+            and contract.diff_eligible
+            and not diff_block_reason
+        ):
             try:
                 diff_rows = self._run_nqe_diff(
                     spec=spec,
+                    contract=contract,
                     context=context,
                     before_snapshot_id=baseline.snapshot_id,
-                    deadline=deadline,
+                    deadline=self._diff_deadline(deadline),
+                )
+                diff_rows = self._reduce_tier2_diff_rows_to_scope(
+                    model_string=model_string,
+                    diff_rows=diff_rows,
+                    ownership_mode=ownership_mode,
+                    before_scoped_devices=before_scoped_devices,
+                    context=context,
                 )
                 rows, delete_rows = runner._split_diff_rows(model_string, diff_rows)
-                rows, _ = self._apply_device_tag_scope(model_string, rows, context)
-                delete_rows, _ = self._apply_device_tag_scope(
-                    model_string, delete_rows, context
-                )
+                if ownership_mode == "global":
+                    rows, _ = self._apply_device_tag_scope(model_string, rows, context)
+                    delete_rows, _ = self._apply_device_tag_scope(
+                        model_string, delete_rows, context
+                    )
                 if original_shard_scope:
                     rows, delete_rows = self._filter_rows_to_shard(
                         model_string,
@@ -1860,36 +2629,98 @@ class ForwardQueryFetcher:
                 )
             except (ForwardClientError, ForwardConnectivityError) as exc:
                 if isinstance(exc, ForwardFetchBudgetExceededError):
-                    raise
-                safe_exc = _safe_exception_summary(exc)
-                if self._require_diff_execution():
-                    raise ForwardQueryError(
-                        "Diff execution is required and Forward NQE diff failed for "
-                        f"{model_string} using `{spec.execution_value}`: {safe_exc}"
-                    ) from exc
-                self.logger.log_warning(
-                    f"Forward NQE diff failed for {model_string} using `{spec.execution_value}`; "
-                    f"falling back to full query execution: {safe_exc}",
-                    obj=self.sync,
-                )
-                fallback_parameters = dict(fetch_parameters)
-                fallback_parameters["fallback_reason"] = safe_exc
-                requested_mode = requested_fetch_mode if shard_scope else "diff"
-                requested_fetch_mode = (
-                    "diff_fallback" if requested_mode != "model" else "model"
-                )
-                fetch_parameters = fallback_parameters
-        elif baseline is not None and not spec.run_query_id:
-            if self._require_diff_execution():
-                raise ForwardQueryError(
-                    "Diff execution is required, but "
-                    f"`{spec.execution_value}` for {model_string} has no query_id. "
-                    "Use query_path/query_id map mode or allow diff fallback."
-                )
-            self.logger.log_warning(
-                f"Forward diffs require a query_id; `{spec.execution_value}` is still raw query text, so running a full query for {model_string} instead.",
-                obj=self.sync,
+                    circuit_open = self._record_diff_timeout(contract)
+                    if self._require_diff_execution():
+                        raise ForwardQueryError(
+                            "Diff execution is required and the bounded Forward NQE "
+                            f"diff budget was exceeded for {model_string}."
+                        ) from exc
+                    if contract is not None and not contract.full_eligible:
+                        raise ForwardQueryError(
+                            "Diff execution for "
+                            f"{model_string} failed, and full execution is not "
+                            f"contractually safe (`{contract.full_reason_code}`)."
+                        ) from exc
+                    self.logger.log_warning(
+                        "Bounded Forward NQE diff execution exceeded its budget for "
+                        f"{model_string}; falling back to full query execution "
+                        f"({exc.__class__.__name__})."
+                        + (
+                            " The per-contract diff circuit is now open for this run."
+                            if circuit_open
+                            else ""
+                        ),
+                        obj=self.sync,
+                    )
+                    fallback_parameters = dict(fetch_parameters)
+                    fallback_parameters["fallback_reason"] = DIFF_BUDGET_FALLBACK_REASON
+                    requested_mode = requested_fetch_mode if shard_scope else "diff"
+                    requested_fetch_mode = (
+                        "diff_fallback" if requested_mode != "model" else "model"
+                    )
+                    fetch_parameters = fallback_parameters
+                else:
+                    safe_exc = _safe_exception_summary(exc)
+                    if self._require_diff_execution():
+                        raise ForwardQueryError(
+                            "Diff execution is required and Forward NQE diff failed for "
+                            f"{model_string} using `{spec.execution_value}`: {safe_exc}"
+                        ) from exc
+                    if contract is not None and not contract.full_eligible:
+                        raise ForwardQueryError(
+                            "Diff execution for "
+                            f"{model_string} failed, and full execution is not "
+                            f"contractually safe (`{contract.full_reason_code}`)."
+                        ) from exc
+                    self.logger.log_warning(
+                        f"Forward NQE diff failed for {model_string} using `{spec.execution_value}`; "
+                        f"falling back to full query execution: {safe_exc}",
+                        obj=self.sync,
+                    )
+                    fallback_parameters = dict(fetch_parameters)
+                    fallback_parameters["fallback_reason"] = safe_exc
+                    requested_mode = requested_fetch_mode if shard_scope else "diff"
+                    requested_fetch_mode = (
+                        "diff_fallback" if requested_mode != "model" else "model"
+                    )
+                    fetch_parameters = fallback_parameters
+        elif baseline is not None:
+            reason_code = diff_block_reason or (
+                contract.reason_code if contract is not None else "unresolved_contract"
             )
+            if self._require_diff_execution():
+                if diff_block_reason:
+                    raise ForwardQueryError(
+                        "Diff execution is required, but safe diff execution for "
+                        f"{model_string} is unavailable ({reason_code})."
+                    )
+                raise ForwardQueryError(
+                    "Diff execution is required, but the resolved execution "
+                    f"contract for {model_string} is full-only ({reason_code})."
+                )
+            if contract is not None and not contract.full_eligible:
+                raise ForwardQueryError(
+                    "Diff execution is unavailable and full execution is not "
+                    f"contractually safe for {model_string}: "
+                    f"{contract.full_reason_code}."
+                )
+            if diff_block_reason:
+                warning = (
+                    f"Safe diff execution for {model_string} is unavailable "
+                    f"({reason_code}); running full query execution for "
+                    f"`{spec.execution_value}`."
+                )
+            else:
+                warning = (
+                    f"Resolved execution contract for {model_string} is full-only "
+                    f"({reason_code}); running full query execution for "
+                    f"`{spec.execution_value}`."
+                )
+            self.logger.log_warning(warning, obj=self.sync)
+            fallback_parameters = dict(fetch_parameters)
+            fallback_parameters["fallback_reason"] = reason_code
+            fetch_parameters = fallback_parameters
+            requested_fetch_mode = "diff_fallback"
         elif spec.run_query_id:
             latest_baseline = self.sync.latest_baseline_ingestion(
                 exclude_ingestion_id=getattr(context, "ingestion_id", None)
@@ -1912,8 +2743,14 @@ class ForwardQueryFetcher:
                 )
 
         try:
+            if contract is not None and not contract.full_eligible:
+                raise ForwardQueryError(
+                    "Full execution is not allowed by the resolved contract "
+                    f"for {model_string}: {contract.full_reason_code}."
+                )
             rows = self._run_nqe_query(
                 spec=spec,
+                contract=contract,
                 context=context,
                 parameters=parameters,
                 fetch_all=True,
@@ -2061,6 +2898,233 @@ class ForwardQueryFetcher:
             )
         return parameters
 
+    @staticmethod
+    def _tag_scope_enabled(context: ForwardQueryContext) -> bool:
+        return bool(context.device_tag_include_tags or context.device_tag_exclude_tags)
+
+    def _scope_context_for_snapshot(
+        self,
+        context: ForwardQueryContext,
+        *,
+        snapshot_id: str,
+    ) -> ForwardQueryContext:
+        cache_key = (
+            context.network_id,
+            snapshot_id,
+            tuple(context.device_tag_include_tags),
+            tuple(context.device_tag_exclude_tags),
+            context.device_tag_include_match,
+            context.sync_endpoints,
+            context.sync_generic_endpoints,
+            context.scope_endpoints_by_include_tags,
+        )
+        cached = self._snapshot_scope_context_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        if self._tag_scope_enabled(context):
+            (
+                scoped_device_names,
+                scoped_site_names,
+                scoped_matched_tags,
+                endpoint_scope_failed,
+            ) = self._resolve_scoped_tag_scope(
+                network_id=context.network_id,
+                snapshot_id=snapshot_id,
+                include_tags=context.device_tag_include_tags,
+                exclude_tags=context.device_tag_exclude_tags,
+                include_match=context.device_tag_include_match,
+                sync_endpoints=context.sync_endpoints,
+                sync_generic_endpoints=context.sync_generic_endpoints,
+                scope_endpoints_by_include_tags=(
+                    context.scope_endpoints_by_include_tags
+                ),
+            )
+            if endpoint_scope_failed:
+                raise ForwardQueryError(
+                    "Forward before-snapshot ownership scope could not be "
+                    "verified for diff execution."
+                )
+        else:
+            scoped_device_names = set()
+            scoped_site_names = set()
+            scoped_matched_tags = {}
+
+        resolved = replace(
+            context,
+            snapshot_id=str(snapshot_id or ""),
+            scoped_device_names=set(scoped_device_names),
+            scoped_site_names=set(scoped_site_names),
+            scoped_matched_tags=dict(scoped_matched_tags),
+        )
+        self._snapshot_scope_context_cache[cache_key] = resolved
+        return resolved
+
+    @staticmethod
+    def _baseline_scope_membership_fingerprint(
+        baseline,
+        model_string: str,
+    ) -> str:
+        fingerprints = {
+            str(row.get("scope_membership_fingerprint") or "")
+            for row in list(getattr(baseline, "model_results", None) or [])
+            if isinstance(row, dict)
+            and str(row.get("model") or row.get("model_string") or "") == model_string
+        }
+        if len(fingerprints) != 1 or "" in fingerprints:
+            return ""
+        return next(iter(fingerprints))
+
+    def _verified_tier2_before_scope(
+        self,
+        *,
+        model_string: str,
+        baseline,
+        context: ForwardQueryContext,
+    ) -> tuple[set[str] | None, str]:
+        try:
+            before_context = self._scope_context_for_snapshot(
+                context,
+                snapshot_id=baseline.snapshot_id,
+            )
+        except (ForwardClientError, ForwardConnectivityError, ForwardQueryError):
+            return None, "unverified_before_scope"
+
+        expected_fingerprint = self._baseline_scope_membership_fingerprint(
+            baseline,
+            model_string,
+        )
+        if (
+            not expected_fingerprint
+            or scope_membership_fingerprint(before_context) != expected_fingerprint
+        ):
+            return None, "before_scope_fingerprint_mismatch"
+
+        before_devices = set(before_context.scoped_device_names)
+        if self._tag_scope_enabled(context) and before_devices != set(
+            context.scoped_device_names
+        ):
+            # Tier 2 rows do not carry tag membership. An unchanged model row
+            # whose device entered or left tag scope is absent from the Forward
+            # change-only response, so a diff cannot reconstruct the scoped
+            # result when membership changed externally.
+            return None, "scope_membership_changed"
+        return before_devices, ""
+
+    @staticmethod
+    def _tier2_side_is_owned(
+        *,
+        model_string: str,
+        row: dict[str, Any],
+        ownership_mode: str,
+        scoped_devices: set[str],
+        scope_enabled: bool,
+    ) -> bool:
+        if not scope_enabled:
+            return True
+        row_devices = _row_device_names(model_string, row)
+        if ownership_mode == "device":
+            if len(row_devices) != 1:
+                raise ForwardQueryError(
+                    f"Forward Tier 2 ownership row for {model_string} did not "
+                    "identify exactly one device."
+                )
+            return bool(row_devices.intersection(scoped_devices))
+        if ownership_mode == "cable_either_endpoint":
+            if not row_devices:
+                raise ForwardQueryError(
+                    "Forward Tier 2 cable ownership row did not identify an "
+                    "endpoint device."
+                )
+            return bool(row_devices.intersection(scoped_devices))
+        raise ForwardQueryError(
+            f"Unsupported Forward diff ownership mode `{ownership_mode}` for "
+            f"{model_string}."
+        )
+
+    def _reduce_tier2_diff_rows_to_scope(
+        self,
+        *,
+        model_string: str,
+        diff_rows: list[dict[str, Any]],
+        ownership_mode: str,
+        before_scoped_devices: set[str],
+        context: ForwardQueryContext,
+    ) -> list[dict[str, Any]]:
+        """Apply asymmetric side-local ownership before diff rows are split."""
+
+        if ownership_mode == "global":
+            return list(diff_rows)
+        scope_enabled = self._tag_scope_enabled(context)
+        after_scoped_devices = set(context.scoped_device_names)
+        reduced = []
+        for diff_row in diff_rows:
+            change_type = diff_row.get("type")
+            before = diff_row.get("before")
+            after = diff_row.get("after")
+            before_owned = False
+            after_owned = False
+
+            if change_type in {"DELETED", "MODIFIED"}:
+                if not isinstance(before, dict):
+                    raise ForwardQueryError(
+                        f"Forward diff row for {model_string} was missing "
+                        f"`before` data for {change_type}."
+                    )
+                before_owned = self._tier2_side_is_owned(
+                    model_string=model_string,
+                    row=before,
+                    ownership_mode=ownership_mode,
+                    scoped_devices=before_scoped_devices,
+                    scope_enabled=scope_enabled,
+                )
+            if change_type in {"ADDED", "MODIFIED"}:
+                if not isinstance(after, dict):
+                    raise ForwardQueryError(
+                        f"Forward diff row for {model_string} was missing "
+                        f"`after` data for {change_type}."
+                    )
+                after_owned = self._tier2_side_is_owned(
+                    model_string=model_string,
+                    row=after,
+                    ownership_mode=ownership_mode,
+                    scoped_devices=after_scoped_devices,
+                    scope_enabled=scope_enabled,
+                )
+
+            if change_type == "ADDED":
+                if after_owned:
+                    reduced.append(diff_row)
+                continue
+            if change_type == "DELETED":
+                if before_owned:
+                    reduced.append(diff_row)
+                continue
+            if change_type != "MODIFIED":
+                raise ForwardQueryError(
+                    f"Forward diff row for {model_string} had unsupported type "
+                    f"`{change_type}`."
+                )
+            if before_owned and after_owned:
+                reduced.append(diff_row)
+            elif before_owned:
+                reduced.append(
+                    {
+                        "type": "DELETED",
+                        "before": before,
+                        "after": None,
+                    }
+                )
+            elif after_owned:
+                reduced.append(
+                    {
+                        "type": "ADDED",
+                        "before": None,
+                        "after": after,
+                    }
+                )
+        return reduced
+
     def _apply_device_tag_scope(
         self, model_string: str, rows: list[dict], context: ForwardQueryContext
     ) -> tuple[list[dict], list[dict]]:
@@ -2091,7 +3155,9 @@ class ForwardQueryFetcher:
                     continue
                 filtered.append(row)
                 continue
-            if model_string == "dcim.cable" and row_devices.issubset(scoped_devices):
+            if model_string == "dcim.cable" and row_devices.intersection(
+                scoped_devices
+            ):
                 filtered.append(row)
                 continue
             if model_string != "dcim.cable" and row_devices.intersection(
@@ -2169,35 +3235,94 @@ class ForwardQueryFetcher:
         self,
         *,
         spec,
+        contract: ResolvedExecutionContract | None = None,
         context: ForwardQueryContext,
         parameters: dict[str, Any],
         limit: int | None = None,
         fetch_all: bool = False,
         deadline=None,
     ):
-        return self.client.run_nqe_query(
-            query=spec.query,
-            query_id=spec.run_query_id,
-            commit_id=spec.commit_id,
-            network_id=context.network_id,
-            snapshot_id=context.snapshot_id,
-            parameters=parameters,
-            limit=limit,
-            fetch_all=fetch_all,
-            deadline=deadline,
-        )
+        if contract is not None and not contract.full_eligible:
+            raise ForwardQueryError(
+                "Full execution is not allowed by the resolved contract for "
+                f"{getattr(spec, 'model_string', 'unknown model')}: "
+                f"{contract.full_reason_code}."
+            )
+        full_revision = contract.full_revision if contract is not None else None
+        call_kwargs = {
+            "query": spec.query,
+            "query_id": (
+                full_revision.query_id or None
+                if full_revision is not None
+                else spec.run_query_id
+            ),
+            "commit_id": (
+                full_revision.commit_id or None
+                if full_revision is not None
+                else spec.commit_id
+            ),
+            "network_id": context.network_id,
+            "snapshot_id": context.snapshot_id,
+            "parameters": parameters,
+            "limit": limit,
+            "fetch_all": fetch_all,
+            "deadline": deadline,
+        }
+        try:
+            return self.client.run_nqe_query(**call_kwargs)
+        except JobTimeoutException:
+            raise
+        except ForwardClientError as exc:
+            is_legacy_resolved_path = bool(spec.query_path and spec.run_query_id)
+            is_parameter_error = "parameter" in str(exc).casefold()
+            if not (
+                is_legacy_resolved_path
+                and is_parameter_error
+                and only_legacy_safe_default_parameters(parameters)
+            ):
+                raise
+            self.logger.log_info(
+                "Retrying read-only legacy path query for "
+                f"{spec.model_string} without unsupported default parameters.",
+                obj=self.sync,
+            )
+            return self.client.run_nqe_query(
+                **{
+                    **call_kwargs,
+                    "parameters": {},
+                }
+            )
 
     def _run_nqe_diff(
         self,
         *,
         spec,
+        contract: ResolvedExecutionContract | None = None,
         context: ForwardQueryContext,
         before_snapshot_id: str,
         deadline=None,
     ):
+        if contract is None or not contract.diff_eligible:
+            reason_code = (
+                contract.reason_code
+                if contract is not None
+                else "unresolved_diff_contract"
+            )
+            raise ForwardQueryError(
+                "Diff execution is not allowed by the resolved contract for "
+                f"{getattr(spec, 'model_string', 'unknown model')}: "
+                f"{reason_code}."
+            )
+        diff_revision = contract.diff_revision
+        if diff_revision is None:
+            raise ForwardQueryError(
+                "Diff execution is not allowed by the resolved contract for "
+                f"{getattr(spec, 'model_string', 'unknown model')}: "
+                "unresolved_diff_revision."
+            )
         return self.client.run_nqe_diff(
-            query_id=spec.run_query_id,
-            commit_id=spec.commit_id,
+            query_id=diff_revision.query_id or None,
+            commit_id=diff_revision.commit_id or None,
             before_snapshot_id=before_snapshot_id,
             after_snapshot_id=context.snapshot_id,
             fetch_all=True,

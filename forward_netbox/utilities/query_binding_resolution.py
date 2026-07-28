@@ -8,12 +8,23 @@ from rq.timeouts import JobTimeoutException
 from ..models import ForwardNQEMap
 from .plugin_integrations.registry import optional_integration_for_model
 from .query_registry import BUILTIN_SEEDED_QUERY_MAPS
+from .query_registry import get_query_specs
+from .query_registry import indexed_query_for_spec
 from .query_registry import query_contract_summary_for_maps
 from .query_registry import read_builtin_query_source
 from .query_registry import read_compiled_builtin_query_source
 
-
 logger = logging.getLogger(__name__)
+
+NQE_LIBRARY_WRITE_PERMISSION_MESSAGE = (
+    "This source login lacks NQE-library write permission (needs Forward "
+    "Network Operator or equivalent). Use 'Resolve to Query ID' for read-only "
+    "binding instead."
+)
+
+
+class NQELibraryWritePermissionError(Exception):
+    """Raised before a publish when the Forward login cannot write NQE."""
 
 
 @dataclass(frozen=True)
@@ -154,10 +165,10 @@ def local_query_binding_drift(query_map: ForwardNQEMap) -> dict:
                 "changes must not be used as durable query identity."
             ),
             remediation=(
-                "Publish or rebind the map once to store the resolved Forward "
-                "query ID."
+                "Use Resolve to Query ID to store the existing Forward query ID "
+                "without publishing or changing the Forward org library."
             ),
-            remediation_action="publish_bundled_queries",
+            remediation_action="resolve_to_query_id",
             expected_filename=expected_filename,
             expected_name=expected_name,
             current_filename=current_filename,
@@ -191,7 +202,28 @@ def local_query_binding_drift(query_map: ForwardNQEMap) -> dict:
     )
 
 
-def live_query_binding_drift(*, client, query_map: ForwardNQEMap) -> dict:
+def live_query_binding_drifts(*, client, query_maps) -> list[dict]:
+    """Check multiple maps while reusing each visible repository index."""
+    repository_query_indexes: dict[str, dict] = {}
+    repository_query_index_errors: set[str] = set()
+    return [
+        live_query_binding_drift(
+            client=client,
+            query_map=query_map,
+            repository_query_indexes=repository_query_indexes,
+            repository_query_index_errors=repository_query_index_errors,
+        )
+        for query_map in query_maps
+    ]
+
+
+def live_query_binding_drift(
+    *,
+    client,
+    query_map: ForwardNQEMap,
+    repository_query_indexes: dict[str, dict] | None = None,
+    repository_query_index_errors: set[str] | None = None,
+) -> dict:
     local_result = local_query_binding_drift(query_map)
     query_default, skipped_reason = builtin_query_default_for_map(query_map)
     if query_default is None:
@@ -215,11 +247,33 @@ def live_query_binding_drift(*, client, query_map: ForwardNQEMap) -> dict:
         repository = query_map.query_repository or "org"
         query_path = query_map.query_path
         requested_commit_id = query_map.commit_id or "head"
+        query_index = None
+        if (
+            requested_commit_id == "head"
+            and repository_query_indexes is not None
+            and repository_query_index_errors is not None
+        ):
+            if repository in repository_query_index_errors:
+                return _live_lookup_failed_result(local_result)
+            query_index = repository_query_indexes.get(repository)
+            if query_index is None:
+                try:
+                    query_index = client.get_nqe_repository_query_index(
+                        repository=repository,
+                        directory="/",
+                    )
+                except JobTimeoutException:
+                    raise
+                except Exception as exc:
+                    repository_query_index_errors.add(repository)
+                    return _live_lookup_failed(local_result, exc)
+                repository_query_indexes[repository] = query_index
         try:
             committed_query = client.get_committed_nqe_query(
                 repository=repository,
                 query_path=query_path,
                 commit_id=requested_commit_id,
+                **({"query_index": query_index} if query_index is not None else {}),
             )
         except JobTimeoutException:
             raise
@@ -239,6 +293,8 @@ def live_query_binding_drift(*, client, query_map: ForwardNQEMap) -> dict:
             query_map=query_map,
             query_default=query_default,
             local_result=local_result,
+            repository_query_indexes=repository_query_indexes,
+            repository_query_index_errors=repository_query_index_errors,
         )
     return {
         **local_result,
@@ -251,6 +307,10 @@ def live_query_binding_drift(*, client, query_map: ForwardNQEMap) -> dict:
 
 def _live_lookup_failed(local_result: dict, exc: Exception) -> dict:
     logger.warning("Forward query repository lookup failed (%s)", type(exc).__name__)
+    return _live_lookup_failed_result(local_result)
+
+
+def _live_lookup_failed_result(local_result: dict) -> dict:
     return {
         **local_result,
         "severity": "warn",
@@ -273,25 +333,47 @@ def _live_drift_for_query_id(
     query_map: ForwardNQEMap,
     query_default: dict,
     local_result: dict,
+    repository_query_indexes: dict[str, dict] | None = None,
+    repository_query_index_errors: set[str] | None = None,
 ) -> dict:
+    if repository_query_indexes is None:
+        repository_query_indexes = {}
+    if repository_query_index_errors is None:
+        repository_query_index_errors = set()
     matches = []
     lookup_errors = []
     for repository in ("org", "fwd"):
-        try:
-            query_index = client.get_nqe_repository_query_index(
-                repository=repository,
-                directory="/",
-            )
-        except JobTimeoutException:
-            raise
-        except Exception as exc:
-            logger.warning(
-                "Forward query ID lookup failed in %s repository (%s)",
-                repository,
-                type(exc).__name__,
-            )
+        if (
+            repository_query_index_errors is not None
+            and repository in repository_query_index_errors
+        ):
             lookup_errors.append(repository)
             continue
+        query_index = (
+            repository_query_indexes.get(repository)
+            if repository_query_indexes is not None
+            else None
+        )
+        if query_index is None:
+            try:
+                query_index = client.get_nqe_repository_query_index(
+                    repository=repository,
+                    directory="/",
+                )
+            except JobTimeoutException:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Forward query ID lookup failed in %s repository (%s)",
+                    repository,
+                    type(exc).__name__,
+                )
+                if repository_query_index_errors is not None:
+                    repository_query_index_errors.add(repository)
+                lookup_errors.append(repository)
+                continue
+            if repository_query_indexes is not None:
+                repository_query_indexes[repository] = query_index
         for query in query_index.get("by_query_id", {}).get(query_map.query_id, []):
             matches.append((repository, query))
 
@@ -332,6 +414,13 @@ def _live_drift_for_query_id(
             query_path=query_path,
             commit_id=query_map.commit_id or commit_id,
             require_source_code=True,
+            **(
+                {
+                    "query_index": repository_query_indexes.get(repository),
+                }
+                if (query_map.commit_id or commit_id) == "head"
+                else {}
+            ),
         )
     except JobTimeoutException:
         raise
@@ -703,6 +792,8 @@ def publish_builtin_nqe_map_queries(
 
     if not map_query_paths and not publish_filenames:
         return results
+    if client.has_nqe_library_write_permission() is not True:
+        raise NQELibraryWritePermissionError(NQE_LIBRARY_WRITE_PERMISSION_MESSAGE)
 
     query_index = client.get_nqe_repository_query_index(
         repository="org", directory=directory
@@ -777,6 +868,164 @@ def publish_builtin_nqe_map_queries(
             preserve_existing_commit_pin=not pin_commit,
         ),
     ]
+
+
+@transaction.atomic
+def resolve_nqe_map_query_ids(*, client, queryset=None) -> list[NQEMapBinding]:
+    """Persist query IDs using only read-only repository metadata."""
+    queryset = (
+        queryset
+        if queryset is not None
+        else ForwardNQEMap.objects.select_related("netbox_model")
+    )
+    selected_maps = list(queryset.select_related("netbox_model"))
+    query_indexes: dict[str, dict] = {}
+    query_index_errors: dict[str, str] = {}
+    results = []
+
+    for query_map in selected_maps:
+        if query_map.query_id:
+            results.append(
+                NQEMapBinding(
+                    model_string=query_map.model_string,
+                    query_name=query_map.name,
+                    query_filename="",
+                    query_path=query_map.query_path,
+                    query_repository=query_map.query_repository,
+                    query_id=query_map.query_id,
+                    commit_id=query_map.commit_id,
+                    map_id=query_map.pk,
+                    skipped_reason="Map already uses a query ID.",
+                )
+            )
+            continue
+        if not query_map.query_path:
+            results.append(
+                NQEMapBinding(
+                    model_string=query_map.model_string,
+                    query_name=query_map.name,
+                    query_filename="",
+                    query_path="",
+                    query_repository=query_map.query_repository,
+                    map_id=query_map.pk,
+                    skipped_reason="Map is not bound by repository path.",
+                )
+            )
+            continue
+
+        specs = get_query_specs(query_map.model_string, maps=[query_map])
+        if len(specs) != 1:
+            results.append(
+                NQEMapBinding(
+                    model_string=query_map.model_string,
+                    query_name=query_map.name,
+                    query_filename="",
+                    query_path=query_map.query_path,
+                    query_repository=query_map.query_repository,
+                    map_id=query_map.pk,
+                    skipped_reason=(
+                        "Map did not produce exactly one repository query "
+                        "specification."
+                    ),
+                )
+            )
+            continue
+
+        spec = specs[0]
+        repository = spec.query_repository or "org"
+        if repository not in query_indexes and repository not in query_index_errors:
+            try:
+                query_index = client.get_nqe_repository_query_index(
+                    repository=repository,
+                    directory="/",
+                )
+            except JobTimeoutException:
+                raise
+            except Exception as exc:  # noqa: BLE001 - report type only
+                query_index_errors[repository] = type(exc).__name__
+            else:
+                query_indexes[repository] = (
+                    query_index if isinstance(query_index, dict) else {}
+                )
+
+        if repository in query_index_errors:
+            results.append(
+                NQEMapBinding(
+                    model_string=query_map.model_string,
+                    query_name=query_map.name,
+                    query_filename="",
+                    query_path=query_map.query_path,
+                    query_repository=repository,
+                    map_id=query_map.pk,
+                    skipped_reason=(
+                        "Read-only repository lookup failed "
+                        f"({query_index_errors[repository]})."
+                    ),
+                )
+            )
+            continue
+
+        indexed_query = indexed_query_for_spec(
+            spec,
+            query_indexes.get(repository, {}),
+        )
+        resolved_query_id = str((indexed_query or {}).get("queryId") or "").strip()
+        if not resolved_query_id:
+            results.append(
+                NQEMapBinding(
+                    model_string=query_map.model_string,
+                    query_name=query_map.name,
+                    query_filename="",
+                    query_path=query_map.query_path,
+                    query_repository=repository,
+                    map_id=query_map.pk,
+                    skipped_reason=(
+                        "No unique repository match was found by exact path, "
+                        "filename, or query intent."
+                    ),
+                )
+            )
+            continue
+
+        resolved_query_path = str(
+            indexed_query.get("path") or query_map.query_path
+        ).strip()
+        resolved_commit_id = str(
+            query_map.commit_id
+            or indexed_query.get("commitId")
+            or indexed_query.get("lastCommitId")
+            or (indexed_query.get("lastCommit") or {}).get("id")
+            or ""
+        ).strip()
+        binding = NQEMapBinding(
+            model_string=query_map.model_string,
+            query_name=query_map.name,
+            query_filename=query_filename_from_path(resolved_query_path),
+            query_path=resolved_query_path,
+            query_repository=repository,
+            query_id=resolved_query_id,
+            commit_id=resolved_commit_id,
+            map_id=query_map.pk,
+        )
+        _save_query_id_binding(
+            query_map,
+            binding,
+            preserve_existing_commit_pin=True,
+        )
+        results.append(
+            NQEMapBinding(
+                model_string=binding.model_string,
+                query_name=binding.query_name,
+                query_filename=binding.query_filename,
+                query_path=binding.query_path,
+                query_repository=binding.query_repository,
+                query_id=binding.query_id,
+                commit_id=query_map.commit_id,
+                map_id=query_map.pk,
+                matched=True,
+            )
+        )
+    return results
 
 
 def builtin_query_repository_sync_summary(

@@ -5,6 +5,10 @@ from .branch_budget import BranchWorkload
 from .sync_contracts import canonical_cable_endpoint_identity
 from .sync_routing_impl import routing_interface_lookup_candidates
 
+CVE_WITHOUT_IN_SCOPE_VULNERABILITY_DELETE_CONTRACT = (
+    "cve_without_in_scope_vulnerability_v1"
+)
+
 
 def normalize_dependency_workloads(
     workloads: list[BranchWorkload],
@@ -37,6 +41,8 @@ def normalize_dependency_workloads(
     for workload in workloads:
         rows = list(workload.upsert_rows)
         delete_rows = list(workload.delete_rows)
+        derived_delete_contract = str(workload.derived_delete_contract or "")
+        derived_delete_count = int(workload.derived_delete_count or 0)
         reason_counts: dict[str, int] = defaultdict(int)
         enrichment_counts: dict[str, int] = defaultdict(int)
         if workload.sync_mode == "full" and workload.model_string == "dcim.device":
@@ -47,6 +53,16 @@ def normalize_dependency_workloads(
             )
             if enriched_count:
                 enrichment_counts["single_chassis_serial"] = enriched_count
+        elif (
+            workload.sync_mode == "full"
+            and workload.model_string == "dcim.inventoryitem"
+        ):
+            rows = _filter_inventory_parent_coverage(
+                rows,
+                device_names=device_names,
+                devices_authoritative=devices_authoritative,
+                reason_counts=reason_counts,
+            )
         elif workload.sync_mode == "full" and workload.model_string == "dcim.cable":
             rows = _filter_cable_parent_coverage(
                 rows,
@@ -60,6 +76,7 @@ def normalize_dependency_workloads(
                 rows,
                 existing_cable_ids_by_endpoint=existing_cable_ids_by_endpoint,
                 reason_counts=reason_counts,
+                delete_rows=delete_rows,
             )
         elif (
             workload.sync_mode == "full"
@@ -78,6 +95,7 @@ def normalize_dependency_workloads(
             and workload.model_string == "netbox_dlm.cve"
             and vulnerabilities_authoritative
         ):
+            incoming_delete_count = len(delete_rows)
             rows, excluded_cve_rows = _filter_cves_by_vulnerability_coverage(
                 rows,
                 vulnerability_cve_ids=vulnerability_cve_ids,
@@ -88,6 +106,11 @@ def normalize_dependency_workloads(
                 excluded_cve_rows,
                 identity_fields=("cve_id",),
             )
+            if excluded_cve_rows and incoming_delete_count == 0:
+                derived_delete_contract = (
+                    CVE_WITHOUT_IN_SCOPE_VULNERABILITY_DELETE_CONTRACT
+                )
+                derived_delete_count = len(delete_rows)
         elif (
             workload.sync_mode == "full"
             and workload.model_string == "netbox_dlm.softwareversion"
@@ -115,7 +138,13 @@ def normalize_dependency_workloads(
 
         excluded_count = sum(reason_counts.values())
         normalized_workload = (
-            replace(workload, upsert_rows=rows, delete_rows=delete_rows)
+            replace(
+                workload,
+                upsert_rows=rows,
+                delete_rows=delete_rows,
+                derived_delete_contract=derived_delete_contract,
+                derived_delete_count=derived_delete_count,
+            )
             if excluded_count
             or enrichment_counts
             or delete_rows != workload.delete_rows
@@ -309,11 +338,64 @@ def _filter_cable_parent_coverage(
     return kept
 
 
+def _retiring_cable_endpoints(
+    *,
+    existing_cable_ids_by_endpoint,
+    desired_identities,
+    delete_rows,
+):
+    """Endpoints freed by cables this run already plans to retire.
+
+    An existing cable whose endpoints are still occupied blocks its own
+    replacement, so the replacement is deferred to a later sync and repeated
+    runs never converge. A cable that is absent from the authoritative desired
+    graph is retiring in this same run, so its endpoints are releasable now.
+
+    Visibility is not guaranteed to be complete. Both endpoints of a cable are
+    only releasable when they are unambiguously attributable to that one cable,
+    either because both terminations are visible, or because a single visible
+    endpoint maps to exactly one planned direction-insensitive delete. Anything
+    ambiguous stays occupied and defers, which is the safe direction.
+    """
+
+    endpoints_by_cable_id = defaultdict(set)
+    for endpoint, cable_id in existing_cable_ids_by_endpoint.items():
+        if cable_id:
+            endpoints_by_cable_id[cable_id].add(endpoint)
+
+    planned_delete_identities = set()
+    for row in delete_rows or []:
+        identity = canonical_cable_endpoint_identity(row)
+        if identity is not None:
+            planned_delete_identities.add(identity)
+
+    released = set()
+    for cable_id, endpoints in endpoints_by_cable_id.items():
+        if len(endpoints) == 2:
+            # Both terminations visible: the cable's own identity is decisive.
+            identity = tuple(sorted(endpoints))
+            if identity not in desired_identities:
+                released.update(endpoints)
+            continue
+        # Incomplete termination visibility. Release only when exactly one
+        # planned delete claims this endpoint.
+        for endpoint in endpoints:
+            claiming = [
+                identity
+                for identity in planned_delete_identities
+                if endpoint in identity
+            ]
+            if len(claiming) == 1:
+                released.add(endpoint)
+    return released
+
+
 def _select_representable_cables(
     rows,
     *,
     existing_cable_ids_by_endpoint,
     reason_counts,
+    delete_rows=None,
 ):
     rows_by_identity = {}
     for row in rows:
@@ -340,10 +422,18 @@ def _select_representable_cables(
             selected_identities.add(identity)
             used_endpoints.update(identity)
 
+    released_endpoints = _retiring_cable_endpoints(
+        existing_cable_ids_by_endpoint=existing_cable_ids_by_endpoint,
+        desired_identities=set(rows_by_identity),
+        delete_rows=delete_rows,
+    )
+    if released_endpoints:
+        reason_counts["retiring_endpoint_released"] += len(released_endpoints)
+
     occupied_endpoints = {
         endpoint
         for endpoint, cable_id in existing_cable_ids_by_endpoint.items()
-        if cable_id
+        if cable_id and endpoint not in released_endpoints
     }
     used_endpoints.update(occupied_endpoints)
 
@@ -385,6 +475,25 @@ def _filter_ospf_interface_coverage(
             ):
                 reason_counts["interface_not_in_workload"] += 1
                 continue
+        kept.append(row)
+    return kept
+
+
+def _filter_inventory_parent_coverage(
+    rows,
+    *,
+    device_names,
+    devices_authoritative,
+    reason_counts,
+):
+    if not devices_authoritative:
+        return rows
+    kept = []
+    for row in rows:
+        device_name = str(row.get("device") or "").strip()
+        if device_name not in device_names:
+            reason_counts["device_not_in_workload"] += 1
+            continue
         kept.append(row)
     return kept
 

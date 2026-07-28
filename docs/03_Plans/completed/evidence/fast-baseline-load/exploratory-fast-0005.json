@@ -1,0 +1,123 @@
+{
+  "engine": "fast",
+  "fixture": {
+    "actual_model_counts": {
+      "dcim.cable": 23083,
+      "dcim.device": 3400,
+      "dcim.interface": 535777,
+      "dcim.inventoryitem": 82572,
+      "dcim.macaddress": 277915,
+      "ipam.ipaddress": 51944,
+      "ipam.prefix": 34388,
+      "netbox_dlm.vulnerability": 70230
+    },
+    "basis": "deterministic anonymized customer-shaped baseline",
+    "logical_change_denominator": 5868,
+    "reference_counts": {
+      "dcim.devicerole": 1,
+      "dcim.devicetype": 1,
+      "dcim.manufacturer": 1,
+      "dcim.platform": 1,
+      "dcim.site": 1
+    },
+    "requested_model_counts": {
+      "dcim.cable": 115,
+      "dcim.device": 17,
+      "dcim.interface": 2679,
+      "dcim.inventoryitem": 413,
+      "dcim.macaddress": 1390,
+      "ipam.ipaddress": 260,
+      "ipam.prefix": 172,
+      "netbox_dlm.vulnerability": 351
+    },
+    "source_rows": 5402
+  },
+  "measurement": {
+    "baseline_rss_mib": 185.4453125,
+    "incremental_peak_rss_mib": 224.55859375,
+    "peak_rss_mib": 410.00390625,
+    "phases": {
+      "eligibility": "eligible_empty_baseline"
+    },
+    "python_system_seconds": 1.1204079999999998,
+    "python_user_seconds": 21.504893,
+    "rate_samples": [
+      {
+        "applied": 1000,
+        "elapsed_seconds": 10.632303749967832,
+        "interval_rows_per_second": 94.05299392457871,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 94.05299392457871,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 2000,
+        "elapsed_seconds": 10.6331598549732,
+        "interval_rows_per_second": 1168081.0107744394,
+        "model": "dcim.interface",
+        "overall_rows_per_second": 188.09084291764754,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 3000,
+        "elapsed_seconds": 12.030434749962296,
+        "interval_rows_per_second": 715.6787856034614,
+        "model": "dcim.inventoryitem",
+        "overall_rows_per_second": 249.36754675548215,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 4000,
+        "elapsed_seconds": 18.332884678966366,
+        "interval_rows_per_second": 158.66845611862286,
+        "model": "dcim.macaddress",
+        "overall_rows_per_second": 218.1871576702421,
+        "phase": "fast_load"
+      },
+      {
+        "applied": 5000,
+        "elapsed_seconds": 25.060850893962197,
+        "interval_rows_per_second": 148.63332663162305,
+        "model": "dcim.cable",
+        "overall_rows_per_second": 199.5143748772165,
+        "phase": "fast_load"
+      }
+    ],
+    "rows_per_second": 185.4558375400933,
+    "sql_by_verb": {
+      "DELETE": 345,
+      "INSERT": 2508,
+      "LOCK": 1,
+      "RELEASE": 947,
+      "SAVEPOINT": 947,
+      "SELECT": 36736,
+      "UPDATE": 1008
+    },
+    "statements": 42492,
+    "statements_per_change": 7.2413087934560325,
+    "wal_bytes": 8044104,
+    "wall_seconds": 31.640956023999024
+  },
+  "scale": 0.005,
+  "schema_version": 1,
+  "verification": {
+    "applied_changes": 0,
+    "baseline_ready": true,
+    "branch_id": null,
+    "change_diffs": 0,
+    "issues": 0,
+    "object_changes": 0,
+    "passed": true,
+    "sync_status": "completed",
+    "target_counts": {
+      "dcim.cable": 115,
+      "dcim.interface": 2679,
+      "dcim.inventoryitem": 413,
+      "dcim.macaddress": 1390,
+      "dcim.site": 1,
+      "ipam.ipaddress": 260,
+      "ipam.prefix": 172,
+      "netbox_dlm.vulnerability": 351
+    }
+  }
+}

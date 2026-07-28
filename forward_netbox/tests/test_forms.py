@@ -24,7 +24,6 @@ from forward_netbox.utilities.crypto import decrypt_secret
 from forward_netbox.utilities.crypto import is_encrypted
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 
-
 BGP_PLUGIN_CONFIG = {
     **settings.PLUGINS_CONFIG,
     "forward_netbox": {
@@ -226,6 +225,8 @@ class ForwardSyncFormTest(TestCase):
         form = ForwardSyncForm()
 
         self.assertTrue(form.fields["enable_bulk_orm"].initial)
+        self.assertFalse(form.fields["enable_fast_baseline_load"].initial)
+        self.assertFalse(form.fields["require_fast_baseline_eligibility"].initial)
 
     def test_safe_bulk_orm_defaults_enabled_for_existing_sync_without_setting(self):
         sync = ForwardSync.objects.create(
@@ -272,6 +273,58 @@ class ForwardSyncFormTest(TestCase):
 
         self.assertTrue(form.is_valid(), form.errors)
         self.assertTrue(form.instance.parameters["enable_bulk_orm"])
+
+    def test_form_persists_explicit_fast_baseline_opt_in(self):
+        form = ForwardSyncForm(
+            data={
+                "name": "sync-fast-baseline",
+                "source": self.source.pk,
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": "on",
+                "auto_merge": "on",
+                "enable_bulk_orm": "on",
+                "enable_fast_baseline_load": "on",
+                "max_changes_per_staging_item": "10000",
+            }
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertTrue(form.instance.parameters["enable_fast_baseline_load"])
+
+    def test_form_persists_single_pass_required_fast_baseline(self):
+        form = ForwardSyncForm(
+            data={
+                "name": "sync-required-fast-baseline",
+                "source": self.source.pk,
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": "on",
+                "auto_merge": "on",
+                "enable_bulk_orm": "on",
+                "enable_fast_baseline_load": "on",
+                "require_fast_baseline_eligibility": "on",
+                "max_changes_per_staging_item": "10000",
+            }
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertTrue(form.instance.parameters["require_fast_baseline_eligibility"])
+
+    def test_form_rejects_required_fast_baseline_when_loader_is_disabled(self):
+        form = ForwardSyncForm(
+            data={
+                "name": "sync-invalid-required-fast-baseline",
+                "source": self.source.pk,
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": "on",
+                "auto_merge": "on",
+                "enable_bulk_orm": "on",
+                "require_fast_baseline_eligibility": "on",
+                "max_changes_per_staging_item": "10000",
+            }
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("also requires enabling", str(form.non_field_errors()))
 
     def test_form_defaults_diff_fallback_mode_to_allow_fallback(self):
         form = ForwardSyncForm(

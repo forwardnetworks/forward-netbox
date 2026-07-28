@@ -36,7 +36,11 @@ repos:
     rev: v3.16.0
     hooks:
       - id: reorder-python-imports
-        exclude: ^forward_netbox/utilities/(merge|diagnostics)\.py$
+        # These modules keep a module docstring ahead of their imports, which
+        # reorder-python-imports strips the blank line from and black restores,
+        # so the two hooks never converge. Formatting stays owned by black.
+        exclude: >-
+          ^forward_netbox/utilities/(merge|diagnostics|fast_baseline|fast_baseline_models|tier3_reducers|contributor_baseline)\.py$
   - repo: https://github.com/psf/black
     rev: 25.9.0
     hooks:

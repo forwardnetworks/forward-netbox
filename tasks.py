@@ -1006,6 +1006,7 @@ def artifact_test(context):
             "python manage.py migrate --noinput",
             "python manage.py check",
             "python manage.py makemigrations --check --dry-run forward_netbox",
+            "python /source/scripts/validate_installed_routes.py",
         )
     )
     run_command = " ".join(
@@ -1135,6 +1136,11 @@ def smoke_sync(
         )
     flag_string = f" {' '.join(flags)}" if flags else ""
     manage_py(context, f"forward_smoke_sync{flag_string}")
+
+
+@task(name="resolve-query-ids")
+def resolve_query_ids(context, sync_id):
+    manage_py(context, f"forward_resolve_query_ids --sync-id {int(sync_id)}")
 
 
 @task(name="scale-soak")

@@ -1,6 +1,11 @@
+from dataclasses import replace
+
 from django.test import SimpleTestCase
 
 from forward_netbox.utilities.branch_budget import BranchWorkload
+from forward_netbox.utilities.workload_normalization import (
+    CVE_WITHOUT_IN_SCOPE_VULNERABILITY_DELETE_CONTRACT,
+)
 from forward_netbox.utilities.workload_normalization import (
     normalize_dependency_workloads,
 )
@@ -86,6 +91,53 @@ class DependencyWorkloadNormalizationTest(SimpleTestCase):
         self.assertNotIn("serial", normalized[0].upsert_rows[0])
         self.assertEqual(summaries, [])
 
+    def test_full_inventory_excludes_rows_without_authoritative_device_parent(self):
+        kept = {
+            "device": "device-a",
+            "name": "Power Supply",
+            "part_id": "PSU-1",
+            "serial": "SERIAL-A",
+        }
+        missing = {
+            "device": "device-out-of-scope",
+            "name": "Power Supply",
+            "part_id": "PSU-2",
+            "serial": "SERIAL-B",
+        }
+        normalized, summaries = normalize_dependency_workloads(
+            [
+                _workload("dcim.device", [{"name": "device-a"}]),
+                _workload("dcim.inventoryitem", [kept, missing]),
+            ]
+        )
+
+        self.assertEqual(normalized[1].upsert_rows, [kept])
+        self.assertEqual(
+            summaries[-1]["reason_counts"],
+            {"device_not_in_workload": 1},
+        )
+
+    def test_inventory_parent_filter_requires_authoritative_full_devices(self):
+        row = {
+            "device": "device-not-in-diff",
+            "name": "Power Supply",
+            "part_id": "PSU-1",
+            "serial": "SERIAL-A",
+        }
+        normalized, summaries = normalize_dependency_workloads(
+            [
+                _workload(
+                    "dcim.device",
+                    [{"name": "device-a"}],
+                    sync_mode="diff",
+                ),
+                _workload("dcim.inventoryitem", [row]),
+            ]
+        )
+
+        self.assertEqual(normalized[1].upsert_rows, [row])
+        self.assertEqual(summaries, [])
+
     def test_cables_require_both_full_workload_devices_and_interfaces(self):
         workloads = [
             _workload(
@@ -168,6 +220,94 @@ class DependencyWorkloadNormalizationTest(SimpleTestCase):
             {"competing_candidate": 1, "existing_endpoint_conflict": 1},
         )
 
+    def _cable_replacement_workloads(self, *, delete_rows):
+        """One retiring cable and its replacement on a shared endpoint."""
+
+        retiring = self._cable("device-a", "Ethernet1", "device-b", "Ethernet1")
+        replacement = self._cable("device-a", "Ethernet1", "device-c", "Ethernet1")
+        device_rows = [{"name": f"device-{letter}"} for letter in ("a", "b", "c")]
+        interface_rows = [
+            {"device": row["name"], "name": "Ethernet1"} for row in device_rows
+        ]
+        cable_workload = replace(
+            _workload("dcim.cable", [replacement]),
+            delete_rows=delete_rows,
+        )
+        return (
+            retiring,
+            replacement,
+            [
+                _workload("dcim.device", device_rows),
+                _workload("dcim.interface", interface_rows),
+                cable_workload,
+            ],
+        )
+
+    def test_cable_replacement_is_selected_when_old_link_retires_same_run(self):
+        retiring, replacement, workloads = self._cable_replacement_workloads(
+            delete_rows=[]
+        )
+
+        normalized, summaries = normalize_dependency_workloads(
+            workloads,
+            # Both terminations of the retiring cable are visible.
+            existing_cable_ids_by_endpoint={
+                ("device-a", "Ethernet1"): 9,
+                ("device-b", "Ethernet1"): 9,
+            },
+        )
+
+        # The retiring cable is absent from the desired graph, so it releases
+        # its endpoints and the replacement converges in this run rather than
+        # being deferred to a later sync.
+        self.assertEqual(normalized[2].upsert_rows, [replacement])
+        self.assertNotIn(
+            "existing_endpoint_conflict",
+            summaries[0]["reason_counts"],
+        )
+        self.assertEqual(
+            summaries[0]["reason_counts"].get("retiring_endpoint_released"),
+            2,
+        )
+
+    def test_cable_endpoint_stays_occupied_when_retirement_is_ambiguous(self):
+        _, replacement, workloads = self._cable_replacement_workloads(delete_rows=[])
+
+        normalized, summaries = normalize_dependency_workloads(
+            workloads,
+            # Only one termination is visible and no planned delete claims it,
+            # so the endpoint is not provably retiring and must stay occupied.
+            existing_cable_ids_by_endpoint={("device-a", "Ethernet1"): 9},
+        )
+
+        self.assertEqual(normalized[2].upsert_rows, [])
+        self.assertEqual(
+            summaries[0]["reason_counts"].get("existing_endpoint_conflict"),
+            1,
+        )
+        self.assertNotIn(
+            "retiring_endpoint_released",
+            summaries[0]["reason_counts"],
+        )
+
+    def test_cable_endpoint_releases_on_unambiguous_planned_delete(self):
+        retiring, replacement, workloads = self._cable_replacement_workloads(
+            delete_rows=[self._cable("device-a", "Ethernet1", "device-b", "Ethernet1")]
+        )
+
+        normalized, summaries = normalize_dependency_workloads(
+            workloads,
+            # Incomplete visibility, but exactly one planned delete claims the
+            # endpoint, so the replacement is admitted in the same run.
+            existing_cable_ids_by_endpoint={("device-a", "Ethernet1"): 9},
+        )
+
+        self.assertEqual(normalized[2].upsert_rows, [replacement])
+        self.assertEqual(
+            summaries[0]["reason_counts"].get("retiring_endpoint_released"),
+            1,
+        )
+
     def test_ospf_interface_accepts_supported_alias_and_rejects_missing_parent(self):
         normalized, summaries = normalize_dependency_workloads(
             [
@@ -240,6 +380,34 @@ class DependencyWorkloadNormalizationTest(SimpleTestCase):
         self.assertEqual(
             summaries[0]["reason_counts"], {"no_in_scope_vulnerability": 1}
         )
+        self.assertEqual(
+            normalized[0].derived_delete_contract,
+            CVE_WITHOUT_IN_SCOPE_VULNERABILITY_DELETE_CONTRACT,
+        )
+        self.assertEqual(normalized[0].derived_delete_count, 1)
+
+    def test_cve_normalization_does_not_mark_mixed_source_deletes(self):
+        source_delete = {"cve_id": "CVE-2026-0003"}
+        workload = _workload(
+            "netbox_dlm.cve",
+            [
+                {"cve_id": "CVE-2026-0001"},
+                {"cve_id": "CVE-2026-0002"},
+            ],
+        )
+        workload = replace(workload, delete_rows=[source_delete])
+        normalized, _ = normalize_dependency_workloads(
+            [
+                workload,
+                _workload(
+                    "netbox_dlm.vulnerability",
+                    [{"name": "device-a", "cve_id": "CVE-2026-0002"}],
+                ),
+            ]
+        )
+
+        self.assertEqual(normalized[0].derived_delete_contract, "")
+        self.assertEqual(normalized[0].derived_delete_count, 0)
 
     def test_empty_full_vulnerability_workload_removes_all_catalog_cves(self):
         normalized, summaries = normalize_dependency_workloads(

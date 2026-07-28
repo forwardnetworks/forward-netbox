@@ -1,4 +1,5 @@
 import json
+from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -8,6 +9,7 @@ from core.models import Job
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
+from django.core.management import call_command
 from django.test import override_settings
 from django.test import SimpleTestCase
 from django.test import TestCase
@@ -31,6 +33,7 @@ from forward_netbox.utilities.health import sync_health_summary
 from forward_netbox.utilities.health_checks import ingestion_check_message
 from forward_netbox.utilities.health_checks import ingestion_check_status
 from forward_netbox.utilities.health_checks import query_drift_check_message
+from forward_netbox.utilities.query_binding import NQELibraryWritePermissionError
 from forward_netbox.utilities.query_fetch_execution import ForwardModelResult
 from forward_netbox.utilities.query_registry import read_compiled_builtin_query_source
 from forward_netbox.views import _dependency_dry_run_payload
@@ -268,6 +271,24 @@ class ForwardSyncHealthTest(TestCase):
         cls.sync.last_ingestion.job = cls.execution_job
         cls.sync.last_ingestion.save(update_fields=["job"])
         cls.sync.refresh_from_db()
+
+    def test_health_reports_unresolved_persisted_query_contracts_before_sync(self):
+        summary = sync_health_summary(self.sync)
+
+        preflight = summary["query_contract_preflight"]
+        self.assertFalse(preflight["consistent"])
+        self.assertEqual(preflight["issue_count"], 2)
+        self.assertEqual(
+            {issue["type"] for issue in preflight["issues"]},
+            {"unresolved_full_commit"},
+        )
+        self.assertTrue(
+            any(
+                check["name"] == "Query execution contracts"
+                and check["status"] == "fail"
+                for check in summary["checks"]
+            )
+        )
 
     def test_collection_gap_summary_reflects_backfilled_tag(self):
         from dcim.models import Device
@@ -870,7 +891,7 @@ class ForwardSyncHealthTest(TestCase):
             patch.object(ForwardSource, "get_client", return_value=Mock()),
             patch(
                 "forward_netbox.views.publish_builtin_nqe_map_queries",
-                side_effect=Exception("403 Forbidden"),
+                side_effect=NQELibraryWritePermissionError(),
             ),
         ):
             response = self.client.post(
@@ -882,6 +903,58 @@ class ForwardSyncHealthTest(TestCase):
             )
 
         self.assertContains(response, "NQE-library write permission")
+        self.assertContains(response, "Resolve to Query ID")
+
+    def test_sync_resolve_query_ids_uses_read_only_binding_action(self):
+        self.client.force_login(self.user)
+        result = Mock(matched=True)
+        client = Mock()
+        with (
+            patch.object(ForwardSource, "get_client", return_value=client),
+            patch(
+                "forward_netbox.views.resolve_nqe_map_query_ids",
+                return_value=[result],
+            ) as resolve_ids,
+        ):
+            response = self.client.post(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_resolve_query_ids",
+                    kwargs={"pk": self.sync.pk},
+                ),
+                follow=True,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        resolve_ids.assert_called_once()
+        self.assertEqual(resolve_ids.call_args.kwargs["client"], client)
+        self.assertContains(response, "read-only Forward repository metadata")
+        self.assertContains(response, "No Forward queries were published or changed")
+
+    def test_resolve_query_ids_management_command_reports_aggregate_counts(self):
+        stdout = StringIO()
+        results = [Mock(matched=True), Mock(matched=False)]
+        client = Mock()
+        with (
+            patch.object(ForwardSource, "get_client", return_value=client),
+            patch(
+                "forward_netbox.management.commands.forward_resolve_query_ids."
+                "resolve_nqe_map_query_ids",
+                return_value=results,
+            ) as resolve_ids,
+        ):
+            call_command(
+                "forward_resolve_query_ids",
+                "--sync-id",
+                str(self.sync.pk),
+                stdout=stdout,
+            )
+
+        resolve_ids.assert_called_once()
+        self.assertEqual(resolve_ids.call_args.kwargs["client"], client)
+        output = stdout.getvalue()
+        self.assertIn("Enabled maps=2 resolved=1 unchanged=1", output)
+        self.assertNotIn(self.sync.name, output)
+        self.assertNotIn(self.source.name, output)
 
     def test_sync_detail_surfaces_query_drift_and_dependency_preview_actions(self):
         self.client.force_login(self.user)
@@ -890,6 +963,7 @@ class ForwardSyncHealthTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Query Drift")
+        self.assertContains(response, "Resolve to Query ID")
         self.assertContains(response, "Publish Bundled Queries")
         self.assertNotContains(response, "Refresh Query IDs")
         self.assertContains(response, "Preview Dependencies")

@@ -85,6 +85,26 @@ This map assigns production behavior to the modules that implement it in 2.6.
 - Construction and ingestion bookkeeping:
   `forward_netbox/utilities/executor_base.py`.
 
+## Fast First-Baseline Boundary
+
+- Selection, preflight, locks, transaction, and attestation:
+  `forward_netbox/utilities/fast_baseline.py`.
+- Versioned set-based model specifications:
+  `forward_netbox/utilities/fast_baseline_models.py`.
+- Direct plan-item primitive: `run_item_direct_to_main()` in
+  `forward_netbox/utilities/branch_lifecycle.py`.
+- Responsibilities: explicit disabled-by-default selection, exact runtime/model/
+  row-shape admission, empty-destination and hook proof, transaction-time
+  mutable recheck, atomic target plus durable-state finalization, and auditable
+  declaration of omitted branch evidence.
+- Required tests: every eligibility guard, no-mutation preflight, atomic fault
+  rollback, target/side/state paired equivalence, attestation visibility, and
+  ordinary-branch fallback before DML.
+- Constraint: this is only a first-full-baseline exception. It admits only the
+  versioned CVE normalization tombstones proven to be physical no-ops on an
+  empty target; all other deletes and all incremental work reject. It never
+  changes engines after target DML.
+
 ## Merge Boundary
 
 - Owner: `forward_netbox/utilities/merge.py`, `bulk_merge.py`, and
