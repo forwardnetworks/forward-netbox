@@ -529,6 +529,12 @@ def harness_check(context):
     context.run(f"{shlex.quote(sys.executable)} scripts/check_harness.py")
 
 
+@task(name="release-preflight")
+def release_preflight(context):
+    """Static checks that must fail before the gate spends time on docker."""
+    context.run(f"{shlex.quote(sys.executable)} scripts/check_release_preflight.py")
+
+
 @task(name="release-authorization-check")
 def release_authorization_check(context, version="2.6.0"):
     context.run(
@@ -1712,6 +1718,10 @@ def sync_release_gate(
 
 @task(
     pre=[
+        # Static, sub-second checks run first: everything below this line costs
+        # docker bring-up or minutes of test time, so a stale version surface or
+        # a missing UI dependency must be reported before any of it starts.
+        release_preflight,
         sensitive_check,
         harness_check,
         harness_test,

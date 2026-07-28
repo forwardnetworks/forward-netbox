@@ -27,19 +27,18 @@ from netbox.context_managers import event_tracking
 from netbox_branching.choices import BranchEventTypeChoices
 from netbox_branching.choices import BranchStatusChoices
 from netbox_branching.merge_strategies import get_merge_strategy
-from rq.timeouts import JobTimeoutException
-
-from .bulk_merge import _ApplyOneFailure
-from .bulk_merge import bulk_merge_changes
-from .bulk_delete import lock_related_writes_for_delete
 from netbox_branching.models import Branch
 from netbox_branching.models import BranchEvent
 from netbox_branching.signals import post_merge
 from netbox_branching.utilities import record_applied_change
+from rq.timeouts import JobTimeoutException
 
 from ..choices import ForwardIngestionPhaseChoices
 from ..exceptions import ForwardPartialMergeError
 from ..models import ForwardIngestionIssue
+from .bulk_delete import lock_related_writes_for_delete
+from .bulk_merge import _ApplyOneFailure
+from .bulk_merge import bulk_merge_changes
 from .diagnostics import exception_type
 from .diagnostics import safe_operation_failure
 
