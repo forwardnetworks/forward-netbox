@@ -44,6 +44,23 @@ is the exact failure this change exists to remove. The pairing stays required
 for `ui-validation`, whose Playwright run does serve over HTTP, and
 `_rtk_parts` still rejects a port/URL mismatch wherever either appears.
 
+**The provenance verifier enforced the same rule and was missed.**
+`verify_release_provenance.py::_require_release_plan_only` independently
+required the tagged commit to change exactly one plan file. Relaxing only
+`check_release_authorization.py` therefore did not relax the release: the
+`v2.6.2` tag pushed successfully and its publish workflow failed on this rule.
+Because the workflow checks out the tag's own tree, the fix could not be
+applied to that tag, and the tag ruleset forbids deletion, so the release was
+renumbered to `2.6.3`. The rule is now `_require_release_plan`: the tagged
+commit must change exactly one `release-<version>` plan and may also change
+code.
+
+The durable lesson is procedural, not just textual. `verify_release_provenance.py`
+runs locally against a candidate tag, so a release must dry-run it before the
+tag is pushed. Verified against the failed `v2.6.2` commit, the relaxed rule was
+the only objection; the prior-release bridge, security bootstrap, lineage and
+per-commit pull-request checks all passed unchanged and are retained.
+
 **The evidence-only commit requirement is removed.**
 `release_evidence_commit_binding` no longer demands that the tagged commit
 change only the release plan. The plan may ship in the same commit as the code
