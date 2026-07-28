@@ -20,6 +20,23 @@ from .workload_state import stage_and_promote_noop_workload_states
 from .workload_state import stage_workload_states
 
 
+def failed_model_strings(model_results) -> list[str]:
+    """Models whose fetch failed, so an empty workload set is not convergence.
+
+    An empty workload set means one of two very different things: the source
+    genuinely converged, or every fetch failed and produced nothing. They are
+    indistinguishable from the workload alone, so the failure results decide it.
+    """
+    return sorted(
+        {
+            str(getattr(result, "model_string", "") or "")
+            for result in model_results or []
+            if getattr(result, "failure_count", 0)
+        }
+        - {""}
+    )
+
+
 class ForwardSingleBranchExecutor(ForwardExecutorBase):
     """Stage a whole sync into ONE provisioned branch, then bulk-merge once."""
 
@@ -57,6 +74,19 @@ class ForwardSingleBranchExecutor(ForwardExecutorBase):
             job=self.job,
         ).record_plan_validation(context.as_dict(), workloads, self.last_model_results)
         if not workloads:
+            # Previously any empty workload recorded a completed, zero-change,
+            # branchless ingestion, so a run whose every fetch failed was
+            # indistinguishable from a converged one. Fail closed instead.
+            failed_models = failed_model_strings(fetcher.model_results)
+            if failed_models:
+                raise SyncError(
+                    "No Forward changes were returned because "
+                    f"{len(failed_models)} model(s) failed to fetch: "
+                    f"{', '.join(failed_models)}. This run applied nothing and is "
+                    "not a converged sync. Resolve the reported query failures "
+                    "and re-run; see the execution contract preflight warnings "
+                    "on this job for the failing maps."
+                )
             self.logger.log_info("No Forward changes were returned for this run.")
             ingestion = create_noop_ingestion(self, context.as_dict())
             staged_contributor_relations = fetcher.stage_pending_contributor_baseline(
