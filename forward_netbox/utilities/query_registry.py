@@ -43,6 +43,10 @@ def _resolve_head_commit_for_query_id(
             )
             or ""
         ).strip()
+    except JobTimeoutException:
+        # A worker timeout is not a resolution failure and must reach the job
+        # boundary rather than be degraded into an unresolved commit.
+        raise
     except Exception:
         return ""
 
