@@ -453,17 +453,18 @@ def check_release_authorization(
             match.group("evidence").strip(),
         )
 
+    # Only the required ids must be present, but any recorded id is held to the
+    # full standard. Recording an optional id with hollow evidence is worse than
+    # omitting it, because it reads as a claim that the work was done.
+    recorded = KNOWN_EVIDENCE_IDS & entries.keys()
     missing = sorted(REQUIRED_EVIDENCE_IDS - entries.keys())
     unchecked = sorted(
-        evidence_id
-        for evidence_id in REQUIRED_EVIDENCE_IDS
-        if evidence_id in entries and not entries[evidence_id][0]
+        evidence_id for evidence_id in recorded if not entries[evidence_id][0]
     )
     placeholders = sorted(
         evidence_id
-        for evidence_id in REQUIRED_EVIDENCE_IDS
-        if evidence_id in entries
-        and not _evidence_is_concrete(evidence_id, entries[evidence_id][1])
+        for evidence_id in recorded
+        if not _evidence_is_concrete(evidence_id, entries[evidence_id][1])
     )
     if missing or unchecked or placeholders:
         raise ValueError(

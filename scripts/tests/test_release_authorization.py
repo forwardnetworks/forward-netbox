@@ -85,7 +85,10 @@ class ReleaseAuthorizationTest(unittest.TestCase):
         entries = "\n".join(
             f"- [{marker}] `{evidence_id}` - "
             f"{evidence_overrides.get(evidence_id, evidence if evidence is not None else self.VALID_EVIDENCE[evidence_id])}"
-            for evidence_id in sorted(release_authorization.REQUIRED_EVIDENCE_IDS)
+            # Every known id, not just the required ones: an optional id is
+            # validated to the same standard whenever a release records it, so
+            # the rejection cases must cover them too.
+            for evidence_id in sorted(release_authorization.KNOWN_EVIDENCE_IDS)
         )
         base_line = (
             f"- Evidence base commit: `{base_commit}`\n\n" if base_commit else ""
