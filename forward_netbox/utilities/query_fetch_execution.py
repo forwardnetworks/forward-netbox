@@ -1583,25 +1583,25 @@ class ForwardQueryFetcher:
         )
         if blocking:
             self.logger.log_warning(
-                f"Execution contract preflight rejected {len(blocking)} map(s) for "
-                f"{model_string}, so this model will be skipped: " + _render(blocking),
+                f"Execution contract preflight found {len(blocking)} rejected "
+                f"map(s) for {model_string}, so this model will be skipped and "
+                "its data will not be synced: " + _render(blocking),
                 obj=self.sync,
             )
 
+        # Still a warning: a map that cannot diff silently falls back to a full
+        # fetch, which the operator should know about even in a full-only run.
         diff_only = _rows(
             lambda contract: contract.full_eligible and not contract.diff_eligible,
             lambda contract: f"diff:{contract.diff_reason_code}",
         )
-        if not diff_only:
-            return
-        message = (
-            f"Execution contract preflight found {len(diff_only)} map(s) for "
-            f"{model_string} that cannot run a diff: " + _render(diff_only)
-        )
-        if self._require_diff_execution():
-            self.logger.log_warning(message, obj=self.sync)
-        else:
-            self.logger.log_info(f"{message}. This run is full-only.", obj=self.sync)
+        if diff_only:
+            self.logger.log_warning(
+                f"Execution contract preflight found {len(diff_only)} map(s) for "
+                f"{model_string} that cannot run a diff; this model still syncs "
+                "in full: " + _render(diff_only),
+                obj=self.sync,
+            )
 
     def _resolve_query_specs(self, model_string: str, specs):
         resolved_specs = resolve_query_specs_for_client(specs, self.client)
