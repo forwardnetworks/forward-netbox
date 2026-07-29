@@ -149,6 +149,15 @@ def check_release_plan_evidence_base(version: str) -> str:
     Reported here, before the push, so the round trip is seconds instead of an
     hour. Skipped when `origin/main` is unknown (a fresh clone or offline run),
     since a missing remote ref is not evidence of a wrong value.
+
+    `origin/main` is only the right comparison *before* the merge. Once the
+    release has merged, `origin/main` is the release commit itself, so demanding
+    it here would tell the operator to record the tagged commit in place of its
+    parent — the exact value `release_evidence_commit_binding` then rejects,
+    since it binds against `HEAD^`. In that window the two checks contradicted
+    each other and the release could not be tagged at all. So when `HEAD` is
+    already `origin/main`, compare against `HEAD^`: same rule, evaluated from
+    the side of the merge the repository is actually on.
     """
     if _git("tag", "--list", f"v{version}"):
         # Already tagged: the recorded value was correct at tag time and is now
@@ -165,18 +174,29 @@ def check_release_plan_evidence_base(version: str) -> str:
     )
     if match is None:
         return "skipped (plan records no evidence base commit yet)"
-    expected = _git("rev-parse", "origin/main")
-    if len(expected) != 40:
+    remote_main = _git("rev-parse", "origin/main")
+    if len(remote_main) != 40:
         return "skipped (origin/main is unknown in this checkout)"
+    merged = _git("rev-parse", "HEAD") == remote_main
+    reference = "HEAD^" if merged else "origin/main"
+    expected = _git("rev-parse", reference) if merged else remote_main
+    if len(expected) != 40:
+        return f"skipped ({reference} is unknown in this checkout)"
     recorded = match.group(1)
     if recorded != expected:
+        detail = (
+            f"the release has merged, so the commit about to be tagged is HEAD "
+            f"and its parent is {expected}"
+            if merged
+            else f"a squash merge will make the release commit's parent "
+            f"{expected} (origin/main)"
+        )
         raise PreflightError(
             f"{plans[0].relative_to(REPO_ROOT)} records evidence base commit "
-            f"{recorded}, but a squash merge will make the release commit's "
-            f"parent {expected} (origin/main). Authorization will fail after "
-            "the merge and require a second PR. Record the origin/main value."
+            f"{recorded}, but {detail}. Authorization binds the tagged commit to "
+            f"its parent, so record {expected}."
         )
-    return f"{recorded[:12]} matches origin/main"
+    return f"{recorded[:12]} matches {reference}"
 
 
 def main() -> int:

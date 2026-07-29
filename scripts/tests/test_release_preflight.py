@@ -176,6 +176,55 @@ class EvidenceBaseCommitTest(unittest.TestCase):
                     preflight.check_release_plan_evidence_base("9.9.9"),
                 )
 
+    def test_accepts_the_tag_parent_once_the_release_has_merged(self):
+        # Between merge and tag, origin/main IS the commit about to be tagged.
+        # Comparing against it would demand the plan record the tagged commit in
+        # place of its parent - which release_evidence_commit_binding rejects,
+        # because it binds against HEAD^. The two checks contradicted each other
+        # and no value could satisfy both, so the release could not be tagged.
+        with tempfile.TemporaryDirectory() as directory:
+            self._plan(directory, "9.9.9", self.BRANCH_PARENT)
+            with (
+                mock.patch.object(preflight, "REPO_ROOT", Path(directory)),
+                mock.patch.object(
+                    preflight,
+                    "_git",
+                    self._git(
+                        {
+                            ("rev-parse", "origin/main"): self.MAIN,
+                            ("rev-parse", "HEAD"): self.MAIN,
+                            ("rev-parse", "HEAD^"): self.BRANCH_PARENT,
+                        }
+                    ),
+                ),
+            ):
+                self.assertIn(
+                    "matches HEAD^",
+                    preflight.check_release_plan_evidence_base("9.9.9"),
+                )
+
+    def test_rejects_the_tagged_commit_itself_once_merged(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._plan(directory, "9.9.9", self.MAIN)
+            with (
+                mock.patch.object(preflight, "REPO_ROOT", Path(directory)),
+                mock.patch.object(
+                    preflight,
+                    "_git",
+                    self._git(
+                        {
+                            ("rev-parse", "origin/main"): self.MAIN,
+                            ("rev-parse", "HEAD"): self.MAIN,
+                            ("rev-parse", "HEAD^"): self.BRANCH_PARENT,
+                        }
+                    ),
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    preflight.PreflightError, "the release has merged"
+                ):
+                    preflight.check_release_plan_evidence_base("9.9.9")
+
     def test_skips_a_plan_that_records_nothing_yet(self):
         with tempfile.TemporaryDirectory() as directory:
             plans = Path(directory) / "docs" / "03_Plans" / "active"
