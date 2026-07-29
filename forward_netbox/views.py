@@ -68,6 +68,7 @@ from .tables import ForwardNQEMapTable
 from .tables import ForwardSourceTable
 from .tables import ForwardSyncTable
 from .tables import ForwardValidationRunTable
+from .utilities.bulk_merge import describe_protecting_references
 from .utilities.change_explainability import change_explainability_summary
 from .utilities.diagnostics import diff_fallback_summary
 from .utilities.diagnostics import safe_job_error_summary
@@ -1650,7 +1651,10 @@ class ForwardIngestionListView(generic.ObjectListView):
     queryset = annotate_statistics(ForwardIngestion.objects.all())
     filterset = ForwardIngestionFilterSet
     table = ForwardIngestionTable
-    actions = (BulkExport,)
+    # BulkDelete so a backlog of ingestion records can actually be cleared;
+    # there is still no edit view, since an ingestion is a record of what a sync
+    # did and is not editable after the fact.
+    actions = (BulkExport, BulkDelete)
 
 
 @register_model_view(ForwardIngestion, name="logs", path="logs")
@@ -1923,6 +1927,70 @@ class ForwardIngestionIssuesView(generic.ObjectChildrenView):
 
     def get_children(self, request, parent):
         return ForwardIngestionIssue.objects.filter(ingestion=parent)
+
+
+def _ingestion_delete_refusal(ingestion) -> str:
+    """Why the database will refuse this delete, or "" when it will not.
+
+    Most relations to an ingestion cascade, but `ForwardContributorBaseline` is
+    PROTECT: a baseline is durable convergence evidence, and dropping the
+    ingestion that produced it would strand it. Reporting that up front turns an
+    unhandled `ProtectedError` into something an operator can act on.
+    """
+    references = describe_protecting_references(type(ingestion), ingestion.pk)
+    if not references:
+        return ""
+    held_by = ", ".join(f"{label} ({count})" for label, count in references)
+    return (
+        f"{ingestion} cannot be deleted while it is still referenced by "
+        f"{held_by}. Those records are convergence evidence for this ingestion; "
+        "remove them first if you genuinely intend to discard it."
+    )
+
+
+@register_model_view(ForwardIngestion, "delete")
+class ForwardIngestionDeleteView(generic.ObjectDeleteView):
+    """Delete a single ingestion, reporting a protected reference rather than 500.
+
+    Restores an action removed in 2.6.3: a `NoReverseMatch` crash on the
+    Ingestions list was fixed by dropping the delete action instead of
+    registering the view it pointed at, which left ingestions undeletable.
+    """
+
+    queryset = ForwardIngestion.objects.all()
+
+    def post(self, request, *args, **kwargs):
+        refusal = _ingestion_delete_refusal(self.get_object(**kwargs))
+        if refusal:
+            messages.error(request, refusal)
+            return redirect(self.get_return_url(request))
+        return super().post(request, *args, **kwargs)
+
+
+@register_model_view(ForwardIngestion, "bulk_delete", path="delete", detail=False)
+class ForwardIngestionBulkDeleteView(generic.BulkDeleteView):
+    """Bulk delete, skipping protected ingestions instead of failing the batch.
+
+    One protected ingestion must not abandon the rest of the selection, so the
+    protected rows are reported by name and the remainder proceed.
+    """
+
+    queryset = ForwardIngestion.objects.all()
+    table = ForwardIngestionTable
+
+    def _filter_deletable(self, request, queryset):
+        protected = [
+            ingestion for ingestion in queryset if _ingestion_delete_refusal(ingestion)
+        ]
+        if not protected:
+            return queryset
+        for refusal in (_ingestion_delete_refusal(item) for item in protected):
+            messages.error(request, refusal)
+        return queryset.exclude(pk__in=[item.pk for item in protected])
+
+    def post(self, request, *args, **kwargs):
+        self.queryset = self._filter_deletable(request, self.get_queryset(request))
+        return super().post(request, *args, **kwargs)
 
 
 @register_model_view(ForwardDeviceAnalysis, "list", path="", detail=False)

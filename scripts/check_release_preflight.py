@@ -125,6 +125,60 @@ def check_ui_harness_dependencies() -> str:
     return ", ".join(required)
 
 
+def _git(*arguments: str) -> str:
+    import subprocess
+
+    return subprocess.run(
+        ["git", *arguments],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def check_release_plan_evidence_base(version: str) -> str:
+    """The plan's evidence base commit must be what `main` will hold at tag time.
+
+    Authorization binds the tagged commit to its parent. A release branch's own
+    parent is *not* that commit: the release squash-merges, so on `main` the
+    release commit's parent is `origin/main`'s head at merge time. Recording the
+    branch-side parent therefore always mismatches once merged, and the release
+    cannot be tagged until a second PR corrects it — which costs a full CI cycle
+    for a one-line change.
+
+    Reported here, before the push, so the round trip is seconds instead of an
+    hour. Skipped when `origin/main` is unknown (a fresh clone or offline run),
+    since a missing remote ref is not evidence of a wrong value.
+    """
+    if _git("tag", "--list", f"v{version}"):
+        # Already tagged: the recorded value was correct at tag time and is now
+        # history. Re-checking it against a moved origin/main is meaningless.
+        return f"skipped (v{version} is already tagged)"
+    plans = sorted((REPO_ROOT / "docs" / "03_Plans").rglob(f"*release-{version}*.md"))
+    if len(plans) != 1:
+        return (
+            f"skipped (expected exactly one release-{version} plan, found {len(plans)})"
+        )
+    text = _read(plans[0])
+    match = re.search(
+        r"^- Evidence base commit: `([0-9a-f]{40})`$", text, flags=re.MULTILINE
+    )
+    if match is None:
+        return "skipped (plan records no evidence base commit yet)"
+    expected = _git("rev-parse", "origin/main")
+    if len(expected) != 40:
+        return "skipped (origin/main is unknown in this checkout)"
+    recorded = match.group(1)
+    if recorded != expected:
+        raise PreflightError(
+            f"{plans[0].relative_to(REPO_ROOT)} records evidence base commit "
+            f"{recorded}, but a squash merge will make the release commit's "
+            f"parent {expected} (origin/main). Authorization will fail after "
+            "the merge and require a second PR. Record the origin/main value."
+        )
+    return f"{recorded[:12]} matches origin/main"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="emit the results as JSON")
@@ -133,11 +187,16 @@ def main() -> int:
     try:
         version = check_version_surfaces()
         dependencies = check_ui_harness_dependencies()
+        evidence_base = check_release_plan_evidence_base(version)
     except PreflightError as exc:
         print(f"release preflight failed: {exc}", file=sys.stderr)
         return 1
 
-    result = {"version": version, "ui_harness_dependencies": dependencies}
+    result = {
+        "version": version,
+        "ui_harness_dependencies": dependencies,
+        "evidence_base_commit": evidence_base,
+    }
     if arguments.json:
         print(json.dumps(result, sort_keys=True))
     else:
@@ -145,6 +204,7 @@ def main() -> int:
         print(
             f"release preflight passed: UI harness dependencies present ({dependencies})"
         )
+        print(f"release preflight passed: evidence base commit {evidence_base}")
     return 0
 
 

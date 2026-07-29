@@ -12,7 +12,6 @@ from django.contrib.auth import get_user_model
 from django.contrib.messages import get_messages
 from django.test import Client
 from django.test import TestCase
-from django.urls import NoReverseMatch
 from django.urls import reverse
 
 from forward_netbox.choices import ForwardSyncStatusChoices
@@ -99,31 +98,40 @@ class ScopeModuleUiTest(TestCase):
         client.force_login(user)
         return client
 
-    def test_ingestion_evidence_has_no_delete_controls(self):
+    def test_ingestion_evidence_offers_delete_but_not_edit(self):
+        # These assertions previously required delete to be ABSENT. That pinned
+        # a workaround, not a requirement: 2.6.3 fixed a NoReverseMatch crash by
+        # removing the delete action rather than registering the view it pointed
+        # at, and a customer reported on 2.6.5 that ingestions could no longer be
+        # deleted at all. Delete is intended; edit is not, because an ingestion
+        # records what a sync did and is not editable after the fact.
         from netbox.object_actions import BulkDelete
+        from netbox.object_actions import BulkEdit
 
         from forward_netbox.tables import ForwardIngestionTable
         from forward_netbox.views import ForwardIngestionListView
 
-        self.assertNotIn(BulkDelete, ForwardIngestionListView.actions)
-        self.assertEqual(ForwardIngestionTable.base_columns["actions"].actions, {})
-        with self.assertRaises(NoReverseMatch):
-            reverse(
-                "plugins:forward_netbox:forwardingestion_delete",
-                kwargs={"pk": self.ingestion.pk},
-            )
-        with self.assertRaises(NoReverseMatch):
-            reverse("plugins:forward_netbox:forwardingestion_bulk_delete")
+        self.assertIn(BulkDelete, ForwardIngestionListView.actions)
+        self.assertNotIn(BulkEdit, ForwardIngestionListView.actions)
+        self.assertIn("delete", ForwardIngestionTable.base_columns["actions"].actions)
+        self.assertNotIn("edit", ForwardIngestionTable.base_columns["actions"].actions)
+        # The routes must exist; their absence is what the 2.6.3 workaround was
+        # working around.
+        reverse(
+            "plugins:forward_netbox:forwardingestion_delete",
+            kwargs={"pk": self.ingestion.pk},
+        )
+        reverse("plugins:forward_netbox:forwardingestion_bulk_delete")
 
-    def test_ingestion_list_renders_for_superuser_without_delete_link(self):
+    def test_ingestion_list_renders_for_superuser_with_delete_link(self):
         response = self._superuser_client().get(
             reverse("plugins:forward_netbox:forwardingestion_list")
         )
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, f"Ingestion {self.ingestion.pk}")
+        self.assertContains(response, 'aria-label="Delete"')
         self.assertNotContains(response, 'aria-label="Edit"')
-        self.assertNotContains(response, 'aria-label="Delete"')
         self.assertNotContains(response, 'aria-label="Changelog"')
 
     def test_scope_reconciliation_view_and_prune(self):

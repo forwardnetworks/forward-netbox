@@ -84,3 +84,114 @@ class UiHarnessDependencyTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EvidenceBaseCommitTest(unittest.TestCase):
+    """The check that turns a 40-minute rebind round trip into a 2-second one.
+
+    Authorization binds the tagged commit to its parent, but a release branch's
+    own parent is not what `main` will hold: the release squash-merges. Recording
+    the branch-side parent therefore always mismatches once merged, and 2.6.5
+    needed an extra PR and a full CI cycle to correct one line.
+    """
+
+    MAIN = "a" * 40
+    BRANCH_PARENT = "b" * 40
+
+    def _git(self, mapping, *, tag=""):
+        def fake(*arguments):
+            if arguments[:2] == ("tag", "--list"):
+                return tag
+            return mapping.get(arguments, "")
+
+        return fake
+
+    def _plan(self, directory, version, commit):
+        plans = Path(directory) / "docs" / "03_Plans" / "active"
+        plans.mkdir(parents=True)
+        plan = plans / f"2026-01-01-release-{version}-tranche.md"
+        plan.write_text(
+            "## Release Authorization\n\n" f"- Evidence base commit: `{commit}`\n",
+            encoding="utf-8",
+        )
+        return plan
+
+    def test_rejects_the_branch_side_parent(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._plan(directory, "9.9.9", self.BRANCH_PARENT)
+            with (
+                mock.patch.object(preflight, "REPO_ROOT", Path(directory)),
+                mock.patch.object(
+                    preflight,
+                    "_git",
+                    self._git({("rev-parse", "origin/main"): self.MAIN}),
+                ),
+            ):
+                with self.assertRaisesRegex(preflight.PreflightError, "squash merge"):
+                    preflight.check_release_plan_evidence_base("9.9.9")
+
+    def test_accepts_the_origin_main_head(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self._plan(directory, "9.9.9", self.MAIN)
+            with (
+                mock.patch.object(preflight, "REPO_ROOT", Path(directory)),
+                mock.patch.object(
+                    preflight,
+                    "_git",
+                    self._git({("rev-parse", "origin/main"): self.MAIN}),
+                ),
+            ):
+                self.assertIn(
+                    "matches origin/main",
+                    preflight.check_release_plan_evidence_base("9.9.9"),
+                )
+
+    def test_skips_an_already_tagged_release(self):
+        # A shipped release's recorded value is history, not a defect.
+        with tempfile.TemporaryDirectory() as directory:
+            self._plan(directory, "9.9.9", self.BRANCH_PARENT)
+            with (
+                mock.patch.object(preflight, "REPO_ROOT", Path(directory)),
+                mock.patch.object(
+                    preflight,
+                    "_git",
+                    self._git({("rev-parse", "origin/main"): self.MAIN}, tag="v9.9.9"),
+                ),
+            ):
+                self.assertIn(
+                    "already tagged",
+                    preflight.check_release_plan_evidence_base("9.9.9"),
+                )
+
+    def test_skips_when_origin_main_is_unknown(self):
+        # A fresh clone or offline run must not fail the gate.
+        with tempfile.TemporaryDirectory() as directory:
+            self._plan(directory, "9.9.9", self.BRANCH_PARENT)
+            with (
+                mock.patch.object(preflight, "REPO_ROOT", Path(directory)),
+                mock.patch.object(preflight, "_git", self._git({})),
+            ):
+                self.assertIn(
+                    "origin/main is unknown",
+                    preflight.check_release_plan_evidence_base("9.9.9"),
+                )
+
+    def test_skips_a_plan_that_records_nothing_yet(self):
+        with tempfile.TemporaryDirectory() as directory:
+            plans = Path(directory) / "docs" / "03_Plans" / "active"
+            plans.mkdir(parents=True)
+            (plans / "2026-01-01-release-9.9.9-tranche.md").write_text(
+                "## Goal\n", encoding="utf-8"
+            )
+            with (
+                mock.patch.object(preflight, "REPO_ROOT", Path(directory)),
+                mock.patch.object(
+                    preflight,
+                    "_git",
+                    self._git({("rev-parse", "origin/main"): self.MAIN}),
+                ),
+            ):
+                self.assertIn(
+                    "records no evidence base commit",
+                    preflight.check_release_plan_evidence_base("9.9.9"),
+                )
