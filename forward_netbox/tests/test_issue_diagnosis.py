@@ -99,8 +99,6 @@ class IngestionIssueDetailRouteTest(TestCase):
         # The list truncates the message and shows only the exception class, so
         # without a detail route a failure could not be inspected at all.
         self.assertEqual(
-            reverse(
-                "plugins:forward_netbox:forwardingestionissue", kwargs={"pk": 1}
-            ),
+            reverse("plugins:forward_netbox:forwardingestionissue", kwargs={"pk": 1}),
             "/plugins/forward/ingestion-issue/1/",
         )

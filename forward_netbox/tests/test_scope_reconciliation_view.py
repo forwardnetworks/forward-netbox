@@ -44,7 +44,9 @@ class ScopeReconciliationViewTest(TestCase):
             source=self.source,
             parameters={"snapshot_id": "latestProcessed"},
         )
-        user = get_user_model().objects.create_user(username="scope-admin", password="x")
+        user = get_user_model().objects.create_user(
+            username="scope-admin", password="x"
+        )
         user.is_superuser = True
         user.is_staff = True
         user.save()
@@ -91,8 +93,10 @@ class ScopeReconciliationViewTest(TestCase):
 
     def test_a_failed_report_is_surfaced_not_swallowed(self):
         self._store_report(
-            {"error": "Forward scope reconciliation failed (SyncError).",
-             "error_type": "SyncError"}
+            {
+                "error": "Forward scope reconciliation failed (SyncError).",
+                "error_type": "SyncError",
+            }
         )
         response = self.client.get(self.url)
         self.assertEqual(response.status_code, 200)

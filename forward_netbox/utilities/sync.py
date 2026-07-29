@@ -311,6 +311,17 @@ class ForwardSyncRunner(ForwardSyncRunnerContractMixin, ForwardSyncRunnerAdapter
         "dcim.platform": "reuse_on_unique_conflict",
         "dcim.devicetype": "reuse_on_unique_conflict",
         "dcim.inventoryitemrole": "reuse_on_unique_conflict",
+        # Shared DLM catalogues keyed by a natural key, created from two paths:
+        # the catalogue map applies the rich row, and the vulnerability /
+        # device-software paths ensure-if-missing. Without this policy a create
+        # that loses the race raises IntegrityError instead of reusing the
+        # existing row, so the branch ends up holding two rows for one natural
+        # key. That cannot be reconciled at merge — Vulnerability.cve is an
+        # inbound FK, so converging the duplicate by natural key would strand
+        # the branch rows pointing at the discarded pk. Preventing the duplicate
+        # at staging is the only place the fix is safe.
+        "netbox_dlm.cve": "reuse_on_unique_conflict",
+        "netbox_dlm.softwareversion": "reuse_on_unique_conflict",
         "dcim.cable": "skip_warn_aggregate",
     }
 

@@ -194,9 +194,17 @@ class ForwardSyncRunnerAdapterMixin:
         coalesce_lookups,
         create_values,
         update_values=None,
-        conflict_policy="strict",
+        conflict_policy=None,
         return_change=False,
     ):
+        # Resolve from MODEL_CONFLICT_POLICIES when the caller does not say.
+        # This defaulted to "strict", so every direct caller silently bypassed
+        # the policy table — including `ensure_dlm_cve`, the create-if-missing
+        # safety net that creates a CVE from the vulnerability path. The map's
+        # own apply went through `coalesce_upsert` and did honour the policy, so
+        # the same model behaved differently depending on which path reached it.
+        if conflict_policy is None:
+            conflict_policy = self._conflict_policy(model._meta.label_lower)
         return sync_coalesce_update_or_create(
             self,
             model,
