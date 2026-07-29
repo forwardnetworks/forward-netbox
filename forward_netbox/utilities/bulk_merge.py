@@ -1264,6 +1264,55 @@ def _add_destination_fk_release_dependencies(collapsed_changes, change_logger):
             )
 
 
+def protecting_reference_blocked_deletes(collapsed_changes):
+    """Deletes that a surviving PROTECT/RESTRICT reference would reject.
+
+    Delete protection is otherwise plugin-ownership based, so a row that the
+    database itself refuses to delete is still scheduled and fails at apply
+    time with `ProtectedError`, leaving the merge short of convergence. That is
+    how a device kept two BGP peers and never converged.
+
+    A reference only blocks when the referencing row is *not* itself being
+    deleted in this run; when it is, ordering resolves it and the delete
+    proceeds. Returns ``{key: [(referencing label, count), ...]}``.
+    """
+    delete_pks_by_model = defaultdict(dict)
+    for key, collapsed in collapsed_changes.items():
+        if collapsed.final_action == ActionType.DELETE:
+            delete_pks_by_model[collapsed.model_class][collapsed.key[1]] = key
+    if not delete_pks_by_model:
+        return {}
+
+    blocked = defaultdict(list)
+    for model_class, deletes_by_pk in delete_pks_by_model.items():
+        target_pks = list(deletes_by_pk)
+        for relation in model_class._meta.related_objects:
+            field = relation.field
+            on_delete = getattr(field.remote_field, "on_delete", None)
+            if on_delete not in (models.PROTECT, models.RESTRICT):
+                continue
+            referencing_model = relation.related_model
+            surviving = delete_pks_by_model.get(referencing_model, {})
+            counts = defaultdict(int)
+            for offset in range(0, len(target_pks), BULK_MERGE_FLUSH_THRESHOLD):
+                chunk = target_pks[offset : offset + BULK_MERGE_FLUSH_THRESHOLD]
+                rows = (
+                    referencing_model.objects.using(DEFAULT_DB_ALIAS)
+                    .filter(**{f"{field.name}__in": chunk})
+                    .values_list("pk", field.attname)
+                )
+                for referencing_pk, target_pk in rows:
+                    if referencing_pk in surviving:
+                        # Deleted in this run; ordering handles it.
+                        continue
+                    counts[target_pk] += 1
+            for target_pk, count in counts.items():
+                blocked[deletes_by_pk[target_pk]].append(
+                    (referencing_model._meta.label, count)
+                )
+    return dict(blocked)
+
+
 def _order_collapsed_changes_fast(collapsed_changes, change_logger, operation):
     """O((V+E) log V) replacement for ``_order_collapsed_changes``.
 
