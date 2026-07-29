@@ -1084,6 +1084,78 @@ class ForwardStartValidationView(BaseObjectView):
         return redirect(sync.get_absolute_url())
 
 
+def _latest_scope_reconciliation_job(sync):
+    """The most recent completed scope reconciliation job for this sync."""
+    from core.choices import JobStatusChoices
+    from core.models import Job
+    from django.contrib.contenttypes.models import ContentType
+
+    return (
+        Job.objects.filter(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=sync.pk,
+            name__icontains="scope reconciliation",
+            status=JobStatusChoices.STATUS_COMPLETED,
+        )
+        .order_by("-created")
+        .first()
+    )
+
+
+def _scope_reconciliation_payload(job):
+    """Return (payload, generated_at, error) for a stored reconciliation job."""
+    if job is None or not isinstance(job.data, dict) or not job.data:
+        return {}, None, ""
+    if job.data.get("error"):
+        return {}, job.completed, str(job.data.get("error"))
+    return job.data, job.completed, ""
+
+
+@register_model_view(
+    ForwardSync,
+    "refresh_scope_reconciliation",
+    path="scope-reconciliation/refresh",
+)
+class ForwardSyncRefreshScopeReconciliationView(BaseObjectView):
+    """Enqueue the reconciliation report instead of computing it in a request."""
+
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardsync"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return redirect(
+            reverse(
+                "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                kwargs={"pk": sync.pk},
+            )
+        )
+
+    def post(self, request, pk):
+        from .jobs import ScopeReconciliationJob
+        from .utilities.job_queue import enqueue_forward_job
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        enqueue_forward_job(
+            ScopeReconciliationJob,
+            instance=sync,
+            user=request.user,
+            name=f"{sync.name} - scope reconciliation",
+        )
+        messages.success(
+            request,
+            _("Scope reconciliation queued. Reload this page when it completes."),
+        )
+        return redirect(
+            reverse(
+                "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                kwargs={"pk": sync.pk},
+            )
+        )
+
+
 @register_model_view(ForwardSync, "scope_reconciliation", path="scope-reconciliation")
 class ForwardSyncScopeReconciliationView(BaseObjectView):
     queryset = ForwardSync.objects.all()
@@ -1093,26 +1165,20 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
         return "forward_netbox.view_forwardsync"
 
     def get(self, request, pk):
-        from .utilities.scope_reconciliation import compute_scope_reconciliation
+        # `compute_scope_reconciliation` is deliberately NOT imported here: this
+        # view must never compute the report. `compute_upgrade_reconciliation`
+        # stays, since it only reads the local database.
         from .utilities.upgrade_reconciliation import compute_upgrade_reconciliation
 
         sync = get_object_or_404(self.queryset, pk=pk)
-        try:
-            report = compute_scope_reconciliation(sync)
-        except Exception as exc:
-            logger.warning(
-                "Scope reconciliation report failed (%s)", type(exc).__name__
-            )
-            messages.error(
-                request,
-                _("Scope reconciliation failed. Review server logs before retrying."),
-            )
-            return redirect(sync.get_absolute_url())
+        # Never compute inline. `compute_scope_reconciliation` issues two live
+        # NQE `fetch_all` queries — every device and every endpoint — so on any
+        # real fabric this exceeded the gateway timeout and returned 504 with
+        # the queries still running, while hitting Forward on every page load.
+        report_job = _latest_scope_reconciliation_job(sync)
+        payload, generated_at, report_error = _scope_reconciliation_payload(report_job)
         from .utilities.scope_reconciliation import BACKFILLED_TAG_SLUG
 
-        payload = {
-            key: value for key, value in report.items() if not key.startswith("_")
-        }
         backfilled_tag_url = f"{reverse('dcim:device_list')}?tag={BACKFILLED_TAG_SLUG}"
         return render(
             request,
@@ -1120,6 +1186,13 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
             {
                 "object": sync,
                 "payload": payload,
+                "report_generated_at": generated_at,
+                "report_error": report_error,
+                "report_pending": report_job is None,
+                "refresh_report_url": reverse(
+                    "plugins:forward_netbox:forwardsync_refresh_scope_reconciliation",
+                    kwargs={"pk": sync.pk},
+                ),
                 "upgrade_reconciliation": compute_upgrade_reconciliation(
                     include_samples=True
                 ),
@@ -1991,6 +2064,19 @@ class ForwardIngestionBulkDeleteView(generic.BulkDeleteView):
     def post(self, request, *args, **kwargs):
         self.queryset = self._filter_deletable(request, self.get_queryset(request))
         return super().post(request, *args, **kwargs)
+
+
+@register_model_view(ForwardIngestionIssue)
+class ForwardIngestionIssueView(generic.ObjectView):
+    """Detail for one ingestion issue.
+
+    The list truncates `message` and shows only the exception class, so a
+    failure could not be inspected at all — four IntegrityError rows blocked a
+    customer's baseline with no way to see which constraint they violated.
+    """
+
+    queryset = ForwardIngestionIssue.objects.all()
+    template_name = "forward_netbox/forwardingestionissue.html"
 
 
 @register_model_view(ForwardDeviceAnalysis, "list", path="", detail=False)

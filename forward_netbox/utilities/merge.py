@@ -40,6 +40,7 @@ from .bulk_merge import _ApplyOneFailure
 from .bulk_merge import bulk_merge_changes
 from .diagnostics import exception_type
 from .diagnostics import safe_operation_failure
+from .diagnostics import structured_failure_diagnosis
 from .merge_observability import checkpoint_merge_attempt
 from .merge_observability import initialize_merge_attempt
 from .merge_observability import mark_merge_attempt_applied
@@ -93,13 +94,19 @@ class _MergeIssueRecorder:
         )
         if self._sync_logger:
             self._sync_logger.log_failure(message)
+        # `raw_data` used to be left empty, so a merge failure recorded nothing
+        # but its exception class. Four IntegrityError rows then blocked a
+        # customer's baseline for a day with no way — GUI, API, CLI or support
+        # bundle — to learn which constraint they violated. The diagnosis holds
+        # schema identifiers only; the key values a Postgres DETAIL line embeds
+        # are deliberately still not captured.
         ForwardIngestionIssue.objects.create(
             ingestion=self._ingestion,
             phase=ForwardIngestionPhaseChoices.MERGE,
             model=model_string,
             message=message,
             exception=exc.__class__.__name__,
-            raw_data={},
+            raw_data=structured_failure_diagnosis(exc),
         )
 
 

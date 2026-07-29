@@ -1279,6 +1279,13 @@ class ForwardIngestionIssue(ForwardPluginModelDocsMixin, models.Model):
     def __str__(self):
         return f"[{self.timestamp}] {self.message}"
 
+    def get_absolute_url(self):
+        from django.urls import reverse
+
+        return reverse(
+            "plugins:forward_netbox:forwardingestionissue", kwargs={"pk": self.pk}
+        )
+
 
 class ForwardManagedDeviceTag(ForwardPluginModelDocsMixin, models.Model):
     """Declares a NetBox tag whose assignments are materialized from claims."""

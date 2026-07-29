@@ -89,6 +89,30 @@ class ScopeModuleUiTest(TestCase):
 
     # --- view smoke tests ----------------------------------------------------
 
+    def _run_scope_reconciliation_job(self, fwd_client):
+        """Compute and store the report the way production now does.
+
+        The page no longer computes on GET: `compute_scope_reconciliation`
+        issues two live NQE fetch-all queries and a customer hit a 504 on it, so
+        it runs in a background job and the view renders the stored result.
+        """
+        from uuid import uuid4
+
+        from core.choices import JobStatusChoices
+        from django.contrib.contenttypes.models import ContentType
+
+        from forward_netbox.jobs import _scope_reconciliation_work
+
+        job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name=f"{self.sync.name} - scope reconciliation",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id=uuid4(),
+        )
+        _scope_reconciliation_work(job)
+        return job
+
     def _superuser_client(self):
         user = get_user_model().objects.create_user(username="admin-ui", password="x")
         user.is_superuser = True
@@ -153,7 +177,8 @@ class ScopeModuleUiTest(TestCase):
             patch.object(ForwardSource, "get_client", return_value=fwd_client),
             patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
         ):
-            # GET preview renders.
+            self._run_scope_reconciliation_job(fwd_client)
+            # GET renders the stored report; it must not query Forward itself.
             resp = client.get(
                 reverse(
                     "plugins:forward_netbox:forwardsync_scope_reconciliation",
@@ -207,6 +232,7 @@ class ScopeModuleUiTest(TestCase):
             patch.object(ForwardSource, "get_client", return_value=fwd_client),
             patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
         ):
+            self._run_scope_reconciliation_job(fwd_client)
             response = client.get(
                 reverse(
                     "plugins:forward_netbox:forwardsync_scope_reconciliation",

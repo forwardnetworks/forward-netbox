@@ -31,6 +31,10 @@ urlpatterns = (
         include(get_model_urls("forward_netbox", "forwardingestion")),
     ),
     path(
+        "ingestion-issue/<int:pk>/",
+        include(get_model_urls("forward_netbox", "forwardingestionissue")),
+    ),
+    path(
         "nqe-map/",
         include(get_model_urls("forward_netbox", "forwardnqemap", detail=False)),
     ),

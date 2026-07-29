@@ -316,6 +316,9 @@ class ForwardIngestionObjectChangesTable(NetBoxTable):
 
 
 class ForwardIngestionIssueTable(NetBoxTable):
+    # Linkified so a failure can actually be opened; the list truncates the
+    # message and shows only the exception class.
+    timestamp = tables.Column(linkify=True)
     phase = columns.ChoiceFieldColumn()
     coalesce_fields = tables.Column(verbose_name=_("Coalesce Fields"))
     defaults = tables.Column(verbose_name=_("Defaults"))
