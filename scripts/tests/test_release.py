@@ -720,11 +720,29 @@ class OpenNextDevCycleTest(unittest.TestCase):
     """
 
     def test_the_marker_is_the_next_version_with_dev0(self):
-        with patch.object(release, "read_current_version", return_value="2.6.5"):
+        # `version_surface_edits` is patched too: without it the test reads the
+        # repository's real pyproject and fails on every version bump, which is
+        # exactly how it broke when this tranche moved the tree to 2.6.6.
+        with (
+            patch.object(release, "read_current_version", return_value="2.6.5"),
+            patch.object(release, "version_surface_edits", return_value={}),
+        ):
             output = StringIO()
             with redirect_stdout(output):
                 release.stage_open_next("2.6.6", write=False)
         self.assertIn("2.6.5 -> 2.6.6.dev0", output.getvalue())
+
+    def test_it_does_not_depend_on_the_repository_version(self):
+        # Guards the coupling directly: any current version must work.
+        for current, target in (("1.0.0", "1.0.1"), ("9.9.9", "10.0.0")):
+            with (
+                patch.object(release, "read_current_version", return_value=current),
+                patch.object(release, "version_surface_edits", return_value={}),
+            ):
+                output = StringIO()
+                with redirect_stdout(output):
+                    release.stage_open_next(target, write=False)
+            self.assertIn(f"{current} -> {target}.dev0", output.getvalue())
 
     def test_a_dry_run_writes_nothing(self):
         with patch.object(release, "read_current_version", return_value="2.6.5"):

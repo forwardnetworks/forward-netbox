@@ -140,7 +140,9 @@ class DLMCatalogueConflictBehaviourTest(TestCase):
         CVE.objects.create(cve_id="CVE-2026-00002")
 
         with patch.object(
-            sync_primitives, "get_unique_or_raise", side_effect=[None, CVE.objects.get(cve_id="CVE-2026-00002")]
+            sync_primitives,
+            "get_unique_or_raise",
+            side_effect=[None, CVE.objects.get(cve_id="CVE-2026-00002")],
         ):
             reused = ensure_dlm_cve(self._runner(), {"cve_id": "CVE-2026-00002"})
 
