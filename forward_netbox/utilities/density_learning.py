@@ -283,3 +283,85 @@ def _safe_density(value):
     if density is None:
         return None
     return round(float(density), 6)
+
+
+def record_density_observation(profile, model_string, *, rows, changes, observed_at):
+    """Fold one measured observation into a model's density profile.
+
+    Density is *branch changes produced per source row of that workload*, which
+    is what `effective_row_budget_for_model` divides the staging budget by. The
+    observation must therefore be attributed to the workload that produced the
+    changes, not to the content type of the changed objects: one `dcim.cable`
+    row creates a cable *and* its terminations, so grouping by changed-object
+    type measures ~1.0 for a model whose real density is 3.0, and would size row
+    budgets too generously in exactly the cases where density matters.
+
+    Running mean and M2 are kept by Welford's method so variance is available
+    without retaining every sample; `density_confidence_score` reads both, and
+    an observation only earns confidence once several agree.
+
+    Returns a new profile dict; the input is not mutated. An unusable
+    observation (no rows, negative counts, or a density outside the clamp range)
+    is counted as rejected and leaves the learned density untouched, so a single
+    malformed run cannot move the budget.
+    """
+    profile = normalize_density_profile(profile)
+    model_key = str(model_string or "").strip()
+    if not model_key:
+        return profile
+
+    entry = dict(
+        profile.get(model_key)
+        or {
+            "density": None,
+            "sample_count": 0,
+            "accepted_observations": 0,
+            "rejected_observations": 0,
+            "mean": 0.0,
+            "m2": 0.0,
+        }
+    )
+
+    row_count = _safe_int(rows)
+    change_count = _safe_int(changes)
+    observed = None
+    if row_count > 0 and change_count >= 0:
+        observed = clamp_density(float(change_count) / float(row_count))
+
+    if observed is None:
+        entry["rejected_observations"] = (
+            _safe_int(entry.get("rejected_observations")) + 1
+        )
+        profile[model_key] = entry
+        return normalize_density_profile(profile)
+
+    sample_count = _safe_int(entry.get("sample_count")) + 1
+    mean = _safe_float(entry.get("mean"))
+    m2 = _safe_float(entry.get("m2"))
+    delta = observed - mean
+    mean += delta / float(sample_count)
+    m2 += delta * (observed - mean)
+
+    entry.update(
+        {
+            "density": clamp_density(mean),
+            "sample_count": sample_count,
+            "accepted_observations": _safe_int(entry.get("accepted_observations")) + 1,
+            "mean": mean,
+            "m2": max(0.0, m2),
+            "last_observed_density": observed,
+            "last_observed_at": str(observed_at or ""),
+            "last_updated_at": str(observed_at or ""),
+        }
+    )
+    profile[model_key] = entry
+    return normalize_density_profile(profile)
+
+
+def learned_density_map_from_profile(profile):
+    """The learned density per model, for `set_model_change_density`."""
+    return {
+        model_string: entry["density"]
+        for model_string, entry in normalize_density_profile(profile).items()
+        if entry.get("density") is not None
+    }
