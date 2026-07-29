@@ -20,10 +20,12 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from django.contrib.auth import get_user_model
+from django.urls import reverse
 from django.test import TestCase
 from netbox_branching.choices import BranchStatusChoices
 from netbox_branching.models import Branch
 
+from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.exceptions import ForwardPartialMergeError
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardSource
@@ -146,3 +148,85 @@ class AcceptedMergeFailureTest(TestCase):
         self.assertIs(signature.parameters["accept_reported_failures"].default, False)
         signature = inspect.signature(merge_branch)
         self.assertIs(signature.parameters["accept_reported_failures"].default, False)
+
+
+class AcceptFailuresUiTest(TestCase):
+    """The way out must be a button, not a shell command.
+
+    A support command that requires container access is not a remedy an operator
+    can reach when their instance is stuck.
+    """
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            username="accept-ui", password="x"
+        )
+        self.user.is_superuser = True
+        self.user.is_staff = True
+        self.user.save()
+        self.client.force_login(self.user)
+        source = ForwardSource.objects.create(
+            name="accept-ui-src",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "u@example.com",
+                "password": "p",
+                "verify": True,
+                "network_id": "net-1",
+            },
+        )
+        self.sync = ForwardSync.objects.create(
+            name="accept-ui-sync",
+            source=source,
+            user=self.user,
+            status=ForwardSyncStatusChoices.READY_TO_MERGE,
+            parameters={"snapshot_id": LATEST_PROCESSED_SNAPSHOT},
+        )
+        self.branch = Branch.objects.create(
+            name=f"accept-ui-{uuid4().hex[:10]}",
+            schema_id=f"accept_ui_{uuid4().hex[:10]}",
+            status=BranchStatusChoices.READY,
+        )
+        self.ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            branch=self.branch,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-accept-ui",
+            failed_change_count=5,
+            applied_change_count=24748,
+        )
+
+    def _url(self):
+        return reverse(
+            "plugins:forward_netbox:forwardingestion_accept_failures",
+            kwargs={"pk": self.ingestion.pk},
+        )
+
+    def test_it_is_offered_when_the_merge_is_stalled_behind_failures(self):
+        self.assertTrue(self.ingestion.can_accept_merge_failures)
+
+    def test_it_is_not_offered_for_a_clean_ingestion(self):
+        self.ingestion.failed_change_count = 0
+        self.assertFalse(self.ingestion.can_accept_merge_failures)
+
+    def test_it_is_not_offered_once_the_baseline_is_promoted(self):
+        self.ingestion.baseline_ready = True
+        self.assertFalse(self.ingestion.can_accept_merge_failures)
+
+    def test_posting_enqueues_a_merge_that_accepts_failures(self):
+        with patch.object(ForwardIngestion, "enqueue_merge_job") as enqueue:
+            enqueue.return_value = type("J", (), {"pk": 1})()
+            response = self.client.post(self._url())
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(enqueue.call_args.kwargs["accept_reported_failures"])
+        self.assertEqual(enqueue.call_args.kwargs["user"], self.user)
+
+    def test_an_ineligible_ingestion_is_refused(self):
+        self.ingestion.failed_change_count = 0
+        self.ingestion.save(update_fields=["failed_change_count"])
+        with patch.object(ForwardIngestion, "enqueue_merge_job") as enqueue:
+            response = self.client.post(self._url())
+        self.assertEqual(response.status_code, 302)
+        enqueue.assert_not_called()

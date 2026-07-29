@@ -1131,6 +1131,7 @@ def merge_forwardingestion(
     job,
     remove_branch=True,
     recovery_sync_job_pks=None,
+    accept_reported_failures=False,
     *args,
     **kwargs,
 ):
@@ -1195,7 +1196,11 @@ def merge_forwardingestion(
         ingestion.save(update_fields=["merge_job"])
         ingestion.sync.logger = SyncLogging(job=job.pk)
         with event_tracking(request):
-            ingestion.sync_merge(remove_branch=remove_branch, claimed_job=job)
+            ingestion.sync_merge(
+                remove_branch=remove_branch,
+                claimed_job=job,
+                accept_reported_failures=accept_reported_failures,
+            )
         safe_save_job_data(job, ingestion.sync)
         _finish_completed_job_with_overlays(
             job,

@@ -461,6 +461,7 @@ def enqueue_merge_job(
     remove_branch=False,
     *,
     recovery_sync_job_pks=None,
+    accept_reported_failures=False,
 ):
     with advisory_lock(ADVISORY_LOCK_KEYS["job-schedules"]), transaction.atomic():
         locked = ingestion.__class__.objects.select_for_update().get(pk=ingestion.pk)
@@ -485,6 +486,7 @@ def enqueue_merge_job(
             user=user,
             remove_branch=remove_branch,
             recovery_sync_job_pks=list(recovery_sync_job_pks or []),
+            accept_reported_failures=bool(accept_reported_failures),
             job_timeout=effective_merge_job_timeout(change_count),
         )
         ingestion.__class__.objects.filter(pk=locked.pk).update(merge_job=job)

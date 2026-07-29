@@ -1889,6 +1889,57 @@ class ForwardIngestionMergeView(BaseObjectView):
         return redirect(ingestion.get_absolute_url())
 
 
+@register_model_view(ForwardIngestion, "accept_failures", path="accept-failures")
+class ForwardIngestionAcceptFailuresView(BaseObjectView):
+    """Complete a merge that recorded row failures, from the UI.
+
+    Any failed row returns the branch to READY without attesting the merge, so
+    the baseline never promotes and every retry hits the same rows. When the
+    failure is deterministic that is a permanent dead end — a customer sat with
+    5 failures out of 24,748 blocking drift measurement and diff syncs.
+
+    Deliberately a separate action from Merge, behind its own permission, so it
+    can never be reached by clicking the ordinary button twice.
+    """
+
+    queryset = ForwardIngestion.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.merge_forwardingestion"
+
+    def get(self, request, pk):
+        return redirect(get_object_or_404(self.queryset, pk=pk).get_absolute_url())
+
+    def post(self, request, pk):
+        ingestion = get_object_or_404(self.queryset, pk=pk)
+        if not ingestion.can_accept_merge_failures:
+            messages.error(
+                request,
+                _(
+                    "This ingestion is not stalled behind accepted-failure "
+                    "eligible failures."
+                ),
+            )
+            return redirect(ingestion.get_absolute_url())
+
+        failed = int(ingestion.failed_change_count or 0)
+        job = ingestion.enqueue_merge_job(
+            user=request.user,
+            remove_branch=True,
+            accept_reported_failures=True,
+        )
+        messages.warning(
+            request,
+            _(
+                "Queued job #%(job)s to complete the merge accepting "
+                "%(failed)s failed change(s). They remain recorded as ingestion "
+                "issues and the acceptance is attributed to you."
+            )
+            % {"job": job.pk, "failed": failed},
+        )
+        return redirect(ingestion.get_absolute_url())
+
+
 @register_model_view(
     ForwardIngestion,
     name="change_diff",
