@@ -230,3 +230,63 @@ class AcceptFailuresUiTest(TestCase):
             response = self.client.post(self._url())
         self.assertEqual(response.status_code, 302)
         enqueue.assert_not_called()
+
+
+class StalledMergeHealthMessageTest(TestCase):
+    """Health must connect the failures to what they are blocking.
+
+    It reported "has 5 failed change(s)" — factually true and completely
+    uninformative. Those rows were why the baseline never promoted, and
+    therefore why drift read "Not measured", ownership read "Incomplete" and
+    diffs were unavailable. Nothing said so, and a day went into rediscovering
+    the chain.
+    """
+
+    def setUp(self):
+        source = ForwardSource.objects.create(
+            name="stalled-health-src",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "u@example.com",
+                "password": "p",
+                "verify": True,
+                "network_id": "net-1",
+            },
+        )
+        self.sync = ForwardSync.objects.create(
+            name="stalled-health-sync",
+            source=source,
+            status=ForwardSyncStatusChoices.READY_TO_MERGE,
+            parameters={"snapshot_id": LATEST_PROCESSED_SNAPSHOT},
+        )
+        self.branch = Branch.objects.create(
+            name=f"stalled-{uuid4().hex[:10]}",
+            schema_id=f"stalled_{uuid4().hex[:10]}",
+            status=BranchStatusChoices.READY,
+        )
+        self.ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            branch=self.branch,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-stalled",
+            failed_change_count=5,
+        )
+
+    def test_it_names_what_the_failures_block(self):
+        from forward_netbox.utilities.health_checks import ingestion_check_message
+
+        message = ingestion_check_message(self.ingestion)
+        self.assertIn("5 failed change(s)", message)
+        self.assertIn("baseline cannot promote", message)
+        self.assertIn("Accept failures & merge", message)
+
+    def test_a_non_stalled_ingestion_keeps_the_plain_message(self):
+        # No branch to merge, so the remedy does not apply and must not be
+        # offered as though it did.
+        from forward_netbox.utilities.health_checks import ingestion_check_message
+
+        self.ingestion.branch = None
+        message = ingestion_check_message(self.ingestion)
+        self.assertIn("5 failed change(s)", message)
+        self.assertNotIn("Accept failures & merge", message)
