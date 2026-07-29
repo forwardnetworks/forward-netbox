@@ -1218,8 +1218,15 @@ class MergeIssueRecorderTest(TestCase):
         self.assertEqual(issue.model, "dcim.modulebay")
         self.assertEqual(issue.exception, "Exception")
         self.assertEqual(issue.message, "Merge for dcim.modulebay failed (Exception).")
-        self.assertEqual(issue.raw_data, {})
+        # `raw_data` used to be asserted empty, which pinned "record nothing".
+        # Four IntegrityError rows then blocked a customer's baseline for a day
+        # with no way to learn which constraint they violated. It now carries a
+        # diagnosis — schema identifiers only.
+        self.assertEqual(issue.raw_data, {"exception_type": "Exception"})
+        # The exception's own text must still never be persisted or shown: it
+        # can quote submitted values.
         self.assertNotIn("Save with update_fields", issue.message)
+        self.assertNotIn("Save with update_fields", str(issue.raw_data))
         self.assertTrue(has_blocking_issues(self.ingestion))
 
     def test_synced_model_failures_recorded_per_change(self):

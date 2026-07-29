@@ -147,8 +147,9 @@ Checks:
 - If staging timed out, inspect the branch and ingestion issues before
   rerunning. Do not start a second sync while the prior branch is nonterminal.
 - If the timeout happened during merge, open that ingestion and requeue the
-  same branch merge. A partial merge remains retryable and cannot become a
-  baseline.
+  same branch merge. A partial merge remains retryable and does not become a
+  baseline on its own; if the same rows keep failing, see *Merge Completes With
+  Failed Changes* for how to accept them deliberately.
 - Use `Export Support Bundle` from the sync page or `Export Logs` from the
   ingestion page. The export includes branch status, linked stage/merge jobs,
   ingestion counters, issues, ownership reconciliation, health summary, and
@@ -275,6 +276,25 @@ Checks:
 - Retry the same branch after correcting the cause. Already-applied rows are
   idempotent; only a clean retry marks the baseline complete and starts
   ownership reconciliation.
+
+When the cause cannot be corrected:
+
+- A failed row returns the branch to **Ready to merge** without completing the
+  merge, so the baseline never promotes. Drift then reports *Not measured*,
+  ownership stays *Incomplete*, and later syncs cannot use diffs. When the
+  failure is deterministic — a uniqueness clash on a row the source keeps
+  re-sending, or a validation error on data you cannot change — retrying hits
+  the same rows every time and the sync stays in that state indefinitely.
+- **Accept failures & merge** on the ingestion page completes the merge over
+  those rows and promotes the baseline. The failures stay recorded as ingestion
+  issues, and the acceptance is stored on the ingestion with who accepted it,
+  when, and how many — an accepted-over baseline is never mistaken for a clean
+  one.
+- Use it only after reviewing the issues. It is a way past rows you have decided
+  to live with, not a way to silence rows you have not read.
+- The same operation is available for support and automation as
+  `python manage.py forward_accept_merge_failures --ingestion <pk> --confirm`,
+  which reports what it would accept before doing anything.
 
 ## Virtual Chassis Workload Fails With `vc_position`
 

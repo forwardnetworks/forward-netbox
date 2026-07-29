@@ -1239,6 +1239,19 @@ def _history_commit_id(row: Any) -> str:
     ).strip()
 
 
+def _history_query_path(row: Any) -> str:
+    """The path the query occupied *at that commit*, which may not be its path now.
+
+    Moving a query to a new folder does not rewrite its history: commits made
+    before the move still record the old path. Asking for the current path at
+    one of those commits returns HTTP 404, so a moved query looks like it has no
+    verifiable source at any revision.
+    """
+    if not isinstance(row, dict):
+        return ""
+    return str(row.get("path") or "").strip()
+
+
 def _resolve_unpinned_builtin_full_revision(
     spec: QuerySpec,
     client,
@@ -1285,22 +1298,35 @@ def _resolve_unpinned_builtin_full_revision(
     if not isinstance(history, (list, tuple)):
         history = []
 
-    candidate_commit_ids = []
+    # (commit_id, path) rather than commit alone: a query that has been moved
+    # keeps its OLD path in every commit predating the move, so asking for the
+    # current path at those commits returns 404 and the revision is discarded.
+    # That silently emptied a whole sync for a customer who had reorganised
+    # their repository folders — every model reported unresolved_full_commit.
+    candidate_revisions: list[tuple[str, str]] = []
+
+    def _add_candidate(commit_id: str, candidate_path: str) -> None:
+        if not commit_id or commit_id == "head" or not candidate_path:
+            return
+        if (commit_id, candidate_path) not in candidate_revisions:
+            candidate_revisions.append((commit_id, candidate_path))
+
     preferred_commit_id = str(preferred_commit_id or "").strip()
-    if preferred_commit_id and preferred_commit_id != "head":
-        candidate_commit_ids.append(preferred_commit_id)
+    _add_candidate(preferred_commit_id, query_path)
     for row in reversed(history or []):
         commit_id = _history_commit_id(row)
-        if commit_id and commit_id != "head" and commit_id not in candidate_commit_ids:
-            candidate_commit_ids.append(commit_id)
+        # The path recorded on the commit first, then the current bound path,
+        # so an unmoved query behaves exactly as before.
+        _add_candidate(commit_id, _history_query_path(row))
+        _add_candidate(commit_id, query_path)
 
     repository = str(spec.query_repository or "org").strip() or "org"
     expected_query_id = str(spec.run_query_id or "").strip()
-    for commit_id in candidate_commit_ids:
+    for commit_id, candidate_path in candidate_revisions:
         try:
             query = client.get_committed_nqe_query(
                 repository=repository,
-                query_path=query_path,
+                query_path=candidate_path,
                 commit_id=commit_id,
                 require_source_code=True,
             )

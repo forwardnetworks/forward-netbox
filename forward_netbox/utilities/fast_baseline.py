@@ -113,7 +113,7 @@ def _runtime_decision():
     expected = {
         "netbox": "4.6.5",
         "branching": "1.1.1",
-        "forward_netbox": "2.6.5",
+        "forward_netbox": "2.6.6",
         "optional_plugins": {
             "netbox-cisco-aci": "0.4.0",
             "netbox-dlm": "0.4.1",

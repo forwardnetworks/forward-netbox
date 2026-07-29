@@ -138,7 +138,11 @@ class ForwardIngestionTable(NetBoxTable):
         accessor="staged_changes",
         verbose_name=_("Number of Changes"),
     )
-    actions = columns.ActionsColumn(actions=())
+    # Read-only overlay: no edit view, so only offer delete. This was briefly
+    # an empty action set — the 2.6.3 fix for a NoReverseMatch crash removed the
+    # action rather than registering the delete view it pointed at, which left
+    # ingestions undeletable from the UI entirely.
+    actions = columns.ActionsColumn(actions=("delete",))
 
     def render_name(self, record):
         if getattr(record, "branch_name", None):
@@ -312,6 +316,9 @@ class ForwardIngestionObjectChangesTable(NetBoxTable):
 
 
 class ForwardIngestionIssueTable(NetBoxTable):
+    # Linkified so a failure can actually be opened; the list truncates the
+    # message and shows only the exception class.
+    timestamp = tables.Column(linkify=True)
     phase = columns.ChoiceFieldColumn()
     coalesce_fields = tables.Column(verbose_name=_("Coalesce Fields"))
     defaults = tables.Column(verbose_name=_("Defaults"))

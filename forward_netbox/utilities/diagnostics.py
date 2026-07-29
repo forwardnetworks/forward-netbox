@@ -120,3 +120,37 @@ def sanitize_job_diagnostics(value):
     if isinstance(value, tuple):
         return [sanitize_job_diagnostics(item) for item in value]
     return deepcopy(value)
+
+
+def structured_failure_diagnosis(exc) -> dict:
+    """Schema-level detail about a failure, never the values that caused it.
+
+    A merge failure previously persisted only the exception class name and an
+    empty ``raw_data``. That is safe but undiagnosable: four `IntegrityError`
+    rows blocked a customer's baseline for a full day, and nothing anywhere
+    recorded *which constraint* they violated, so the failures could not be
+    acted on from the GUI, the API, the CLI or a support bundle.
+
+    Constraint, table, column and field names are schema identifiers the plugin
+    itself defines — they carry no customer data, unlike the key *values* a
+    Postgres DETAIL line embeds, which are deliberately not captured here.
+    """
+    diagnosis = {"exception_type": exception_type(exc)}
+
+    # psycopg surfaces unique/foreign-key violation metadata on the cause's
+    # `diag`; these are catalogue names, not row contents.
+    diag = getattr(getattr(exc, "__cause__", None), "diag", None)
+    for attribute in ("constraint_name", "table_name", "column_name"):
+        value = str(getattr(diag, attribute, "") or "").strip()
+        if value and _SAFE_DIAGNOSTIC_TOKEN.fullmatch(value):
+            diagnosis[attribute] = value
+
+    # Django ValidationError names the offending fields; the messages can quote
+    # submitted values, so only the field names are kept.
+    message_dict = getattr(exc, "message_dict", None)
+    if isinstance(message_dict, dict) and message_dict:
+        diagnosis["invalid_fields"] = sorted(
+            str(field) for field in message_dict if str(field)
+        )
+
+    return diagnosis

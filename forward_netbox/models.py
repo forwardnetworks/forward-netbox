@@ -931,12 +931,14 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
         remove_branch=False,
         *,
         recovery_sync_job_pks=None,
+        accept_reported_failures=False,
     ):
         return enqueue_forward_merge_job(
             self,
             user,
             remove_branch=remove_branch,
             recovery_sync_job_pks=recovery_sync_job_pks,
+            accept_reported_failures=accept_reported_failures,
         )
 
     @property
@@ -946,6 +948,22 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
         if self.merge_job and not self.merge_job.completed:
             return False
         return self.sync.status == ForwardSyncStatusChoices.READY_TO_MERGE
+
+    @property
+    def can_accept_merge_failures(self):
+        """Whether this ingestion is stalled behind failures an operator can accept.
+
+        Offered only when a merge has actually run and left failures behind: any
+        failed row returns the branch to READY without attesting, so the
+        baseline never promotes and every retry hits the same rows. Never
+        offered for a clean ingestion, one already promoted, or one with no
+        branch left to merge.
+        """
+        if not self.can_queue_merge:
+            return False
+        if self.baseline_ready:
+            return False
+        return int(self.failed_change_count or 0) > 0
 
     def get_statistics(self, stage="sync"):
         return build_ingestion_statistics(self, stage=stage)
@@ -978,6 +996,7 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
         remove_branch=True,
         claimed_job=None,
         merge_attempt=None,
+        accept_reported_failures=False,
     ):
         from .utilities.ingestion_merge import sync_merge_ingestion
 
@@ -987,6 +1006,7 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
             remove_branch=remove_branch,
             claimed_job=claimed_job,
             merge_attempt=merge_attempt,
+            accept_reported_failures=accept_reported_failures,
         )
 
 
@@ -1278,6 +1298,13 @@ class ForwardIngestionIssue(ForwardPluginModelDocsMixin, models.Model):
 
     def __str__(self):
         return f"[{self.timestamp}] {self.message}"
+
+    def get_absolute_url(self):
+        from django.urls import reverse
+
+        return reverse(
+            "plugins:forward_netbox:forwardingestionissue", kwargs={"pk": self.pk}
+        )
 
 
 class ForwardManagedDeviceTag(ForwardPluginModelDocsMixin, models.Model):

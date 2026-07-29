@@ -1053,6 +1053,47 @@ def _dependency_preview_work(job):
         raise
 
 
+def _scope_reconciliation_work(job):
+    """Compute the scope reconciliation report off the request path.
+
+    The view used to run this inline on GET. It issues two live NQE
+    `fetch_all` queries — every device and every endpoint in the network — so on
+    a fabric of any size the page exceeded the gateway timeout and returned 504
+    with the queries still running. It also meant every page load hit Forward,
+    which is the call volume Forward engineering has asked us to reduce.
+
+    Mirrors `_dependency_preview_work`: compute once in the background, persist
+    on the job, and let the page render the stored result.
+    """
+    from .utilities.scope_reconciliation import compute_scope_reconciliation
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    client = None
+    try:
+        sync.logger = SyncLogging(job=job.pk)
+        client = sync.source.get_client()
+        report = compute_scope_reconciliation(sync)
+        job.data = json_safe_value(
+            {key: value for key, value in report.items() if not key.startswith("_")}
+        )
+        job.save(update_fields=["data"])
+    except Exception as exc:
+        from .utilities.api_usage import record_forward_api_usage
+
+        job.data = {
+            "error": safe_operation_failure("Forward scope reconciliation", exc),
+            "error_type": exception_type(exc),
+            "forward_api_usage": record_forward_api_usage(sync, client),
+        }
+        job.save(update_fields=["data"])
+        if type(exc) in (SyncError, JobTimeoutException):
+            logger.error(
+                "Forward scope reconciliation failed (%s).",
+                exception_type(exc),
+            )
+        raise
+
+
 def _complete_recovered_sync_producers(sync, producer_job_pks):
     producer_job_pks = list(dict.fromkeys(producer_job_pks or []))
     if not producer_job_pks:
@@ -1090,6 +1131,7 @@ def merge_forwardingestion(
     job,
     remove_branch=True,
     recovery_sync_job_pks=None,
+    accept_reported_failures=False,
     *args,
     **kwargs,
 ):
@@ -1154,7 +1196,11 @@ def merge_forwardingestion(
         ingestion.save(update_fields=["merge_job"])
         ingestion.sync.logger = SyncLogging(job=job.pk)
         with event_tracking(request):
-            ingestion.sync_merge(remove_branch=remove_branch, claimed_job=job)
+            ingestion.sync_merge(
+                remove_branch=remove_branch,
+                claimed_job=job,
+                accept_reported_failures=accept_reported_failures,
+            )
         safe_save_job_data(job, ingestion.sync)
         _finish_completed_job_with_overlays(
             job,
@@ -1633,6 +1679,18 @@ class DependencyPreviewJob(ForwardJobRunner):
         if _skip_if_immediate_equivalent_active(self.job, "dependency preview"):
             return
         _dependency_preview_work(self.job)
+
+
+class ScopeReconciliationJob(ForwardJobRunner):
+    """Background scope reconciliation; the GET path must not query Forward."""
+
+    class Meta:
+        name = "scope reconciliation"
+
+    def run(self, *args, **kwargs):
+        if _skip_if_immediate_equivalent_active(self.job, "scope reconciliation"):
+            return
+        _scope_reconciliation_work(self.job)
 
 
 class ValidationJob(ForwardJobRunner):

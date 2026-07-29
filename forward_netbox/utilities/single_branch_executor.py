@@ -8,6 +8,7 @@ from netbox_branching.models import Branch
 from ..choices import ForwardSyncStatusChoices
 from .branch_budget import build_branch_plan
 from .branch_lifecycle import create_noop_ingestion
+from .branch_lifecycle import persist_density_observations
 from .branch_lifecycle import run_item_in_branch
 from .branching import build_branch_request
 from .branching import missing_branch_table_report
@@ -248,6 +249,8 @@ class ForwardSingleBranchExecutor(ForwardExecutorBase):
                 branch,
                 total_plan_items=total,
             )
+
+        persist_density_observations(self)
 
         ingestion.sync_mode = self._sync_mode()
         ingestion.model_results = self.last_model_results

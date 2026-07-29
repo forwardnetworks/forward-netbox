@@ -482,10 +482,23 @@ def ingestion_check_message(ingestion):
     if ingestion.catchup_status == ForwardCatchupStatusChoices.QUEUED:
         return f"Latest ingestion {ingestion.pk} queued a newer snapshot catch-up."
     if ingestion.failed_change_count:
-        return (
+        # Naming the consequence and the remedy, because the count alone reads
+        # as a minor blemish. Those rows are why the baseline never promoted,
+        # and therefore why drift reports "Not measured", ownership stays
+        # incomplete, and later syncs cannot use diffs. A customer spent a day
+        # on that chain without the connection being stated anywhere.
+        message = (
             f"Latest ingestion {ingestion.pk} has "
             f"{ingestion.failed_change_count} failed change(s)."
         )
+        if getattr(ingestion, "can_accept_merge_failures", False):
+            message += (
+                " The baseline cannot promote while any row has failed, so "
+                "drift stays unmeasured and diffs are unavailable. Correct the "
+                "cause and retry the merge, or use `Accept failures & merge` on "
+                "the ingestion to complete it over these rows."
+            )
+        return message
     if has_blocking_issues(ingestion):
         issue_count = ingestion.issues.count()
         return (

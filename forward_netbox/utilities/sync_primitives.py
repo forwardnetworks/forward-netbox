@@ -1,5 +1,6 @@
 from ipaddress import ip_interface
 
+from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db.models import Q
 from django.db.models.deletion import ProtectedError
@@ -31,6 +32,7 @@ UNIQUE_LOOKUP_CACHE_FIELD_SETS = {
     "ipam.vlan": (("site", "vid"),),
     "ipam.prefix": (("prefix", "vrf"), ("prefix", "vrf__isnull")),
     "netbox_peering_manager.peeringsession": (("bgp_peer",),),
+    "netbox_dlm.cve": (("cve_id",),),
     "netbox_dlm.softwareversion": (("platform", "version"),),
     "netbox_dlm.hardwarenotice": (("device_type",),),
     "netbox_dlm.devicesoftware": (("device",),),
@@ -77,6 +79,25 @@ def update_existing_or_create(
     )
 
 
+def _is_uniqueness_violation(exc) -> bool:
+    """Whether a ValidationError is purely "this already exists".
+
+    Django reports a unique or unique_together clash from `full_clean` with the
+    code `unique` / `unique_together`. Anything else — a bad choice, a missing
+    required field — is a real defect and must keep failing.
+    """
+    error_dict = getattr(exc, "error_dict", None)
+    error_lists = (
+        list(error_dict.values())
+        if isinstance(error_dict, dict)
+        else [getattr(exc, "error_list", []) or []]
+    )
+    codes = {
+        getattr(error, "code", "") for errors in error_lists for error in (errors or [])
+    }
+    return bool(codes) and codes <= {"unique", "unique_together"}
+
+
 def coalesce_update_or_create(
     runner,
     model,
@@ -115,8 +136,18 @@ def coalesce_update_or_create(
             if return_change:
                 return obj, True, True
             return obj, True
-        except IntegrityError:
+        except (IntegrityError, ValidationError) as exc:
+            # A duplicate surfaces two different ways depending on who notices
+            # first. `full_clean` checks uniqueness in Python and raises
+            # ValidationError; a genuine race gets past that and the database
+            # raises IntegrityError. The policy only ever caught the second, so
+            # a shared catalogue row created from two paths still failed hard on
+            # the far more common first path.
             if conflict_policy != "reuse_on_unique_conflict":
+                raise
+            if isinstance(exc, ValidationError) and not _is_uniqueness_violation(exc):
+                # Only uniqueness is benign here. Any other validation failure is
+                # a real defect and must not be swallowed by a retry.
                 raise
             for retry_lookup in lookups:
                 obj = get_unique_or_raise(runner, model, retry_lookup)

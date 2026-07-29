@@ -68,6 +68,7 @@ from .tables import ForwardNQEMapTable
 from .tables import ForwardSourceTable
 from .tables import ForwardSyncTable
 from .tables import ForwardValidationRunTable
+from .utilities.bulk_merge import describe_protecting_references
 from .utilities.change_explainability import change_explainability_summary
 from .utilities.diagnostics import diff_fallback_summary
 from .utilities.diagnostics import safe_job_error_summary
@@ -1083,6 +1084,78 @@ class ForwardStartValidationView(BaseObjectView):
         return redirect(sync.get_absolute_url())
 
 
+def _latest_scope_reconciliation_job(sync):
+    """The most recent completed scope reconciliation job for this sync."""
+    from core.choices import JobStatusChoices
+    from core.models import Job
+    from django.contrib.contenttypes.models import ContentType
+
+    return (
+        Job.objects.filter(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=sync.pk,
+            name__icontains="scope reconciliation",
+            status=JobStatusChoices.STATUS_COMPLETED,
+        )
+        .order_by("-created")
+        .first()
+    )
+
+
+def _scope_reconciliation_payload(job):
+    """Return (payload, generated_at, error) for a stored reconciliation job."""
+    if job is None or not isinstance(job.data, dict) or not job.data:
+        return {}, None, ""
+    if job.data.get("error"):
+        return {}, job.completed, str(job.data.get("error"))
+    return job.data, job.completed, ""
+
+
+@register_model_view(
+    ForwardSync,
+    "refresh_scope_reconciliation",
+    path="scope-reconciliation/refresh",
+)
+class ForwardSyncRefreshScopeReconciliationView(BaseObjectView):
+    """Enqueue the reconciliation report instead of computing it in a request."""
+
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardsync"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return redirect(
+            reverse(
+                "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                kwargs={"pk": sync.pk},
+            )
+        )
+
+    def post(self, request, pk):
+        from .jobs import ScopeReconciliationJob
+        from .utilities.job_queue import enqueue_forward_job
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        enqueue_forward_job(
+            ScopeReconciliationJob,
+            instance=sync,
+            user=request.user,
+            name=f"{sync.name} - scope reconciliation",
+        )
+        messages.success(
+            request,
+            _("Scope reconciliation queued. Reload this page when it completes."),
+        )
+        return redirect(
+            reverse(
+                "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                kwargs={"pk": sync.pk},
+            )
+        )
+
+
 @register_model_view(ForwardSync, "scope_reconciliation", path="scope-reconciliation")
 class ForwardSyncScopeReconciliationView(BaseObjectView):
     queryset = ForwardSync.objects.all()
@@ -1092,26 +1165,20 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
         return "forward_netbox.view_forwardsync"
 
     def get(self, request, pk):
-        from .utilities.scope_reconciliation import compute_scope_reconciliation
+        # `compute_scope_reconciliation` is deliberately NOT imported here: this
+        # view must never compute the report. `compute_upgrade_reconciliation`
+        # stays, since it only reads the local database.
         from .utilities.upgrade_reconciliation import compute_upgrade_reconciliation
 
         sync = get_object_or_404(self.queryset, pk=pk)
-        try:
-            report = compute_scope_reconciliation(sync)
-        except Exception as exc:
-            logger.warning(
-                "Scope reconciliation report failed (%s)", type(exc).__name__
-            )
-            messages.error(
-                request,
-                _("Scope reconciliation failed. Review server logs before retrying."),
-            )
-            return redirect(sync.get_absolute_url())
+        # Never compute inline. `compute_scope_reconciliation` issues two live
+        # NQE `fetch_all` queries — every device and every endpoint — so on any
+        # real fabric this exceeded the gateway timeout and returned 504 with
+        # the queries still running, while hitting Forward on every page load.
+        report_job = _latest_scope_reconciliation_job(sync)
+        payload, generated_at, report_error = _scope_reconciliation_payload(report_job)
         from .utilities.scope_reconciliation import BACKFILLED_TAG_SLUG
 
-        payload = {
-            key: value for key, value in report.items() if not key.startswith("_")
-        }
         backfilled_tag_url = f"{reverse('dcim:device_list')}?tag={BACKFILLED_TAG_SLUG}"
         return render(
             request,
@@ -1119,6 +1186,13 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
             {
                 "object": sync,
                 "payload": payload,
+                "report_generated_at": generated_at,
+                "report_error": report_error,
+                "report_pending": report_job is None,
+                "refresh_report_url": reverse(
+                    "plugins:forward_netbox:forwardsync_refresh_scope_reconciliation",
+                    kwargs={"pk": sync.pk},
+                ),
                 "upgrade_reconciliation": compute_upgrade_reconciliation(
                     include_samples=True
                 ),
@@ -1650,7 +1724,10 @@ class ForwardIngestionListView(generic.ObjectListView):
     queryset = annotate_statistics(ForwardIngestion.objects.all())
     filterset = ForwardIngestionFilterSet
     table = ForwardIngestionTable
-    actions = (BulkExport,)
+    # BulkDelete so a backlog of ingestion records can actually be cleared;
+    # there is still no edit view, since an ingestion is a record of what a sync
+    # did and is not editable after the fact.
+    actions = (BulkExport, BulkDelete)
 
 
 @register_model_view(ForwardIngestion, name="logs", path="logs")
@@ -1812,6 +1889,57 @@ class ForwardIngestionMergeView(BaseObjectView):
         return redirect(ingestion.get_absolute_url())
 
 
+@register_model_view(ForwardIngestion, "accept_failures", path="accept-failures")
+class ForwardIngestionAcceptFailuresView(BaseObjectView):
+    """Complete a merge that recorded row failures, from the UI.
+
+    Any failed row returns the branch to READY without attesting the merge, so
+    the baseline never promotes and every retry hits the same rows. When the
+    failure is deterministic that is a permanent dead end — a customer sat with
+    5 failures out of 24,748 blocking drift measurement and diff syncs.
+
+    Deliberately a separate action from Merge, behind its own permission, so it
+    can never be reached by clicking the ordinary button twice.
+    """
+
+    queryset = ForwardIngestion.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.merge_forwardingestion"
+
+    def get(self, request, pk):
+        return redirect(get_object_or_404(self.queryset, pk=pk).get_absolute_url())
+
+    def post(self, request, pk):
+        ingestion = get_object_or_404(self.queryset, pk=pk)
+        if not ingestion.can_accept_merge_failures:
+            messages.error(
+                request,
+                _(
+                    "This ingestion is not stalled behind accepted-failure "
+                    "eligible failures."
+                ),
+            )
+            return redirect(ingestion.get_absolute_url())
+
+        failed = int(ingestion.failed_change_count or 0)
+        job = ingestion.enqueue_merge_job(
+            user=request.user,
+            remove_branch=True,
+            accept_reported_failures=True,
+        )
+        messages.warning(
+            request,
+            _(
+                "Queued job #%(job)s to complete the merge accepting "
+                "%(failed)s failed change(s). They remain recorded as ingestion "
+                "issues and the acceptance is attributed to you."
+            )
+            % {"job": job.pk, "failed": failed},
+        )
+        return redirect(ingestion.get_absolute_url())
+
+
 @register_model_view(
     ForwardIngestion,
     name="change_diff",
@@ -1923,6 +2051,83 @@ class ForwardIngestionIssuesView(generic.ObjectChildrenView):
 
     def get_children(self, request, parent):
         return ForwardIngestionIssue.objects.filter(ingestion=parent)
+
+
+def _ingestion_delete_refusal(ingestion) -> str:
+    """Why the database will refuse this delete, or "" when it will not.
+
+    Most relations to an ingestion cascade, but `ForwardContributorBaseline` is
+    PROTECT: a baseline is durable convergence evidence, and dropping the
+    ingestion that produced it would strand it. Reporting that up front turns an
+    unhandled `ProtectedError` into something an operator can act on.
+    """
+    references = describe_protecting_references(type(ingestion), ingestion.pk)
+    if not references:
+        return ""
+    held_by = ", ".join(f"{label} ({count})" for label, count in references)
+    return (
+        f"{ingestion} cannot be deleted while it is still referenced by "
+        f"{held_by}. Those records are convergence evidence for this ingestion; "
+        "remove them first if you genuinely intend to discard it."
+    )
+
+
+@register_model_view(ForwardIngestion, "delete")
+class ForwardIngestionDeleteView(generic.ObjectDeleteView):
+    """Delete a single ingestion, reporting a protected reference rather than 500.
+
+    Restores an action removed in 2.6.3: a `NoReverseMatch` crash on the
+    Ingestions list was fixed by dropping the delete action instead of
+    registering the view it pointed at, which left ingestions undeletable.
+    """
+
+    queryset = ForwardIngestion.objects.all()
+
+    def post(self, request, *args, **kwargs):
+        refusal = _ingestion_delete_refusal(self.get_object(**kwargs))
+        if refusal:
+            messages.error(request, refusal)
+            return redirect(self.get_return_url(request))
+        return super().post(request, *args, **kwargs)
+
+
+@register_model_view(ForwardIngestion, "bulk_delete", path="delete", detail=False)
+class ForwardIngestionBulkDeleteView(generic.BulkDeleteView):
+    """Bulk delete, skipping protected ingestions instead of failing the batch.
+
+    One protected ingestion must not abandon the rest of the selection, so the
+    protected rows are reported by name and the remainder proceed.
+    """
+
+    queryset = ForwardIngestion.objects.all()
+    table = ForwardIngestionTable
+
+    def _filter_deletable(self, request, queryset):
+        protected = [
+            ingestion for ingestion in queryset if _ingestion_delete_refusal(ingestion)
+        ]
+        if not protected:
+            return queryset
+        for refusal in (_ingestion_delete_refusal(item) for item in protected):
+            messages.error(request, refusal)
+        return queryset.exclude(pk__in=[item.pk for item in protected])
+
+    def post(self, request, *args, **kwargs):
+        self.queryset = self._filter_deletable(request, self.get_queryset(request))
+        return super().post(request, *args, **kwargs)
+
+
+@register_model_view(ForwardIngestionIssue)
+class ForwardIngestionIssueView(generic.ObjectView):
+    """Detail for one ingestion issue.
+
+    The list truncates `message` and shows only the exception class, so a
+    failure could not be inspected at all — four IntegrityError rows blocked a
+    customer's baseline with no way to see which constraint they violated.
+    """
+
+    queryset = ForwardIngestionIssue.objects.all()
+    template_name = "forward_netbox/forwardingestionissue.html"
 
 
 @register_model_view(ForwardDeviceAnalysis, "list", path="", detail=False)

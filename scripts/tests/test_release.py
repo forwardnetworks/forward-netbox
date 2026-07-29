@@ -630,3 +630,132 @@ class RequiredReleaseWorkflowTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VersionSurfaceEditTest(unittest.TestCase):
+    """Every version surface must move together.
+
+    `stage_prepare` bumped only pyproject and `__init__`, leaving the
+    fast-baseline runtime pin and the runtime version test behind. That drift
+    cost the 2.6.3 release six full gate runs, and the fast-baseline pin is
+    load-bearing: a stale value silently reverts a first sync to the slow path.
+    """
+
+    def _tree(self, directory, version):
+        root = Path(directory)
+        (root / "forward_netbox" / "utilities").mkdir(parents=True)
+        (root / "forward_netbox" / "tests").mkdir(parents=True)
+        (root / "pyproject.toml").write_text(
+            f'version = "{version}"\n', encoding="utf-8"
+        )
+        (root / "forward_netbox" / "__init__.py").write_text(
+            f'    version = "{version}"\n', encoding="utf-8"
+        )
+        (root / "forward_netbox" / "utilities" / "fast_baseline.py").write_text(
+            f'    "forward_netbox": "{version}",\n', encoding="utf-8"
+        )
+        (
+            root / "forward_netbox" / "tests" / "test_runtime_dependency_check.py"
+        ).write_text(
+            f'        NetboxForwardConfig.version, "{version}"\n', encoding="utf-8"
+        )
+        return root
+
+    def _patched(self, root):
+        return (
+            patch.object(release, "REPO_ROOT", root),
+            patch.object(release, "PYPROJECT", root / "pyproject.toml"),
+            patch.object(release, "INIT_PY", root / "forward_netbox/__init__.py"),
+            patch.object(
+                release,
+                "FAST_BASELINE",
+                root / "forward_netbox/utilities/fast_baseline.py",
+            ),
+            patch.object(
+                release,
+                "RUNTIME_VERSION_TEST",
+                root / "forward_netbox/tests/test_runtime_dependency_check.py",
+            ),
+        )
+
+    def test_all_four_surfaces_are_rewritten(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._tree(directory, "1.2.3")
+            patches = self._patched(root)
+            for item in patches:
+                item.start()
+            try:
+                edits = release.version_surface_edits("1.2.3", "1.2.4")
+            finally:
+                for item in patches:
+                    item.stop()
+            self.assertEqual(len(edits), 4)
+            for text in edits.values():
+                self.assertIn("1.2.4", text)
+                self.assertNotIn("1.2.3", text)
+
+    def test_a_missing_surface_is_reported_not_skipped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._tree(directory, "1.2.3")
+            (root / "forward_netbox" / "utilities" / "fast_baseline.py").write_text(
+                "nothing to bump here\n", encoding="utf-8"
+            )
+            patches = self._patched(root)
+            for item in patches:
+                item.start()
+            try:
+                with self.assertRaisesRegex(release.ReleaseError, "fast_baseline"):
+                    release.version_surface_edits("1.2.3", "1.2.4")
+            finally:
+                for item in patches:
+                    item.stop()
+
+
+class OpenNextDevCycleTest(unittest.TestCase):
+    """`main` must be self-describing as not-the-release.
+
+    It carries the release from the moment the release PR merges — before the
+    tag and before PyPI. A customer installed from `main` in that window and
+    reported running a version PyPI did not have.
+    """
+
+    def test_the_marker_is_the_next_version_with_dev0(self):
+        # `version_surface_edits` is patched too: without it the test reads the
+        # repository's real pyproject and fails on every version bump, which is
+        # exactly how it broke when this tranche moved the tree to 2.6.6.
+        with (
+            patch.object(release, "read_current_version", return_value="2.6.5"),
+            patch.object(release, "version_surface_edits", return_value={}),
+        ):
+            output = StringIO()
+            with redirect_stdout(output):
+                release.stage_open_next("2.6.6", write=False)
+        self.assertIn("2.6.5 -> 2.6.6.dev0", output.getvalue())
+
+    def test_it_does_not_depend_on_the_repository_version(self):
+        # Guards the coupling directly: any current version must work.
+        for current, target in (("1.0.0", "1.0.1"), ("9.9.9", "10.0.0")):
+            with (
+                patch.object(release, "read_current_version", return_value=current),
+                patch.object(release, "version_surface_edits", return_value={}),
+            ):
+                output = StringIO()
+                with redirect_stdout(output):
+                    release.stage_open_next(target, write=False)
+            self.assertIn(f"{current} -> {target}.dev0", output.getvalue())
+
+    def test_a_dry_run_writes_nothing(self):
+        with patch.object(release, "read_current_version", return_value="2.6.5"):
+            with patch.object(release, "version_surface_edits") as edits:
+                output = StringIO()
+                with redirect_stdout(output):
+                    release.stage_open_next("2.6.6", write=False)
+                edits.assert_called_once_with("2.6.5", "2.6.6.dev0")
+        self.assertIn("not writing files", output.getvalue())
+
+    def test_refuses_to_open_a_cycle_twice(self):
+        with patch.object(release, "read_current_version", return_value="2.6.6.dev0"):
+            with self.assertRaisesRegex(
+                release.ReleaseError, "already on a dev marker"
+            ):
+                release.stage_open_next("2.6.7", write=False)
