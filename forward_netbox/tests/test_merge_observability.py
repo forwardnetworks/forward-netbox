@@ -3,11 +3,9 @@ from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
-from forward_netbox.utilities.merge_observability import (
-    ForwardMergeSignalError,
-    failure_evidence,
-    rq_process_failure_evidence,
-)
+from forward_netbox.utilities.merge_observability import failure_evidence
+from forward_netbox.utilities.merge_observability import ForwardMergeSignalError
+from forward_netbox.utilities.merge_observability import rq_process_failure_evidence
 
 
 class MergeProcessEvidenceTest(SimpleTestCase):

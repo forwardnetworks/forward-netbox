@@ -1,9 +1,7 @@
 from django.test import SimpleTestCase
 
-from forward_netbox.utilities.merge_profiling import (
-    MergeProfileRecorder,
-    profile_scope,
-)
+from forward_netbox.utilities.merge_profiling import MergeProfileRecorder
+from forward_netbox.utilities.merge_profiling import profile_scope
 
 
 class MergeProfileRecorderTest(SimpleTestCase):

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 """Summarize fsync'd merge-profile rounds and cgroup samples."""
-
 import argparse
 import csv
 import json

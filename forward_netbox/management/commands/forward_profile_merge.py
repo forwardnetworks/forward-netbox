@@ -9,7 +9,9 @@ from pathlib import Path
 
 from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
-from django.db import DatabaseError, connection, transaction
+from django.db import connection
+from django.db import DatabaseError
+from django.db import transaction
 from django.test import RequestFactory
 from django.urls import reverse
 from netbox.context_managers import event_tracking
@@ -17,7 +19,9 @@ from netbox_branching.choices import BranchStatusChoices
 from netbox_branching.models import Branch
 from netbox_branching.utilities import activate_branch
 
-from forward_netbox.models import ForwardIngestion, ForwardSource, ForwardSync
+from forward_netbox.models import ForwardIngestion
+from forward_netbox.models import ForwardSource
+from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.merge import merge_branch
 from forward_netbox.utilities.merge_observability import begin_merge_attempt
 from forward_netbox.utilities.merge_profiling import MergeProfileRecorder

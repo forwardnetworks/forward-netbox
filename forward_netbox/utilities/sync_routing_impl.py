@@ -291,6 +291,17 @@ def bgp_peer_name(row):
 
 
 def bgp_peer_comments(row):
+    """Stable descriptive state only — never per-snapshot operational counters.
+
+    `session_state`, `advertised_prefixes` and `received_prefixes` move between
+    snapshots even when the configured peer is identical. Rendering them here put
+    them inside the field that drives change detection, so every sync rewrote
+    every peer: 360 UPDATEs, 360 ObjectChanges and 360 branch changes to stage
+    and merge, on every run, for a peer whose configuration never changed.
+
+    Forward remains authoritative for the live counters; NetBox carries the
+    session's configured identity, and `status` already records active/offline.
+    """
     lines = ["Observed by Forward from structured BGP neighbor state."]
     for label, key in (
         ("Router ID", "router_id"),
@@ -298,9 +309,6 @@ def bgp_peer_comments(row):
         ("Peer device", "peer_device"),
         ("Peer VRF", "peer_vrf"),
         ("Peer router ID", "peer_router_id"),
-        ("Session state", "session_state"),
-        ("Advertised prefixes", "advertised_prefixes"),
-        ("Received prefixes", "received_prefixes"),
     ):
         value = row.get(key)
         if value not in ("", None):

@@ -14,8 +14,7 @@ from ..exceptions import ForwardPartialMergeError
 from .diagnostics import safe_operation_failure
 
 _WAITPID_RE = re.compile(
-    r"waitpid returned (?P<wait_status>-?\d+)"
-    r"(?: \(signal (?P<signal>\d+)\))?"
+    r"waitpid returned (?P<wait_status>-?\d+)" r"(?: \(signal (?P<signal>\d+)\))?"
 )
 _CAPTURED_SIGNALS = tuple(
     item
@@ -74,9 +73,11 @@ def begin_merge_attempt(ingestion, *, job=None):
     job_id = getattr(job, "pk", None)
     if not isinstance(job_id, int):
         job_id = None
-    elif not ForwardMergeAttempt._meta.get_field("job").remote_field.model.objects.filter(
-        pk=job_id
-    ).exists():
+    elif (
+        not ForwardMergeAttempt._meta.get_field("job")
+        .remote_field.model.objects.filter(pk=job_id)
+        .exists()
+    ):
         # A management/test caller can provide a job-shaped object which has
         # no durable Core Job row. Keep the merge attempt rather than deferring
         # a foreign-key failure until the surrounding transaction commits.
