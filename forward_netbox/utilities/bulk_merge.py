@@ -37,6 +37,7 @@ from django.db import OperationalError
 from django.db import transaction
 from django.db.models import prefetch_related_objects
 from django.db.models import Q
+from django.db.models.deletion import ProtectedError
 from mptt.models import MPTTModel
 from netbox_branching.merge_strategies.squash import ActionType
 from netbox_branching.merge_strategies.squash import CollapsedChange
@@ -1264,6 +1265,37 @@ def _add_destination_fk_release_dependencies(collapsed_changes, change_logger):
             )
 
 
+def describe_protecting_references(model_class, pk):
+    """Which surviving rows still reference this one, as ``[(label, count)]``.
+
+    A `ProtectedError` names the exception but not what an operator has to act
+    on. Read the protecting relations directly so a refused delete reports the
+    model and count holding it. Never raises: diagnostics must not turn a
+    recorded failure into an unhandled one.
+    """
+    found = []
+    try:
+        for relation in model_class._meta.related_objects:
+            field = relation.field
+            if getattr(field.remote_field, "on_delete", None) not in (
+                models.PROTECT,
+                models.RESTRICT,
+            ):
+                continue
+            count = (
+                relation.related_model.objects.using(DEFAULT_DB_ALIAS)
+                .filter(**{field.name: pk})
+                .count()
+            )
+            if count:
+                found.append((relation.related_model._meta.label, count))
+    except JobTimeoutException:
+        raise
+    except Exception:  # noqa: BLE001 - a diagnostic must never mask the failure
+        return []
+    return sorted(found)
+
+
 def protecting_reference_blocked_deletes(collapsed_changes):
     """Deletes that a surviving PROTECT/RESTRICT reference would reject.
 
@@ -1313,6 +1345,147 @@ def protecting_reference_blocked_deletes(collapsed_changes):
     return dict(blocked)
 
 
+def _protected_child_delete_edges(collapsed_changes):
+    """Candidate ``(parent_key, child_key)`` DELETE edges read from destination state.
+
+    Only pairs where *both* rows are being deleted in this run are returned. A
+    reference that survives the run is deliberately left alone so the parent
+    delete still fails strictly instead of being reordered into a false success.
+    """
+    deletes_by_model = defaultdict(dict)
+    for key, collapsed in collapsed_changes.items():
+        if collapsed.final_action == ActionType.DELETE:
+            deletes_by_model[collapsed.model_class][collapsed.key[1]] = key
+    if not deletes_by_model:
+        return []
+
+    edges = []
+    for model_class, deletes_by_pk in deletes_by_model.items():
+        target_pks = list(deletes_by_pk)
+        for relation in model_class._meta.related_objects:
+            field = relation.field
+            if getattr(field.remote_field, "on_delete", None) not in (
+                models.PROTECT,
+                models.RESTRICT,
+            ):
+                continue
+            child_deletes = deletes_by_model.get(relation.related_model)
+            if not child_deletes:
+                continue
+            for offset in range(0, len(target_pks), BULK_MERGE_FLUSH_THRESHOLD):
+                chunk = target_pks[offset : offset + BULK_MERGE_FLUSH_THRESHOLD]
+                rows = (
+                    relation.related_model.objects.using(DEFAULT_DB_ALIAS)
+                    .filter(**{f"{field.name}__in": chunk})
+                    .values_list("pk", field.attname)
+                )
+                for child_pk, parent_pk in rows:
+                    child_key = child_deletes.get(child_pk)
+                    if child_key is None:
+                        continue
+                    parent_key = deletes_by_pk.get(parent_pk)
+                    if parent_key is not None and parent_key != child_key:
+                        edges.append((parent_key, child_key))
+    return edges
+
+
+def _acyclic_delete_edges(collapsed_changes, candidate_edges, change_logger):
+    """Drop candidate edges that would make the ordering graph unsortable.
+
+    A cycle makes `_order_collapsed_changes_fast` raise and fails the *entire*
+    merge, which is far worse than one delete the database refuses. Mutually
+    protecting rows are undeletable by the database anyway, so dropping the edge
+    only returns that pair to the strict failure it would have had regardless.
+    """
+    nodes = {key for edge in candidate_edges for key in edge}
+    for key in list(nodes):
+        nodes.update(
+            dep for dep in collapsed_changes[key].depends_on if dep in collapsed_changes
+        )
+    existing = {
+        key: {
+            dep
+            for dep in collapsed_changes[key].depends_on
+            if dep in nodes and dep != key
+        }
+        for key in nodes
+    }
+    accepted = list(candidate_edges)
+    for _attempt in range(3):
+        depends = {key: set(deps) for key, deps in existing.items()}
+        for parent_key, child_key in accepted:
+            depends[parent_key].add(child_key)
+        indeg = {key: len(deps) for key, deps in depends.items()}
+        successors = defaultdict(list)
+        for key, deps in depends.items():
+            for dep in deps:
+                successors[dep].append(key)
+        queue = [key for key, count in indeg.items() if count == 0]
+        seen = 0
+        while queue:
+            key = queue.pop()
+            seen += 1
+            for succ in successors.get(key, ()):
+                indeg[succ] -= 1
+                if indeg[succ] == 0:
+                    queue.append(succ)
+        if seen == len(depends):
+            return accepted
+        cyclic = {key for key, count in indeg.items() if count > 0}
+        kept = [
+            edge for edge in accepted if edge[0] not in cyclic and edge[1] not in cyclic
+        ]
+        if len(kept) == len(accepted):
+            return []
+        change_logger.warning(
+            "Bulk merge: dropped %d protected-delete ordering edge(s) that would "
+            "have made the change graph unsortable; those rows stay mutually "
+            "protected and their deletes are reported rather than reordered.",
+            len(accepted) - len(kept),
+        )
+        accepted = kept
+        if not accepted:
+            return []
+    return []
+
+
+def _add_protected_child_delete_dependencies(collapsed_changes, change_logger):
+    """Order child DELETEs before parent DELETEs using destination state.
+
+    The framework builds child-before-parent DELETE edges from each child's
+    ``prechange_data`` (`_build_fk_dependency_graph` step 3). Branch-native bulk
+    DELETE ObjectChanges can carry an empty ``prechange_data`` when the row came
+    from the direct first-baseline path — the same gap
+    `_add_destination_fk_release_dependencies` exists to close for UPDATEs. The
+    edge is then never created, the parent DELETE is attempted while a child row
+    still references it, and the database refuses it with ``ProtectedError``. The
+    parent survives, and every later sync repeats the failure: that is how a
+    device kept two BGP peers and never converged.
+
+    Reading the protecting references from the destination needs no branch
+    preimage, so the edge is restored whether or not a preimage exists.
+    """
+    edges = _protected_child_delete_edges(collapsed_changes)
+    if not edges:
+        return 0
+    accepted = _acyclic_delete_edges(collapsed_changes, edges, change_logger)
+    added = 0
+    for parent_key, child_key in accepted:
+        parent = collapsed_changes[parent_key]
+        if child_key in parent.depends_on:
+            continue
+        parent.depends_on.add(child_key)
+        collapsed_changes[child_key].depended_by.add(parent_key)
+        added += 1
+    if added:
+        change_logger.debug(
+            "Restored %d child-before-parent DELETE ordering edge(s) from "
+            "destination protecting references.",
+            added,
+        )
+    return added
+
+
 def _order_collapsed_changes_fast(collapsed_changes, change_logger, operation):
     """O((V+E) log V) replacement for ``_order_collapsed_changes``.
 
@@ -1358,6 +1531,7 @@ def _order_collapsed_changes_fast(collapsed_changes, change_logger, operation):
         deletes, updates, creates, change_logger
     )
     _add_destination_fk_release_dependencies(to_process, change_logger)
+    _add_protected_child_delete_dependencies(to_process, change_logger)
     squash_dependency_graph_built.send(
         sender=SquashMergeStrategy,
         collapsed_changes=to_process,
@@ -1626,6 +1800,22 @@ def _bulk_merge_changes_main(
                 getattr(model_class, "__name__", model_class),
                 exc,
             )
+            if isinstance(exc, ProtectedError):
+                # Name what actually holds the row. Without this the operator
+                # sees only ProtectedError and cannot tell why the sync never
+                # converged.
+                references = describe_protecting_references(
+                    model_class, collapsed_change.key[1]
+                )
+                if references:
+                    change_logger.warning(
+                        "Bulk merge: %s %s cannot be deleted while referenced by "
+                        "%s. Remove or reassign those references, or exclude the "
+                        "row from this sync's scope.",
+                        getattr(model_class, "__name__", model_class),
+                        collapsed_change.key[1],
+                        ", ".join(f"{label} x{count}" for label, count in references),
+                    )
             _record_failure(collapsed_change, failure=exc)
             return
         if isinstance(outcome, _ApplyOneFailure):
