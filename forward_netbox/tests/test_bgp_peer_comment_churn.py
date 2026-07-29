@@ -33,9 +33,7 @@ class BGPPeerCommentChurnTest(SimpleTestCase):
     def test_only_the_counters_moving_produces_identical_comments(self):
         # The exact churn case: a healthy session whose prefix counts drifted.
         before = bgp_peer_comments(_row())
-        after = bgp_peer_comments(
-            _row(advertised_prefixes=1477, received_prefixes=91)
-        )
+        after = bgp_peer_comments(_row(advertised_prefixes=1477, received_prefixes=91))
 
         self.assertEqual(before, after)
 
