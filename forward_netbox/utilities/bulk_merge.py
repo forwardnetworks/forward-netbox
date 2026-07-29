@@ -37,6 +37,7 @@ from django.db import OperationalError
 from django.db import transaction
 from django.db.models import prefetch_related_objects
 from django.db.models import Q
+from django.db.models.deletion import ProtectedError
 from mptt.models import MPTTModel
 from netbox_branching.merge_strategies.squash import ActionType
 from netbox_branching.merge_strategies.squash import CollapsedChange
@@ -49,6 +50,7 @@ from rq.timeouts import JobTimeoutException
 from utilities.serialization import deserialize_object
 
 from .bulk_delete import lock_tables_for_writes
+from .merge_profiling import profile_scope
 
 # SQL chunk size handed to bulk_create (splits the multi-row INSERT).
 BULK_MERGE_BATCH_SIZE = 1000
@@ -223,7 +225,7 @@ def _rebuild_main_prefix_hierarchies(vrf_ids):
             rebuild_prefixes(vrf_id)
 
 
-def _sync_global_change_diffs(object_changes, action):
+def _sync_global_change_diffs_impl(object_changes, action):
     """Mirror Branching's global ObjectChange receiver after a bulk audit write."""
     if not object_changes:
         return
@@ -260,7 +262,25 @@ def _sync_global_change_diffs(object_changes, action):
         )
 
 
-def _emit_main_object_changes(
+def _sync_global_change_diffs(object_changes, action):
+    model = (
+        object_changes[0].changed_object_type.model_class()._meta.label_lower
+        if object_changes
+        else ""
+    )
+    with profile_scope(
+        "changediff_resolution",
+        model=model,
+        # This is Forward's set-based equivalent of Branching's global
+        # ObjectChange receiver. The ChangeDiff contract is upstream-owned,
+        # but this implementation and its query shape are actionable here.
+        owner="ours",
+        rows=len(object_changes),
+    ):
+        return _sync_global_change_diffs_impl(object_changes, action)
+
+
+def _emit_main_object_changes_impl(
     objects,
     action,
     request,
@@ -324,6 +344,33 @@ def _emit_main_object_changes(
                 batch_size=BULK_MERGE_BATCH_SIZE,
             )
             _sync_global_change_diffs(object_changes, action)
+
+
+def _emit_main_object_changes(
+    objects,
+    action,
+    request,
+    branch,
+    *,
+    message=None,
+    allow_unchanged=False,
+):
+    objects = list(objects)
+    model = objects[0]._meta.label_lower if objects else ""
+    with profile_scope(
+        "audit_and_lineage",
+        model=model,
+        owner="ours",
+        rows=len(objects),
+    ):
+        return _emit_main_object_changes_impl(
+            objects,
+            action,
+            request,
+            branch,
+            message=message,
+            allow_unchanged=allow_unchanged,
+        )
 
 
 class _PrefixDeleteNeedsIsolation(Exception):
@@ -885,12 +932,13 @@ def _typed_audit_mismatches(target, prior_applied_data, field_names):
     mismatches = []
     for field_name in field_names:
         field = concrete_fields.get(field_name)
-        if isinstance(field, models.DecimalField):
-            if getattr(target, field.attname) == getattr(
-                deserialized.object,
-                field.attname,
-            ):
-                continue
+        if isinstance(field, models.DecimalField) and getattr(
+            target, field.attname
+        ) == getattr(
+            deserialized.object,
+            field.attname,
+        ):
+            continue
         mismatches.append(field_name)
     return mismatches
 
@@ -1264,6 +1312,227 @@ def _add_destination_fk_release_dependencies(collapsed_changes, change_logger):
             )
 
 
+def describe_protecting_references(model_class, pk):
+    """Which surviving rows still reference this one, as ``[(label, count)]``.
+
+    A `ProtectedError` names the exception but not what an operator has to act
+    on. Read the protecting relations directly so a refused delete reports the
+    model and count holding it. Never raises: diagnostics must not turn a
+    recorded failure into an unhandled one.
+    """
+    found = []
+    try:
+        for relation in model_class._meta.related_objects:
+            field = relation.field
+            if getattr(field.remote_field, "on_delete", None) not in (
+                models.PROTECT,
+                models.RESTRICT,
+            ):
+                continue
+            count = (
+                relation.related_model.objects.using(DEFAULT_DB_ALIAS)
+                .filter(**{field.name: pk})
+                .count()
+            )
+            if count:
+                found.append((relation.related_model._meta.label, count))
+    except JobTimeoutException:
+        raise
+    except Exception:  # noqa: BLE001 - a diagnostic must never mask the failure
+        return []
+    return sorted(found)
+
+
+def protecting_reference_blocked_deletes(collapsed_changes):
+    """Deletes that a surviving PROTECT/RESTRICT reference would reject.
+
+    Delete protection is otherwise plugin-ownership based, so a row that the
+    database itself refuses to delete is still scheduled and fails at apply
+    time with `ProtectedError`, leaving the merge short of convergence. That is
+    how a device kept two BGP peers and never converged.
+
+    A reference only blocks when the referencing row is *not* itself being
+    deleted in this run; when it is, ordering resolves it and the delete
+    proceeds. Returns ``{key: [(referencing label, count), ...]}``.
+    """
+    delete_pks_by_model = defaultdict(dict)
+    for key, collapsed in collapsed_changes.items():
+        if collapsed.final_action == ActionType.DELETE:
+            delete_pks_by_model[collapsed.model_class][collapsed.key[1]] = key
+    if not delete_pks_by_model:
+        return {}
+
+    blocked = defaultdict(list)
+    for model_class, deletes_by_pk in delete_pks_by_model.items():
+        target_pks = list(deletes_by_pk)
+        for relation in model_class._meta.related_objects:
+            field = relation.field
+            on_delete = getattr(field.remote_field, "on_delete", None)
+            if on_delete not in (models.PROTECT, models.RESTRICT):
+                continue
+            referencing_model = relation.related_model
+            surviving = delete_pks_by_model.get(referencing_model, {})
+            counts = defaultdict(int)
+            for offset in range(0, len(target_pks), BULK_MERGE_FLUSH_THRESHOLD):
+                chunk = target_pks[offset : offset + BULK_MERGE_FLUSH_THRESHOLD]
+                rows = (
+                    referencing_model.objects.using(DEFAULT_DB_ALIAS)
+                    .filter(**{f"{field.name}__in": chunk})
+                    .values_list("pk", field.attname)
+                )
+                for referencing_pk, target_pk in rows:
+                    if referencing_pk in surviving:
+                        # Deleted in this run; ordering handles it.
+                        continue
+                    counts[target_pk] += 1
+            for target_pk, count in counts.items():
+                blocked[deletes_by_pk[target_pk]].append(
+                    (referencing_model._meta.label, count)
+                )
+    return dict(blocked)
+
+
+def _protected_child_delete_edges(collapsed_changes):
+    """Candidate ``(parent_key, child_key)`` DELETE edges read from destination state.
+
+    Only pairs where *both* rows are being deleted in this run are returned. A
+    reference that survives the run is deliberately left alone so the parent
+    delete still fails strictly instead of being reordered into a false success.
+    """
+    deletes_by_model = defaultdict(dict)
+    for key, collapsed in collapsed_changes.items():
+        if collapsed.final_action == ActionType.DELETE:
+            deletes_by_model[collapsed.model_class][collapsed.key[1]] = key
+    if not deletes_by_model:
+        return []
+
+    edges = []
+    for model_class, deletes_by_pk in deletes_by_model.items():
+        target_pks = list(deletes_by_pk)
+        for relation in model_class._meta.related_objects:
+            field = relation.field
+            if getattr(field.remote_field, "on_delete", None) not in (
+                models.PROTECT,
+                models.RESTRICT,
+            ):
+                continue
+            child_deletes = deletes_by_model.get(relation.related_model)
+            if not child_deletes:
+                continue
+            for offset in range(0, len(target_pks), BULK_MERGE_FLUSH_THRESHOLD):
+                chunk = target_pks[offset : offset + BULK_MERGE_FLUSH_THRESHOLD]
+                rows = (
+                    relation.related_model.objects.using(DEFAULT_DB_ALIAS)
+                    .filter(**{f"{field.name}__in": chunk})
+                    .values_list("pk", field.attname)
+                )
+                for child_pk, parent_pk in rows:
+                    child_key = child_deletes.get(child_pk)
+                    if child_key is None:
+                        continue
+                    parent_key = deletes_by_pk.get(parent_pk)
+                    if parent_key is not None and parent_key != child_key:
+                        edges.append((parent_key, child_key))
+    return edges
+
+
+def _acyclic_delete_edges(collapsed_changes, candidate_edges, change_logger):
+    """Drop candidate edges that would make the ordering graph unsortable.
+
+    A cycle makes `_order_collapsed_changes_fast` raise and fails the *entire*
+    merge, which is far worse than one delete the database refuses. Mutually
+    protecting rows are undeletable by the database anyway, so dropping the edge
+    only returns that pair to the strict failure it would have had regardless.
+    """
+    nodes = {key for edge in candidate_edges for key in edge}
+    for key in list(nodes):
+        nodes.update(
+            dep for dep in collapsed_changes[key].depends_on if dep in collapsed_changes
+        )
+    existing = {
+        key: {
+            dep
+            for dep in collapsed_changes[key].depends_on
+            if dep in nodes and dep != key
+        }
+        for key in nodes
+    }
+    accepted = list(candidate_edges)
+    for _attempt in range(3):
+        depends = {key: set(deps) for key, deps in existing.items()}
+        for parent_key, child_key in accepted:
+            depends[parent_key].add(child_key)
+        indeg = {key: len(deps) for key, deps in depends.items()}
+        successors = defaultdict(list)
+        for key, deps in depends.items():
+            for dep in deps:
+                successors[dep].append(key)
+        queue = [key for key, count in indeg.items() if count == 0]
+        seen = 0
+        while queue:
+            key = queue.pop()
+            seen += 1
+            for succ in successors.get(key, ()):
+                indeg[succ] -= 1
+                if indeg[succ] == 0:
+                    queue.append(succ)
+        if seen == len(depends):
+            return accepted
+        cyclic = {key for key, count in indeg.items() if count > 0}
+        kept = [
+            edge for edge in accepted if edge[0] not in cyclic and edge[1] not in cyclic
+        ]
+        if len(kept) == len(accepted):
+            return []
+        change_logger.warning(
+            "Bulk merge: dropped %d protected-delete ordering edge(s) that would "
+            "have made the change graph unsortable; those rows stay mutually "
+            "protected and their deletes are reported rather than reordered.",
+            len(accepted) - len(kept),
+        )
+        accepted = kept
+        if not accepted:
+            return []
+    return []
+
+
+def _add_protected_child_delete_dependencies(collapsed_changes, change_logger):
+    """Order child DELETEs before parent DELETEs using destination state.
+
+    The framework builds child-before-parent DELETE edges from each child's
+    ``prechange_data`` (`_build_fk_dependency_graph` step 3). Branch-native bulk
+    DELETE ObjectChanges can carry an empty ``prechange_data`` when the row came
+    from the direct first-baseline path — the same gap
+    `_add_destination_fk_release_dependencies` exists to close for UPDATEs. The
+    edge is then never created, the parent DELETE is attempted while a child row
+    still references it, and the database refuses it with ``ProtectedError``. The
+    parent survives, and every later sync repeats the failure: that is how a
+    device kept two BGP peers and never converged.
+
+    Reading the protecting references from the destination needs no branch
+    preimage, so the edge is restored whether or not a preimage exists.
+    """
+    edges = _protected_child_delete_edges(collapsed_changes)
+    if not edges:
+        return 0
+    accepted = _acyclic_delete_edges(collapsed_changes, edges, change_logger)
+    added = 0
+    for parent_key, child_key in accepted:
+        parent = collapsed_changes[parent_key]
+        if child_key in parent.depends_on:
+            continue
+        parent.depends_on.add(child_key)
+        collapsed_changes[child_key].depended_by.add(parent_key)
+        added += 1
+    if added:
+        change_logger.debug(
+            "Restored %d child-before-parent DELETE ordering edge(s) from "
+            "destination protecting references.",
+            added,
+        )
+    return added
+
+
 def _order_collapsed_changes_fast(collapsed_changes, change_logger, operation):
     """O((V+E) log V) replacement for ``_order_collapsed_changes``.
 
@@ -1286,78 +1555,92 @@ def _order_collapsed_changes_fast(collapsed_changes, change_logger, operation):
     # The exact 1.1.1 runtime breaks cycles inside its own sorter rather than
     # exposing a helper. This custom O((V+E) log V) sorter owns the equivalent
     # deterministic pair split before reusing the framework dependency graph.
-    _split_bidirectional_create_cycles(to_process, change_logger)
-    # Then split deferred self-referential FKs (primary_ip4/6, oob_ip, VC master)
-    # out of CREATEs — these form 3-node cycles the framework's 2-node split misses
-    # (device -> primary_ip -> assigned interface -> device). Must run before the
-    # graph build below so the cycle edge is never created.
-    _defer_self_referential_create_fks(to_process, change_logger)
-    _add_tag_identity_release_dependencies(to_process)
-    deletes = sorted(
-        (v for v in to_process.values() if v.final_action == ActionType.DELETE),
-        key=lambda c: c.last_change.time,
-    )
-    updates = sorted(
-        (v for v in to_process.values() if v.final_action == ActionType.UPDATE),
-        key=lambda c: c.last_change.time,
-    )
-    creates = sorted(
-        (v for v in to_process.values() if v.final_action == ActionType.CREATE),
-        key=lambda c: c.last_change.time,
-    )
-    SquashMergeStrategy._build_fk_dependency_graph(
-        deletes, updates, creates, change_logger
-    )
-    _add_destination_fk_release_dependencies(to_process, change_logger)
-    squash_dependency_graph_built.send(
-        sender=SquashMergeStrategy,
-        collapsed_changes=to_process,
-        operation=operation,
-    )
+    with profile_scope(
+        "dependency_cycle_preparation", owner="ours", rows=len(to_process)
+    ):
+        _split_bidirectional_create_cycles(to_process, change_logger)
+        # Then split deferred self-referential FKs (primary_ip4/6, oob_ip, VC master)
+        # out of CREATEs — these form 3-node cycles the framework's 2-node split misses
+        # (device -> primary_ip -> assigned interface -> device). Must run before the
+        # graph build below so the cycle edge is never created.
+        _defer_self_referential_create_fks(to_process, change_logger)
+        _add_tag_identity_release_dependencies(to_process)
+        deletes = sorted(
+            (v for v in to_process.values() if v.final_action == ActionType.DELETE),
+            key=lambda c: c.last_change.time,
+        )
+        updates = sorted(
+            (v for v in to_process.values() if v.final_action == ActionType.UPDATE),
+            key=lambda c: c.last_change.time,
+        )
+        creates = sorted(
+            (v for v in to_process.values() if v.final_action == ActionType.CREATE),
+            key=lambda c: c.last_change.time,
+        )
+    with profile_scope(
+        "dependency_graph",
+        owner="upstream_netbox_branching",
+        rows=len(to_process),
+    ):
+        SquashMergeStrategy._build_fk_dependency_graph(
+            deletes, updates, creates, change_logger
+        )
+        # Both restore edges the framework can only derive from a branch
+        # preimage, which branch-native bulk changes may not carry. They must
+        # run after the framework graph build and before the signal, so a
+        # receiver sees the completed graph.
+        _add_destination_fk_release_dependencies(to_process, change_logger)
+        _add_protected_child_delete_dependencies(to_process, change_logger)
+        squash_dependency_graph_built.send(
+            sender=SquashMergeStrategy,
+            collapsed_changes=to_process,
+            operation=operation,
+        )
 
     # Authoritative reverse index + in-degree, both from depends_on filtered to
     # in-scope keys (so a dependency on a SKIP'd/absent node never wedges).
-    successors = defaultdict(list)
-    indeg = {}
-    for key, collapsed in to_process.items():
-        deps = [d for d in collapsed.depends_on if d in to_process]
-        indeg[key] = len(deps)
-        for dep in deps:
-            successors[dep].append(key)
+    with profile_scope("dependency_ordering", owner="ours", rows=len(to_process)):
+        successors = defaultdict(list)
+        indeg = {}
+        for key, collapsed in to_process.items():
+            deps = [d for d in collapsed.depends_on if d in to_process]
+            indeg[key] = len(deps)
+            for dep in deps:
+                successors[dep].append(key)
 
-    heap = []
-    seq = 0
-    for key, collapsed in to_process.items():
-        if indeg[key] == 0:
-            heapq.heappush(
-                heap,
-                (
-                    _merge_priority(collapsed),
-                    collapsed.last_change.time,
-                    seq,
-                    key,
-                ),
-            )
-            seq += 1
-
-    ordered = []
-    while heap:
-        _, _, _, key = heapq.heappop(heap)
-        ordered.append(to_process[key])
-        for succ in successors.get(key, ()):
-            indeg[succ] -= 1
-            if indeg[succ] == 0:
-                sv = to_process[succ]
+        heap = []
+        seq = 0
+        for key, collapsed in to_process.items():
+            if indeg[key] == 0:
                 heapq.heappush(
                     heap,
                     (
-                        _merge_priority(sv),
-                        sv.last_change.time,
+                        _merge_priority(collapsed),
+                        collapsed.last_change.time,
                         seq,
-                        succ,
+                        key,
                     ),
                 )
                 seq += 1
+
+        ordered = []
+        while heap:
+            _, _, _, key = heapq.heappop(heap)
+            ordered.append(to_process[key])
+            for succ in successors.get(key, ()):
+                indeg[succ] -= 1
+                if indeg[succ] == 0:
+                    sv = to_process[succ]
+                    heapq.heappush(
+                        heap,
+                        (
+                            _merge_priority(sv),
+                            sv.last_change.time,
+                            seq,
+                            succ,
+                        ),
+                    )
+                    seq += 1
 
     if len(ordered) != len(to_process):
         remaining = {
@@ -1368,7 +1651,7 @@ def _order_collapsed_changes_fast(collapsed_changes, change_logger, operation):
             to_process,
             change_logger,
         )
-        raise Exception(
+        raise RuntimeError(
             f"Cycle detected in dependency graph. {len(remaining)} changes are "
             f"involved in circular dependencies and cannot be ordered."
         )
@@ -1386,6 +1669,7 @@ def bulk_merge_changes(
     record_applied=None,
     record_failed=None,
     result_metadata=None,
+    set_based_decision=None,
 ):
     """Merge branch changes into main regardless of caller branch context."""
     with deactivate_branch():
@@ -1399,6 +1683,7 @@ def bulk_merge_changes(
             record_applied=record_applied,
             record_failed=record_failed,
             result_metadata=result_metadata,
+            set_based_decision=set_based_decision,
         )
 
 
@@ -1413,6 +1698,7 @@ def _bulk_merge_changes_main(
     record_applied=None,
     record_failed=None,
     result_metadata=None,
+    set_based_decision=None,
 ):
     """Merge ``changes`` (a branch's unmerged ObjectChanges) into main.
 
@@ -1435,11 +1721,16 @@ def _bulk_merge_changes_main(
         if hasattr(changes, "iterator")
         else changes
     )
-    collapsed, _ = SquashMergeStrategy._collapse_changes(change_iter, change_logger)
+    with profile_scope("collapse_changes", owner="upstream_netbox_branching"):
+        collapsed, _ = SquashMergeStrategy._collapse_changes(
+            change_iter,
+            change_logger,
+        )
     logical_actions = {
         key: change.final_action.value for key, change in collapsed.items()
     }
-    _skip_updates_missing_in_main_batched(collapsed, change_logger)
+    with profile_scope("skip_missing_updates", owner="ours", rows=len(collapsed)):
+        _skip_updates_missing_in_main_batched(collapsed, change_logger)
     ordered = _order_collapsed_changes_fast(collapsed, change_logger, "merge")
     affected_prefix_vrf_ids = _affected_prefix_vrf_ids(ordered)
 
@@ -1452,6 +1743,7 @@ def _bulk_merge_changes_main(
     prefix_batch_action = None
     deferred_fk_batch = []
     deferred_fk_batch_model = None
+    set_based_mac_batch = []
     logical_components = defaultdict(set)
     logical_models = {}
     component_results = {}
@@ -1555,19 +1847,32 @@ def _bulk_merge_changes_main(
         # while the branch modified it, or any per-object validation conflict) so
         # one bad change never fails the whole sync — the merge must be resilient
         # for steady-state diffs. Mirrors the bulk-create IntegrityError isolation.
+        model_label = model_class._meta.label_lower
         try:
-            if (
-                collapsed_change.final_action == ActionType.CREATE
-                and _resume_existing_create(
-                    collapsed_change,
-                    change_logger,
-                    request,
-                    branch,
-                )
+            with profile_scope(
+                "fallback_orchestration",
+                model=model_label,
+                owner="ours",
+                rows=1,
             ):
-                _record_success(collapsed_change, model_class)
-                return
-            outcome = apply_one(collapsed_change)
+                resumed = False
+                if collapsed_change.final_action == ActionType.CREATE:
+                    with profile_scope(
+                        "replay_existing_create_check",
+                        model=model_label,
+                        owner="ours",
+                        rows=1,
+                    ):
+                        resumed = _resume_existing_create(
+                            collapsed_change,
+                            change_logger,
+                            request,
+                            branch,
+                        )
+                if resumed:
+                    _record_success(collapsed_change, model_class)
+                    return
+                outcome = apply_one(collapsed_change)
         except JobTimeoutException:
             raise
         except Exception as exc:  # noqa: BLE001 - isolate one object, keep merging
@@ -1577,6 +1882,22 @@ def _bulk_merge_changes_main(
                 getattr(model_class, "__name__", model_class),
                 exc,
             )
+            if isinstance(exc, ProtectedError):
+                # Name what actually holds the row. Without this the operator
+                # sees only ProtectedError and cannot tell why the sync never
+                # converged.
+                references = describe_protecting_references(
+                    model_class, collapsed_change.key[1]
+                )
+                if references:
+                    change_logger.warning(
+                        "Bulk merge: %s %s cannot be deleted while referenced by "
+                        "%s. Remove or reassign those references, or exclude the "
+                        "row from this sync's scope.",
+                        getattr(model_class, "__name__", model_class),
+                        collapsed_change.key[1],
+                        ", ".join(f"{label} x{count}" for label, count in references),
+                    )
             _record_failure(collapsed_change, failure=exc)
             return
         if isinstance(outcome, _ApplyOneFailure):
@@ -1587,7 +1908,7 @@ def _bulk_merge_changes_main(
             return
         _record_failure(collapsed_change)
 
-    def _flush():
+    def _flush_impl():
         nonlocal batch, batch_model
         if not batch:
             return
@@ -1831,11 +2152,24 @@ def _bulk_merge_changes_main(
         for collapsed_change, _ in built:
             _record_success(collapsed_change, model_class)
 
+    def _flush():
+        if not batch:
+            return None
+        model_label = batch_model._meta.label_lower if batch_model is not None else ""
+        row_count = len(batch)
+        with profile_scope(
+            "bulk_application",
+            model=model_label,
+            owner="ours",
+            rows=row_count,
+        ):
+            return _flush_impl()
+
     def _record_bulk_success(items, model_class):
         for collapsed_change in items:
             _record_success(collapsed_change, model_class)
 
-    def _flush_deferred_fks():
+    def _flush_deferred_fks_impl():
         nonlocal deferred_fk_batch, deferred_fk_batch_model
         if not deferred_fk_batch:
             return
@@ -1910,14 +2244,60 @@ def _bulk_merge_changes_main(
         for collapsed_change in fallback:
             _apply_via_fallback(collapsed_change, model_class)
 
-    def _flush_prefix():
+    def _flush_deferred_fks():
+        if not deferred_fk_batch:
+            return None
+        model_label = (
+            deferred_fk_batch_model._meta.label_lower
+            if deferred_fk_batch_model is not None
+            else ""
+        )
+        row_count = len(deferred_fk_batch)
+        with profile_scope(
+            "deferred_fk_application",
+            model=model_label,
+            owner="ours",
+            rows=row_count,
+        ):
+            return _flush_deferred_fks_impl()
+
+    def _flush_set_based_mac_impl():
+        nonlocal set_based_mac_batch
+        if not set_based_mac_batch:
+            return
+        from .merge_set_based import apply_set_based_mac_range
+
+        pending = set_based_mac_batch
+        set_based_mac_batch = []
+        result = apply_set_based_mac_range(
+            branch=branch,
+            collapsed_changes=pending,
+            request=request,
+            decision=set_based_decision,
+        )
+        for collapsed_change in result.applied:
+            _record_success(collapsed_change, collapsed_change.model_class)
+        for collapsed_change in result.fallback:
+            _apply_via_fallback(collapsed_change, collapsed_change.model_class)
+
+    def _flush_set_based_mac():
+        if not set_based_mac_batch:
+            return None
+        with profile_scope(
+            "set_based_mac_application",
+            model="dcim.macaddress",
+            owner="ours",
+            rows=len(set_based_mac_batch),
+        ):
+            return _flush_set_based_mac_impl()
+
+    def _flush_prefix_impl():
         nonlocal prefix_batch, prefix_batch_action
         if not prefix_batch:
             return
         from core.choices import ObjectChangeActionChoices
         from django.db import IntegrityError
-        from django.db.models.deletion import ProtectedError
-        from django.db.models.deletion import RestrictedError
+        from django.db.models.deletion import ProtectedError, RestrictedError
         from ipam.models import Prefix
         from netbox.context import current_request
         from utilities.exceptions import AbortRequest
@@ -2037,6 +2417,19 @@ def _bulk_merge_changes_main(
             return
         _record_bulk_success(present, Prefix)
 
+    def _flush_prefix():
+        if not prefix_batch:
+            return None
+        row_count = len(prefix_batch)
+        action = str(prefix_batch_action or "")
+        with profile_scope(
+            f"prefix_{action}_application",
+            model="ipam.prefix",
+            owner="ours",
+            rows=row_count,
+        ):
+            return _flush_prefix_impl()
+
     for logical_key, collapsed_change in collapsed.items():
         if collapsed_change.final_action == ActionType.SKIP:
             _record_success(collapsed_change, logical_models[logical_key])
@@ -2050,6 +2443,22 @@ def _bulk_merge_changes_main(
                 continue
             model_class = collapsed_change.model_class
             models_touched.add(model_class)
+
+            use_set_based_mac = bool(
+                set_based_decision is not None
+                and set_based_decision.enabled
+                and model_class._meta.label_lower == "dcim.macaddress"
+            )
+            if use_set_based_mac:
+                _flush()
+                _flush_prefix()
+                _flush_deferred_fks()
+                set_based_mac_batch.append(collapsed_change)
+                if len(set_based_mac_batch) >= BULK_MERGE_FLUSH_THRESHOLD:
+                    _flush_set_based_mac()
+                continue
+
+            _flush_set_based_mac()
 
             if _is_deferred_fk_update(collapsed_change):
                 _flush()
@@ -2093,6 +2502,7 @@ def _bulk_merge_changes_main(
         _flush()
         _flush_prefix()
         _flush_deferred_fks()
+        _flush_set_based_mac()
     except JobTimeoutException:
         timed_out = True
         raise

@@ -364,8 +364,15 @@ def sync_merge_ingestion(
     mark_baseline_ready=None,
     remove_branch=True,
     claimed_job=None,
+    merge_attempt=None,
 ):
     from .merge import merge_branch
+    from .merge_observability import (
+        begin_merge_attempt,
+        capture_merge_signals,
+        complete_merge_attempt,
+        fail_merge_attempt,
+    )
 
     forwardsync = ingestion.sync
     forwardsync.refresh_from_db(fields=["status"])
@@ -380,53 +387,67 @@ def sync_merge_ingestion(
 
     pre_sync.send(sender=ingestion.__class__, instance=ingestion)
     context = _post_merge_context(ingestion, mark_baseline_ready)
+    merge_attempt = merge_attempt or begin_merge_attempt(
+        ingestion,
+        job=claimed_job,
+    )
 
     forwardsync.status = ForwardSyncStatusChoices.MERGING
     ForwardSync = forwardsync.__class__
     ForwardSync.objects.filter(pk=forwardsync.pk).update(status=forwardsync.status)
 
     try:
-        with suppress_branch_merge_side_effect_signals():
-            merge_branch(
-                ingestion=ingestion,
-                sync_logger=forwardsync.logger,
-                user=merge_user,
-            )
-        _complete_post_merge_bookkeeping(
-            ingestion,
-            context=context,
-            remove_branch=remove_branch,
-        )
-    except ForwardPartialMergeError:
-        forwardsync.status = ForwardSyncStatusChoices.READY_TO_MERGE
-        ForwardSync.objects.filter(pk=forwardsync.pk).update(
-            status=forwardsync.status,
-        )
-        forwardsync.source.status = ForwardSourceStatusChoices.READY
-        forwardsync.source.__class__.objects.filter(pk=forwardsync.source.pk).update(
-            status=forwardsync.source.status
-        )
+        with capture_merge_signals():
+            try:
+                with suppress_branch_merge_side_effect_signals():
+                    merge_branch(
+                        ingestion=ingestion,
+                        sync_logger=forwardsync.logger,
+                        user=merge_user,
+                        merge_attempt=merge_attempt,
+                    )
+                _complete_post_merge_bookkeeping(
+                    ingestion,
+                    context=context,
+                    remove_branch=remove_branch,
+                )
+            except ForwardPartialMergeError:
+                forwardsync.status = ForwardSyncStatusChoices.READY_TO_MERGE
+                ForwardSync.objects.filter(pk=forwardsync.pk).update(
+                    status=forwardsync.status,
+                )
+                forwardsync.source.status = ForwardSourceStatusChoices.READY
+                forwardsync.source.__class__.objects.filter(
+                    pk=forwardsync.source.pk
+                ).update(status=forwardsync.source.status)
+                raise
+            except Exception:
+                ingestion.refresh_from_db(
+                    fields=["merge_applied_at", "merge_finalized_at"]
+                )
+                post_merge_failure = ingestion.merge_applied_at is not None
+                forwardsync.status = (
+                    ForwardSyncStatusChoices.MERGING
+                    if post_merge_failure
+                    else ForwardSyncStatusChoices.FAILED
+                )
+                ForwardSync.objects.filter(pk=forwardsync.pk).update(
+                    status=forwardsync.status,
+                )
+                forwardsync.source.status = (
+                    ForwardSourceStatusChoices.READY
+                    if post_merge_failure
+                    else ForwardSourceStatusChoices.FAILED
+                )
+                forwardsync.source.__class__.objects.filter(
+                    pk=forwardsync.source.pk
+                ).update(status=forwardsync.source.status)
+                raise
+    except BaseException as exc:
+        fail_merge_attempt(merge_attempt, exc)
         raise
-    except Exception:
-        ingestion.refresh_from_db(fields=["merge_applied_at", "merge_finalized_at"])
-        post_merge_failure = ingestion.merge_applied_at is not None
-        forwardsync.status = (
-            ForwardSyncStatusChoices.MERGING
-            if post_merge_failure
-            else ForwardSyncStatusChoices.FAILED
-        )
-        ForwardSync.objects.filter(pk=forwardsync.pk).update(
-            status=forwardsync.status,
-        )
-        forwardsync.source.status = (
-            ForwardSourceStatusChoices.READY
-            if post_merge_failure
-            else ForwardSourceStatusChoices.FAILED
-        )
-        forwardsync.source.__class__.objects.filter(pk=forwardsync.source.pk).update(
-            status=forwardsync.source.status
-        )
-        raise
+    else:
+        complete_merge_attempt(merge_attempt)
 
 
 def enqueue_merge_job(
@@ -436,38 +457,33 @@ def enqueue_merge_job(
     *,
     recovery_sync_job_pks=None,
 ):
-    with advisory_lock(ADVISORY_LOCK_KEYS["job-schedules"]):
-        with transaction.atomic():
-            locked = ingestion.__class__.objects.select_for_update().get(
-                pk=ingestion.pk
-            )
-            existing_job = (
-                Job.objects.filter(pk=locked.merge_job_id).first()
-                if locked.merge_job_id
-                else None
-            )
-            if existing_job is not None and not existing_job.completed:
-                ingestion.merge_job = existing_job
-                return existing_job
-            sync = locked.sync.__class__.objects.select_for_update().get(
-                pk=locked.sync_id
-            )
-            sync.status = ForwardSyncStatusChoices.QUEUED
-            sync.__class__.objects.filter(pk=sync.pk).update(status=sync.status)
-            change_count = (
-                locked.branch.get_unmerged_changes().count() if locked.branch_id else 0
-            )
-            job = enqueue_forward_job(
-                import_string("forward_netbox.jobs.merge_forwardingestion"),
-                name=f"{locked.name} Merge",
-                instance=locked,
-                user=user,
-                remove_branch=remove_branch,
-                recovery_sync_job_pks=list(recovery_sync_job_pks or []),
-                job_timeout=effective_merge_job_timeout(change_count),
-            )
-            ingestion.__class__.objects.filter(pk=locked.pk).update(merge_job=job)
-            ingestion.merge_job = job
+    with advisory_lock(ADVISORY_LOCK_KEYS["job-schedules"]), transaction.atomic():
+        locked = ingestion.__class__.objects.select_for_update().get(pk=ingestion.pk)
+        existing_job = (
+            Job.objects.filter(pk=locked.merge_job_id).first()
+            if locked.merge_job_id
+            else None
+        )
+        if existing_job is not None and not existing_job.completed:
+            ingestion.merge_job = existing_job
+            return existing_job
+        sync = locked.sync.__class__.objects.select_for_update().get(pk=locked.sync_id)
+        sync.status = ForwardSyncStatusChoices.QUEUED
+        sync.__class__.objects.filter(pk=sync.pk).update(status=sync.status)
+        change_count = (
+            locked.branch.get_unmerged_changes().count() if locked.branch_id else 0
+        )
+        job = enqueue_forward_job(
+            import_string("forward_netbox.jobs.merge_forwardingestion"),
+            name=f"{locked.name} Merge",
+            instance=locked,
+            user=user,
+            remove_branch=remove_branch,
+            recovery_sync_job_pks=list(recovery_sync_job_pks or []),
+            job_timeout=effective_merge_job_timeout(change_count),
+        )
+        ingestion.__class__.objects.filter(pk=locked.pk).update(merge_job=job)
+        ingestion.merge_job = job
     return job
 
 

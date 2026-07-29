@@ -24,6 +24,7 @@ from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.exceptions import ForwardPartialMergeError
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardIngestionIssue
+from forward_netbox.models import ForwardMergeAttempt
 from forward_netbox.models import ForwardOwnershipReconciliation
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
@@ -1106,23 +1107,39 @@ class ForwardIngestionMergeHelperTest(TestCase):
             snapshot_id="snapshot-merge-progress",
         )
         sync_logger = MagicMock()
+        attempt = ForwardMergeAttempt.objects.create(
+            ingestion=ingestion,
+            attempt_number=1,
+        )
 
         with patch("forward_netbox.utilities.merge.time.monotonic", return_value=101.0):
             heartbeat_at, log_at = _report_merge_progress(
-                ingestion,
+                attempt,
                 sync_logger=sync_logger,
                 model_string="ipam.prefix",
-                processed=5000,
+                merged_changes=5000,
+                failed_changes=0,
                 total_changes=9295,
+                model_progress={"ipam.prefix": {"merged": 5000, "failed": 0}},
+                started_at=91.0,
                 last_heartbeat_at=100.0,
                 last_log_at=100.0,
             )
 
         sync_logger.log_info.assert_called_once_with(
-            "Merged 5000/9295 branch changes (current model `ipam.prefix`)."
+            "Merge progress: 5000/9295 changes merged; current model "
+            "`ipam.prefix`; rate 500.00 changes/sec; elapsed 10.0s; ETA 8.6s."
         )
         self.assertEqual(heartbeat_at, 101.0)
         self.assertEqual(log_at, 101.0)
+        attempt.refresh_from_db()
+        self.assertEqual(attempt.merged_changes, 5000)
+        self.assertEqual(attempt.current_model, "ipam.prefix")
+        self.assertEqual(attempt.checkpoint_sequence, 1)
+        self.assertEqual(
+            attempt.model_progress,
+            {"ipam.prefix": {"merged": 5000, "failed": 0}},
+        )
 
     def test_merge_progress_skips_noisy_updates_between_intervals(self):
         from forward_netbox.utilities.merge import _report_merge_progress
@@ -1133,14 +1150,21 @@ class ForwardIngestionMergeHelperTest(TestCase):
             snapshot_id="snapshot-merge-progress-quiet",
         )
         sync_logger = MagicMock()
+        attempt = ForwardMergeAttempt.objects.create(
+            ingestion=ingestion,
+            attempt_number=1,
+        )
 
         with patch("forward_netbox.utilities.merge.time.monotonic", return_value=101.0):
             heartbeat_at, log_at = _report_merge_progress(
-                ingestion,
+                attempt,
                 sync_logger=sync_logger,
                 model_string="ipam.prefix",
-                processed=999,
+                merged_changes=999,
+                failed_changes=0,
                 total_changes=9295,
+                model_progress={"ipam.prefix": {"merged": 999, "failed": 0}},
+                started_at=91.0,
                 last_heartbeat_at=100.0,
                 last_log_at=100.0,
             )
@@ -1148,6 +1172,9 @@ class ForwardIngestionMergeHelperTest(TestCase):
         sync_logger.log_info.assert_not_called()
         self.assertEqual(heartbeat_at, 100.0)
         self.assertEqual(log_at, 100.0)
+        attempt.refresh_from_db()
+        self.assertEqual(attempt.merged_changes, 0)
+        self.assertEqual(attempt.checkpoint_sequence, 0)
 
 
 class MergeIssueRecorderTest(TestCase):

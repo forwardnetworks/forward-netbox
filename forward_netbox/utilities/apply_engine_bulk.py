@@ -848,6 +848,26 @@ def _canonical_mac(value):
         return str(value).strip().upper()
 
 
+def _is_parseable_mac(value) -> bool:
+    """Whether ``value`` survives the EUI-48 parse the ORM lookup will perform.
+
+    ``MACAddress.mac_address__in`` prepares each element through NetBox's MAC
+    field, so a single malformed string raises ``AddrFormatError`` while the
+    *query* is being built — before any row is examined. That failed the whole
+    batch instead of the one bad row, so a single unparseable MAC from Forward
+    took every other MAC in the shard down with it.
+    """
+    from netaddr import EUI
+
+    try:
+        EUI(str(value), version=48)
+    except JobTimeoutException:
+        raise
+    except Exception:  # noqa: BLE001 - unparseable is the answer, not an error
+        return False
+    return True
+
+
 def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
     from dcim.models import Device
     from dcim.models import Interface
@@ -885,7 +905,9 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
         for interface in Interface.objects.select_related("device").filter(query):
             interfaces_by_key[(interface.device.name, interface.name)] = interface
     macs_by_address = {}
-    for batch in _chunks(list(mac_values)):
+    # Only parseable values may enter the lookup; an unparseable one is left for
+    # the per-row loop below to reject individually.
+    for batch in _chunks([value for value in mac_values if _is_parseable_mac(value)]):
         for mac in MACAddress.objects.filter(mac_address__in=batch):
             macs_by_address[_canonical_mac(mac.mac_address)] = mac
 
@@ -904,6 +926,29 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
                     "required": ("device", "interface", "mac"),
                     "device": device_name,
                     "interface": interface_name,
+                },
+                data=row,
+            )
+            runner._mark_dependency_failed("dcim.macaddress", row)
+            runner.logger.increment_statistics("dcim.macaddress", outcome="failed")
+            runner._record_issue(
+                "dcim.macaddress",
+                str(exc),
+                row,
+                exception=exc,
+                context=exc.context,
+                defaults=exc.defaults,
+            )
+            continue
+
+        if not _is_parseable_mac(mac_address):
+            exc = ForwardSyncDataError(
+                f"MAC address `{mac_address}` is not a valid EUI-48 address.",
+                model_string="dcim.macaddress",
+                context={
+                    "device": device_name,
+                    "interface": interface_name,
+                    "mac": mac_address,
                 },
                 data=row,
             )
