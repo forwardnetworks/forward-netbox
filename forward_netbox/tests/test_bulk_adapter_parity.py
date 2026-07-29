@@ -455,6 +455,38 @@ class BulkAdapterParityTest(TestCase):
             mock_update.assert_not_called()
         self.assertEqual(self._outcomes(runner, "dcim.macaddress"), {"unchanged": 1})
 
+    def test_one_malformed_mac_fails_alone_and_the_batch_still_applies(self):
+        """A bad MAC must not take the whole shard down with it.
+
+        `MACAddress.mac_address__in` prepares every element through NetBox's MAC
+        field, so an unparseable string raised AddrFormatError while the *query*
+        was being built — before any row was examined. One malformed value from
+        Forward therefore failed every other MAC in the batch.
+        """
+        rows = [
+            {"device": "dev-p", "interface": "Ethernet1", "mac": "not-a-mac"},
+            {"device": "dev-p", "interface": "Ethernet1", "mac": "00:11:22:33:44:66"},
+        ]
+
+        runner = self._runner()
+        bulk_orm_apply_macaddress(runner, rows)
+
+        self.assertTrue(
+            MACAddress.objects.filter(mac_address="00:11:22:33:44:66").exists(),
+            "the well-formed MAC in the same batch must still be applied",
+        )
+        self.assertEqual(
+            self._outcomes(runner, "dcim.macaddress"), {"applied": 1, "failed": 1}
+        )
+
+    def test_a_batch_of_only_malformed_macs_does_not_raise(self):
+        runner = self._runner()
+        bulk_orm_apply_macaddress(
+            runner,
+            [{"device": "dev-p", "interface": "Ethernet1", "mac": "zzz"}],
+        )
+        self.assertEqual(self._outcomes(runner, "dcim.macaddress"), {"failed": 1})
+
     def test_ipaddress_reapply_makes_no_writes(self):
         rows = [
             {

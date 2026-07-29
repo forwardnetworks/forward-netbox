@@ -50,6 +50,7 @@ from rq.timeouts import JobTimeoutException
 from utilities.serialization import deserialize_object
 
 from .bulk_delete import lock_tables_for_writes
+from .merge_profiling import profile_scope
 
 # SQL chunk size handed to bulk_create (splits the multi-row INSERT).
 BULK_MERGE_BATCH_SIZE = 1000
@@ -224,7 +225,7 @@ def _rebuild_main_prefix_hierarchies(vrf_ids):
             rebuild_prefixes(vrf_id)
 
 
-def _sync_global_change_diffs(object_changes, action):
+def _sync_global_change_diffs_impl(object_changes, action):
     """Mirror Branching's global ObjectChange receiver after a bulk audit write."""
     if not object_changes:
         return
@@ -261,7 +262,25 @@ def _sync_global_change_diffs(object_changes, action):
         )
 
 
-def _emit_main_object_changes(
+def _sync_global_change_diffs(object_changes, action):
+    model = (
+        object_changes[0].changed_object_type.model_class()._meta.label_lower
+        if object_changes
+        else ""
+    )
+    with profile_scope(
+        "changediff_resolution",
+        model=model,
+        # This is Forward's set-based equivalent of Branching's global
+        # ObjectChange receiver. The ChangeDiff contract is upstream-owned,
+        # but this implementation and its query shape are actionable here.
+        owner="ours",
+        rows=len(object_changes),
+    ):
+        return _sync_global_change_diffs_impl(object_changes, action)
+
+
+def _emit_main_object_changes_impl(
     objects,
     action,
     request,
@@ -325,6 +344,33 @@ def _emit_main_object_changes(
                 batch_size=BULK_MERGE_BATCH_SIZE,
             )
             _sync_global_change_diffs(object_changes, action)
+
+
+def _emit_main_object_changes(
+    objects,
+    action,
+    request,
+    branch,
+    *,
+    message=None,
+    allow_unchanged=False,
+):
+    objects = list(objects)
+    model = objects[0]._meta.label_lower if objects else ""
+    with profile_scope(
+        "audit_and_lineage",
+        model=model,
+        owner="ours",
+        rows=len(objects),
+    ):
+        return _emit_main_object_changes_impl(
+            objects,
+            action,
+            request,
+            branch,
+            message=message,
+            allow_unchanged=allow_unchanged,
+        )
 
 
 class _PrefixDeleteNeedsIsolation(Exception):
@@ -886,12 +932,13 @@ def _typed_audit_mismatches(target, prior_applied_data, field_names):
     mismatches = []
     for field_name in field_names:
         field = concrete_fields.get(field_name)
-        if isinstance(field, models.DecimalField):
-            if getattr(target, field.attname) == getattr(
-                deserialized.object,
-                field.attname,
-            ):
-                continue
+        if isinstance(field, models.DecimalField) and getattr(
+            target, field.attname
+        ) == getattr(
+            deserialized.object,
+            field.attname,
+        ):
+            continue
         mismatches.append(field_name)
     return mismatches
 
@@ -1508,79 +1555,92 @@ def _order_collapsed_changes_fast(collapsed_changes, change_logger, operation):
     # The exact 1.1.1 runtime breaks cycles inside its own sorter rather than
     # exposing a helper. This custom O((V+E) log V) sorter owns the equivalent
     # deterministic pair split before reusing the framework dependency graph.
-    _split_bidirectional_create_cycles(to_process, change_logger)
-    # Then split deferred self-referential FKs (primary_ip4/6, oob_ip, VC master)
-    # out of CREATEs — these form 3-node cycles the framework's 2-node split misses
-    # (device -> primary_ip -> assigned interface -> device). Must run before the
-    # graph build below so the cycle edge is never created.
-    _defer_self_referential_create_fks(to_process, change_logger)
-    _add_tag_identity_release_dependencies(to_process)
-    deletes = sorted(
-        (v for v in to_process.values() if v.final_action == ActionType.DELETE),
-        key=lambda c: c.last_change.time,
-    )
-    updates = sorted(
-        (v for v in to_process.values() if v.final_action == ActionType.UPDATE),
-        key=lambda c: c.last_change.time,
-    )
-    creates = sorted(
-        (v for v in to_process.values() if v.final_action == ActionType.CREATE),
-        key=lambda c: c.last_change.time,
-    )
-    SquashMergeStrategy._build_fk_dependency_graph(
-        deletes, updates, creates, change_logger
-    )
-    _add_destination_fk_release_dependencies(to_process, change_logger)
-    _add_protected_child_delete_dependencies(to_process, change_logger)
-    squash_dependency_graph_built.send(
-        sender=SquashMergeStrategy,
-        collapsed_changes=to_process,
-        operation=operation,
-    )
+    with profile_scope(
+        "dependency_cycle_preparation", owner="ours", rows=len(to_process)
+    ):
+        _split_bidirectional_create_cycles(to_process, change_logger)
+        # Then split deferred self-referential FKs (primary_ip4/6, oob_ip, VC master)
+        # out of CREATEs — these form 3-node cycles the framework's 2-node split misses
+        # (device -> primary_ip -> assigned interface -> device). Must run before the
+        # graph build below so the cycle edge is never created.
+        _defer_self_referential_create_fks(to_process, change_logger)
+        _add_tag_identity_release_dependencies(to_process)
+        deletes = sorted(
+            (v for v in to_process.values() if v.final_action == ActionType.DELETE),
+            key=lambda c: c.last_change.time,
+        )
+        updates = sorted(
+            (v for v in to_process.values() if v.final_action == ActionType.UPDATE),
+            key=lambda c: c.last_change.time,
+        )
+        creates = sorted(
+            (v for v in to_process.values() if v.final_action == ActionType.CREATE),
+            key=lambda c: c.last_change.time,
+        )
+    with profile_scope(
+        "dependency_graph",
+        owner="upstream_netbox_branching",
+        rows=len(to_process),
+    ):
+        SquashMergeStrategy._build_fk_dependency_graph(
+            deletes, updates, creates, change_logger
+        )
+        # Both restore edges the framework can only derive from a branch
+        # preimage, which branch-native bulk changes may not carry. They must
+        # run after the framework graph build and before the signal, so a
+        # receiver sees the completed graph.
+        _add_destination_fk_release_dependencies(to_process, change_logger)
+        _add_protected_child_delete_dependencies(to_process, change_logger)
+        squash_dependency_graph_built.send(
+            sender=SquashMergeStrategy,
+            collapsed_changes=to_process,
+            operation=operation,
+        )
 
     # Authoritative reverse index + in-degree, both from depends_on filtered to
     # in-scope keys (so a dependency on a SKIP'd/absent node never wedges).
-    successors = defaultdict(list)
-    indeg = {}
-    for key, collapsed in to_process.items():
-        deps = [d for d in collapsed.depends_on if d in to_process]
-        indeg[key] = len(deps)
-        for dep in deps:
-            successors[dep].append(key)
+    with profile_scope("dependency_ordering", owner="ours", rows=len(to_process)):
+        successors = defaultdict(list)
+        indeg = {}
+        for key, collapsed in to_process.items():
+            deps = [d for d in collapsed.depends_on if d in to_process]
+            indeg[key] = len(deps)
+            for dep in deps:
+                successors[dep].append(key)
 
-    heap = []
-    seq = 0
-    for key, collapsed in to_process.items():
-        if indeg[key] == 0:
-            heapq.heappush(
-                heap,
-                (
-                    _merge_priority(collapsed),
-                    collapsed.last_change.time,
-                    seq,
-                    key,
-                ),
-            )
-            seq += 1
-
-    ordered = []
-    while heap:
-        _, _, _, key = heapq.heappop(heap)
-        ordered.append(to_process[key])
-        for succ in successors.get(key, ()):
-            indeg[succ] -= 1
-            if indeg[succ] == 0:
-                sv = to_process[succ]
+        heap = []
+        seq = 0
+        for key, collapsed in to_process.items():
+            if indeg[key] == 0:
                 heapq.heappush(
                     heap,
                     (
-                        _merge_priority(sv),
-                        sv.last_change.time,
+                        _merge_priority(collapsed),
+                        collapsed.last_change.time,
                         seq,
-                        succ,
+                        key,
                     ),
                 )
                 seq += 1
+
+        ordered = []
+        while heap:
+            _, _, _, key = heapq.heappop(heap)
+            ordered.append(to_process[key])
+            for succ in successors.get(key, ()):
+                indeg[succ] -= 1
+                if indeg[succ] == 0:
+                    sv = to_process[succ]
+                    heapq.heappush(
+                        heap,
+                        (
+                            _merge_priority(sv),
+                            sv.last_change.time,
+                            seq,
+                            succ,
+                        ),
+                    )
+                    seq += 1
 
     if len(ordered) != len(to_process):
         remaining = {
@@ -1591,7 +1651,7 @@ def _order_collapsed_changes_fast(collapsed_changes, change_logger, operation):
             to_process,
             change_logger,
         )
-        raise Exception(
+        raise RuntimeError(
             f"Cycle detected in dependency graph. {len(remaining)} changes are "
             f"involved in circular dependencies and cannot be ordered."
         )
@@ -1609,6 +1669,7 @@ def bulk_merge_changes(
     record_applied=None,
     record_failed=None,
     result_metadata=None,
+    set_based_decision=None,
 ):
     """Merge branch changes into main regardless of caller branch context."""
     with deactivate_branch():
@@ -1622,6 +1683,7 @@ def bulk_merge_changes(
             record_applied=record_applied,
             record_failed=record_failed,
             result_metadata=result_metadata,
+            set_based_decision=set_based_decision,
         )
 
 
@@ -1636,6 +1698,7 @@ def _bulk_merge_changes_main(
     record_applied=None,
     record_failed=None,
     result_metadata=None,
+    set_based_decision=None,
 ):
     """Merge ``changes`` (a branch's unmerged ObjectChanges) into main.
 
@@ -1658,11 +1721,16 @@ def _bulk_merge_changes_main(
         if hasattr(changes, "iterator")
         else changes
     )
-    collapsed, _ = SquashMergeStrategy._collapse_changes(change_iter, change_logger)
+    with profile_scope("collapse_changes", owner="upstream_netbox_branching"):
+        collapsed, _ = SquashMergeStrategy._collapse_changes(
+            change_iter,
+            change_logger,
+        )
     logical_actions = {
         key: change.final_action.value for key, change in collapsed.items()
     }
-    _skip_updates_missing_in_main_batched(collapsed, change_logger)
+    with profile_scope("skip_missing_updates", owner="ours", rows=len(collapsed)):
+        _skip_updates_missing_in_main_batched(collapsed, change_logger)
     ordered = _order_collapsed_changes_fast(collapsed, change_logger, "merge")
     affected_prefix_vrf_ids = _affected_prefix_vrf_ids(ordered)
 
@@ -1675,6 +1743,7 @@ def _bulk_merge_changes_main(
     prefix_batch_action = None
     deferred_fk_batch = []
     deferred_fk_batch_model = None
+    set_based_mac_batch = []
     logical_components = defaultdict(set)
     logical_models = {}
     component_results = {}
@@ -1778,19 +1847,32 @@ def _bulk_merge_changes_main(
         # while the branch modified it, or any per-object validation conflict) so
         # one bad change never fails the whole sync — the merge must be resilient
         # for steady-state diffs. Mirrors the bulk-create IntegrityError isolation.
+        model_label = model_class._meta.label_lower
         try:
-            if (
-                collapsed_change.final_action == ActionType.CREATE
-                and _resume_existing_create(
-                    collapsed_change,
-                    change_logger,
-                    request,
-                    branch,
-                )
+            with profile_scope(
+                "fallback_orchestration",
+                model=model_label,
+                owner="ours",
+                rows=1,
             ):
-                _record_success(collapsed_change, model_class)
-                return
-            outcome = apply_one(collapsed_change)
+                resumed = False
+                if collapsed_change.final_action == ActionType.CREATE:
+                    with profile_scope(
+                        "replay_existing_create_check",
+                        model=model_label,
+                        owner="ours",
+                        rows=1,
+                    ):
+                        resumed = _resume_existing_create(
+                            collapsed_change,
+                            change_logger,
+                            request,
+                            branch,
+                        )
+                if resumed:
+                    _record_success(collapsed_change, model_class)
+                    return
+                outcome = apply_one(collapsed_change)
         except JobTimeoutException:
             raise
         except Exception as exc:  # noqa: BLE001 - isolate one object, keep merging
@@ -1826,7 +1908,7 @@ def _bulk_merge_changes_main(
             return
         _record_failure(collapsed_change)
 
-    def _flush():
+    def _flush_impl():
         nonlocal batch, batch_model
         if not batch:
             return
@@ -2070,11 +2152,24 @@ def _bulk_merge_changes_main(
         for collapsed_change, _ in built:
             _record_success(collapsed_change, model_class)
 
+    def _flush():
+        if not batch:
+            return None
+        model_label = batch_model._meta.label_lower if batch_model is not None else ""
+        row_count = len(batch)
+        with profile_scope(
+            "bulk_application",
+            model=model_label,
+            owner="ours",
+            rows=row_count,
+        ):
+            return _flush_impl()
+
     def _record_bulk_success(items, model_class):
         for collapsed_change in items:
             _record_success(collapsed_change, model_class)
 
-    def _flush_deferred_fks():
+    def _flush_deferred_fks_impl():
         nonlocal deferred_fk_batch, deferred_fk_batch_model
         if not deferred_fk_batch:
             return
@@ -2149,14 +2244,60 @@ def _bulk_merge_changes_main(
         for collapsed_change in fallback:
             _apply_via_fallback(collapsed_change, model_class)
 
-    def _flush_prefix():
+    def _flush_deferred_fks():
+        if not deferred_fk_batch:
+            return None
+        model_label = (
+            deferred_fk_batch_model._meta.label_lower
+            if deferred_fk_batch_model is not None
+            else ""
+        )
+        row_count = len(deferred_fk_batch)
+        with profile_scope(
+            "deferred_fk_application",
+            model=model_label,
+            owner="ours",
+            rows=row_count,
+        ):
+            return _flush_deferred_fks_impl()
+
+    def _flush_set_based_mac_impl():
+        nonlocal set_based_mac_batch
+        if not set_based_mac_batch:
+            return
+        from .merge_set_based import apply_set_based_mac_range
+
+        pending = set_based_mac_batch
+        set_based_mac_batch = []
+        result = apply_set_based_mac_range(
+            branch=branch,
+            collapsed_changes=pending,
+            request=request,
+            decision=set_based_decision,
+        )
+        for collapsed_change in result.applied:
+            _record_success(collapsed_change, collapsed_change.model_class)
+        for collapsed_change in result.fallback:
+            _apply_via_fallback(collapsed_change, collapsed_change.model_class)
+
+    def _flush_set_based_mac():
+        if not set_based_mac_batch:
+            return None
+        with profile_scope(
+            "set_based_mac_application",
+            model="dcim.macaddress",
+            owner="ours",
+            rows=len(set_based_mac_batch),
+        ):
+            return _flush_set_based_mac_impl()
+
+    def _flush_prefix_impl():
         nonlocal prefix_batch, prefix_batch_action
         if not prefix_batch:
             return
         from core.choices import ObjectChangeActionChoices
         from django.db import IntegrityError
-        from django.db.models.deletion import ProtectedError
-        from django.db.models.deletion import RestrictedError
+        from django.db.models.deletion import ProtectedError, RestrictedError
         from ipam.models import Prefix
         from netbox.context import current_request
         from utilities.exceptions import AbortRequest
@@ -2276,6 +2417,19 @@ def _bulk_merge_changes_main(
             return
         _record_bulk_success(present, Prefix)
 
+    def _flush_prefix():
+        if not prefix_batch:
+            return None
+        row_count = len(prefix_batch)
+        action = str(prefix_batch_action or "")
+        with profile_scope(
+            f"prefix_{action}_application",
+            model="ipam.prefix",
+            owner="ours",
+            rows=row_count,
+        ):
+            return _flush_prefix_impl()
+
     for logical_key, collapsed_change in collapsed.items():
         if collapsed_change.final_action == ActionType.SKIP:
             _record_success(collapsed_change, logical_models[logical_key])
@@ -2289,6 +2443,22 @@ def _bulk_merge_changes_main(
                 continue
             model_class = collapsed_change.model_class
             models_touched.add(model_class)
+
+            use_set_based_mac = bool(
+                set_based_decision is not None
+                and set_based_decision.enabled
+                and model_class._meta.label_lower == "dcim.macaddress"
+            )
+            if use_set_based_mac:
+                _flush()
+                _flush_prefix()
+                _flush_deferred_fks()
+                set_based_mac_batch.append(collapsed_change)
+                if len(set_based_mac_batch) >= BULK_MERGE_FLUSH_THRESHOLD:
+                    _flush_set_based_mac()
+                continue
+
+            _flush_set_based_mac()
 
             if _is_deferred_fk_update(collapsed_change):
                 _flush()
@@ -2332,6 +2502,7 @@ def _bulk_merge_changes_main(
         _flush()
         _flush_prefix()
         _flush_deferred_fks()
+        _flush_set_based_mac()
     except JobTimeoutException:
         timed_out = True
         raise

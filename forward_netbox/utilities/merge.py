@@ -11,21 +11,20 @@ This preserves the branch-backed merge lifecycle while scaling its apply path:
 import logging
 import time
 import uuid
+from collections import defaultdict
 from functools import partial
 from typing import TYPE_CHECKING
 
 from core.exceptions import SyncError
 from core.models import ObjectChange as ObjectChange_
-from django.db import DEFAULT_DB_ALIAS
-from django.db import transaction
+from django.db import DEFAULT_DB_ALIAS, transaction
 from django.db.models import Count
 from django.db.models.signals import post_save
 from django.test import RequestFactory
 from django.urls import reverse
 from django.utils import timezone
 from netbox.context_managers import event_tracking
-from netbox_branching.choices import BranchEventTypeChoices
-from netbox_branching.choices import BranchStatusChoices
+from netbox_branching.choices import BranchEventTypeChoices, BranchStatusChoices
 from netbox_branching.merge_strategies import get_merge_strategy
 from netbox_branching.models import Branch
 from netbox_branching.models import BranchEvent
@@ -41,6 +40,11 @@ from .bulk_merge import _ApplyOneFailure
 from .bulk_merge import bulk_merge_changes
 from .diagnostics import exception_type
 from .diagnostics import safe_operation_failure
+from .merge_observability import checkpoint_merge_attempt
+from .merge_observability import initialize_merge_attempt
+from .merge_observability import mark_merge_attempt_applied
+from .merge_profiling import profile_scope
+from .merge_set_based import set_based_merge_decision
 
 if TYPE_CHECKING:
     from ..models import ForwardIngestion
@@ -101,25 +105,26 @@ class _MergeIssueRecorder:
 
 def _attest_branch_merged(ingestion, branch, user) -> None:
     """Atomically persist Branching completion and durable ingestion evidence."""
-    merged_at = timezone.now()
-    with transaction.atomic():
-        branch.status = BranchStatusChoices.MERGED
-        branch.merged_time = merged_at
-        branch.merged_by = user
-        branch.save(
-            update_merge_sync_fields=True,
-            update_fields=["status", "merged_time", "merged_by", "last_updated"],
-        )
-        BranchEvent.objects.create(
-            branch=branch,
-            user=user,
-            type=BranchEventTypeChoices.MERGED,
-        )
-        ingestion.__class__.objects.filter(pk=ingestion.pk).update(
-            merge_applied_at=merged_at
-        )
-        ingestion.merge_applied_at = merged_at
-    post_merge.send(sender=Branch, branch=branch, user=user)
+    with profile_scope("branch_attestation", owner="ours"):
+        merged_at = timezone.now()
+        with transaction.atomic():
+            branch.status = BranchStatusChoices.MERGED
+            branch.merged_time = merged_at
+            branch.merged_by = user
+            branch.save(
+                update_merge_sync_fields=True,
+                update_fields=["status", "merged_time", "merged_by", "last_updated"],
+            )
+            BranchEvent.objects.create(
+                branch=branch,
+                user=user,
+                type=BranchEventTypeChoices.MERGED,
+            )
+            ingestion.__class__.objects.filter(pk=ingestion.pk).update(
+                merge_applied_at=merged_at
+            )
+            ingestion.merge_applied_at = merged_at
+        post_merge.send(sender=Branch, branch=branch, user=user)
 
 
 def _retire_resolved_merge_issues(ingestion, issue_ids) -> int:
@@ -192,6 +197,7 @@ def merge_branch(
     sync_logger: "SyncLogging | None" = None,
     *,
     user=None,
+    merge_attempt=None,
 ) -> None:
     branch = ingestion.branch
     user = user or ingestion.sync.user
@@ -213,6 +219,7 @@ def merge_branch(
     )
     changes = branch.get_unmerged_changes().order_by("time")
     if not changes.exists():
+        initialize_merge_attempt(merge_attempt, total_changes=0)
         if retrying_partial:
             ingestion.record_change_totals(
                 applied=previous_applied + previous_failed,
@@ -234,6 +241,7 @@ def merge_branch(
             _retire_resolved_merge_issues(ingestion, prior_merge_issue_ids)
         if sync_logger:
             sync_logger.log_info("No changes to merge.")
+        mark_merge_attempt_applied(merge_attempt)
         return
 
     if sync_logger:
@@ -260,6 +268,14 @@ def merge_branch(
         .distinct()
         .count()
     )
+    initialize_merge_attempt(
+        merge_attempt,
+        total_changes=logical_total_changes,
+    )
+    if sync_logger:
+        sync_logger.log_info(
+            f"Merge progress: 0/{logical_total_changes} changes merged; rate pending."
+        )
     previous_logical_total = previous_applied + previous_failed
     if retrying_partial and logical_total_changes != previous_logical_total:
         raise RuntimeError(
@@ -280,11 +296,34 @@ def merge_branch(
     request.user = user
     request.id = ingestion.change_request_id
 
+    set_based_decision = set_based_merge_decision(
+        sync=ingestion.sync,
+        branch=branch,
+    )
+    if sync_logger and bool(
+        (getattr(ingestion.sync, "parameters", {}) or {}).get(
+            "enable_set_based_merge", False
+        )
+    ):
+        if set_based_decision.enabled:
+            sync_logger.log_info(
+                "Set-based merge enabled for `dcim.macaddress` "
+                f"(spec {set_based_decision.context['model_spec_version']})."
+            )
+        else:
+            sync_logger.log_info(
+                "Set-based merge requested but failed closed "
+                f"({set_based_decision.reason_code}); using the current path."
+            )
+
     models_touched = set()
     failed = 0
     issue_recorder = _MergeIssueRecorder(ingestion, sync_logger)
 
-    processed = 0
+    progress_merged = 0
+    progress_failed = 0
+    model_progress = defaultdict(lambda: {"merged": 0, "failed": 0})
+    progress_started_at = time.monotonic()
     last_heartbeat_at = time.monotonic()
     last_log_at = last_heartbeat_at
 
@@ -300,7 +339,15 @@ def merge_branch(
         model_string = _model_string(model_class)
         dummy_change = collapsed_change.generate_object_change()
         try:
-            with transaction.atomic():
+            with (
+                profile_scope(
+                    "objectchange_apply",
+                    model=model_string,
+                    owner="upstream_netbox_branching",
+                    rows=1,
+                ),
+                transaction.atomic(),
+            ):
                 if (
                     model_string == "dcim.device"
                     and getattr(
@@ -310,30 +357,40 @@ def merge_branch(
                     )
                     == "delete"
                 ):
-                    from .ownership import (
-                        release_authoritative_device_delete_ownership,
-                    )
-
-                    release = release_authoritative_device_delete_ownership(
-                        ingestion.sync,
-                        [collapsed_change.key[1]],
-                    )
-                    if release["blocked_device_ids"]:
-                        raise RuntimeError(
-                            "Authoritative device deletion is blocked by current "
-                            "ownership evidence."
+                    with profile_scope(
+                        "authoritative_device_delete_guard",
+                        model=model_string,
+                        owner="ours",
+                        rows=1,
+                    ):
+                        from .ownership import (
+                            release_authoritative_device_delete_ownership,
                         )
-                    lock_related_writes_for_delete(
-                        model_class,
-                        using=DEFAULT_DB_ALIAS,
-                    )
+
+                        release = release_authoritative_device_delete_ownership(
+                            ingestion.sync,
+                            [collapsed_change.key[1]],
+                        )
+                        if release["blocked_device_ids"]:
+                            raise RuntimeError(
+                                "Authoritative device deletion is blocked by "
+                                "current ownership evidence."
+                            )
+                        lock_related_writes_for_delete(
+                            model_class,
+                            using=DEFAULT_DB_ALIAS,
+                        )
                 with event_tracking(request):
-                    dummy_change.apply(branch, using=DEFAULT_DB_ALIAS, logger=logger)
+                    dummy_change.apply(
+                        branch,
+                        using=DEFAULT_DB_ALIAS,
+                        logger=logger,
+                    )
             models_touched.add(model_class)
             return True
         except JobTimeoutException:
             raise
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - preserve row-level isolation
             if _replication_side_effect_exists(collapsed_change):
                 logger.info(
                     "Treating redundant %s create for %s as applied; main "
@@ -345,23 +402,45 @@ def merge_branch(
             return _ApplyOneFailure(exc)
 
     def _record_failed(collapsed_change, exc):
+        nonlocal progress_failed, last_heartbeat_at, last_log_at
         model_string = _model_string(collapsed_change.model_class)
         issue_recorder.record(
             model_string=model_string,
             exc=exc,
         )
+        progress_failed += 1
+        model_progress[model_string]["failed"] += 1
+        if sync_logger:
+            sync_logger.increment_statistics(model_string, outcome="failed")
+        last_heartbeat_at, last_log_at = _report_merge_progress(
+            merge_attempt,
+            sync_logger=sync_logger,
+            model_string=model_string,
+            merged_changes=progress_merged,
+            failed_changes=progress_failed,
+            total_changes=logical_total_changes,
+            model_progress=model_progress,
+            started_at=progress_started_at,
+            last_heartbeat_at=last_heartbeat_at,
+            last_log_at=last_log_at,
+        )
 
     def _record_applied(model_class):
-        nonlocal processed, last_heartbeat_at, last_log_at
-        processed += 1
+        nonlocal progress_merged, last_heartbeat_at, last_log_at
+        progress_merged += 1
+        model_string = _model_string(model_class)
+        model_progress[model_string]["merged"] += 1
         if sync_logger:
-            sync_logger.increment_statistics(_model_string(model_class))
+            sync_logger.increment_statistics(model_string)
         last_heartbeat_at, last_log_at = _report_merge_progress(
-            ingestion,
+            merge_attempt,
             sync_logger=sync_logger,
-            model_string=_model_string(model_class),
-            processed=processed,
+            model_string=model_string,
+            merged_changes=progress_merged,
+            failed_changes=progress_failed,
             total_changes=logical_total_changes,
+            model_progress=model_progress,
+            started_at=progress_started_at,
             last_heartbeat_at=last_heartbeat_at,
             last_log_at=last_log_at,
         )
@@ -378,15 +457,35 @@ def merge_branch(
             record_applied=_record_applied,
             record_failed=_record_failed,
             result_metadata=merge_metadata,
+            set_based_decision=set_based_decision,
         )
         failed += bulk_failed
         models_touched |= bulk_models
     finally:
         post_save.disconnect(handler, sender=ObjectChange_)
 
+    last_heartbeat_at, last_log_at = _report_merge_progress(
+        merge_attempt,
+        sync_logger=sync_logger,
+        model_string=(merge_attempt.current_model if merge_attempt is not None else ""),
+        merged_changes=progress_merged,
+        failed_changes=progress_failed,
+        total_changes=logical_total_changes,
+        model_progress=model_progress,
+        started_at=progress_started_at,
+        last_heartbeat_at=last_heartbeat_at,
+        last_log_at=last_log_at,
+        force=True,
+    )
+
     if models_touched:
         strategy_class = get_merge_strategy(branch.merge_strategy)
-        strategy_class()._clean(models_touched)
+        with profile_scope(
+            "merge_cleanup",
+            owner="upstream_netbox_branching",
+            rows=len(models_touched),
+        ):
+            strategy_class()._clean(models_touched)
 
     reported_logical_total = int(merge_metadata.get("logical_total", -1))
     if reported_logical_total != logical_total_changes:
@@ -435,6 +534,7 @@ def merge_branch(
         )
 
     _attest_branch_merged(ingestion, branch, user)
+    mark_merge_attempt_applied(merge_attempt)
     if retrying_partial:
         _retire_resolved_merge_issues(ingestion, prior_merge_issue_ids)
 
@@ -444,34 +544,55 @@ def merge_branch(
 
 
 def _report_merge_progress(
-    ingestion: "ForwardIngestion",
+    merge_attempt,
     *,
     sync_logger: "SyncLogging | None",
     model_string: str,
-    processed: int,
+    merged_changes: int,
+    failed_changes: int,
     total_changes: int,
+    model_progress,
+    started_at: float,
     last_heartbeat_at: float,
     last_log_at: float,
+    force: bool = False,
 ) -> tuple[float, float]:
     now = time.monotonic()
+    processed = merged_changes + failed_changes
     heartbeat_due = (
-        processed == total_changes
+        force
+        or processed == total_changes
         or processed % MERGE_HEARTBEAT_ROW_INTERVAL == 0
         or now - last_heartbeat_at >= MERGE_HEARTBEAT_SECONDS
     )
     log_due = (
-        processed == total_changes
+        force
+        or processed == total_changes
         or processed % MERGE_LOG_ROW_INTERVAL == 0
         or now - last_log_at >= MERGE_LOG_SECONDS
     )
 
     if heartbeat_due:
+        checkpoint_merge_attempt(
+            merge_attempt,
+            merged_changes=merged_changes,
+            failed_changes=failed_changes,
+            current_model=model_string,
+            model_progress=model_progress,
+        )
         last_heartbeat_at = now
 
     if sync_logger and log_due:
+        elapsed = max(0.0, now - started_at)
+        rate = processed / elapsed if elapsed > 0 else 0.0
+        remaining = max(0, total_changes - processed)
+        eta = remaining / rate if rate > 0 else 0.0
+        failure_suffix = f", {failed_changes} failed" if failed_changes else ""
         sync_logger.log_info(
-            f"Merged {processed}/{total_changes} branch changes "
-            f"(current model `{model_string}`)."
+            f"Merge progress: {merged_changes}/{total_changes} changes merged"
+            f"{failure_suffix}; current model `{model_string or 'pending'}`; "
+            f"rate {rate:.2f} changes/sec; elapsed {elapsed:.1f}s; "
+            f"ETA {eta:.1f}s."
         )
         last_log_at = now
 

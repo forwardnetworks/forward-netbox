@@ -977,6 +977,7 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
         mark_baseline_ready=None,
         remove_branch=True,
         claimed_job=None,
+        merge_attempt=None,
     ):
         from .utilities.ingestion_merge import sync_merge_ingestion
 
@@ -985,7 +986,76 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
             mark_baseline_ready=mark_baseline_ready,
             remove_branch=remove_branch,
             claimed_job=claimed_job,
+            merge_attempt=merge_attempt,
         )
+
+
+class ForwardMergeAttempt(ForwardPluginModelDocsMixin, models.Model):
+    """Durable progress and failure evidence for one complete merge replay."""
+
+    class Status(models.TextChoices):
+        RUNNING = "running", _("Running")
+        APPLIED = "applied", _("Branch changes applied")
+        COMPLETED = "completed", _("Completed")
+        FAILED = "failed", _("Failed")
+        INTERRUPTED = "interrupted", _("Interrupted")
+
+    ingestion = models.ForeignKey(
+        ForwardIngestion,
+        on_delete=models.CASCADE,
+        related_name="merge_attempts",
+    )
+    job = models.ForeignKey(
+        Job,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",
+    )
+    attempt_number = models.PositiveIntegerField()
+    status = models.CharField(
+        max_length=20,
+        choices=Status,
+        default=Status.RUNNING,
+        db_index=True,
+    )
+    phase = models.CharField(max_length=32, default="preparing")
+    total_changes = models.PositiveBigIntegerField(default=0)
+    merged_changes = models.PositiveBigIntegerField(default=0)
+    failed_changes = models.PositiveBigIntegerField(default=0)
+    current_model = models.CharField(max_length=100, blank=True, default="")
+    model_progress = models.JSONField(blank=True, default=dict)
+    checkpoint_sequence = models.PositiveBigIntegerField(default=0)
+    started_at = models.DateTimeField(default=timezone.now, editable=False)
+    heartbeat_at = models.DateTimeField(default=timezone.now, db_index=True)
+    finished_at = models.DateTimeField(blank=True, null=True)
+    failure_kind = models.CharField(max_length=32, blank=True, default="")
+    exception_type = models.CharField(max_length=255, blank=True, default="")
+    failure_summary = models.TextField(blank=True, default="")
+    traceback = models.TextField(blank=True, default="")
+    process_wait_status = models.IntegerField(blank=True, null=True)
+    process_exit_code = models.IntegerField(blank=True, null=True)
+    process_signal = models.PositiveSmallIntegerField(blank=True, null=True)
+    process_signal_name = models.CharField(max_length=32, blank=True, default="")
+
+    class Meta:
+        ordering = ("ingestion_id", "-attempt_number")
+        verbose_name = _("Forward Merge Attempt")
+        verbose_name_plural = _("Forward Merge Attempts")
+        db_table = "forward_netbox_merge_attempt"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["ingestion", "attempt_number"],
+                name="forward_merge_attempt_ingestion_number",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.ingestion}: merge attempt {self.attempt_number} ({self.status})"
+
+    @property
+    def processed_changes(self):
+        return int(self.merged_changes or 0) + int(self.failed_changes or 0)
 
 
 class ForwardWorkloadState(ForwardPluginModelDocsMixin, models.Model):
