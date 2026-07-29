@@ -199,13 +199,64 @@ def _retire_resolved_merge_issues(ingestion, issue_ids) -> int:
     return len(issues)
 
 
+ACCEPTED_MERGE_FAILURES_KEY = "accepted_merge_failures"
+
+
+def _record_accepted_failures(ingestion, *, failed, user) -> None:
+    """Write durable evidence that a baseline was promoted over known failures.
+
+    Without this the ingestion would be indistinguishable from a clean merge,
+    which is the 2.6.4 defect in a new costume: a run that did not fully apply
+    must never look like one that did.
+    """
+    with transaction.atomic():
+        locked = ingestion.__class__.objects.select_for_update().get(pk=ingestion.pk)
+        snapshot_info = dict(locked.snapshot_info or {})
+        accepted = list(snapshot_info.get(ACCEPTED_MERGE_FAILURES_KEY) or [])
+        accepted.append(
+            {
+                "accepted_at": timezone.now().isoformat(),
+                "accepted_by": getattr(user, "username", "") or "",
+                "failed_change_count": int(failed),
+                "issue_ids": sorted(
+                    ForwardIngestionIssue.objects.filter(
+                        ingestion=locked,
+                        phase=ForwardIngestionPhaseChoices.MERGE,
+                    ).values_list("pk", flat=True)
+                ),
+            }
+        )
+        snapshot_info[ACCEPTED_MERGE_FAILURES_KEY] = accepted
+        locked.snapshot_info = snapshot_info
+        locked.save(update_fields=["snapshot_info"])
+        ingestion.snapshot_info = snapshot_info
+
+
 def merge_branch(
     ingestion: "ForwardIngestion",
     sync_logger: "SyncLogging | None" = None,
     *,
     user=None,
     merge_attempt=None,
+    accept_reported_failures: bool = False,
 ) -> None:
+    """Merge one staged branch.
+
+    `accept_reported_failures` completes the merge even though rows failed. It
+    exists because the alternative is a permanent dead end: a failed row leaves
+    the branch READY and never attests the merge, so `merge_applied_at` stays
+    null and `resume_post_merge_bookkeeping` cannot recover it either. The only
+    exit is a retry with zero failures — and when a failure is deterministic,
+    such as a unique-constraint clash on a row the source keeps re-sending, that
+    retry never arrives. A customer sat with 5 failures out of 24,748 blocking
+    the baseline, and with it drift measurement and diff-based syncs, forever.
+
+    It must never be automatic. Nothing in the sync or retry path sets it; it is
+    reachable only through an explicit operator action, the failures stay
+    recorded as ingestion issues, and the acceptance is written into durable
+    evidence so a later reader can see the baseline was promoted over known
+    exceptions rather than a clean run.
+    """
     branch = ingestion.branch
     user = user or ingestion.sync.user
 
@@ -524,7 +575,7 @@ def merge_branch(
         deleted=deleted,
     )
 
-    if failed:
+    if failed and not accept_reported_failures:
         branch.status = BranchStatusChoices.READY
         branch.save(update_fields=["status", "last_updated"])
         summary = (
@@ -539,6 +590,20 @@ def merge_branch(
             applied=applied_count,
             failed=failed,
         )
+
+    if failed:
+        # Operator-accepted. Record it durably before attesting, so evidence of
+        # the exception can never be lost by a later crash between the two.
+        _record_accepted_failures(ingestion, failed=failed, user=user)
+        accepted = (
+            f"Merge completed with {failed} accepted failure(s): "
+            f"{applied_count} applied. The failures remain recorded as "
+            "ingestion issues and the baseline was promoted over them by an "
+            "explicit operator action."
+        )
+        logger.warning(accepted)
+        if sync_logger:
+            sync_logger.log_warning(accepted)
 
     _attest_branch_merged(ingestion, branch, user)
     mark_merge_attempt_applied(merge_attempt)

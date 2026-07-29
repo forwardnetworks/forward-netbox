@@ -365,6 +365,7 @@ def sync_merge_ingestion(
     remove_branch=True,
     claimed_job=None,
     merge_attempt=None,
+    accept_reported_failures=False,
 ):
     from .merge import merge_branch
     from .merge_observability import (
@@ -405,6 +406,7 @@ def sync_merge_ingestion(
                         sync_logger=forwardsync.logger,
                         user=merge_user,
                         merge_attempt=merge_attempt,
+                        accept_reported_failures=accept_reported_failures,
                     )
                 _complete_post_merge_bookkeeping(
                     ingestion,
