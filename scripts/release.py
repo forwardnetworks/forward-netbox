@@ -38,6 +38,10 @@ README_TABLES = (
     REPO_ROOT / "docs/01_User_Guide/README.md",
 )
 INSTALL_DOC = REPO_ROOT / "docs/01_User_Guide/README.md"
+FAST_BASELINE = REPO_ROOT / "forward_netbox/utilities/fast_baseline.py"
+RUNTIME_VERSION_TEST = (
+    REPO_ROOT / "forward_netbox/tests/test_runtime_dependency_check.py"
+)
 # The compatibility cell shared by every table row, so a new row reuses the
 # previous row's NetBox-support text verbatim.
 CURRENT_RELEASE_RE = re.compile(
@@ -160,17 +164,69 @@ def run(
     return result.returncode
 
 
+def version_surface_edits(old: str, new: str) -> dict[Path, str]:
+    """Every file carrying the version literal, as {path: new text}.
+
+    `stage_prepare` used to bump only pyproject and `__init__`, leaving the
+    fast-baseline runtime pin and the runtime version test behind. That drift is
+    what cost the 2.6.3 release six full gate runs, and the load-bearing one is
+    the fast-baseline pin: a stale value silently reverts a first sync from the
+    fast path to the slow one. Bumping them together is the fix;
+    `scripts/check_release_preflight.py` is the backstop.
+    """
+    substitutions = {
+        PYPROJECT: (f'version = "{old}"', f'version = "{new}"'),
+        INIT_PY: (f'version = "{old}"', f'version = "{new}"'),
+        FAST_BASELINE: (f'"forward_netbox": "{old}"', f'"forward_netbox": "{new}"'),
+        RUNTIME_VERSION_TEST: (
+            f'NetboxForwardConfig.version, "{old}"',
+            f'NetboxForwardConfig.version, "{new}"',
+        ),
+    }
+    edits: dict[Path, str] = {}
+    for path, (needle, replacement) in substitutions.items():
+        text = path.read_text(encoding="utf-8")
+        count = text.count(needle)
+        if count != 1:
+            raise ReleaseError(
+                f"expected exactly one {needle!r} in "
+                f"{path.relative_to(REPO_ROOT)}, found {count}"
+            )
+        edits[path] = text.replace(needle, replacement)
+    return edits
+
+
+def stage_open_next(version: str, *, write: bool) -> None:
+    """Move `main` onto a `.dev0` marker so an install from it is self-describing.
+
+    `main` carries the release from the moment the release PR merges — before
+    the tag exists and before anything reaches PyPI. A customer installed from
+    `main` inside that window and reported running a version PyPI did not yet
+    have. Marking `main` as `X.Y.Z.dev0` makes that visible at the install
+    rather than leaving it indistinguishable from the published release.
+
+    The tag-only publish trigger is deliberately untouched: reordering it would
+    require a `workflow_dispatch` bypass of the control that exists to prevent
+    exactly that.
+    """
+    old = read_current_version()
+    if old.endswith(".dev0"):
+        raise ReleaseError(f"already on a dev marker ({old}); nothing to open")
+    marker = f"{version}.dev0"
+    print(f"[open-next] {old} -> {marker}")
+    edits = version_surface_edits(old, marker)
+    if not write:
+        print("[open-next] dry-run: not writing files")
+        return
+    for path, text in edits.items():
+        path.write_text(text, encoding="utf-8")
+    print(f"[open-next] wrote {len(edits)} version surfaces")
+
+
 def stage_prepare(version: str, summary: str, *, write: bool) -> None:
     old = read_current_version()
     print(f"[prepare] bump {old} -> {version}")
-    edits = {
-        PYPROJECT: bump_version_text(
-            PYPROJECT.read_text(encoding="utf-8"), old, version, key="version"
-        ),
-        INIT_PY: bump_version_text(
-            INIT_PY.read_text(encoding="utf-8"), old, version, key="version"
-        ),
-    }
+    edits = version_surface_edits(old, version)
     for path in README_TABLES:
         edits[path] = set_release_intro_text(
             insert_release_row(path.read_text(encoding="utf-8"), version, summary),
@@ -776,12 +832,23 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="promote, open release PRs, or tag validated main (rollout)",
     )
+    parser.add_argument(
+        "--open-next",
+        action="store_true",
+        help=(
+            "after a release ships, move main to <version>.dev0 so an install "
+            "from main is visibly not the published release"
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not SEMVER_RE.match(args.version):
         parser.error(f"version must be X.Y.Z, got {args.version!r}")
 
     try:
+        if args.open_next:
+            stage_open_next(args.version, write=args.write)
+            return 0
         if args.finish:
             stage_finish(args.version)
             return 0

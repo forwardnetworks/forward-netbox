@@ -85,9 +85,7 @@ class IngestionDeleteRefusalTest(TestCase):
     def test_an_unreferenced_ingestion_is_deletable(self):
         self.assertEqual(_ingestion_delete_refusal(self.ingestion), "")
         self.ingestion.delete()
-        self.assertFalse(
-            ForwardIngestion.objects.filter(pk=self.ingestion.pk).exists()
-        )
+        self.assertFalse(ForwardIngestion.objects.filter(pk=self.ingestion.pk).exists())
 
     def test_a_contributor_baseline_blocks_the_delete_and_is_named(self):
         # The real PROTECT relation against a real row, not a mock.
