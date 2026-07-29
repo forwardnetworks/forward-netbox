@@ -118,6 +118,7 @@ class Command(BaseCommand):
             ingestion,
             accept_reported_failures=True,
             claimed_job=None,
+            user=user,
         )
         ingestion.refresh_from_db()
         self.stdout.write(

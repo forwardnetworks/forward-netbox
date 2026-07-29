@@ -366,6 +366,7 @@ def sync_merge_ingestion(
     claimed_job=None,
     merge_attempt=None,
     accept_reported_failures=False,
+    user=None,
 ):
     from .merge import merge_branch
     from .merge_observability import (
@@ -378,7 +379,9 @@ def sync_merge_ingestion(
     forwardsync = ingestion.sync
     forwardsync.refresh_from_db(fields=["status"])
     claimed_job_id = getattr(claimed_job, "pk", None)
-    merge_user = getattr(claimed_job, "user", None) or forwardsync.user
+    # An explicit user wins: accepting reported failures is attributed to the
+    # operator who typed it, not to whoever happens to own the sync.
+    merge_user = user or getattr(claimed_job, "user", None) or forwardsync.user
     if merge_user is None:
         raise SyncError("Merge attribution requires an invoking user or sync owner.")
     if forwardsync.status == ForwardSyncStatusChoices.MERGING and (

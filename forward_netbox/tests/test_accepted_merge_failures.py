@@ -77,7 +77,9 @@ class AcceptedMergeFailureTest(TestCase):
 
         with (
             patch.object(Branch, "get_unmerged_changes", return_value=changes),
-            patch("forward_netbox.utilities.merge.bulk_merge_changes", side_effect=bulk),
+            patch(
+                "forward_netbox.utilities.merge.bulk_merge_changes", side_effect=bulk
+            ),
         ):
             merge_branch(
                 self.ingestion,
@@ -115,9 +117,7 @@ class AcceptedMergeFailureTest(TestCase):
     def test_acceptance_is_recorded_as_durable_evidence(self):
         self._merge(applied=10, failed=2, accept=True)
         self.ingestion.refresh_from_db()
-        accepted = (self.ingestion.snapshot_info or {}).get(
-            ACCEPTED_MERGE_FAILURES_KEY
-        )
+        accepted = (self.ingestion.snapshot_info or {}).get(ACCEPTED_MERGE_FAILURES_KEY)
         self.assertTrue(accepted, "an accepted-over baseline must say so")
         self.assertEqual(accepted[-1]["failed_change_count"], 2)
         self.assertEqual(accepted[-1]["accepted_by"], "accept-owner")
@@ -143,10 +143,6 @@ class AcceptedMergeFailureTest(TestCase):
         from forward_netbox.utilities.ingestion_merge import sync_merge_ingestion
 
         signature = inspect.signature(sync_merge_ingestion)
-        self.assertIs(
-            signature.parameters["accept_reported_failures"].default, False
-        )
+        self.assertIs(signature.parameters["accept_reported_failures"].default, False)
         signature = inspect.signature(merge_branch)
-        self.assertIs(
-            signature.parameters["accept_reported_failures"].default, False
-        )
+        self.assertIs(signature.parameters["accept_reported_failures"].default, False)
