@@ -184,8 +184,11 @@ def local_query_binding_drift(query_map: ForwardNQEMap) -> dict:
                 "bundled query source without a live Forward repository lookup."
             ),
             remediation=(
-                "Run a live drift check to verify the query ID and source. Folder "
-                "and repository path changes do not require rebinding."
+                "Run a live drift check to verify the query ID and source. Moving "
+                "the query to another folder does not require rebinding: "
+                "verification reads the path recorded on each commit, so commits "
+                "predating a move still resolve. Deleting or replacing the query "
+                "behind this ID does require rebinding."
             ),
             expected_filename=expected_filename,
             expected_name=expected_name,

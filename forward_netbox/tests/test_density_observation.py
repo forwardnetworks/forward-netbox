@@ -111,8 +111,6 @@ class DensityObservationTest(SimpleTestCase):
 
     def test_a_blank_model_string_is_ignored(self):
         self.assertEqual(
-            record_density_observation(
-                {}, "  ", rows=10, changes=10, observed_at=WHEN
-            ),
+            record_density_observation({}, "  ", rows=10, changes=10, observed_at=WHEN),
             {},
         )

@@ -369,10 +369,8 @@ def sync_health_summary(sync):
             _check(
                 name="Query execution contracts",
                 status="fail",
-                message=(
-                    "Enabled NQE maps have unresolved persisted execution "
-                    "contracts. Correct the reported type-only contract issues "
-                    "before starting a sync."
+                message=_query_contract_preflight_message(
+                    query_contract_preflight["issues"]
                 ),
             )
         )
@@ -451,6 +449,55 @@ def sync_health_summary(sync):
         "next_run": next_run,
         "checks": checks,
     }
+
+
+_CONTRACT_ISSUE_REMEDIATION = {
+    "unresolved_full_commit": (
+        "no committed revision is stored, so a full sync cannot be proved "
+        "against verified source. Run Publish Bundled Queries (overwrite "
+        "enabled, targeting the folder the queries are in now) to create a "
+        "commit at the current path, or pin a commit on the map"
+    ),
+    "identical_full_diff_commit": (
+        "the full and diff contracts point at the same commit, so a diff would "
+        "re-execute the full query. Re-resolve the diff contract"
+    ),
+    "missing_diff_source_hash": (
+        "a diff commit is pinned with no source hash to verify it against. "
+        "Re-resolve the diff contract so its source is attested"
+    ),
+}
+
+
+def _query_contract_preflight_message(issues):
+    """One actionable line per distinct problem, not a wall of identical rows.
+
+    A customer whose every map reported `unresolved_full_commit` saw only
+    "correct the reported type-only contract issues" against 32 rows that all
+    said the same thing, with no indication of which maps, what was wrong, or
+    what to do about it. The reason codes here describe *persisted map state*
+    and deliberately share their names with the runtime execution contract, so
+    the message says which one it is.
+    """
+    grouped = {}
+    for issue in issues:
+        grouped.setdefault(str(issue.get("type") or "unknown"), []).append(
+            str(issue.get("model") or "")
+        )
+    parts = []
+    for issue_type, models in sorted(grouped.items()):
+        named = sorted({model for model in models if model})
+        sample = ", ".join(named[:3])
+        if len(named) > 3:
+            sample += f", +{len(named) - 3} more"
+        remediation = _CONTRACT_ISSUE_REMEDIATION.get(
+            issue_type, "review the map's persisted execution contract"
+        )
+        parts.append(f"{len(models)} map(s) [{sample}]: {remediation}.")
+    return (
+        "Enabled NQE maps have unresolved persisted execution contracts, so "
+        "those models would be skipped. " + " ".join(parts)
+    )
 
 
 def _persisted_query_contract_preflight(maps):

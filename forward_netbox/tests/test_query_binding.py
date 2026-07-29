@@ -340,7 +340,14 @@ class NQEMapBindingTest(TestCase):
         self.assertEqual(drift["status"], "direct_query_id_unverified")
         self.assertEqual(drift["severity"], "info")
         self.assertEqual(drift["commit_binding"], "latest_commit")
-        self.assertIn("Folder", drift["remediation"])
+        # The old wording said flatly that "folder and repository path changes
+        # do not require rebinding", which read as a guarantee and sent an
+        # investigation down the wrong path during a live outage. It now states
+        # *why* a move is tolerated — verification reads the path recorded on
+        # each commit — and what genuinely does require rebinding.
+        self.assertIn("does not require rebinding", drift["remediation"])
+        self.assertIn("path recorded on each commit", drift["remediation"])
+        self.assertIn("Deleting or replacing the query", drift["remediation"])
         self.assertEqual(drift["remediation_action"], "")
 
     def test_live_query_binding_drift_reports_repository_source_match(self):
