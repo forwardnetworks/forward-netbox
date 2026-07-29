@@ -368,7 +368,9 @@ def sync_health_summary(sync):
         checks.append(
             _check(
                 name="Query execution contracts",
-                status="fail",
+                status=_query_contract_preflight_status(
+                    query_contract_preflight["issues"]
+                ),
                 message=_query_contract_preflight_message(
                     query_contract_preflight["issues"]
                 ),
@@ -453,10 +455,10 @@ def sync_health_summary(sync):
 
 _CONTRACT_ISSUE_REMEDIATION = {
     "unresolved_full_commit": (
-        "no committed revision is stored, so a full sync cannot be proved "
-        "against verified source. Run Publish Bundled Queries (overwrite "
-        "enabled, targeting the folder the queries are in now) to create a "
-        "commit at the current path, or pin a commit on the map"
+        "no commit is stored on the map. This is the normal state for a map "
+        "bound by query ID or repository path, because head is resolved at "
+        "sync time and not persisted, so it does not by itself mean the model "
+        "will be skipped. Pin a commit only if you need the revision frozen"
     ),
     "identical_full_diff_commit": (
         "the full and diff contracts point at the same commit, so a diff would "
@@ -467,6 +469,28 @@ _CONTRACT_ISSUE_REMEDIATION = {
         "Re-resolve the diff contract so its source is attested"
     ),
 }
+
+
+# `unresolved_full_commit` here means "no commit stored on the map", which is the
+# normal resting state for a query-ID or path binding: head is resolved during
+# the sync and never written back. It is NOT the runtime execution contract's
+# reason code of the same name, which does mean the model was refused.
+#
+# Proven by a customer bundle: 32 of 32 maps reported this both while the sync
+# applied nothing AND after the same sync applied 24,748 changes. A signal that
+# is identical when broken and when healthy cannot gate a sync, and reporting it
+# as a failure sent an investigation down the wrong path.
+_NON_BLOCKING_CONTRACT_ISSUES = {"unresolved_full_commit"}
+
+
+def _query_contract_preflight_status(issues):
+    """`fail` only for issues that actually stop a sync."""
+    if any(
+        str(issue.get("type") or "") not in _NON_BLOCKING_CONTRACT_ISSUES
+        for issue in issues
+    ):
+        return "fail"
+    return "info"
 
 
 def _query_contract_preflight_message(issues):
@@ -494,10 +518,15 @@ def _query_contract_preflight_message(issues):
             issue_type, "review the map's persisted execution contract"
         )
         parts.append(f"{len(models)} map(s) [{sample}]: {remediation}.")
-    return (
-        "Enabled NQE maps have unresolved persisted execution contracts, so "
-        "those models would be skipped. " + " ".join(parts)
+    blocking = _query_contract_preflight_status(issues) == "fail"
+    lead = (
+        "Enabled NQE maps have persisted execution contract issues that will "
+        "skip those models. "
+        if blocking
+        else "Enabled NQE maps have no stored commit. This is informational: "
+        "head is resolved at sync time. "
     )
+    return lead + " ".join(parts)
 
 
 def _persisted_query_contract_preflight(maps):

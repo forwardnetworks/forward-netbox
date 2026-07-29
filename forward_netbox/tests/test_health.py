@@ -272,7 +272,13 @@ class ForwardSyncHealthTest(TestCase):
         cls.sync.last_ingestion.save(update_fields=["job"])
         cls.sync.refresh_from_db()
 
-    def test_health_reports_unresolved_persisted_query_contracts_before_sync(self):
+    def test_health_reports_a_missing_stored_commit_without_failing(self):
+        # This previously asserted `fail`, which pinned a false positive.
+        # A customer bundle proved it: 32 of 32 maps reported
+        # `unresolved_full_commit` both while the sync applied nothing AND after
+        # the same sync applied 24,748 changes. Head is resolved at sync time
+        # and never persisted, so an empty stored commit is the normal resting
+        # state for a query-ID or path binding, not a reason to block.
         summary = sync_health_summary(self.sync)
 
         preflight = summary["query_contract_preflight"]
@@ -285,7 +291,7 @@ class ForwardSyncHealthTest(TestCase):
         self.assertTrue(
             any(
                 check["name"] == "Query execution contracts"
-                and check["status"] == "fail"
+                and check["status"] == "info"
                 for check in summary["checks"]
             )
         )

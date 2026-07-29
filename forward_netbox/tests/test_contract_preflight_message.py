@@ -9,6 +9,7 @@ would fix it. The sync applied nothing and the message explained none of it.
 from django.test import SimpleTestCase
 
 from forward_netbox.utilities.health import _query_contract_preflight_message
+from forward_netbox.utilities.health import _query_contract_preflight_status
 
 
 def _issues(issue_type, *models):
@@ -19,13 +20,28 @@ def _issues(issue_type, *models):
 
 
 class ContractPreflightMessageTest(SimpleTestCase):
-    def test_it_names_the_consequence(self):
-        # The old message never said the models would be skipped, which is the
-        # part that mattered: the sync looked like it ran.
-        message = _query_contract_preflight_message(
-            _issues("unresolved_full_commit", "dcim.site")
-        )
-        self.assertIn("skipped", message)
+    def test_a_missing_stored_commit_is_not_reported_as_a_failure(self):
+        """Proven by a customer bundle, not by reasoning.
+
+        32 of 32 maps reported `unresolved_full_commit` both while the sync
+        applied nothing AND after the same sync applied 24,748 changes. A signal
+        identical when broken and when healthy cannot gate a sync. Reporting it
+        as a failure is what sent the investigation down the wrong path.
+        """
+        issues = _issues("unresolved_full_commit", "dcim.site")
+        self.assertEqual(_query_contract_preflight_status(issues), "info")
+        self.assertIn("informational", _query_contract_preflight_message(issues))
+
+    def test_a_genuinely_blocking_issue_still_fails(self):
+        issues = _issues("missing_diff_source_hash", "dcim.site")
+        self.assertEqual(_query_contract_preflight_status(issues), "fail")
+        self.assertIn("skip those models", _query_contract_preflight_message(issues))
+
+    def test_one_blocking_issue_among_many_benign_ones_still_fails(self):
+        issues = _issues(
+            "unresolved_full_commit", *[f"a.m{i}" for i in range(30)]
+        ) + _issues("identical_full_diff_commit", "dcim.site")
+        self.assertEqual(_query_contract_preflight_status(issues), "fail")
 
     def test_it_names_the_affected_models(self):
         message = _query_contract_preflight_message(
@@ -41,21 +57,19 @@ class ContractPreflightMessageTest(SimpleTestCase):
         self.assertIn("32 map(s)", message)
         self.assertIn("+29 more", message)
 
-    def test_it_gives_the_remediation_for_an_unresolved_commit(self):
+    def test_a_missing_stored_commit_explains_why_it_is_normal(self):
+        # It must not tell an operator to go fix something that is not broken.
         message = _query_contract_preflight_message(
             _issues("unresolved_full_commit", "dcim.site")
         )
-        self.assertIn("Publish Bundled Queries", message)
-        # The folder caveat matters: publishing to the wrong directory creates
-        # duplicates instead of fixing the binding.
-        self.assertIn("folder", message)
+        self.assertIn("resolved at sync time", message)
+        self.assertNotIn("Publish Bundled Queries", message)
 
     def test_distinct_problems_are_reported_separately(self):
         message = _query_contract_preflight_message(
             _issues("unresolved_full_commit", "dcim.site")
             + _issues("missing_diff_source_hash", "dcim.device")
         )
-        self.assertIn("Publish Bundled Queries", message)
         self.assertIn("source is attested", message)
 
     def test_an_identical_full_and_diff_commit_is_explained(self):
