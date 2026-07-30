@@ -29,10 +29,10 @@ SET_BASED_MERGE_ALLOWED_MODELS = frozenset(SET_BASED_MERGE_MODEL_SPEC_VERSIONS)
 SET_BASED_MERGE_SUPPORTED_NETBOX_VERSION = "4.6.5"
 SET_BASED_MERGE_SUPPORTED_BRANCHING_VERSION = "1.1.1"
 SET_BASED_MERGE_SUPPORTED_OPTIONAL_DISTRIBUTIONS = {
-    "netbox-cisco-aci": "0.4.0",
-    "netbox-dlm": "0.4.1",
-    "netbox-peering-manager": "0.3.0",
-    "netbox-routing": "0.4.3",
+    "netbox-cisco-aci": frozenset({"0.4.0"}),
+    "netbox-dlm": frozenset({"0.4.1", "0.5.0"}),
+    "netbox-peering-manager": frozenset({"0.3.0"}),
+    "netbox-routing": frozenset({"0.4.3"}),
 }
 SET_BASED_MERGE_SUPPORTED_PLUGIN_APPS = frozenset(
     {
@@ -188,7 +188,7 @@ def _runtime_tuple_decision():
         )
     for distribution, actual in optional_versions:
         expected = SET_BASED_MERGE_SUPPORTED_OPTIONAL_DISTRIBUTIONS[distribution]
-        if actual != expected:
+        if actual not in expected:
             return SetBasedMergeDecision(
                 False,
                 "unsupported_optional_plugin_version",

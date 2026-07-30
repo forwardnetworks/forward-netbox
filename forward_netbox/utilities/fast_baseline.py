@@ -114,11 +114,16 @@ def _runtime_decision():
         "netbox": "4.6.5",
         "branching": "1.1.1",
         "forward_netbox": "2.6.7",
+        # Each optional distribution lists every version validated against this
+        # engine, not a single pin. An exact pin meant a customer upgrading one
+        # optional plugin silently lost the fast baseline — no error, just a
+        # first sync that takes hours instead of minutes — because the whole
+        # tuple stopped matching.
         "optional_plugins": {
-            "netbox-cisco-aci": "0.4.0",
-            "netbox-dlm": "0.4.1",
-            "netbox-peering-manager": "0.3.0",
-            "netbox-routing": "0.4.3",
+            "netbox-cisco-aci": frozenset({"0.4.0"}),
+            "netbox-dlm": frozenset({"0.4.1", "0.5.0"}),
+            "netbox-peering-manager": frozenset({"0.3.0"}),
+            "netbox-routing": frozenset({"0.4.3"}),
         },
         "plugin_apps": sorted(
             {
@@ -131,11 +136,30 @@ def _runtime_decision():
             }
         ),
     }
-    if actual != expected:
+    mismatched = (
+        actual["netbox"] != expected["netbox"]
+        or actual["branching"] != expected["branching"]
+        or actual["forward_netbox"] != expected["forward_netbox"]
+        or actual["plugin_apps"] != expected["plugin_apps"]
+        or any(
+            actual["optional_plugins"].get(name) not in versions
+            for name, versions in expected["optional_plugins"].items()
+        )
+    )
+    if mismatched:
         return FastBaselineDecision(
             False,
             "unsupported_runtime_tuple",
-            {"expected": expected, "actual": actual},
+            {
+                "expected": {
+                    **expected,
+                    "optional_plugins": {
+                        name: sorted(versions)
+                        for name, versions in expected["optional_plugins"].items()
+                    },
+                },
+                "actual": actual,
+            },
         )
     if connection.vendor != "postgresql":
         return FastBaselineDecision(False, "postgresql_required", {})

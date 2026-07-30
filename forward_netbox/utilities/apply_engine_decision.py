@@ -63,10 +63,10 @@ COPY_SQL_ALLOWED_MODELS = frozenset(COPY_SQL_MODEL_SPEC_VERSIONS)
 COPY_SQL_SUPPORTED_NETBOX_VERSION = "4.6.5"
 COPY_SQL_SUPPORTED_BRANCHING_VERSION = "1.1.1"
 COPY_SQL_SUPPORTED_OPTIONAL_DISTRIBUTIONS = {
-    "netbox-cisco-aci": "0.4.0",
-    "netbox-dlm": "0.4.1",
-    "netbox-peering-manager": "0.3.0",
-    "netbox-routing": "0.4.3",
+    "netbox-cisco-aci": frozenset({"0.4.0"}),
+    "netbox-dlm": frozenset({"0.4.1", "0.5.0"}),
+    "netbox-peering-manager": frozenset({"0.3.0"}),
+    "netbox-routing": frozenset({"0.4.3"}),
 }
 COPY_SQL_SUPPORTED_PLUGIN_APPS = frozenset(
     {
@@ -369,9 +369,9 @@ def _copy_sql_runtime_supported():
         )
     for distribution, actual in optional_versions:
         expected = COPY_SQL_SUPPORTED_OPTIONAL_DISTRIBUTIONS[distribution]
-        # Absence is also a different runtime tuple.  WP-A was proved with this
-        # exact optional-plugin set; any other installation fails closed.
-        if actual != expected:
+        # Absence is also a different runtime tuple. Each entry lists every
+        # version validated against this engine; anything else fails closed.
+        if actual not in expected:
             return (
                 False,
                 "unsupported_optional_plugin_version",
