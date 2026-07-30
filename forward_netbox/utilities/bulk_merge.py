@@ -1436,13 +1436,22 @@ def _protected_child_delete_edges(collapsed_changes):
     return edges
 
 
-def _acyclic_delete_edges(collapsed_changes, candidate_edges, change_logger):
+def _acyclic_delete_edges(
+    collapsed_changes,
+    candidate_edges,
+    change_logger,
+    *,
+    edge_label="protected-delete",
+):
     """Drop candidate edges that would make the ordering graph unsortable.
 
     A cycle makes `_order_collapsed_changes_fast` raise and fails the *entire*
     merge, which is far worse than one delete the database refuses. Mutually
     protecting rows are undeletable by the database anyway, so dropping the edge
     only returns that pair to the strict failure it would have had regardless.
+
+    Edges are ``(dependent_key, dependency_key)``. The algorithm is not specific
+    to deletes; `edge_label` only names the edge class in the warning.
     """
     nodes = {key for edge in candidate_edges for key in edge}
     for key in list(nodes):
@@ -1485,10 +1494,11 @@ def _acyclic_delete_edges(collapsed_changes, candidate_edges, change_logger):
         if len(kept) == len(accepted):
             return []
         change_logger.warning(
-            "Bulk merge: dropped %d protected-delete ordering edge(s) that would "
+            "Bulk merge: dropped %d %s ordering edge(s) that would "
             "have made the change graph unsortable; those rows stay mutually "
             "protected and their deletes are reported rather than reordered.",
             len(accepted) - len(kept),
+            edge_label,
         )
         accepted = kept
         if not accepted:
@@ -1528,6 +1538,89 @@ def _add_protected_child_delete_dependencies(collapsed_changes, change_logger):
         change_logger.debug(
             "Restored %d child-before-parent DELETE ordering edge(s) from "
             "destination protecting references.",
+            added,
+        )
+    return added
+
+
+def _add_ip_adoption_dependencies(collapsed_changes, change_logger):
+    """Order an IP's assignment UPDATE before the UPDATE that adopts it.
+
+    ``Device.clean()`` requires ``primary_ip4``/``primary_ip6``/``oob_ip`` to
+    resolve to an interface of that device (``vc_interfaces``), read from the
+    *destination*. So the change that assigns the IP to the interface has to be
+    merged before the change that points the device at the IP.
+
+    The framework graph never orders these. ``_build_fk_dependency_graph`` builds
+    UPDATE->CREATE, CREATE->CREATE, DELETE->UPDATE and DELETE->DELETE edges — it
+    has no UPDATE->UPDATE case at all, and neither did this module. While both
+    rows are new the ordering still holds by accident, through the CREATE chain
+    (device -> ip -> interface). But when the device *and* the IP already exist
+    in main and the branch only re-points them — a Mgmt_-tagged device adopting
+    an address that is being moved onto its interface in the same sync — the two
+    UPDATEs carry no edge between them and fall back to the sort's timestamp
+    tie-break. Whichever ObjectChange was recorded first wins.
+
+    Device-first raises ``ValidationError({'primary_ip4': 'The specified IP
+    address (...) is not assigned to this device.'})``. It is a race, not a
+    deterministic failure, which is why it presented as a single device out of
+    thousands and never reproduced.
+    """
+    ip_updates = {
+        collapsed.key[1]: collapsed
+        for collapsed in collapsed_changes.values()
+        if collapsed.final_action == ActionType.UPDATE
+        and collapsed.model_class._meta.label_lower == "ipam.ipaddress"
+    }
+    if not ip_updates:
+        return 0
+
+    candidate_edges = []
+    for key, collapsed in collapsed_changes.items():
+        if collapsed.final_action != ActionType.UPDATE:
+            continue
+        # key[0] is the model label for both real UPDATE keys and the synthetic
+        # ("<label>", pk, "defer_self_ref_fk") keys the create-cycle split adds.
+        fields = _DEFERRED_CREATE_FK_FIELDS.get(key[0])
+        if not fields:
+            continue
+        postchange = collapsed.postchange_data or {}
+        for field_name in fields:
+            field = collapsed.model_class._meta.get_field(field_name)
+            related = getattr(field, "related_model", None)
+            if related is None or related._meta.label_lower != "ipam.ipaddress":
+                continue
+            adopted = _serialized_fk_id(postchange.get(field_name))
+            if not adopted:
+                continue
+            ip_change = ip_updates.get(adopted)
+            if ip_change is None or ip_change.key == key:
+                continue
+            if ip_change.key in collapsed.depends_on:
+                continue
+            candidate_edges.append((key, ip_change.key))
+
+    if not candidate_edges:
+        return 0
+
+    accepted = _acyclic_delete_edges(
+        collapsed_changes,
+        candidate_edges,
+        change_logger,
+        edge_label="IP-adoption",
+    )
+    added = 0
+    for dependent_key, dependency_key in accepted:
+        dependent = collapsed_changes[dependent_key]
+        if dependency_key in dependent.depends_on:
+            continue
+        dependent.depends_on.add(dependency_key)
+        collapsed_changes[dependency_key].depended_by.add(dependent_key)
+        added += 1
+    if added:
+        change_logger.debug(
+            "Ordered %d IP assignment change(s) before the device/VM update "
+            "that adopts the address as a primary or OOB IP.",
             added,
         )
     return added
@@ -1591,6 +1684,8 @@ def _order_collapsed_changes_fast(collapsed_changes, change_logger, operation):
         # receiver sees the completed graph.
         _add_destination_fk_release_dependencies(to_process, change_logger)
         _add_protected_child_delete_dependencies(to_process, change_logger)
+        # UPDATE->UPDATE ordering, which the framework graph has no case for.
+        _add_ip_adoption_dependencies(to_process, change_logger)
         squash_dependency_graph_built.send(
             sender=SquashMergeStrategy,
             collapsed_changes=to_process,
