@@ -23,6 +23,7 @@ ACTIVE_SYNC_STATUSES = ("queued", "syncing", "merging")
 ISOLATED_TEST_PROJECT_NAME = "forward-netbox-test"
 ISOLATED_PLAYWRIGHT_PROJECT_NAME = "forward-netbox-ui-test"
 RELEASE_ARTIFACT_PROJECT_NAME = "forward-netbox-artifact-test"
+RELEASE_UPGRADE_PROJECT_NAME = "forward-netbox-artifact-upgrade"
 ISOLATED_REDIS_DATABASE = 14
 ISOLATED_REDIS_CACHE_DATABASE = 15
 CYCLONEDX_BOM_VERSION = "7.3.0"
@@ -67,7 +68,7 @@ namespace = Collection("forward_netbox")
 namespace.configure(
     {
         "forward_netbox": {
-            "netbox_ver": os.environ.get("NETBOX_VER", "v4.6.5"),
+            "netbox_ver": os.environ.get("NETBOX_VER", "v4.6.6"),
             "project_name": os.environ.get(
                 "FORWARD_NETBOX_DOCKER_PROJECT",
                 "forward-netbox",
@@ -958,67 +959,33 @@ def _prepare_sbom_output(version):
     return sbom_path
 
 
-@task(name="artifact-test")
-def artifact_test(context):
-    """Install the built wheel into the exact runtime and validate it."""
-    version, wheel = _release_artifact_inputs()
-    sbom_path = _prepare_sbom_output(version)
-    netbox_version = str(context.forward_netbox.netbox_ver or "").strip()
-    if netbox_version != "v4.6.5":
-        raise Exit(
-            "Release artifact validation requires NETBOX_VER=v4.6.5.",
-            code=2,
-        )
+def _build_artifact_image(context, *, netbox_version, package, image_tag):
+    """Build the exact runtime image with `package` installed.
 
-    image_tag = f"forward-netbox-artifact:{version}"
-    package_path = f"/source/dist/{wheel.name}"
-    netbox_package_version = netbox_version.removeprefix("v")
+    `package` goes straight to `uv pip install`, so it is either a path to the
+    built wheel or a PyPI requirement such as `forward-netbox==2.6.5` - which is
+    what lets the upgrade gate stand up a previous release.
+    """
     context.run(
         " ".join(
             (
                 "docker build",
                 f"--file {shlex.quote(str(REPO_ROOT / 'development/Dockerfile'))}",
                 f"--build-arg NETBOX_VER={shlex.quote(netbox_version)}",
-                f"--build-arg PACKAGE={shlex.quote(package_path)}",
+                f"--build-arg PACKAGE={shlex.quote(package)}",
                 f"--tag {shlex.quote(image_tag)}",
                 shlex.quote(str(REPO_ROOT)),
             )
         )
     )
 
-    artifact_context = _compose_project_context(
-        context,
-        RELEASE_ARTIFACT_PROJECT_NAME,
-    )
-    validation_script = "\n".join(
-        (
-            "set -eu",
-            "rm -rf /source/forward_netbox",
-            "python /source/scripts/validate_installed_artifact.py "
-            f"--expected-version {shlex.quote(version)}",
-            "python - <<'PY'",
-            "import socket",
-            "import time",
-            "for host, port in (('postgres', 5432), ('redis', 6379)):",
-            "    for attempt in range(30):",
-            "        try:",
-            "            with socket.create_connection((host, port), timeout=1):",
-            "                break",
-            "        except OSError:",
-            "            if attempt == 29:",
-            "                raise",
-            "            time.sleep(1)",
-            "PY",
-            "python manage.py migrate --noinput",
-            "python manage.py check",
-            "python manage.py makemigrations --check --dry-run forward_netbox",
-            "python /source/scripts/validate_installed_routes.py",
-        )
-    )
-    run_command = " ".join(
+
+def _artifact_run_command(image_tag, script, project_name):
+    """A one-shot container on the isolated project's network, running `script`."""
+    return " ".join(
         (
             "docker run --rm",
-            f"--network {shlex.quote(RELEASE_ARTIFACT_PROJECT_NAME + '_default')}",
+            f"--network {shlex.quote(project_name + '_default')}",
             f"--env-file {shlex.quote(str(REPO_ROOT / 'development/env/netbox.env'))}",
             "--volume "
             + shlex.quote(
@@ -1053,8 +1020,98 @@ def artifact_test(context):
             "--tmpfs /var/log/netbox:rw,mode=1777",
             "--entrypoint /bin/bash",
             shlex.quote(image_tag),
-            f"-lc {shlex.quote(validation_script)}",
+            f"-lc {shlex.quote(script)}",
         )
+    )
+
+
+_SERVICE_WAIT_SCRIPT = "\n".join(
+    (
+        "python - <<'PY'",
+        "import socket",
+        "import time",
+        "for host, port in (('postgres', 5432), ('redis', 6379)):",
+        "    for attempt in range(30):",
+        "        try:",
+        "            with socket.create_connection((host, port), timeout=1):",
+        "                break",
+        "        except OSError:",
+        "            if attempt == 29:",
+        "                raise",
+        "            time.sleep(1)",
+        "PY",
+    )
+)
+
+
+def _previous_released_version(context, version):
+    """The highest released tag strictly below `version`.
+
+    Read from tags rather than the changelog: a tag is the thing that was
+    actually published, and it is what an operator will be upgrading from.
+    """
+    result = context.run("git tag --list 'v*'", hide=True, warn=True)
+    parsed = []
+    for tag in (result.stdout or "").split():
+        parts = tag.removeprefix("v").split(".")
+        if len(parts) != 3 or not all(part.isdigit() for part in parts):
+            continue
+        parsed.append(tuple(int(part) for part in parts))
+    current = tuple(int(part) for part in version.split("."))
+    candidates = sorted(entry for entry in parsed if entry < current)
+    if not candidates:
+        raise Exit(
+            f"No released tag below {version} was found, so there is nothing to "
+            "upgrade from. Pass --from-version explicitly if the tag is not in "
+            "this checkout.",
+            code=2,
+        )
+    return ".".join(str(part) for part in candidates[-1])
+
+
+@task(name="artifact-test")
+def artifact_test(context):
+    """Install the built wheel into the exact runtime and validate it."""
+    version, wheel = _release_artifact_inputs()
+    sbom_path = _prepare_sbom_output(version)
+    netbox_version = str(context.forward_netbox.netbox_ver or "").strip()
+    if netbox_version != "v4.6.6":
+        raise Exit(
+            "Release artifact validation requires NETBOX_VER=v4.6.6.",
+            code=2,
+        )
+
+    image_tag = f"forward-netbox-artifact:{version}"
+    package_path = f"/source/dist/{wheel.name}"
+    netbox_package_version = netbox_version.removeprefix("v")
+    _build_artifact_image(
+        context,
+        netbox_version=netbox_version,
+        package=package_path,
+        image_tag=image_tag,
+    )
+
+    artifact_context = _compose_project_context(
+        context,
+        RELEASE_ARTIFACT_PROJECT_NAME,
+    )
+    validation_script = "\n".join(
+        (
+            "set -eu",
+            "rm -rf /source/forward_netbox",
+            "python /source/scripts/validate_installed_artifact.py "
+            f"--expected-version {shlex.quote(version)}",
+            _SERVICE_WAIT_SCRIPT,
+            "python manage.py migrate --noinput",
+            "python manage.py check",
+            "python manage.py makemigrations --check --dry-run forward_netbox",
+            "python /source/scripts/validate_installed_routes.py",
+        )
+    )
+    run_command = _artifact_run_command(
+        image_tag,
+        validation_script,
+        RELEASE_ARTIFACT_PROJECT_NAME,
     )
     sbom_script = "\n".join(
         (
@@ -1108,6 +1165,114 @@ def artifact_test(context):
             warn=True,
         )
         context.run(f"docker image rm {shlex.quote(image_tag)}", warn=True)
+
+
+@task(
+    name="artifact-upgrade-test",
+    help={
+        "from_version": (
+            "Released version to upgrade from. Defaults to the highest released "
+            "tag below the version being built."
+        )
+    },
+)
+def artifact_upgrade_test(context, from_version=None):
+    """Upgrade a populated previous-release install to the built wheel.
+
+    `artifact-test` installs into an empty database, which is not how any
+    existing deployment receives a release. A migration that drops a column, a
+    default that never backfills, or a field whose meaning changed all pass a
+    clean install and break a real upgrade. This stands up the previous release,
+    writes plugin rows under it, then installs the built wheel over the same
+    database and reads those rows back.
+    """
+    version, wheel = _release_artifact_inputs()
+    netbox_version = str(context.forward_netbox.netbox_ver or "").strip()
+    if netbox_version != "v4.6.6":
+        raise Exit(
+            "Release artifact validation requires NETBOX_VER=v4.6.6.",
+            code=2,
+        )
+    from_version = str(
+        from_version or _previous_released_version(context, version)
+    ).strip()
+    if from_version == version:
+        raise Exit(
+            f"Cannot upgrade {version} from itself; pass a released "
+            "--from-version below it.",
+            code=2,
+        )
+
+    previous_image = f"forward-netbox-upgrade-from:{from_version}"
+    upgraded_image = f"forward-netbox-upgrade-to:{version}"
+    upgrade_context = _compose_project_context(context, RELEASE_UPGRADE_PROJECT_NAME)
+
+    # `rm -rf /source/forward_netbox` so the working tree cannot shadow the
+    # installed distribution - the same guard `artifact-test` relies on.
+    seed_script = "\n".join(
+        (
+            "set -eu",
+            "rm -rf /source/forward_netbox",
+            _SERVICE_WAIT_SCRIPT,
+            "python manage.py migrate --noinput",
+            "python /source/scripts/validate_upgrade_state.py --mode seed",
+        )
+    )
+    upgrade_script = "\n".join(
+        (
+            "set -eu",
+            "rm -rf /source/forward_netbox",
+            "python /source/scripts/validate_installed_artifact.py "
+            f"--expected-version {shlex.quote(version)}",
+            _SERVICE_WAIT_SCRIPT,
+            "python manage.py migrate --noinput",
+            "python manage.py check",
+            # An upgrade that leaves model state ahead of the migrations shipped
+            # in the wheel is exactly the failure a clean install cannot show.
+            "python manage.py makemigrations --check --dry-run forward_netbox",
+            "python /source/scripts/validate_upgrade_state.py --mode verify",
+            "python /source/scripts/validate_installed_routes.py",
+        )
+    )
+
+    try:
+        _build_artifact_image(
+            context,
+            netbox_version=netbox_version,
+            package=f"forward-netbox=={from_version}",
+            image_tag=previous_image,
+        )
+        _build_artifact_image(
+            context,
+            netbox_version=netbox_version,
+            package=f"/source/dist/{wheel.name}",
+            image_tag=upgraded_image,
+        )
+        docker_compose(upgrade_context, "up -d postgres redis")
+        print(f"artifact-upgrade-test: seeding under {from_version}")
+        context.run(
+            _artifact_run_command(
+                previous_image, seed_script, RELEASE_UPGRADE_PROJECT_NAME
+            )
+        )
+        print(f"artifact-upgrade-test: upgrading {from_version} -> {version}")
+        context.run(
+            _artifact_run_command(
+                upgraded_image, upgrade_script, RELEASE_UPGRADE_PROJECT_NAME
+            )
+        )
+        print(
+            f"artifact-upgrade-test passed: {from_version} -> {version} "
+            "migrated and the rows seeded under the previous release survived."
+        )
+    finally:
+        docker_compose(
+            upgrade_context,
+            "down --volumes --remove-orphans",
+            warn=True,
+        )
+        context.run(f"docker image rm {shlex.quote(previous_image)}", warn=True)
+        context.run(f"docker image rm {shlex.quote(upgraded_image)}", warn=True)
 
 
 @task

@@ -228,6 +228,11 @@ class ForwardSyncFormTest(TestCase):
         self.assertFalse(form.fields["enable_fast_baseline_load"].initial)
         self.assertFalse(form.fields["require_fast_baseline_eligibility"].initial)
 
+    def test_copy_sql_defaults_off_for_new_syncs(self):
+        form = ForwardSyncForm()
+
+        self.assertFalse(form.fields["enable_copy_sql"].initial)
+
     def test_safe_bulk_orm_defaults_enabled_for_existing_sync_without_setting(self):
         sync = ForwardSync.objects.create(
             name="sync-existing-no-bulk-flag",
@@ -273,6 +278,31 @@ class ForwardSyncFormTest(TestCase):
 
         self.assertTrue(form.is_valid(), form.errors)
         self.assertTrue(form.instance.parameters["enable_bulk_orm"])
+
+    def test_form_persists_copy_sql_opt_in_and_kill_switch(self):
+        # The form rebuilds `parameters` wholesale, so a key it forgets is
+        # silently dropped rather than left at its previous value.
+        form = ForwardSyncForm(
+            data={
+                "name": "sync-copy-sql",
+                "source": self.source.pk,
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.device": "on",
+                "dcim.macaddress": "on",
+                "auto_merge": "on",
+                "enable_bulk_orm": "on",
+                "enable_copy_sql": "on",
+                "copy_sql_kill_switches": ["dcim.macaddress"],
+                "max_changes_per_staging_item": "10000",
+            }
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertTrue(form.instance.parameters["enable_copy_sql"])
+        self.assertEqual(
+            form.instance.parameters["copy_sql_kill_switches"],
+            ["dcim.macaddress"],
+        )
 
     def test_form_persists_explicit_fast_baseline_opt_in(self):
         form = ForwardSyncForm(

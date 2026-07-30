@@ -18,6 +18,7 @@ from ..utilities.logging import SyncLogging
 from .api_usage import record_forward_api_usage
 from .diagnostics import exception_type
 from .diagnostics import safe_operation_failure
+from .diagnostics import structured_failure_diagnosis
 from .runtime_guidance import log_worker_timeout_guidance
 
 logger = logging.getLogger("forward_netbox.models")
@@ -81,13 +82,26 @@ def _record_forward_sync_failure(sync, job, executor, ingestion, exc):
             ingestion.validation_run = validation_run
             ingestion.save(update_fields=["validation_run"])
     message = safe_operation_failure("Forward ingestion", exc)
+    # This is the row an operator lands on when a sync dies: it names the model
+    # nothing and carried an empty `raw_data`, so the only failure that actually
+    # stopped the run was the least explicable thing in the UI. Recording the
+    # schema-level diagnosis here means the constraint or invalid field is
+    # visible without reading server logs — the values behind them still are not
+    # captured.
+    diagnosis = structured_failure_diagnosis(exc)
+    constraint = diagnosis.get("constraint_name") or ""
+    invalid_fields = diagnosis.get("invalid_fields") or []
+    if constraint:
+        message = f"{message[:-1]} on constraint {constraint}."
+    elif invalid_fields:
+        message = f"{message[:-1]} on invalid field(s) {', '.join(invalid_fields)}."
     sync.logger.log_failure(message, obj=ingestion)
     ForwardIngestionIssue.objects.create(
         ingestion=ingestion,
         phase=ForwardIngestionPhaseChoices.SYNC,
         message=message,
         exception=exc.__class__.__name__,
-        raw_data={},
+        raw_data=diagnosis,
     )
     return ingestion
 

@@ -15,6 +15,7 @@ from ..utilities.forward_api import MAX_NQE_FETCH_ALL_MAX_PAGES
 from ..utilities.forward_api import MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
 from ..utilities.forward_api import MAX_NQE_PAGE_SIZE
 from ..utilities.forward_api import MAX_QUERY_FETCH_CONCURRENCY
+from .apply_engine_decision import COPY_SQL_ALLOWED_MODELS
 from .branch_budget import MODEL_CHANGE_DENSITY_PARAMETER
 from .branch_budget import MODEL_CHANGE_DENSITY_PROFILE_PARAMETER
 from .sync_contracts import normalize_coalesce_fields
@@ -393,6 +394,8 @@ def clean_forward_sync(sync):
             "enable_bulk_orm",
             "enable_fast_baseline_load",
             "require_fast_baseline_eligibility",
+            "enable_copy_sql",
+            "copy_sql_kill_switches",
             "set_primary_ip_from_mgmt_tag",
             "diff_fallback_mode",
             "webhook_secret",
@@ -487,6 +490,28 @@ def clean_forward_sync(sync):
             )
         )
     parameters["require_fast_baseline_eligibility"] = require_fast_baseline_eligibility
+    parameters["enable_copy_sql"] = bool(parameters.get("enable_copy_sql", False))
+    copy_sql_kill_switches = parameters.get("copy_sql_kill_switches") or []
+    if not isinstance(copy_sql_kill_switches, (list, tuple)):
+        raise ValidationError(_("`copy_sql_kill_switches` must be a list."))
+    copy_sql_kill_switches = [
+        str(model_string).strip()
+        for model_string in copy_sql_kill_switches
+        if str(model_string).strip()
+    ]
+    # A switch naming a model COPY/SQL never runs is almost certainly a typo of
+    # one that it does, so reject it rather than silently protecting nothing.
+    unsupported_copy_sql_switches = sorted(
+        set(copy_sql_kill_switches) - COPY_SQL_ALLOWED_MODELS
+    )
+    if unsupported_copy_sql_switches:
+        raise ValidationError(
+            _(
+                "`copy_sql_kill_switches` contains models outside the COPY/SQL "
+                f"allowlist: {unsupported_copy_sql_switches}"
+            )
+        )
+    parameters["copy_sql_kill_switches"] = sorted(set(copy_sql_kill_switches))
     try:
         max_changes_per_staging_item = int(
             parameters.get(

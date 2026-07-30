@@ -117,7 +117,7 @@ class InsertReleaseRowTest(unittest.TestCase):
 
 class ReleaseIntroTest(unittest.TestCase):
     INTRO = (
-        "The `1.5.10` release requires NetBox `4.6.5`. "
+        "The `1.5.10` release requires NetBox `4.6.6`. "
         "Expand for the published release history and release notes."
     )
 
@@ -130,7 +130,7 @@ class ReleaseIntroTest(unittest.TestCase):
 
         self.assertEqual(
             out,
-            "The `1.5.11` release candidate requires NetBox `4.6.5`. "
+            "The `1.5.11` release candidate requires NetBox `4.6.6`. "
             "Expand for the published release history and candidate notes.",
         )
 
@@ -149,7 +149,7 @@ class ReleaseIntroTest(unittest.TestCase):
 
         self.assertEqual(
             out,
-            "The `1.5.11` release requires NetBox `4.6.5`. "
+            "The `1.5.11` release requires NetBox `4.6.6`. "
             "Expand for the published release history and release notes.",
         )
         self.assertEqual(

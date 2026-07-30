@@ -114,6 +114,8 @@ def runtime_summary(sync):
         "branching_available": branch_plugin_available,
         "auto_merge": bool(sync.auto_merge),
         "enable_bulk_orm": bool(parameters.get("enable_bulk_orm", False)),
+        "enable_copy_sql": bool(parameters.get("enable_copy_sql", False)),
+        "copy_sql_kill_switches": list(parameters.get("copy_sql_kill_switches") or []),
         "diff_fallback_mode": parameters.get(
             "diff_fallback_mode",
             ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,

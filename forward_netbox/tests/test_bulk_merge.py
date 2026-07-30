@@ -5381,6 +5381,170 @@ class DeferredSelfRefFKSplitTest(TestCase):
         self.assertIn(cc.key, to_process[upd_key].depends_on)
 
 
+class IPAdoptionOrderingTest(TestCase):
+    """An IP's assignment must merge before the device that adopts it.
+
+    `Device.clean()` reads the device's interfaces from the destination and
+    rejects a primary/OOB IP that does not resolve to one of them. The framework
+    dependency graph has no UPDATE->UPDATE case, so when the device and the IP
+    both already exist in main and the branch only re-points them, the two
+    UPDATEs were unordered and fell back to the sort's timestamp tie-break.
+    Device-first raised ValidationError({'primary_ip4': ...}); that race is why
+    it surfaced as one device out of thousands and never reproduced.
+    """
+
+    DEVICE_PK = 900001
+    IP_PK = 900002
+    INTERFACE_PK = 900003
+
+    def _change(self, key, model_class, action, prechange=None, postchange=None, at=0):
+        from types import SimpleNamespace
+
+        from netbox_branching.merge_strategies.squash import CollapsedChange
+
+        collapsed = CollapsedChange(key, model_class)
+        collapsed.final_action = action
+        collapsed.prechange_data = dict(prechange or {})
+        collapsed.postchange_data = dict(postchange or {})
+        collapsed.last_change = SimpleNamespace(time=at, pk=at, request_id=uuid.uuid4())
+        return collapsed
+
+    def _interface_ct(self):
+        from django.contrib.contenttypes.models import ContentType
+
+        return ContentType.objects.get(app_label="dcim", model="interface").pk
+
+    def _device_adoption(self, at, field="primary_ip4", ip_pk=None):
+        from dcim.models import Device
+
+        from forward_netbox.utilities.bulk_merge import ActionType
+
+        return self._change(
+            ("dcim.device", self.DEVICE_PK),
+            Device,
+            ActionType.UPDATE,
+            prechange={"name": "sw1", field: None},
+            postchange={"name": "sw1", field: ip_pk or self.IP_PK},
+            at=at,
+        )
+
+    def _ip_assignment(self, at):
+        from ipam.models import IPAddress
+
+        from forward_netbox.utilities.bulk_merge import ActionType
+
+        return self._change(
+            ("ipam.ipaddress", self.IP_PK),
+            IPAddress,
+            ActionType.UPDATE,
+            prechange={"assigned_object_type": None, "assigned_object_id": None},
+            postchange={
+                "assigned_object_type": self._interface_ct(),
+                "assigned_object_id": self.INTERFACE_PK,
+            },
+            at=at,
+        )
+
+    def _order(self, *changes):
+        from forward_netbox.utilities.bulk_merge import (
+            _order_collapsed_changes_fast,
+        )
+
+        collapsed = {change.key: change for change in changes}
+        ordered = _order_collapsed_changes_fast(
+            collapsed, logging.getLogger("t"), "merge"
+        )
+        return [change.key for change in ordered], collapsed
+
+    def test_orders_the_assignment_first_whichever_change_is_older(self):
+        # The timestamp is the tie-break the unordered pair fell back to, so
+        # both directions have to be pinned - passing in only one is the bug.
+        for device_at, ip_at in ((1, 2), (2, 1)):
+            with self.subTest(device_at=device_at, ip_at=ip_at):
+                device = self._device_adoption(device_at)
+                ip = self._ip_assignment(ip_at)
+                order, collapsed = self._order(device, ip)
+
+                self.assertLess(
+                    order.index(("ipam.ipaddress", self.IP_PK)),
+                    order.index(("dcim.device", self.DEVICE_PK)),
+                )
+                self.assertIn(
+                    ("ipam.ipaddress", self.IP_PK),
+                    collapsed[("dcim.device", self.DEVICE_PK)].depends_on,
+                )
+
+    def test_orders_an_oob_ip_adoption_too(self):
+        device = self._device_adoption(1, field="oob_ip")
+        ip = self._ip_assignment(2)
+        order, _ = self._order(device, ip)
+
+        self.assertLess(
+            order.index(("ipam.ipaddress", self.IP_PK)),
+            order.index(("dcim.device", self.DEVICE_PK)),
+        )
+
+    def test_orders_a_virtual_machine_adoption(self):
+        from virtualization.models import VirtualMachine
+
+        from forward_netbox.utilities.bulk_merge import ActionType
+
+        vm = self._change(
+            ("virtualization.virtualmachine", self.DEVICE_PK),
+            VirtualMachine,
+            ActionType.UPDATE,
+            prechange={"name": "vm1", "primary_ip4": None},
+            postchange={"name": "vm1", "primary_ip4": self.IP_PK},
+            at=1,
+        )
+        order, _ = self._order(vm, self._ip_assignment(2))
+
+        self.assertLess(
+            order.index(("ipam.ipaddress", self.IP_PK)),
+            order.index(("virtualization.virtualmachine", self.DEVICE_PK)),
+        )
+
+    def test_adds_no_edge_when_the_ip_is_not_changed_in_the_same_merge(self):
+        # The IP is already assigned in main; nothing to order against, and an
+        # edge to a change that is not in the batch would wedge the sort.
+        device = self._device_adoption(1)
+        order, collapsed = self._order(device)
+
+        self.assertEqual(order, [("dcim.device", self.DEVICE_PK)])
+        self.assertEqual(collapsed[("dcim.device", self.DEVICE_PK)].depends_on, set())
+
+    def test_ignores_deferred_fields_that_do_not_point_at_an_ip(self):
+        # dcim.virtualchassis.master is in the deferred set but points at a
+        # Device, so an IPAddress update must not be ordered against it.
+        from dcim.models import VirtualChassis
+
+        from forward_netbox.utilities.bulk_merge import ActionType
+
+        chassis = self._change(
+            ("dcim.virtualchassis", 900010),
+            VirtualChassis,
+            ActionType.UPDATE,
+            postchange={"name": "vc1", "master": self.IP_PK},
+            at=1,
+        )
+        _order, collapsed = self._order(chassis, self._ip_assignment(2))
+
+        self.assertEqual(collapsed[("dcim.virtualchassis", 900010)].depends_on, set())
+
+    def test_drops_the_edge_rather_than_failing_the_whole_merge_on_a_cycle(self):
+        # A cycle makes the sorter raise and fails every row in the merge, which
+        # is far worse than the one ValidationError this edge exists to prevent.
+        device = self._device_adoption(1)
+        ip = self._ip_assignment(2)
+        ip.depends_on.add(device.key)
+        device.depended_by.add(ip.key)
+
+        order, collapsed = self._order(device, ip)
+
+        self.assertEqual(len(order), 2)
+        self.assertNotIn(ip.key, collapsed[device.key].depends_on)
+
+
 class BulkMergeTagNameCollisionTest(CleanTransactionTestCase):
     """Alternate Tag identities are exact-match, audit-backed, and fail closed."""
 

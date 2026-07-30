@@ -1237,6 +1237,50 @@ def _skip_updates_missing_in_main_batched(collapsed_changes, change_logger):
             )
 
 
+def _skip_protecting_reference_blocked_deletes(collapsed_changes, change_logger):
+    """Skip deletes the database will refuse, instead of failing them at apply.
+
+    `protecting_reference_blocked_deletes` identifies a delete whose PROTECT or
+    RESTRICT reference *survives* the run. Scheduling it anyway guarantees a
+    `ProtectedError` at apply time, which fails the row — and per the merge
+    failure dead end a single failed row permanently blocks baseline promotion.
+    So one operator-owned object the plugin does not manage could wedge an
+    entire sync's convergence bookkeeping indefinitely.
+
+    The plugin cannot resolve these itself. The three PROTECT references into
+    `dcim.Device` are `dcim.VirtualChassis.master`,
+    `dcim.VirtualDeviceContext.device` and `virtualization.VirtualMachine.device`,
+    and only virtualchassis is a synced model — the other two are operator data.
+    Deleting them to clear the path would destroy records the operator owns, and
+    the sync has no mandate for that.
+
+    So report and skip: the delete intent stays exact and visible as an issue,
+    the row stays in drift where an operator can act on it, and the merge is not
+    wedged by a condition it cannot fix. Ordering already handles the case where
+    the referencing row *is* deleted in the same run; only survivors reach here.
+
+    Returns the skipped keys mapped to what holds them.
+    """
+    blocked = protecting_reference_blocked_deletes(collapsed_changes)
+    if not blocked:
+        return {}
+    for key, references in blocked.items():
+        collapsed_changes[key].final_action = ActionType.SKIP
+        held_by = ", ".join(f"{label} ({count})" for label, count in references)
+        change_logger.warning(
+            "Skipping DELETE for %s %s: still referenced by %s. The database "
+            "would refuse it, and those rows are not being deleted in this run.",
+            key[0],
+            key[1],
+            held_by,
+        )
+    change_logger.info(
+        "Skipped %d delete(s) held by a surviving protected reference.",
+        len(blocked),
+    )
+    return blocked
+
+
 def _add_destination_fk_release_dependencies(collapsed_changes, change_logger):
     """Order destination FK releases before deletes even without a branch preimage.
 
@@ -1351,14 +1395,33 @@ def protecting_reference_blocked_deletes(collapsed_changes):
     time with `ProtectedError`, leaving the merge short of convergence. That is
     how a device kept two BGP peers and never converged.
 
-    A reference only blocks when the referencing row is *not* itself being
-    deleted in this run; when it is, ordering resolves it and the delete
-    proceeds. Returns ``{key: [(referencing label, count), ...]}``.
+    A reference only blocks when the referencing row is **not changing at all**
+    in this run. Two ways it can be changing, and both resolve the block:
+
+    * it is deleted here — ordering puts the child before the parent
+      (`_add_protected_child_delete_dependencies`);
+    * it is updated here — the update may release the FK, and
+      `_add_destination_fk_release_dependencies` orders that release before the
+      delete. This read happens against destination state *before* either has
+      been applied, so a referrer that is about to release still looks like it
+      protects. Treating an updated referrer as blocking would skip a delete
+      that in fact succeeds — which is how the DLM protected-version delete,
+      the exact case that release-ordering exists for, regressed.
+
+    Erring this way is deliberate: wrongly skipping loses a real delete
+    silently, while wrongly allowing one just restores the pre-existing
+    `ProtectedError`, which is reported.
+
+    Returns ``{key: [(referencing label, count), ...]}``.
     """
     delete_pks_by_model = defaultdict(dict)
+    changing_pks_by_model = defaultdict(set)
     for key, collapsed in collapsed_changes.items():
         if collapsed.final_action == ActionType.DELETE:
             delete_pks_by_model[collapsed.model_class][collapsed.key[1]] = key
+            changing_pks_by_model[collapsed.model_class].add(collapsed.key[1])
+        elif collapsed.final_action == ActionType.UPDATE:
+            changing_pks_by_model[collapsed.model_class].add(collapsed.key[1])
     if not delete_pks_by_model:
         return {}
 
@@ -1371,7 +1434,7 @@ def protecting_reference_blocked_deletes(collapsed_changes):
             if on_delete not in (models.PROTECT, models.RESTRICT):
                 continue
             referencing_model = relation.related_model
-            surviving = delete_pks_by_model.get(referencing_model, {})
+            changing = changing_pks_by_model.get(referencing_model, set())
             counts = defaultdict(int)
             for offset in range(0, len(target_pks), BULK_MERGE_FLUSH_THRESHOLD):
                 chunk = target_pks[offset : offset + BULK_MERGE_FLUSH_THRESHOLD]
@@ -1381,8 +1444,8 @@ def protecting_reference_blocked_deletes(collapsed_changes):
                     .values_list("pk", field.attname)
                 )
                 for referencing_pk, target_pk in rows:
-                    if referencing_pk in surviving:
-                        # Deleted in this run; ordering handles it.
+                    if referencing_pk in changing:
+                        # Deleted or updated in this run; ordering handles it.
                         continue
                     counts[target_pk] += 1
             for target_pk, count in counts.items():
@@ -1436,13 +1499,22 @@ def _protected_child_delete_edges(collapsed_changes):
     return edges
 
 
-def _acyclic_delete_edges(collapsed_changes, candidate_edges, change_logger):
+def _acyclic_delete_edges(
+    collapsed_changes,
+    candidate_edges,
+    change_logger,
+    *,
+    edge_label="protected-delete",
+):
     """Drop candidate edges that would make the ordering graph unsortable.
 
     A cycle makes `_order_collapsed_changes_fast` raise and fails the *entire*
     merge, which is far worse than one delete the database refuses. Mutually
     protecting rows are undeletable by the database anyway, so dropping the edge
     only returns that pair to the strict failure it would have had regardless.
+
+    Edges are ``(dependent_key, dependency_key)``. The algorithm is not specific
+    to deletes; `edge_label` only names the edge class in the warning.
     """
     nodes = {key for edge in candidate_edges for key in edge}
     for key in list(nodes):
@@ -1485,10 +1557,11 @@ def _acyclic_delete_edges(collapsed_changes, candidate_edges, change_logger):
         if len(kept) == len(accepted):
             return []
         change_logger.warning(
-            "Bulk merge: dropped %d protected-delete ordering edge(s) that would "
+            "Bulk merge: dropped %d %s ordering edge(s) that would "
             "have made the change graph unsortable; those rows stay mutually "
             "protected and their deletes are reported rather than reordered.",
             len(accepted) - len(kept),
+            edge_label,
         )
         accepted = kept
         if not accepted:
@@ -1528,6 +1601,89 @@ def _add_protected_child_delete_dependencies(collapsed_changes, change_logger):
         change_logger.debug(
             "Restored %d child-before-parent DELETE ordering edge(s) from "
             "destination protecting references.",
+            added,
+        )
+    return added
+
+
+def _add_ip_adoption_dependencies(collapsed_changes, change_logger):
+    """Order an IP's assignment UPDATE before the UPDATE that adopts it.
+
+    ``Device.clean()`` requires ``primary_ip4``/``primary_ip6``/``oob_ip`` to
+    resolve to an interface of that device (``vc_interfaces``), read from the
+    *destination*. So the change that assigns the IP to the interface has to be
+    merged before the change that points the device at the IP.
+
+    The framework graph never orders these. ``_build_fk_dependency_graph`` builds
+    UPDATE->CREATE, CREATE->CREATE, DELETE->UPDATE and DELETE->DELETE edges — it
+    has no UPDATE->UPDATE case at all, and neither did this module. While both
+    rows are new the ordering still holds by accident, through the CREATE chain
+    (device -> ip -> interface). But when the device *and* the IP already exist
+    in main and the branch only re-points them — a Mgmt_-tagged device adopting
+    an address that is being moved onto its interface in the same sync — the two
+    UPDATEs carry no edge between them and fall back to the sort's timestamp
+    tie-break. Whichever ObjectChange was recorded first wins.
+
+    Device-first raises ``ValidationError({'primary_ip4': 'The specified IP
+    address (...) is not assigned to this device.'})``. It is a race, not a
+    deterministic failure, which is why it presented as a single device out of
+    thousands and never reproduced.
+    """
+    ip_updates = {
+        collapsed.key[1]: collapsed
+        for collapsed in collapsed_changes.values()
+        if collapsed.final_action == ActionType.UPDATE
+        and collapsed.model_class._meta.label_lower == "ipam.ipaddress"
+    }
+    if not ip_updates:
+        return 0
+
+    candidate_edges = []
+    for key, collapsed in collapsed_changes.items():
+        if collapsed.final_action != ActionType.UPDATE:
+            continue
+        # key[0] is the model label for both real UPDATE keys and the synthetic
+        # ("<label>", pk, "defer_self_ref_fk") keys the create-cycle split adds.
+        fields = _DEFERRED_CREATE_FK_FIELDS.get(key[0])
+        if not fields:
+            continue
+        postchange = collapsed.postchange_data or {}
+        for field_name in fields:
+            field = collapsed.model_class._meta.get_field(field_name)
+            related = getattr(field, "related_model", None)
+            if related is None or related._meta.label_lower != "ipam.ipaddress":
+                continue
+            adopted = _serialized_fk_id(postchange.get(field_name))
+            if not adopted:
+                continue
+            ip_change = ip_updates.get(adopted)
+            if ip_change is None or ip_change.key == key:
+                continue
+            if ip_change.key in collapsed.depends_on:
+                continue
+            candidate_edges.append((key, ip_change.key))
+
+    if not candidate_edges:
+        return 0
+
+    accepted = _acyclic_delete_edges(
+        collapsed_changes,
+        candidate_edges,
+        change_logger,
+        edge_label="IP-adoption",
+    )
+    added = 0
+    for dependent_key, dependency_key in accepted:
+        dependent = collapsed_changes[dependent_key]
+        if dependency_key in dependent.depends_on:
+            continue
+        dependent.depends_on.add(dependency_key)
+        collapsed_changes[dependency_key].depended_by.add(dependent_key)
+        added += 1
+    if added:
+        change_logger.debug(
+            "Ordered %d IP assignment change(s) before the device/VM update "
+            "that adopts the address as a primary or OOB IP.",
             added,
         )
     return added
@@ -1591,6 +1747,8 @@ def _order_collapsed_changes_fast(collapsed_changes, change_logger, operation):
         # receiver sees the completed graph.
         _add_destination_fk_release_dependencies(to_process, change_logger)
         _add_protected_child_delete_dependencies(to_process, change_logger)
+        # UPDATE->UPDATE ordering, which the framework graph has no case for.
+        _add_ip_adoption_dependencies(to_process, change_logger)
         squash_dependency_graph_built.send(
             sender=SquashMergeStrategy,
             collapsed_changes=to_process,
@@ -1731,6 +1889,15 @@ def _bulk_merge_changes_main(
     }
     with profile_scope("skip_missing_updates", owner="ours", rows=len(collapsed)):
         _skip_updates_missing_in_main_batched(collapsed, change_logger)
+    # Before ordering: a delete held by a surviving PROTECT reference can never
+    # succeed, and failing it would block baseline promotion over data the
+    # plugin does not own.
+    with profile_scope(
+        "skip_protected_blocked_deletes", owner="ours", rows=len(collapsed)
+    ):
+        protected_blocked_deletes = _skip_protecting_reference_blocked_deletes(
+            collapsed, change_logger
+        )
     ordered = _order_collapsed_changes_fast(collapsed, change_logger, "merge")
     affected_prefix_vrf_ids = _affected_prefix_vrf_ids(ordered)
 
@@ -2525,5 +2692,17 @@ def _bulk_merge_changes_main(
         result_metadata.update(
             logical_total=len(logical_components),
             logical_action_counts=dict(Counter(logical_actions.values())),
+            # Schema identifiers and counts only — never the referencing rows.
+            protected_blocked_deletes=[
+                {
+                    "model": key[0],
+                    "held_by": [
+                        {"model": label, "count": count} for label, count in references
+                    ],
+                }
+                for key, references in sorted(
+                    protected_blocked_deletes.items(), key=lambda item: repr(item[0])
+                )
+            ],
         )
     return applied, failed, models_touched

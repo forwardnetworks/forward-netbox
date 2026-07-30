@@ -11,6 +11,18 @@ Source of truth:
 - `ADAPTER_REQUIRED_MODELS`
 - `ADAPTER_MODEL_BLOCKERS`
 
+## COPY/SQL Allowlist
+
+`copy_sql` is a third, default-off engine layered above this matrix. It is
+branch-only and exact-version gated. WP-A allowlists only `dcim.macaddress`
+under model specification version 1. Exceptional identity buckets route to the
+existing engine; no other model is implicitly eligible.
+
+The per-sync `copy_sql_kill_switches` list can disable an allowlisted model.
+Unsupported versions, a missing active branch, a registered Branching field
+migrator, applicable CustomFields, runtime validation/protection hooks, enabled
+EventRules, or a kill switch all select the existing engine.
+
 ## Bulk ORM Safe Set
 
 These models are parity-tested for the default `bulk_orm` path:

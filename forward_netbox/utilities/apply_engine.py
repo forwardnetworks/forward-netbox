@@ -37,7 +37,42 @@ class ForwardApplyEngine:
     name: str = ForwardApplyEngineChoices.ADAPTER
     decision: ForwardApplyEngineDecision | None = None
 
+    def apply_plan_item(self, runner, model_string, upsert_rows, delete_rows):
+        """Apply one planner item without recalculating its approved delta.
+
+        COPY/SQL needs the upserts and the approved deletes together: it commits
+        target rows, FK side effects, ObjectChanges and ChangeDiffs in one
+        transaction, which two separate engine calls cannot express. Every other
+        engine keeps its existing two-call dispatch.
+        """
+        if self.name == ForwardApplyEngineChoices.COPY_SQL:
+            from .apply_engine_copy_sql import copy_sql_apply_plan_item
+
+            # Resolve the fallback engine up front, with COPY/SQL excluded, so a
+            # SQL fault has somewhere to replay the whole item to.
+            fallback_decision = _decision_mod.apply_engine_decision_for(
+                sync=runner.sync,
+                model_string=model_string,
+                consider_copy_sql=False,
+            )
+            fallback_engine = ForwardApplyEngine(
+                name=fallback_decision.selected_engine,
+                decision=fallback_decision,
+            )
+            return copy_sql_apply_plan_item(
+                runner=runner,
+                model_string=model_string,
+                upsert_rows=upsert_rows,
+                delete_rows=delete_rows,
+                fallback_engine=fallback_engine,
+            )
+        self.apply_upserts(runner, model_string, upsert_rows)
+        if delete_rows:
+            self.apply_deletes(runner, model_string, delete_rows)
+
     def apply_upserts(self, runner, model_string, rows):
+        if self.name == ForwardApplyEngineChoices.COPY_SQL:
+            return self.apply_plan_item(runner, model_string, rows, ())
         if self.name == ForwardApplyEngineChoices.BULK_ORM and model_string in (
             BULK_ORM_ENABLED_MODELS
         ):
@@ -53,6 +88,8 @@ class ForwardApplyEngine:
         return runner._apply_model_rows(model_string, rows)
 
     def apply_deletes(self, runner, model_string, rows):
+        if self.name == ForwardApplyEngineChoices.COPY_SQL:
+            return self.apply_plan_item(runner, model_string, (), rows)
         if (
             self.name == ForwardApplyEngineChoices.BULK_ORM
             and model_string == "ipam.prefix"

@@ -51,7 +51,7 @@ class DockerComposeIsolationTest(unittest.TestCase):
         context = SimpleNamespace(
             run=Mock(),
             forward_netbox=SimpleNamespace(
-                netbox_ver="v4.6.5",
+                netbox_ver="v4.6.6",
                 project_name="forward-netbox",
                 compose_dir="/tmp/forward-netbox",
             ),
@@ -77,7 +77,7 @@ class DockerComposeIsolationTest(unittest.TestCase):
         context = SimpleNamespace(
             run=Mock(),
             forward_netbox=SimpleNamespace(
-                netbox_ver="v4.6.5",
+                netbox_ver="v4.6.6",
                 project_name="forward-netbox",
                 compose_dir="/tmp/forward-netbox",
             ),
@@ -91,7 +91,7 @@ class DockerComposeIsolationTest(unittest.TestCase):
 
 
 class ReleaseArtifactTaskTest(unittest.TestCase):
-    def _context(self, netbox_version="v4.6.5"):
+    def _context(self, netbox_version="v4.6.6"):
         return SimpleNamespace(
             run=Mock(),
             forward_netbox=SimpleNamespace(
@@ -121,7 +121,7 @@ class ReleaseArtifactTaskTest(unittest.TestCase):
             tasks.artifact_test.body(context)
 
         commands = [call.args[0] for call in context.run.call_args_list]
-        self.assertIn("--build-arg NETBOX_VER=v4.6.5", commands[0])
+        self.assertIn("--build-arg NETBOX_VER=v4.6.6", commands[0])
         self.assertIn(
             "--build-arg PACKAGE=/source/dist/forward_netbox-2.6.0-py3-none-any.whl",
             commands[0],
@@ -142,7 +142,7 @@ class ReleaseArtifactTaskTest(unittest.TestCase):
         self.assertIn("uv tool run --isolated", commands[2])
         self.assertIn("cyclonedx-py environment", commands[2])
         self.assertIn("--pyproject /tmp/netbox-runtime-pyproject.toml", commands[2])
-        self.assertIn('version = "4.6.5"', commands[2])
+        self.assertIn('version = "4.6.6"', commands[2])
         self.assertIn("forward-netbox==2.6.0", commands[2])
         self.assertIn("/opt/netbox/venv/bin/python", commands[2])
         self.assertIn("--output-reproducible", commands[2])
@@ -206,6 +206,147 @@ class ReleaseArtifactTaskTest(unittest.TestCase):
             dockerignore.index("!dist/*.whl"),
             dockerignore.index("dist"),
         )
+
+
+class ArtifactUpgradeTaskTest(unittest.TestCase):
+    """The upgrade gate: a clean install cannot show an upgrade defect.
+
+    `artifact-test` migrates an empty database, so a migration that drops a
+    column, a default that never backfills, or a field whose meaning changed all
+    pass it and break a real deployment. This gate seeds rows under the previous
+    release and reads them back under the built wheel.
+    """
+
+    WHEEL = "dist/forward_netbox-2.6.7-py3-none-any.whl"
+
+    def _context(self, netbox_version="v4.6.6", tags="v2.6.5\nv2.6.6\n"):
+        run = Mock(return_value=SimpleNamespace(stdout=tags))
+        return SimpleNamespace(
+            run=run,
+            forward_netbox=SimpleNamespace(
+                netbox_ver=netbox_version,
+                project_name="forward-netbox",
+                compose_dir=str(tasks.REPO_ROOT / "development"),
+            ),
+        )
+
+    def _run(self, context, **kwargs):
+        with (
+            patch.object(
+                tasks,
+                "_release_artifact_inputs",
+                return_value=("2.6.7", tasks.REPO_ROOT / self.WHEEL),
+            ),
+            patch.object(tasks, "docker_compose") as docker_compose,
+        ):
+            tasks.artifact_upgrade_test.body(context, **kwargs)
+        return [call.args[0] for call in context.run.call_args_list], docker_compose
+
+    def test_builds_the_previous_release_then_the_built_wheel(self):
+        context = self._context()
+        commands, docker_compose = self._run(context)
+
+        builds = [command for command in commands if command.startswith("docker build")]
+        self.assertIn("--build-arg PACKAGE=forward-netbox==2.6.6", builds[0])
+        self.assertIn(
+            "--build-arg PACKAGE=/source/dist/forward_netbox-2.6.7-py3-none-any.whl",
+            builds[1],
+        )
+        self.assertEqual(
+            docker_compose.call_args_list[0].args[1], "up -d postgres redis"
+        )
+        self.assertEqual(
+            docker_compose.call_args_list[-1].args[1],
+            "down --volumes --remove-orphans",
+        )
+
+    def test_seeds_under_the_old_release_and_verifies_under_the_new(self):
+        context = self._context()
+        commands, _ = self._run(context)
+
+        runs = [command for command in commands if command.startswith("docker run")]
+        self.assertIn("validate_upgrade_state.py --mode seed", runs[0])
+        self.assertNotIn("--mode verify", runs[0])
+        self.assertIn("validate_upgrade_state.py --mode verify", runs[1])
+        # The upgraded run must prove it is the built wheel, migrate on top of
+        # the seeded database, and leave no unmade migrations behind.
+        self.assertIn("validate_installed_artifact.py", runs[1])
+        self.assertIn("--expected-version 2.6.7", runs[1])
+        self.assertIn("python manage.py migrate --noinput", runs[1])
+        self.assertIn(
+            "python manage.py makemigrations --check --dry-run forward_netbox",
+            runs[1],
+        )
+        self.assertIn("validate_installed_routes.py", runs[1])
+
+    def test_runs_in_its_own_compose_project(self):
+        # Sharing the artifact-test project would let a clean-install run and an
+        # upgrade run collide over the same database volume.
+        context = self._context()
+        commands, _ = self._run(context)
+
+        runs = [command for command in commands if command.startswith("docker run")]
+        for command in runs:
+            self.assertIn("forward-netbox-artifact-upgrade_default", command)
+            self.assertNotIn("forward-netbox-artifact-test_default", command)
+
+    def test_honours_an_explicit_from_version(self):
+        context = self._context()
+        commands, _ = self._run(context, from_version="2.6.4")
+
+        builds = [command for command in commands if command.startswith("docker build")]
+        self.assertIn("--build-arg PACKAGE=forward-netbox==2.6.4", builds[0])
+
+    def test_rejects_upgrading_a_version_from_itself(self):
+        context = self._context()
+        with (
+            patch.object(
+                tasks,
+                "_release_artifact_inputs",
+                return_value=("2.6.7", tasks.REPO_ROOT / self.WHEEL),
+            ),
+            patch.object(tasks, "docker_compose"),
+        ):
+            with self.assertRaises(Exit) as raised:
+                tasks.artifact_upgrade_test.body(context, from_version="2.6.7")
+        self.assertEqual(raised.exception.code, 2)
+
+    def test_rejects_any_other_netbox_version(self):
+        context = self._context(netbox_version="v4.6.4")
+        with patch.object(
+            tasks,
+            "_release_artifact_inputs",
+            return_value=("2.6.7", tasks.REPO_ROOT / self.WHEEL),
+        ):
+            with self.assertRaises(Exit) as raised:
+                tasks.artifact_upgrade_test.body(context)
+        self.assertEqual(raised.exception.code, 2)
+        context.run.assert_not_called()
+
+    def test_previous_version_picks_the_highest_tag_below_the_build(self):
+        context = self._context(tags="v2.5.11\nv2.6.6\nv2.6.5\nv2.6.7\nnot-a-tag\n")
+
+        self.assertEqual(
+            tasks._previous_released_version(context, "2.6.7"),
+            "2.6.6",
+        )
+
+    def test_previous_version_orders_numerically_not_lexically(self):
+        # "2.5.11" sorts below "2.5.9" as a string; the tag that shipped last is
+        # 2.5.11, and upgrading from the wrong one would test nothing real.
+        context = self._context(tags="v2.5.9\nv2.5.11\n")
+
+        self.assertEqual(
+            tasks._previous_released_version(context, "2.6.0"),
+            "2.5.11",
+        )
+
+    def test_previous_version_fails_closed_without_a_tag(self):
+        context = self._context(tags="")
+
+        with self.assertRaises(Exit) as raised:
+            tasks._previous_released_version(context, "2.6.7")
+        self.assertEqual(raised.exception.code, 2)
 
 
 class SyncHealthGateTaskTest(unittest.TestCase):

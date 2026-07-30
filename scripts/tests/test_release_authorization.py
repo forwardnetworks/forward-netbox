@@ -19,35 +19,35 @@ class ReleaseAuthorizationTest(unittest.TestCase):
         "final-tree-full-gate": (
             "`rtk env FORWARD_NETBOX_DOCKER_PROJECT=forward-netbox-release-gate "
             "FORWARD_NETBOX_POSTGRES_DATA_PATH=netbox-postgres-data "
-            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.5 "
+            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.6 "
             "invoke ci` passed: 1343 tests, 0 failures."
         ),
         "exact-runtime-artifact": (
             "`rtk env FORWARD_NETBOX_DOCKER_PROJECT=forward-netbox-release-gate "
             "FORWARD_NETBOX_POSTGRES_DATA_PATH=netbox-postgres-data "
-            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.5 "
-            "invoke artifact-test` passed: NetBox 4.6.5, Branching 1.1.1, "
+            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.6 "
+            "invoke artifact-test` passed: NetBox 4.6.6, Branching 1.1.2, "
             "Python 3.14, and SBOM validation; 0 errors."
         ),
         "scale-and-failure": (
             "`rtk env FORWARD_NETBOX_DOCKER_PROJECT=forward-netbox-upgrade26 "
             "FORWARD_NETBOX_POSTGRES_DATA_PATH=netbox-postgres-data "
-            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.5 "
+            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.6 "
             "invoke scale-soak --runs 3` passed 3 runs and "
             "`rtk env FORWARD_NETBOX_DOCKER_PROJECT=forward-netbox-release-gate "
             "FORWARD_NETBOX_POSTGRES_DATA_PATH=netbox-postgres-data "
-            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.5 "
+            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.6 "
             "invoke scenario-test` passed 28 failure scenarios, 0 failures and "
             "`rtk env FORWARD_NETBOX_DOCKER_PROJECT=forward-netbox-release-gate "
             "FORWARD_NETBOX_POSTGRES_DATA_PATH=netbox-postgres-data "
-            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.5 "
+            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.6 "
             "invoke bulk-merge-retry-scale-test` passed 20,005-row replay with "
             "a 1,512-second 1M-row projection under the 2,400-second limit."
         ),
         "ui-validation": (
             "`rtk env FORWARD_NETBOX_DOCKER_PROJECT=forward-netbox-release-gate "
             "FORWARD_NETBOX_POSTGRES_DATA_PATH=netbox-postgres-data "
-            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.5 "
+            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.6 "
             "FORWARD_NETBOX_HOST_PORT=18081 NETBOX_URL=http://127.0.0.1:18081 "
             "invoke playwright-test` passed 14 desktop and mobile checks, 0 failures."
         ),
@@ -59,7 +59,7 @@ class ReleaseAuthorizationTest(unittest.TestCase):
         "customer-equivalent-acceptance": (
             "`rtk env FORWARD_NETBOX_DOCKER_PROJECT=forward-netbox-upgrade26 "
             "FORWARD_NETBOX_POSTGRES_DATA_PATH=netbox-postgres-data "
-            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.5 "
+            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.6 "
             "invoke sync-release-gate --sync-ids 51` passed sync id 51: 0 blockers, "
             "0 warnings, 0 errors."
         ),
@@ -229,15 +229,78 @@ class ReleaseAuthorizationTest(unittest.TestCase):
                 self._plan(evidence_overrides={"ui-validation": evidence})
             )
 
-    def test_rejects_full_gate_evidence_naming_unused_url_variables(self):
-        evidence = self.VALID_EVIDENCE["final-tree-full-gate"].replace(
-            "invoke ci`",
-            "FORWARD_NETBOX_HOST_PORT=18080 NETBOX_URL=http://127.0.0.1:18080 "
-            "invoke ci`",
+    def _on_host_port(self, evidence_id, port, url_port=None):
+        """The same evidence, published on a non-default host port."""
+        task = self.VALID_EVIDENCE[evidence_id]
+        marker = "invoke "
+        index = task.index(marker)
+        return (
+            f"{task[:index]}FORWARD_NETBOX_HOST_PORT={port} "
+            f"NETBOX_URL=http://127.0.0.1:{url_port or port} {task[index:]}"
+        )
+
+    def test_accepts_full_gate_evidence_on_a_non_default_host_port(self):
+        # The gate brings up a stack that publishes ${FORWARD_NETBOX_HOST_PORT}
+        # :-8000, so forbidding the pair pinned every release to port 8000 and
+        # collided with whatever the operator already had bound there. The port
+        # is host-side only - it changes nothing about what is under test.
+        result = release_authorization.check_release_authorization(
+            self._plan(
+                evidence_overrides={
+                    "final-tree-full-gate": self._on_host_port(
+                        "final-tree-full-gate", 18080
+                    )
+                }
+            )
+        )
+
+        self.assertIn("final-tree-full-gate", result["authorized_evidence_ids"])
+
+    def test_rejects_a_drifted_release_variable_despite_a_host_port_pair(self):
+        # The loosening must not leak: everything except the port pair is still
+        # compared for exact equality with the canonical release environment.
+        evidence = self._on_host_port("final-tree-full-gate", 18080).replace(
+            "NETBOX_VER=v4.6.6", "NETBOX_VER=v4.6.4"
         )
         with self.assertRaisesRegex(ValueError, "placeholder_evidence"):
             release_authorization.check_release_authorization(
                 self._plan(evidence_overrides={"final-tree-full-gate": evidence})
+            )
+
+    def test_rejects_a_full_gate_port_that_disagrees_with_its_url(self):
+        evidence = self._on_host_port("final-tree-full-gate", 18080, url_port=18081)
+        with self.assertRaisesRegex(ValueError, "placeholder_evidence"):
+            release_authorization.check_release_authorization(
+                self._plan(evidence_overrides={"final-tree-full-gate": evidence})
+            )
+
+    def test_rejects_a_half_declared_host_port_pair(self):
+        evidence = self.VALID_EVIDENCE["final-tree-full-gate"].replace(
+            "invoke ci`", "FORWARD_NETBOX_HOST_PORT=18080 invoke ci`"
+        )
+        with self.assertRaisesRegex(ValueError, "placeholder_evidence"):
+            release_authorization.check_release_authorization(
+                self._plan(evidence_overrides={"final-tree-full-gate": evidence})
+            )
+
+    def test_rejects_a_release_url_that_is_not_loopback(self):
+        evidence = self._on_host_port("final-tree-full-gate", 18080).replace(
+            "http://127.0.0.1:18080", "http://netbox.example.com:18080"
+        )
+        with self.assertRaisesRegex(ValueError, "placeholder_evidence"):
+            release_authorization.check_release_authorization(
+                self._plan(evidence_overrides={"final-tree-full-gate": evidence})
+            )
+
+    def test_still_requires_the_url_pair_for_ui_validation(self):
+        # Playwright has to be told where to connect, so an absent pair there
+        # means the cited run was not the run being described.
+        evidence = self.VALID_EVIDENCE["ui-validation"].replace(
+            "FORWARD_NETBOX_HOST_PORT=18081 NETBOX_URL=http://127.0.0.1:18081 ", ""
+        )
+        with self.assertRaisesRegex(ValueError, "placeholder_evidence"):
+            release_authorization.check_release_authorization(
+                self._plan(evidence_overrides={"ui-validation": evidence})
             )
 
     def test_rejects_reserved_isolated_project_as_release_target(self):

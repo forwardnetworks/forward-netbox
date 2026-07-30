@@ -20,19 +20,20 @@ from psycopg.types.json import Jsonb
 from rq.timeouts import JobTimeoutException
 
 from .bulk_delete import lock_related_writes_for_delete
-
+from .version_series import series_matches
 
 logger = logging.getLogger("forward_netbox.bulk_merge")
 
+
 SET_BASED_MERGE_MODEL_SPEC_VERSIONS = {"dcim.macaddress": 1}
 SET_BASED_MERGE_ALLOWED_MODELS = frozenset(SET_BASED_MERGE_MODEL_SPEC_VERSIONS)
-SET_BASED_MERGE_SUPPORTED_NETBOX_VERSION = "4.6.5"
-SET_BASED_MERGE_SUPPORTED_BRANCHING_VERSION = "1.1.1"
+SET_BASED_MERGE_SUPPORTED_NETBOX_SERIES = "4.6"
+SET_BASED_MERGE_SUPPORTED_BRANCHING_SERIES = "1.1"
 SET_BASED_MERGE_SUPPORTED_OPTIONAL_DISTRIBUTIONS = {
-    "netbox-cisco-aci": "0.4.0",
-    "netbox-dlm": "0.4.1",
-    "netbox-peering-manager": "0.3.0",
-    "netbox-routing": "0.4.3",
+    "netbox-cisco-aci": frozenset({"0.4.0"}),
+    "netbox-dlm": frozenset({"0.4.1", "0.5.0"}),
+    "netbox-peering-manager": frozenset({"0.3.0"}),
+    "netbox-routing": frozenset({"0.4.3"}),
 }
 SET_BASED_MERGE_SUPPORTED_PLUGIN_APPS = frozenset(
     {
@@ -168,27 +169,29 @@ def _runtime_tuple_decision():
     netbox_version, branching_version, optional_versions = (
         set_based_merge_runtime_version_tuple()
     )
-    if netbox_version != SET_BASED_MERGE_SUPPORTED_NETBOX_VERSION:
+    if not series_matches(netbox_version, SET_BASED_MERGE_SUPPORTED_NETBOX_SERIES):
         return SetBasedMergeDecision(
             False,
             "unsupported_netbox_version",
             {
-                "expected": SET_BASED_MERGE_SUPPORTED_NETBOX_VERSION,
+                "expected": f"{SET_BASED_MERGE_SUPPORTED_NETBOX_SERIES}.x",
                 "actual": netbox_version,
             },
         )
-    if branching_version != SET_BASED_MERGE_SUPPORTED_BRANCHING_VERSION:
+    if not series_matches(
+        branching_version, SET_BASED_MERGE_SUPPORTED_BRANCHING_SERIES
+    ):
         return SetBasedMergeDecision(
             False,
             "unsupported_branching_version",
             {
-                "expected": SET_BASED_MERGE_SUPPORTED_BRANCHING_VERSION,
+                "expected": f"{SET_BASED_MERGE_SUPPORTED_BRANCHING_SERIES}.x",
                 "actual": branching_version,
             },
         )
     for distribution, actual in optional_versions:
         expected = SET_BASED_MERGE_SUPPORTED_OPTIONAL_DISTRIBUTIONS[distribution]
-        if actual != expected:
+        if actual not in expected:
             return SetBasedMergeDecision(
                 False,
                 "unsupported_optional_plugin_version",

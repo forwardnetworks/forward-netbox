@@ -14,6 +14,9 @@ from utilities.proxy import resolve_proxies
 from ..exceptions import ForwardClientError
 from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardFetchBudgetExceededError
+from ..exceptions import ForwardLicenseTierError
+from .license_tier import is_license_tier_denial
+from .license_tier import license_tier_denial_message
 
 LATEST_PROCESSED_SNAPSHOT = "latestProcessed"
 LATEST_COLLECTED_SNAPSHOT = "latestCollected"
@@ -847,9 +850,18 @@ class ForwardClient:
                     last_connectivity_error.__cause__ = exc
                 else:
                     self._record_api_usage("http_nontransient_status_failures")
+                    body = exc.response.text
+                    # A license-tier refusal is a capability limit, not a
+                    # transport or auth fault; retrying can never clear it, and
+                    # the raw body names a query without saying what the license
+                    # lacks.
+                    if is_license_tier_denial(body):
+                        self._record_api_usage("license_tier_denials")
+                        raise ForwardLicenseTierError(
+                            license_tier_denial_message(body)
+                        ) from exc
                     raise ForwardClientError(
-                        "Forward API request failed with HTTP "
-                        f"{status_code}: {exc.response.text}"
+                        f"Forward API request failed with HTTP {status_code}: {body}"
                     ) from exc
             except httpx.HTTPError as exc:
                 self._record_api_usage("http_failures")

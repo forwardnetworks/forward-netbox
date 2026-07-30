@@ -20,6 +20,7 @@ from django.utils import timezone
 
 from .. import config as forward_config
 from ..choices import ForwardSyncStatusChoices
+from .version_series import series_matches
 
 FAST_BASELINE_SPEC_VERSION = 1
 FAST_BASELINE_ADVISORY_LOCK_ID = 0x46574442415345
@@ -63,6 +64,92 @@ FAST_BASELINE_OMITTED_EVIDENCE = (
     "applied_change",
     "branch_rollback",
 )
+
+
+# Every field a direct-loaded model requires, recorded against the runtime this
+# engine was proven on.
+#
+# The fast baseline `bulk_create`s straight into main, bypassing branch audit
+# and the per-object save path, and it populates denormalized columns by hand
+# (`_device_id`, `_rack_id`, `_site_id`, `_location_id`). Its other contracts are
+# read live — the search index comes from `get_indexer(model).fields`, so a newly
+# indexed field is picked up automatically — but nothing noticed a *column*
+# appearing on a model it writes.
+#
+# The check is deliberately about REQUIRED fields, not every field. A new
+# optional column (nullable, blank, or defaulted) is written correctly by
+# `bulk_create` without our help, which is why netbox-dlm 0.5.0 adding
+# `SoftwareVersion.release_designation` is fine. A new *required* column is one
+# the loader would leave unset, so it fails closed instead.
+FAST_BASELINE_REQUIRED_FIELD_CONTRACT = {
+    "dcim.cable": (),
+    "dcim.device": ("device_type", "role", "site"),
+    "dcim.devicerole": ("level", "lft", "name", "rght", "slug", "tree_id"),
+    "dcim.devicetype": ("manufacturer", "model", "slug"),
+    "dcim.interface": ("device", "name", "type"),
+    "dcim.inventoryitem": ("device", "level", "lft", "name", "rght", "tree_id"),
+    "dcim.macaddress": ("mac_address",),
+    "dcim.manufacturer": ("name", "slug"),
+    "dcim.module": ("device", "module_bay", "module_type"),
+    "dcim.platform": ("level", "lft", "name", "rght", "slug", "tree_id"),
+    "dcim.site": ("name", "slug"),
+    "extras.taggeditem": ("content_type", "object_id", "tag"),
+    "ipam.fhrpgroup": ("group_id", "protocol"),
+    "ipam.ipaddress": ("address",),
+    "ipam.prefix": ("prefix",),
+    "ipam.vlan": ("name", "vid"),
+    "ipam.vrf": ("name",),
+    "netbox_dlm.cve": ("cve_id",),
+    "netbox_dlm.devicesoftware": ("device", "software_version"),
+    "netbox_dlm.hardwarenotice": (),
+    "netbox_dlm.softwareversion": ("platform", "version"),
+    "netbox_dlm.vulnerability": ("cve", "software_version"),
+    "netbox_routing.bgpaddressfamily": ("address_family", "scope"),
+    "netbox_routing.bgppeer": ("peer",),
+    "netbox_routing.bgppeeraddressfamily": ("address_family",),
+    "netbox_routing.ospfarea": ("area_id",),
+    "netbox_routing.ospfinstance": ("device", "name", "process_id", "router_id"),
+    "netbox_routing.ospfinterface": ("area", "instance", "interface"),
+}
+
+
+def _required_field_names(model):
+    """Fields `bulk_create` cannot fill in for us."""
+    from django.db import models as django_models
+
+    names = []
+    for field in model._meta.concrete_fields:
+        if field.auto_created or field.null or field.has_default() or field.blank:
+            continue
+        if isinstance(field, django_models.DateTimeField) and (
+            field.auto_now or field.auto_now_add
+        ):
+            continue
+        names.append(field.name)
+    return tuple(sorted(names))
+
+
+def fast_baseline_field_contract_drift():
+    """Models whose required-field set no longer matches the recorded contract."""
+    from django.apps import apps
+
+    drift = []
+    for label, expected in sorted(FAST_BASELINE_REQUIRED_FIELD_CONTRACT.items()):
+        try:
+            model = apps.get_model(label)
+        except LookupError:
+            # An optional plugin that is not installed cannot be loaded either.
+            continue
+        actual = _required_field_names(model)
+        if actual != tuple(expected):
+            drift.append(
+                {
+                    "model": label,
+                    "expected": list(expected),
+                    "actual": list(actual),
+                }
+            )
+    return drift
 
 
 @dataclass(frozen=True)
@@ -111,14 +198,19 @@ def fast_baseline_runtime_tuple():
 def _runtime_decision():
     actual = fast_baseline_runtime_tuple()
     expected = {
-        "netbox": "4.6.5",
-        "branching": "1.1.1",
-        "forward_netbox": "2.6.6",
+        "netbox_series": "4.6",
+        "branching_series": "1.1",
+        "forward_netbox": "2.6.7",
+        # Each optional distribution lists every version validated against this
+        # engine, not a single pin. An exact pin meant a customer upgrading one
+        # optional plugin silently lost the fast baseline — no error, just a
+        # first sync that takes hours instead of minutes — because the whole
+        # tuple stopped matching.
         "optional_plugins": {
-            "netbox-cisco-aci": "0.4.0",
-            "netbox-dlm": "0.4.1",
-            "netbox-peering-manager": "0.3.0",
-            "netbox-routing": "0.4.3",
+            "netbox-cisco-aci": frozenset({"0.4.0"}),
+            "netbox-dlm": frozenset({"0.4.1", "0.5.0"}),
+            "netbox-peering-manager": frozenset({"0.3.0"}),
+            "netbox-routing": frozenset({"0.4.3"}),
         },
         "plugin_apps": sorted(
             {
@@ -131,14 +223,42 @@ def _runtime_decision():
             }
         ),
     }
-    if actual != expected:
+    mismatched = (
+        not series_matches(actual["netbox"], expected["netbox_series"])
+        or not series_matches(actual["branching"], expected["branching_series"])
+        or actual["forward_netbox"] != expected["forward_netbox"]
+        or actual["plugin_apps"] != expected["plugin_apps"]
+        or any(
+            actual["optional_plugins"].get(name) not in versions
+            for name, versions in expected["optional_plugins"].items()
+        )
+    )
+    if mismatched:
         return FastBaselineDecision(
             False,
             "unsupported_runtime_tuple",
-            {"expected": expected, "actual": actual},
+            {
+                "expected": {
+                    **expected,
+                    "optional_plugins": {
+                        name: sorted(versions)
+                        for name, versions in expected["optional_plugins"].items()
+                    },
+                },
+                "actual": actual,
+            },
         )
     if connection.vendor != "postgresql":
         return FastBaselineDecision(False, "postgresql_required", {})
+    # Version series alone cannot tell a harmless patch from one that adds a
+    # column this loader would leave unset, so check the models themselves.
+    drift = fast_baseline_field_contract_drift()
+    if drift:
+        return FastBaselineDecision(
+            False,
+            "model_field_contract_mismatch",
+            {"drift": drift},
+        )
     return FastBaselineDecision(True, "supported_runtime_tuple", actual)
 
 

@@ -1498,4 +1498,4 @@ routing = ["netbox-routing"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.15"
-content-hash = "1716af8bd69970046d361efb4e6a475ec67ecc81b416d51ff87a24ad5a1ef65b"
+content-hash = "f775f7dd5067c0b074f7e6a6588ea424f733f127fa83b6fb55d93803b89ffcc3"

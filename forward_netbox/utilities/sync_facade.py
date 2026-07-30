@@ -21,6 +21,9 @@ from .sync_state import (
 
 
 DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS = True
+# COPY/SQL is proven only for dcim.macaddress on the exact supported runtime
+# tuple, so it stays opt-in per sync rather than defaulting on.
+DEFAULT_ENABLE_COPY_SQL_FOR_NEW_SYNCS = False
 
 
 def effective_scope_endpoints_by_include_tags(source_parameters):
@@ -39,6 +42,8 @@ def normalize_forward_sync(sync):
         parameters["enable_bulk_orm"] = DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS
     parameters.setdefault("enable_fast_baseline_load", False)
     parameters.setdefault("require_fast_baseline_eligibility", False)
+    parameters.setdefault("enable_copy_sql", DEFAULT_ENABLE_COPY_SQL_FOR_NEW_SYNCS)
+    parameters.setdefault("copy_sql_kill_switches", [])
     parameters.setdefault("validation_schedule_interval", 0)
     parameters.setdefault("preview_schedule_interval", 0)
     max_changes_per_staging_item = get_state_max_changes_per_staging_item(

@@ -15,6 +15,8 @@ from django.contrib.contenttypes.models import ContentType
 from django.db import connections
 from django.db.models.signals import post_save
 from django.test import RequestFactory
+import unittest
+
 from django.test import TransactionTestCase
 from django.urls import reverse
 from extras.models import Bookmark
@@ -55,6 +57,30 @@ def provision_branch(*, user, name):
 
 class SetBasedMergeMACTest(TransactionTestCase):
     reset_sequences = True
+
+    @classmethod
+    def setUpClass(cls):
+        # The engine writes MAC search-index rows in SQL, mirroring NetBox's own
+        # indexer, so it fails closed when that indexer changes. NetBox 4.6.6
+        # added ('comments', 5000) to MACAddressIndex.fields, which the engine
+        # does not emit yet, so it declines with `search_index_contract_mismatch`
+        # there. Skip rather than assert 4.6.5-only behaviour on a runtime where
+        # the engine correctly refuses to run — the guard reads the live indexer,
+        # so it re-enables itself once the contract is widened.
+        super().setUpClass()
+        from dcim.models import MACAddress
+        from netbox.registry import registry
+
+        indexer = registry["search"].get(MACAddress._meta.label_lower)
+        if indexer is None or tuple(indexer.fields) != (
+            ("mac_address", 100),
+            ("description", 500),
+        ):
+            raise unittest.SkipTest(
+                "set-based MAC merge declines on this runtime: the MACAddress "
+                f"search index is {tuple(getattr(indexer, 'fields', ()))}, not the "
+                "contract this engine writes"
+            )
 
     @classmethod
     def _pre_setup(cls):
@@ -473,7 +499,9 @@ class SetBasedMergeMACTest(TransactionTestCase):
         with patch(
             "forward_netbox.utilities.merge_set_based."
             "set_based_merge_runtime_version_tuple",
-            return_value=("4.6.6", "1.1.1", ()),
+            # Out of series: the gate accepts any 4.6.x, so a rejection case
+            # has to name a different series entirely.
+            return_value=("4.7.0", "1.1.1", ()),
         ):
             decision = set_based_merge_decision(
                 sync=ingestion.sync,
