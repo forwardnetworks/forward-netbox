@@ -291,3 +291,102 @@ class ProtectedChildDeleteOrderingTest(TestCase):
             ordered = self._order(changes)
 
         self.assertEqual(len(ordered), 2)
+
+
+class SkipProtectedBlockedDeletesTest(TestCase):
+    """The identifier must actually be wired into the merge.
+
+    `protecting_reference_blocked_deletes` shipped fully implemented and tested
+    with **zero production call sites**, so a delete held by a surviving PROTECT
+    reference was still scheduled and still failed with `ProtectedError` at apply
+    time. A failed row permanently blocks baseline promotion, which meant one
+    operator-owned object could wedge a sync's convergence bookkeeping.
+    """
+
+    def _collapsed(self, *changes):
+        return {change.key: change for change in changes}
+
+    def test_marks_a_blocked_delete_as_skip(self):
+        device_type, device, _field = _protected_pair()
+        # Only the parent is deleted; the device referencing it survives.
+        parent = _delete(type(device_type), device_type.pk)
+        changes = self._collapsed(parent)
+
+        blocked = bulk_merge._skip_protecting_reference_blocked_deletes(
+            changes, logging.getLogger("forward_netbox.tests.skip-blocked")
+        )
+
+        self.assertIn(parent.key, blocked)
+        self.assertEqual(changes[parent.key].final_action, ActionType.SKIP)
+
+    def test_leaves_a_delete_alone_when_the_reference_is_also_deleted(self):
+        # Ordering resolves this pair; skipping it would lose a real delete.
+        device_type, device, _field = _protected_pair()
+        parent = _delete(type(device_type), device_type.pk)
+        child = _delete(Device, device.pk)
+        changes = self._collapsed(parent, child)
+
+        blocked = bulk_merge._skip_protecting_reference_blocked_deletes(
+            changes, logging.getLogger("forward_netbox.tests.skip-blocked")
+        )
+
+        self.assertEqual(blocked, {})
+        self.assertEqual(changes[parent.key].final_action, ActionType.DELETE)
+        self.assertEqual(changes[child.key].final_action, ActionType.DELETE)
+
+    def test_no_deletes_is_a_no_op(self):
+        changes = self._collapsed(_update(Device, 1))
+
+        self.assertEqual(
+            bulk_merge._skip_protecting_reference_blocked_deletes(
+                changes, logging.getLogger("forward_netbox.tests.skip-blocked")
+            ),
+            {},
+        )
+
+    def test_the_merge_calls_it(self):
+        # The defect being fixed was an unwired function, so pin the call site
+        # itself: asserting only the helper's behaviour would pass again if a
+        # refactor dropped the call.
+        import inspect
+
+        source = inspect.getsource(bulk_merge._bulk_merge_changes_main)
+
+        self.assertIn("_skip_protecting_reference_blocked_deletes", source)
+
+
+class UpdatedReferrerDoesNotBlockTest(TestCase):
+    """An updated referrer may release the FK, so it must not block.
+
+    The check reads destination state before ordering has applied anything, so
+    a referrer that is about to release its FK still looks like it protects.
+    Treating it as blocking skipped a delete that in fact succeeds — the
+    regression that `test_dlm_protected_version_delete_follows_destination_fk_
+    reassignment` caught.
+    """
+
+    def _collapsed(self, *changes):
+        return {change.key: change for change in changes}
+
+    def test_an_updated_referrer_does_not_block_the_delete(self):
+        parent, child, _field = _protected_pair()
+
+        blocked = protecting_reference_blocked_deletes(
+            self._collapsed(
+                _delete(type(parent), parent.pk),
+                _update(type(child), child.pk),
+            )
+        )
+
+        self.assertEqual(blocked, {})
+
+    def test_an_unchanged_referrer_still_blocks(self):
+        # The tightening must not swallow the case the skip exists for.
+        parent, child, _field = _protected_pair()
+
+        blocked = protecting_reference_blocked_deletes(
+            self._collapsed(_delete(type(parent), parent.pk))
+        )
+
+        key = (type(parent)._meta.label_lower, parent.pk)
+        self.assertIn(key, blocked)
