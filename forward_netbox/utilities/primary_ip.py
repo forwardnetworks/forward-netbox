@@ -122,6 +122,25 @@ def _branch_interface_ips(device_names):
     return devices, device_interface_ips, ip_lookup
 
 
+def _existing_primary_ip_owners():
+    """Map ``(attr, ip_pk) -> device_pk`` for primary IPs already claimed.
+
+    Read from the branch rather than inferred from this run: an address may
+    already be another device's primary from an earlier sync or an operator
+    edit, and that owner need not appear in this run's assignment set.
+    """
+    from dcim.models import Device
+
+    owners = {}
+    rows = Device.objects.exclude(primary_ip4__isnull=True, primary_ip6__isnull=True)
+    for pk, ip4, ip6 in rows.values_list("pk", "primary_ip4_id", "primary_ip6_id"):
+        if ip4:
+            owners[("primary_ip4", ip4)] = pk
+        if ip6:
+            owners[("primary_ip6", ip6)] = pk
+    return owners
+
+
 def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
     """Set device primary_ip4/6 from Forward ``Mgmt_<iface>`` tags, in the branch.
 
@@ -178,6 +197,15 @@ def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
             )
             updated = []
             unresolved = 0
+            # NetBox enforces UNIQUE(primary_ip4_id) and UNIQUE(primary_ip6_id):
+            # an address is the primary of exactly one device. Two devices
+            # resolving the same Mgmt_ address — a shared management address, or
+            # one address discovered on interfaces of two devices — both reached
+            # `device.save()` and failed the whole ingestion with
+            # `dcim_device_primary_ip4_id_key`, after every workload had already
+            # been staged. Claim each address once and report the loser.
+            claimed_by = _existing_primary_ip_owners()
+            conflicts = {}
             for name, assignment in assignments.items():
                 device = devices.get(name)
                 if device is None:
@@ -190,12 +218,31 @@ def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
                     if not addr:
                         continue
                     ip = ip_lookup.get((name, interface, addr))
-                    if ip is not None and getattr(device, f"{attr}_id") != ip.pk:
-                        setattr(device, attr, ip)
-                        changed = True
+                    if ip is None or getattr(device, f"{attr}_id") == ip.pk:
+                        continue
+                    holder = claimed_by.get((attr, ip.pk))
+                    if holder is not None and holder != device.pk:
+                        conflicts[attr] = conflicts.get(attr, 0) + 1
+                        continue
+                    setattr(device, attr, ip)
+                    claimed_by[(attr, ip.pk)] = device.pk
+                    changed = True
                 if changed:
                     device.save(update_fields=["primary_ip4", "primary_ip6"])
                     updated.append(device)
+            if conflicts:
+                # Counts and field names only — device names are customer data.
+                detail = ", ".join(
+                    f"{count} on {attr}" for attr, count in sorted(conflicts.items())
+                )
+                logger.log_warning(
+                    f"primary_ip-from-tag: {sum(conflicts.values())} device(s) "
+                    "resolved a management address that is already another "
+                    f"device's primary IP ({detail}). NetBox allows one owner per "
+                    "address, so those assignments were skipped and the rest "
+                    "applied.",
+                    obj=getattr(executor, "current_ingestion", None) or sync,
+                )
             # Devices whose Mgmt_ tag pointed at no resolvable interface/IP.
             unresolved = len(device_mgmt_tags) - len(assignments)
             if updated:

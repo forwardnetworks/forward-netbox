@@ -78,6 +78,13 @@ ROLLUP_SUMMARY_TEMPLATES = {
         "a module-bay name. Correct the source query data and re-run the sync. "
         "Examples: {examples}{suffix}."
     ),
+    "component-claimed-by-another-module": (
+        "Skipped {total} {model} row(s) whose module type would create a "
+        "component whose name another module on the same device already uses. "
+        "NetBox adopts an existing component only when it belongs to no module, "
+        "so this one can be neither adopted nor recreated. Examples: "
+        "{examples}{suffix}."
+    ),
     "shared-vip": (
         "{total} {model} row(s) share a virtual IP with another FHRP group; the "
         "VIP stays on the first group and the others are kept without a duplicate "

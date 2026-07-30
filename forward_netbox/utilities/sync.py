@@ -279,7 +279,9 @@ class ForwardSyncRunner(ForwardSyncRunnerContractMixin, ForwardSyncRunnerAdapter
     # module row on that hardware. Collapse these into ONE actionable summary
     # (total + a few examples + the forward_module_readiness remediation) at the
     # end of the model instead of logging a wall of near-identical per-row lines.
-    SKIP_WARNING_ROLLUP_REASONS = frozenset({"missing-module-bay", "shared-vip"})
+    SKIP_WARNING_ROLLUP_REASONS = frozenset(
+        {"missing-module-bay", "shared-vip", "component-claimed-by-another-module"}
+    )
     # Cap on per-model ForwardDependencySkipError ISSUE ROWS (each distinct
     # missing parent is a unique message, so they are not deduped). Beyond this
     # the rows are collapsed into one actionable summary issue per model

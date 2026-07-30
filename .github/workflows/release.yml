@@ -114,6 +114,14 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          # Tags are needed here, not only in `validate`:
+          # artifact-upgrade-test resolves the version to upgrade
+          # *from* by reading released tags, and a shallow checkout
+          # has none. Without this it fails closed with "no released
+          # tag below <version>" — which stopped v2.6.7 publishing
+          # after the tag had already been pushed and fixed.
+          fetch-depth: 0
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
