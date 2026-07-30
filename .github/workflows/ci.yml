@@ -10,7 +10,11 @@ jobs:
   validate:
     name: Validate NetBox ${{ matrix.netbox-version }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Successful runs take 34-44 minutes. A 45-minute ceiling sat barely above
+    # that spread and cancelled the 2.6.6 release commit's run at 45m43s, which
+    # blocked the tag until a no-op rerun. See
+    # docs/03_Plans/active/2026-07-30-release-gate-portability.md.
+    timeout-minutes: 75
     strategy:
       fail-fast: false
       matrix:

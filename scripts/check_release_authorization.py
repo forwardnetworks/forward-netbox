@@ -163,25 +163,51 @@ def _rtk_tail(tokens: list[str]) -> list[str] | None:
     return parts[0] if parts is not None else None
 
 
+URL_VARIABLES = frozenset({"FORWARD_NETBOX_HOST_PORT", "NETBOX_URL"})
+
+
 def _environment_matches(
     command: list[str],
     expected: dict[str, str],
     *,
     require_url: bool = False,
 ) -> bool:
+    """The command must have run under exactly the expected release environment.
+
+    The host port pair is the one variable part. `FORWARD_NETBOX_HOST_PORT` and
+    `NETBOX_URL` only move which host port the stack is published on; the image,
+    the plugin, the database and the code under test are unchanged. Forbidding
+    the pair therefore pinned every gate to port 8000 - so the release gate
+    collided with any stack already bound there - without making the evidence
+    say anything stronger. The pair is optional here and still bounded
+    elsewhere: `_safe_environment_assignment` constrains the port and holds the
+    URL to loopback, and `_rtk_parts` rejects a URL whose port disagrees with
+    `FORWARD_NETBOX_HOST_PORT`.
+
+    `require_url` still *demands* the pair for `ui-validation`, unchanged by this
+    revision. Note that its stated justification does not survive inspection
+    either: `invoke playwright-test` takes no port, and
+    `_run_playwright_in_isolated_runtime` reads
+    `FORWARD_NETBOX_PLAYWRIGHT_HOST_PORT` - falling back to an auto-picked free
+    loopback port - then sets `NETBOX_URL` itself. So the rule requires naming
+    two variables that task never reads. It is left in place here rather than
+    widened silently: `ui-validation` is optional evidence and blocks nothing,
+    so the question of what it should require deserves its own change.
+    """
     parts = _rtk_parts(command)
     if parts is None:
         return False
     _tail, environment = parts
-    if require_url:
-        if set(environment) != {
-            *expected,
-            "FORWARD_NETBOX_HOST_PORT",
-            "NETBOX_URL",
-        }:
-            return False
-        return all(environment.get(key) == value for key, value in expected.items())
-    return environment == expected
+    declared_url = URL_VARIABLES.intersection(environment)
+    if require_url and declared_url != URL_VARIABLES:
+        return False
+    if declared_url not in (frozenset(), URL_VARIABLES):
+        # Unreachable while `_rtk_parts` rejects a half-declared pair, but the
+        # exactness of this check should not depend on that staying true.
+        return False
+    return {
+        name: value for name, value in environment.items() if name not in URL_VARIABLES
+    } == expected
 
 
 def _parse_command_options(
@@ -341,12 +367,10 @@ def _is_ownership_audit_command(command: list[str]) -> bool:
 
 def _commands_satisfy(evidence_id: str, commands: list[list[str]]) -> bool:
     if evidence_id == "final-tree-full-gate":
-        # No require_url: `invoke ci` never binds an HTTP port, so demanding
-        # FORWARD_NETBOX_HOST_PORT/NETBOX_URL here forced the evidence to name
-        # variables the command does not read. The pairing is still enforced
-        # for `ui-validation`, whose Playwright run does serve over HTTP, and
-        # `_rtk_parts` still rejects an inconsistent port/URL wherever either
-        # appears.
+        # No require_url: the host port pair is optional here, since `invoke ci`
+        # runs wherever the operator's own stack leaves a port free. It stays
+        # mandatory for `ui-validation`, whose Playwright run must be told where
+        # to connect. See `_environment_matches`.
         return _has_exact_invoke_task(
             commands,
             "ci",
