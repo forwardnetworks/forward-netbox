@@ -53,6 +53,8 @@ class ForwardSyncFacadeHelperTest(TestCase):
         self.assertEqual(sync.parameters["max_changes_per_staging_item"], 1)
         self.assertTrue(sync.auto_merge)
         self.assertTrue(sync.parameters["enable_bulk_orm"])
+        self.assertFalse(sync.parameters["enable_copy_sql"])
+        self.assertEqual(sync.parameters["copy_sql_kill_switches"], [])
         self.assertEqual(sync.parameters["validation_schedule_interval"], 0)
         self.assertEqual(sync.parameters["preview_schedule_interval"], 0)
         self.assertEqual(

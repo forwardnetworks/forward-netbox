@@ -872,6 +872,7 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
     from dcim.models import Device
     from dcim.models import Interface
     from dcim.models import MACAddress
+    from django.core.exceptions import ValidationError
     from django.db import transaction
 
     from ..exceptions import ForwardDependencySkipError
@@ -905,11 +906,20 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
         for interface in Interface.objects.select_related("device").filter(query):
             interfaces_by_key[(interface.device.name, interface.name)] = interface
     macs_by_address = {}
+    # Two persisted rows can share a canonical MAC. Last-write-wins would pick
+    # one arbitrarily and silently write the customer's assignment to whichever
+    # row happened to come back last, so record the collision and reject those
+    # rows explicitly below.
+    ambiguous_mac_keys = set()
     # Only parseable values may enter the lookup; an unparseable one is left for
     # the per-row loop below to reject individually.
     for batch in _chunks([value for value in mac_values if _is_parseable_mac(value)]):
         for mac in MACAddress.objects.filter(mac_address__in=batch):
-            macs_by_address[_canonical_mac(mac.mac_address)] = mac
+            key = _canonical_mac(mac.mac_address)
+            if key in macs_by_address and macs_by_address[key].pk != mac.pk:
+                ambiguous_mac_keys.add(key)
+            else:
+                macs_by_address[key] = mac
 
     create_objects = {}
     update_objects = {}
@@ -1050,6 +1060,34 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
             continue
 
         mac_key = _canonical_mac(mac_address)
+        if mac_key in ambiguous_mac_keys:
+            # Reported, not failed. The row cannot be applied — we genuinely
+            # cannot tell which of the duplicate rows the customer means — but a
+            # failed row permanently blocks baseline promotion, and this is a
+            # pre-existing data condition in the destination rather than a fault
+            # in the change being applied. Failing it would convert a latent
+            # duplicate into a stuck sync on a customer's first upgrade. Skipping
+            # leaves the assignment unconverged and visible in drift, which the
+            # operator can act on without the sync being wedged.
+            exc = ForwardSearchError(
+                "Ambiguous coalesce lookup for `dcim.macaddress` with "
+                f"{{'mac_address': {mac_address!r}}}; the destination holds more "
+                "than one MAC row with this canonical address, so the assignment "
+                "cannot be attributed to one of them.",
+                model_string="dcim.macaddress",
+                context={"mac_address": mac_address},
+                data=row,
+            )
+            runner.logger.increment_statistics("dcim.macaddress", outcome="skipped")
+            runner._record_issue(
+                "dcim.macaddress",
+                str(exc),
+                row,
+                exception=exc,
+                context=exc.context,
+                defaults=exc.defaults,
+            )
+            continue
         mac = macs_by_address.get(mac_key)
         if mac is None:
             mac = create_objects.get(mac_key)
@@ -1061,7 +1099,21 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
             )
             # Identity proven absent above; skip the per-row validate_unique DB
             # query (constraint violations still surface via isolate).
-            mac.full_clean(validate_unique=False, validate_constraints=False)
+            try:
+                mac.full_clean(validate_unique=False, validate_constraints=False)
+            except ValidationError as exc:
+                # One invalid row must not abort the whole plan item: the
+                # IntegrityError handler below re-raises unconditionally while a
+                # branch is active, so without this the sync dies here.
+                runner._mark_dependency_failed("dcim.macaddress", row)
+                runner.logger.increment_statistics("dcim.macaddress", outcome="failed")
+                runner._record_issue(
+                    "dcim.macaddress",
+                    str(exc),
+                    row,
+                    exception=exc,
+                )
+                continue
             create_objects[mac_key] = mac
             macs_by_address[mac_key] = mac
             runner.logger.increment_statistics("dcim.macaddress", outcome="applied")
@@ -1082,9 +1134,30 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
         # an unsaved object, so only snapshot already-persisted rows.
         if branch_active and getattr(mac, "pk", None) is not None:
             mac.snapshot()
+        original_type_id = mac.assigned_object_type_id
+        original_object_id = mac.assigned_object_id
         mac.assigned_object_type = interface_content_type
         mac.assigned_object_id = interface.pk
-        mac.full_clean()
+        try:
+            mac.full_clean()
+        except ValidationError as exc:
+            # NetBox refuses to reassign a MAC that is an object's primary MAC.
+            # Restore the assignment and drop the snapshot, or a row that was
+            # never written still contributes a prechange snapshot to the branch
+            # diff.
+            mac.assigned_object_type_id = original_type_id
+            mac.assigned_object_id = original_object_id
+            if hasattr(mac, "_prechange_snapshot"):
+                del mac._prechange_snapshot
+            runner._mark_dependency_failed("dcim.macaddress", row)
+            runner.logger.increment_statistics("dcim.macaddress", outcome="failed")
+            runner._record_issue(
+                "dcim.macaddress",
+                str(exc),
+                row,
+                exception=exc,
+            )
+            continue
         if getattr(mac, "pk", None):
             update_objects[mac.pk] = mac
         runner.logger.increment_statistics("dcim.macaddress", outcome="applied")
@@ -2257,9 +2330,21 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]]):
                 address=row["address"],
                 vrf=vrf,
                 status=row["status"],
-                assigned_object_type=interface_ct,
-                assigned_object_id=interface.pk,
             )
+            # Assign through the descriptor so the generic-FK fields_cache is
+            # primed. Passing assigned_object_type/_id to the constructor leaves
+            # it cold, and IPAddress.clean() then refetches the interface and its
+            # device - two queries per created row. `interfaces_by_key` is built
+            # with select_related("device"), so the cached object satisfies
+            # clean()'s parent_object walk without touching the database.
+            ip.assigned_object = interface
+            # NetBox records _original_assigned_object_* in __init__ to detect
+            # reassignment of a *persisted* IP away from an object whose primary
+            # IP it is. On a never-saved row that check is dead logic - it ends
+            # up comparing None to None - but it still costs the device and
+            # interface queries above. Clear it so clean() skips the block.
+            ip._original_assigned_object_id = None
+            ip._original_assigned_object_type_id = None
             # Identity proven absent above; skip the per-row validate_unique DB
             # query (constraint violations still surface via isolate). IPAddress
             # has no unique global constraint here, so behaviour is unchanged.

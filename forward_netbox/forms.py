@@ -53,6 +53,7 @@ from .utilities.runtime_guidance import (
     DEFAULT_PUSHDOWN_RUNTIME_FALLBACK_WARN_SHARE,
 )
 from .utilities.sync_facade import DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS
+from .utilities.sync_facade import DEFAULT_ENABLE_COPY_SQL_FOR_NEW_SYNCS
 from .utilities.sync_facade import effective_scope_endpoints_by_include_tags
 
 
@@ -1103,6 +1104,22 @@ class ForwardSyncForm(NetBoxModelForm):
             "branch, or target row instead of falling back to branch staging."
         ),
     )
+    enable_copy_sql = forms.BooleanField(
+        required=False,
+        label="Use experimental COPY/SQL for MAC addresses",
+        initial=DEFAULT_ENABLE_COPY_SQL_FOR_NEW_SYNCS,
+        help_text=(
+            "Opt in to the exact-version, branch-only COPY/SQL engine for "
+            "dcim.macaddress. Unsupported runtimes fail closed to the existing engine."
+        ),
+    )
+    copy_sql_kill_switches = forms.MultipleChoiceField(
+        required=False,
+        label="COPY/SQL model kill switches",
+        choices=(("dcim.macaddress", "dcim.macaddress"),),
+        widget=forms.CheckboxSelectMultiple,
+        help_text="Force an allowlisted model back to its existing apply engine.",
+    )
     set_primary_ip_from_mgmt_tag = forms.BooleanField(
         required=False,
         label="Set primary IP from Mgmt_ tag",
@@ -1211,6 +1228,13 @@ class ForwardSyncForm(NetBoxModelForm):
             "require_fast_baseline_eligibility",
             False,
         )
+        self.fields["enable_copy_sql"].initial = parameters.get(
+            "enable_copy_sql",
+            DEFAULT_ENABLE_COPY_SQL_FOR_NEW_SYNCS,
+        )
+        self.fields["copy_sql_kill_switches"].initial = parameters.get(
+            "copy_sql_kill_switches", []
+        )
         self.fields["set_primary_ip_from_mgmt_tag"].initial = parameters.get(
             "set_primary_ip_from_mgmt_tag",
             False,
@@ -1258,6 +1282,8 @@ class ForwardSyncForm(NetBoxModelForm):
                 "enable_bulk_orm",
                 "enable_fast_baseline_load",
                 "require_fast_baseline_eligibility",
+                "enable_copy_sql",
+                "copy_sql_kill_switches",
                 "set_primary_ip_from_mgmt_tag",
                 "diff_fallback_mode",
                 "scheduled",
@@ -1323,6 +1349,8 @@ class ForwardSyncForm(NetBoxModelForm):
             "require_fast_baseline_eligibility": bool(
                 cleaned.get("require_fast_baseline_eligibility", False)
             ),
+            "enable_copy_sql": bool(cleaned.get("enable_copy_sql", False)),
+            "copy_sql_kill_switches": list(cleaned.get("copy_sql_kill_switches") or []),
             "set_primary_ip_from_mgmt_tag": bool(
                 cleaned.get("set_primary_ip_from_mgmt_tag", False)
             ),
@@ -1353,6 +1381,10 @@ class ForwardSyncForm(NetBoxModelForm):
             ),
             "require_fast_baseline_eligibility": bool(
                 self.cleaned_data.get("require_fast_baseline_eligibility", False)
+            ),
+            "enable_copy_sql": bool(self.cleaned_data.get("enable_copy_sql", False)),
+            "copy_sql_kill_switches": list(
+                self.cleaned_data.get("copy_sql_kill_switches") or []
             ),
             "set_primary_ip_from_mgmt_tag": bool(
                 self.cleaned_data.get("set_primary_ip_from_mgmt_tag", False)

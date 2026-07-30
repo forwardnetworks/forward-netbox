@@ -770,6 +770,26 @@ class ForwardSyncModelTest(TestCase):
         sync.clean()
 
         self.assertTrue(sync.parameters["enable_bulk_orm"])
+        self.assertFalse(sync.parameters["enable_copy_sql"])
+        self.assertEqual(sync.parameters["copy_sql_kill_switches"], [])
+
+    def test_sync_rejects_unknown_copy_sql_kill_switch(self):
+        # A switch naming a model COPY/SQL never runs protects nothing and is
+        # almost certainly a typo of one that it does.
+        sync = ForwardSync(
+            name="sync-copy-sql-unknown-kill-switch",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "dcim.macaddress": True,
+                "enable_copy_sql": True,
+                "copy_sql_kill_switches": ["dcim.interface"],
+            },
+        )
+
+        with self.assertRaises(ValidationError) as ctx:
+            sync.clean()
+        self.assertIn("outside the COPY/SQL allowlist", str(ctx.exception))
 
     def test_sync_rejects_past_scheduled_time(self):
         sync = ForwardSync(

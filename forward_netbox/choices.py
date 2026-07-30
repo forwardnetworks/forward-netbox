@@ -145,10 +145,12 @@ class ForwardDiffFallbackModeChoices(ChoiceSet):
 class ForwardApplyEngineChoices(ChoiceSet):
     ADAPTER = "adapter"
     BULK_ORM = "bulk_orm"
+    COPY_SQL = "copy_sql"
 
     CHOICES = (
         (ADAPTER, _("Adapter"), "blue"),
         (BULK_ORM, _("Bulk ORM"), "cyan"),
+        (COPY_SQL, _("COPY/SQL"), "purple"),
     )
 
 
