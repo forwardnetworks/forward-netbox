@@ -15,6 +15,7 @@ from ..exceptions import ForwardSearchError
 from ..exceptions import ForwardSyncDataError
 from .diagnostics import diagnostic_shape
 from .diagnostics import exception_type
+from .diagnostics import structured_failure_diagnosis
 from .json_safe import json_safe_value
 from .sync_primitives import dependency_parent_coverage_summary
 from .sync_primitives import prime_dependency_lookup_caches
@@ -333,10 +334,28 @@ def record_issue(
         # Redacted diagnostics cannot distinguish different dependency rows.
         # Use the bounded sequence number only for in-memory deduplication.
         dependency_skip_detail_number = seen
+    # Schema-level detail about the failure. 2.6.6 added this for merge issues
+    # and left the sync phase recording only an exception class name, so a
+    # customer's terminating `dcim.module` IntegrityError said "row processing
+    # failed (IntegrityError)" and nothing about *which* constraint — the one
+    # fact that identifies it. Constraint/table/column and invalid-field names
+    # are schema identifiers the plugin itself defines; the key *values* a
+    # Postgres DETAIL line embeds are deliberately not captured.
+    diagnosis = structured_failure_diagnosis(exception) if exception is not None else {}
+    constraint = diagnosis.get("constraint_name") or ""
+    invalid_fields = diagnosis.get("invalid_fields") or []
+    if is_dependency_skip_summary:
+        detail = ""
+    elif constraint:
+        detail = f"{exception_name}; constraint {constraint}"
+    elif invalid_fields:
+        detail = f"{exception_name}; invalid fields {', '.join(invalid_fields)}"
+    else:
+        detail = exception_name
     message = (
         message
         if is_dependency_skip_summary
-        else f"{model_string} row processing failed ({exception_name})."
+        else f"{model_string} row processing failed ({detail})."
     )
     context_data = (
         json_safe_value(context or {})
@@ -344,7 +363,10 @@ def record_issue(
         else diagnostic_shape(dict(context or {}))
     )
     defaults_data = diagnostic_shape(dict(defaults or {}))
-    raw_data = diagnostic_shape(row or {})
+    # Row shape plus the schema-level diagnosis. The keys are disjoint
+    # (`type`/`fields` vs `exception_type`/`constraint_name`/...), so this stays
+    # readable for anything already consuming the shape.
+    raw_data = {**diagnostic_shape(row or {}), **diagnosis}
     issue_key = (
         runner.ingestion.pk if runner.ingestion else None,
         ForwardIngestionPhaseChoices.SYNC,

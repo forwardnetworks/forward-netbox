@@ -1831,7 +1831,9 @@ class ForwardSyncModelTest(TestCase):
         self.assertEqual(self.source.status, ForwardSourceStatusChoices.FAILED)
         issue = ingestion.issues.get()
         self.assertEqual(issue.message, "Forward ingestion failed (RuntimeError).")
-        self.assertEqual(issue.raw_data, {})
+        # A plain exception has no schema detail to add, so the classifier is
+        # all that is recorded — but it is recorded, where `{}` used to be.
+        self.assertEqual(issue.raw_data, {"exception_type": "RuntimeError"})
         self.assertNotIn("boom", issue.message)
 
     @patch("forward_netbox.models.ForwardSource.get_client")

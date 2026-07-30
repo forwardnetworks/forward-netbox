@@ -7912,9 +7912,16 @@ select {device: value, name: value}
             issue.message,
             "dcim.device row processing failed (RuntimeError).",
         )
+        # Exact equality is the point: it catches anything new leaking in.
+        # `exception_type` is a class name, deliberately added so the UI can
+        # explain a failure without an operator reading server logs.
         self.assertEqual(
             issue.raw_data,
-            {"type": "mapping", "fields": ["name", "serial"]},
+            {
+                "type": "mapping",
+                "fields": ["name", "serial"],
+                "exception_type": "RuntimeError",
+            },
         )
         self.assertEqual(
             issue.coalesce_fields,
