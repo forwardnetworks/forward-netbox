@@ -23,6 +23,7 @@ from forward_netbox.utilities.apply_engine_decision import (
 from forward_netbox.utilities.merge_set_based import (
     SET_BASED_MERGE_SUPPORTED_OPTIONAL_DISTRIBUTIONS,
 )
+from forward_netbox.utilities.version_series import series_matches
 
 
 class OptionalDistributionVersionSetTest(SimpleTestCase):
@@ -59,6 +60,21 @@ class OptionalDistributionVersionSetTest(SimpleTestCase):
 
 
 class FastBaselineRuntimeTupleTest(SimpleTestCase):
+    def test_any_patch_in_the_series_is_accepted(self):
+        # The policy: 4.6.x and 1.1.x, not an exact pin. A patch release must
+        # not silently switch an engine off.
+        for version in ("4.6.5", "4.6.6", "4.6.12", "4.6"):
+            self.assertTrue(series_matches(version, "4.6"), version)
+        for version in ("1.1.1", "1.1.2", "1.1.9"):
+            self.assertTrue(series_matches(version, "1.1"), version)
+
+    def test_a_different_series_is_still_refused(self):
+        # Permissive within a series is not permissive across one.
+        for version in ("4.7.0", "4.5.9", "5.0.0", "", None, "4.60.1"):
+            self.assertFalse(series_matches(version, "4.6"), version)
+        for version in ("1.2.0", "1.0.9", "2.0.0"):
+            self.assertFalse(series_matches(version, "1.1"), version)
+
     def _decide(self, dlm_version):
         from forward_netbox.utilities import fast_baseline
 
@@ -87,6 +103,38 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
             fast_baseline, "fast_baseline_runtime_tuple", return_value=tuple_
         ):
             return fast_baseline._runtime_decision()
+
+    def test_a_later_netbox_patch_keeps_the_fast_baseline(self):
+        from forward_netbox.utilities import fast_baseline
+
+        tuple_ = {
+            "netbox": "4.6.9",
+            "branching": "1.1.2",
+            "forward_netbox": fast_baseline.forward_config.version,
+            "optional_plugins": {
+                "netbox-cisco-aci": "0.4.0",
+                "netbox-dlm": "0.5.0",
+                "netbox-peering-manager": "0.3.0",
+                "netbox-routing": "0.4.3",
+            },
+            "plugin_apps": sorted(
+                {
+                    "forward_netbox",
+                    "netbox_branching",
+                    "netbox_cisco_aci",
+                    "netbox_dlm",
+                    "netbox_peering_manager",
+                    "netbox_routing",
+                }
+            ),
+        }
+        with patch.object(
+            fast_baseline, "fast_baseline_runtime_tuple", return_value=tuple_
+        ):
+            self.assertNotEqual(
+                fast_baseline._runtime_decision().reason_code,
+                "unsupported_runtime_tuple",
+            )
 
     def test_the_previously_pinned_version_is_still_supported(self):
         self.assertNotEqual(
@@ -117,3 +165,56 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
         self.assertEqual(
             detail["expected"]["optional_plugins"]["netbox-dlm"], ["0.4.1", "0.5.0"]
         )
+
+
+class FastBaselineFieldContractTest(SimpleTestCase):
+    """Series matching needs a behavioural backstop for the direct loader.
+
+    The fast baseline `bulk_create`s straight into main, bypassing branch audit
+    and the per-object save path. Accepting any 4.6.x means a future patch could
+    add a column it never populates. Its search-index contract is already read
+    live from `get_indexer`, so the gap was the model fields themselves.
+    """
+
+    def test_the_live_runtime_matches_the_recorded_contract(self):
+        from forward_netbox.utilities.fast_baseline import (
+            fast_baseline_field_contract_drift,
+        )
+
+        self.assertEqual(fast_baseline_field_contract_drift(), [])
+
+    def test_a_new_required_field_fails_closed(self):
+        from unittest.mock import patch as _patch
+
+        from forward_netbox.utilities import fast_baseline
+
+        contract = dict(fast_baseline.FAST_BASELINE_REQUIRED_FIELD_CONTRACT)
+        contract["dcim.site"] = ("name", "slug", "a_field_netbox_added_later")
+        with _patch.object(
+            fast_baseline, "FAST_BASELINE_REQUIRED_FIELD_CONTRACT", contract
+        ):
+            drift = fast_baseline.fast_baseline_field_contract_drift()
+
+        self.assertEqual([entry["model"] for entry in drift], ["dcim.site"])
+
+    def test_an_optional_field_does_not_trip_it(self):
+        # netbox-dlm 0.5.0 adds SoftwareVersion.release_designation as a blank
+        # CharField. bulk_create fills that in without help, so it must not be
+        # treated as drift — otherwise the check would refuse the very upgrade
+        # this release exists to allow.
+        from forward_netbox.utilities.fast_baseline import _required_field_names
+        from netbox_dlm.models import SoftwareVersion
+
+        self.assertNotIn("release_designation", _required_field_names(SoftwareVersion))
+
+    def test_an_uninstalled_optional_model_is_skipped(self):
+        from unittest.mock import patch as _patch
+
+        from forward_netbox.utilities import fast_baseline
+
+        contract = dict(fast_baseline.FAST_BASELINE_REQUIRED_FIELD_CONTRACT)
+        contract["nonexistent_plugin.thing"] = ("x",)
+        with _patch.object(
+            fast_baseline, "FAST_BASELINE_REQUIRED_FIELD_CONTRACT", contract
+        ):
+            self.assertEqual(fast_baseline.fast_baseline_field_contract_drift(), [])

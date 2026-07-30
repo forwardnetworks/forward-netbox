@@ -8,6 +8,7 @@ from netbox_branching.contextvars import active_branch
 
 from ..choices import FORWARD_SUPPORTED_MODELS
 from ..choices import ForwardApplyEngineChoices
+from .version_series import series_matches
 
 
 BULK_ORM_ENABLED_MODELS = {
@@ -60,8 +61,8 @@ COPY_SQL_MODEL_SPEC_VERSIONS = {
     "dcim.macaddress": 1,
 }
 COPY_SQL_ALLOWED_MODELS = frozenset(COPY_SQL_MODEL_SPEC_VERSIONS)
-COPY_SQL_SUPPORTED_NETBOX_VERSION = "4.6.5"
-COPY_SQL_SUPPORTED_BRANCHING_VERSION = "1.1.1"
+COPY_SQL_SUPPORTED_NETBOX_SERIES = "4.6"
+COPY_SQL_SUPPORTED_BRANCHING_SERIES = "1.1"
 COPY_SQL_SUPPORTED_OPTIONAL_DISTRIBUTIONS = {
     "netbox-cisco-aci": frozenset({"0.4.0"}),
     "netbox-dlm": frozenset({"0.4.1", "0.5.0"}),
@@ -349,21 +350,21 @@ def _copy_sql_runtime_supported():
     netbox_version, branching_version, optional_versions = (
         copy_sql_runtime_version_tuple()
     )
-    if netbox_version != COPY_SQL_SUPPORTED_NETBOX_VERSION:
+    if not series_matches(netbox_version, COPY_SQL_SUPPORTED_NETBOX_SERIES):
         return (
             False,
             "unsupported_netbox_version",
             {
-                "expected": COPY_SQL_SUPPORTED_NETBOX_VERSION,
+                "expected": f"{COPY_SQL_SUPPORTED_NETBOX_SERIES}.x",
                 "actual": netbox_version,
             },
         )
-    if branching_version != COPY_SQL_SUPPORTED_BRANCHING_VERSION:
+    if not series_matches(branching_version, COPY_SQL_SUPPORTED_BRANCHING_SERIES):
         return (
             False,
             "unsupported_branching_version",
             {
-                "expected": COPY_SQL_SUPPORTED_BRANCHING_VERSION,
+                "expected": f"{COPY_SQL_SUPPORTED_BRANCHING_SERIES}.x",
                 "actual": branching_version,
             },
         )

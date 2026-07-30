@@ -51,7 +51,7 @@ class DockerComposeIsolationTest(unittest.TestCase):
         context = SimpleNamespace(
             run=Mock(),
             forward_netbox=SimpleNamespace(
-                netbox_ver="v4.6.5",
+                netbox_ver="v4.6.6",
                 project_name="forward-netbox",
                 compose_dir="/tmp/forward-netbox",
             ),
@@ -77,7 +77,7 @@ class DockerComposeIsolationTest(unittest.TestCase):
         context = SimpleNamespace(
             run=Mock(),
             forward_netbox=SimpleNamespace(
-                netbox_ver="v4.6.5",
+                netbox_ver="v4.6.6",
                 project_name="forward-netbox",
                 compose_dir="/tmp/forward-netbox",
             ),
@@ -91,7 +91,7 @@ class DockerComposeIsolationTest(unittest.TestCase):
 
 
 class ReleaseArtifactTaskTest(unittest.TestCase):
-    def _context(self, netbox_version="v4.6.5"):
+    def _context(self, netbox_version="v4.6.6"):
         return SimpleNamespace(
             run=Mock(),
             forward_netbox=SimpleNamespace(
@@ -121,7 +121,7 @@ class ReleaseArtifactTaskTest(unittest.TestCase):
             tasks.artifact_test.body(context)
 
         commands = [call.args[0] for call in context.run.call_args_list]
-        self.assertIn("--build-arg NETBOX_VER=v4.6.5", commands[0])
+        self.assertIn("--build-arg NETBOX_VER=v4.6.6", commands[0])
         self.assertIn(
             "--build-arg PACKAGE=/source/dist/forward_netbox-2.6.0-py3-none-any.whl",
             commands[0],
@@ -142,7 +142,7 @@ class ReleaseArtifactTaskTest(unittest.TestCase):
         self.assertIn("uv tool run --isolated", commands[2])
         self.assertIn("cyclonedx-py environment", commands[2])
         self.assertIn("--pyproject /tmp/netbox-runtime-pyproject.toml", commands[2])
-        self.assertIn('version = "4.6.5"', commands[2])
+        self.assertIn('version = "4.6.6"', commands[2])
         self.assertIn("forward-netbox==2.6.0", commands[2])
         self.assertIn("/opt/netbox/venv/bin/python", commands[2])
         self.assertIn("--output-reproducible", commands[2])
@@ -219,7 +219,7 @@ class ArtifactUpgradeTaskTest(unittest.TestCase):
 
     WHEEL = "dist/forward_netbox-2.6.7-py3-none-any.whl"
 
-    def _context(self, netbox_version="v4.6.5", tags="v2.6.5\nv2.6.6\n"):
+    def _context(self, netbox_version="v4.6.6", tags="v2.6.5\nv2.6.6\n"):
         run = Mock(return_value=SimpleNamespace(stdout=tags))
         return SimpleNamespace(
             run=run,

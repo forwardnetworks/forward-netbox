@@ -8,7 +8,7 @@ class NetboxForwardConfig(PluginConfig):
     version = "2.6.7"
     base_url = "forward"
     min_version = "4.6.5"
-    max_version = "4.6.5"
+    max_version = "4.6.99"
 
     def ready(self):
         super().ready()
@@ -23,23 +23,31 @@ def _check_runtime_dependencies():
 
     from django.core.exceptions import ImproperlyConfigured
 
+    from .utilities.version_series import series_matches
+
     log = logging.getLogger("forward_netbox")
-    required = "1.1.1"
+    # A release series, not an exact version. This was `== "1.1.1"` and raised
+    # ImproperlyConfigured, so a Branching patch upgrade stopped the plugin
+    # loading at all — the same hard block `max_version` imposed for NetBox
+    # patches. Behaviour we actually depend on is checked per engine against the
+    # live runtime, not inferred from a version string.
+    required_series = "1.1"
     label = "netbox_branching"
 
     try:
         import netbox_branching  # noqa: F401
     except ImportError as exc:
         raise ImproperlyConfigured(
-            "forward_netbox requires netboxlabs-netbox-branching==1.1.1 and "
-            "the `netbox_branching` plugin must be enabled."
+            "forward_netbox requires netboxlabs-netbox-branching "
+            f"{required_series}.x and the `netbox_branching` plugin must be "
+            "enabled."
         ) from exc
 
     resolved = _resolved_branching_version()
-    if resolved != required:
+    if not series_matches(resolved, required_series):
         raise ImproperlyConfigured(
-            "forward_netbox requires netboxlabs-netbox-branching==1.1.1; "
-            f"found {resolved or 'no package metadata'}."
+            "forward_netbox requires netboxlabs-netbox-branching "
+            f"{required_series}.x; found {resolved or 'no package metadata'}."
         )
     log.info("forward_netbox runtime dependency %s==%s", label, resolved)
 

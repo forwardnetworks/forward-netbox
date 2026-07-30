@@ -35,7 +35,7 @@ RETIRED_VERSION_TAG_CREATION_RULESET = "version-tag-creation"
 VERSION_TAG_INTEGRITY_RULESET = "version-tag-integrity"
 PYPI_ENVIRONMENT = "pypi"
 BASE_REQUIRED_STATUS_CHECKS = {
-    ("Validate NetBox v4.6.5", GITHUB_ACTIONS_APP_ID),
+    ("Validate NetBox v4.6.6", GITHUB_ACTIONS_APP_ID),
     ("CodeQL python", GITHUB_ACTIONS_APP_ID),
     ("CodeQL javascript-typescript", GITHUB_ACTIONS_APP_ID),
     ("CodeQL", GITHUB_ADVANCED_SECURITY_APP_ID),

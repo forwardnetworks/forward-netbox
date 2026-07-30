@@ -366,7 +366,7 @@ class CheckHarnessDevelopmentSecretBoundaryTest(unittest.TestCase):
     def test_rejects_tracked_secret_file_and_assignment(self):
         failures = self._check(
             {
-                "development/.env": "NETBOX_VER=v4.6.5\n",
+                "development/.env": "NETBOX_VER=v4.6.6\n",
                 "development/env/netbox.env": (
                     "DB_PASSWORD=example\nRQ_DEFAULT_TIMEOUT=7200\n"
                 ),

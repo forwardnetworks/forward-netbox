@@ -9,7 +9,7 @@ cryptography==49.0.0
 httpx==0.28.1
 netbox-cisco-aci==0.4.0
 netbox-dlm==0.4.1
-netboxlabs-netbox-branching==1.1.1
+netboxlabs-netbox-branching==1.1.2
 netbox-peering-manager==0.3.0
 netbox-routing==0.4.3
 pyzipper==0.4.0

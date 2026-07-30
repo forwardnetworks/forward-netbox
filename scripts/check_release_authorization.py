@@ -66,8 +66,8 @@ EVIDENCE_BASE_RE = re.compile(
 )
 EVIDENCE_REQUIRED_TEXT_PATTERNS = {
     "exact-runtime-artifact": (
-        re.compile(r"\bNetBox\s+4\.6\.5\b", re.IGNORECASE),
-        re.compile(r"\bBranching\s+1\.1\.1\b", re.IGNORECASE),
+        re.compile(r"\bNetBox\s+4\.6\.6\b", re.IGNORECASE),
+        re.compile(r"\bBranching\s+1\.1\.2\b", re.IGNORECASE),
         re.compile(r"\bPython\s+3\.14\b", re.IGNORECASE),
         re.compile(r"\bSBOM\b", re.IGNORECASE),
     ),
@@ -87,13 +87,13 @@ RELEASE_RUNTIME_ENVIRONMENT = {
     "FORWARD_NETBOX_DOCKER_PROJECT": "forward-netbox-release-gate",
     "FORWARD_NETBOX_POSTGRES_DATA_PATH": "netbox-postgres-data",
     "FORWARD_NETBOX_WORKER_AUTORELOAD": "0",
-    "NETBOX_VER": "v4.6.5",
+    "NETBOX_VER": "v4.6.6",
 }
 ACCEPTANCE_RUNTIME_ENVIRONMENT = {
     "FORWARD_NETBOX_DOCKER_PROJECT": "forward-netbox-upgrade26",
     "FORWARD_NETBOX_POSTGRES_DATA_PATH": "netbox-postgres-data",
     "FORWARD_NETBOX_WORKER_AUTORELOAD": "0",
-    "NETBOX_VER": "v4.6.5",
+    "NETBOX_VER": "v4.6.6",
 }
 
 
@@ -127,7 +127,7 @@ def _safe_environment_assignment(assignment: str) -> bool:
         match = re.fullmatch(r"http://127\.0\.0\.1:(?P<port>[1-9]\d{0,4})", value)
         return bool(match and int(match.group("port")) <= 65535)
     return (name, value) in {
-        ("NETBOX_VER", "v4.6.5"),
+        ("NETBOX_VER", "v4.6.6"),
         ("FORWARD_NETBOX_WORKER_AUTORELOAD", "0"),
         ("FORWARD_NETBOX_POSTGRES_DATA_PATH", "netbox-postgres-data"),
     }

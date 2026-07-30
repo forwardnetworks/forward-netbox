@@ -68,7 +68,7 @@ namespace = Collection("forward_netbox")
 namespace.configure(
     {
         "forward_netbox": {
-            "netbox_ver": os.environ.get("NETBOX_VER", "v4.6.5"),
+            "netbox_ver": os.environ.get("NETBOX_VER", "v4.6.6"),
             "project_name": os.environ.get(
                 "FORWARD_NETBOX_DOCKER_PROJECT",
                 "forward-netbox",
@@ -1075,9 +1075,9 @@ def artifact_test(context):
     version, wheel = _release_artifact_inputs()
     sbom_path = _prepare_sbom_output(version)
     netbox_version = str(context.forward_netbox.netbox_ver or "").strip()
-    if netbox_version != "v4.6.5":
+    if netbox_version != "v4.6.6":
         raise Exit(
-            "Release artifact validation requires NETBOX_VER=v4.6.5.",
+            "Release artifact validation requires NETBOX_VER=v4.6.6.",
             code=2,
         )
 
@@ -1188,9 +1188,9 @@ def artifact_upgrade_test(context, from_version=None):
     """
     version, wheel = _release_artifact_inputs()
     netbox_version = str(context.forward_netbox.netbox_ver or "").strip()
-    if netbox_version != "v4.6.5":
+    if netbox_version != "v4.6.6":
         raise Exit(
-            "Release artifact validation requires NETBOX_VER=v4.6.5.",
+            "Release artifact validation requires NETBOX_VER=v4.6.6.",
             code=2,
         )
     from_version = str(

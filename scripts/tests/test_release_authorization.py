@@ -19,35 +19,35 @@ class ReleaseAuthorizationTest(unittest.TestCase):
         "final-tree-full-gate": (
             "`rtk env FORWARD_NETBOX_DOCKER_PROJECT=forward-netbox-release-gate "
             "FORWARD_NETBOX_POSTGRES_DATA_PATH=netbox-postgres-data "
-            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.5 "
+            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.6 "
             "invoke ci` passed: 1343 tests, 0 failures."
         ),
         "exact-runtime-artifact": (
             "`rtk env FORWARD_NETBOX_DOCKER_PROJECT=forward-netbox-release-gate "
             "FORWARD_NETBOX_POSTGRES_DATA_PATH=netbox-postgres-data "
-            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.5 "
-            "invoke artifact-test` passed: NetBox 4.6.5, Branching 1.1.1, "
+            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.6 "
+            "invoke artifact-test` passed: NetBox 4.6.6, Branching 1.1.2, "
             "Python 3.14, and SBOM validation; 0 errors."
         ),
         "scale-and-failure": (
             "`rtk env FORWARD_NETBOX_DOCKER_PROJECT=forward-netbox-upgrade26 "
             "FORWARD_NETBOX_POSTGRES_DATA_PATH=netbox-postgres-data "
-            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.5 "
+            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.6 "
             "invoke scale-soak --runs 3` passed 3 runs and "
             "`rtk env FORWARD_NETBOX_DOCKER_PROJECT=forward-netbox-release-gate "
             "FORWARD_NETBOX_POSTGRES_DATA_PATH=netbox-postgres-data "
-            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.5 "
+            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.6 "
             "invoke scenario-test` passed 28 failure scenarios, 0 failures and "
             "`rtk env FORWARD_NETBOX_DOCKER_PROJECT=forward-netbox-release-gate "
             "FORWARD_NETBOX_POSTGRES_DATA_PATH=netbox-postgres-data "
-            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.5 "
+            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.6 "
             "invoke bulk-merge-retry-scale-test` passed 20,005-row replay with "
             "a 1,512-second 1M-row projection under the 2,400-second limit."
         ),
         "ui-validation": (
             "`rtk env FORWARD_NETBOX_DOCKER_PROJECT=forward-netbox-release-gate "
             "FORWARD_NETBOX_POSTGRES_DATA_PATH=netbox-postgres-data "
-            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.5 "
+            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.6 "
             "FORWARD_NETBOX_HOST_PORT=18081 NETBOX_URL=http://127.0.0.1:18081 "
             "invoke playwright-test` passed 14 desktop and mobile checks, 0 failures."
         ),
@@ -59,7 +59,7 @@ class ReleaseAuthorizationTest(unittest.TestCase):
         "customer-equivalent-acceptance": (
             "`rtk env FORWARD_NETBOX_DOCKER_PROJECT=forward-netbox-upgrade26 "
             "FORWARD_NETBOX_POSTGRES_DATA_PATH=netbox-postgres-data "
-            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.5 "
+            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.6 "
             "invoke sync-release-gate --sync-ids 51` passed sync id 51: 0 blockers, "
             "0 warnings, 0 errors."
         ),
@@ -260,7 +260,7 @@ class ReleaseAuthorizationTest(unittest.TestCase):
         # The loosening must not leak: everything except the port pair is still
         # compared for exact equality with the canonical release environment.
         evidence = self._on_host_port("final-tree-full-gate", 18080).replace(
-            "NETBOX_VER=v4.6.5", "NETBOX_VER=v4.6.4"
+            "NETBOX_VER=v4.6.6", "NETBOX_VER=v4.6.4"
         )
         with self.assertRaisesRegex(ValueError, "placeholder_evidence"):
             release_authorization.check_release_authorization(
