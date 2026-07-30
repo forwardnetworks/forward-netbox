@@ -44,6 +44,16 @@ class ForwardConnectivityError(ForwardClientError):
     """Raised when a Forward API call cannot be reached."""
 
 
+class ForwardLicenseTierError(ForwardClientError):
+    """Raised when Forward refuses an NQE query for the org's license tier.
+
+    A capability limit, not a fault: retrying, re-authenticating or re-running
+    the sync cannot clear it. Distinguished from the generic client error so the
+    operator is told which license facet is missing instead of reading a raw
+    HTTP body. See `forward_netbox.utilities.license_tier`.
+    """
+
+
 class ForwardQueryError(ForwardSyncError):
     """Raised when a built-in Forward NQE query fails."""
 
