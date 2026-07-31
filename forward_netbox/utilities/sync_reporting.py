@@ -350,11 +350,18 @@ def record_issue(
     # Postgres DETAIL line embeds are deliberately not captured.
     diagnosis = structured_failure_diagnosis(exception) if exception is not None else {}
     constraint = diagnosis.get("constraint_name") or ""
+    rules = diagnosis.get("validation_rules") or []
+    unrecognized = diagnosis.get("unrecognized_validation_rules") or []
     invalid_fields = diagnosis.get("invalid_fields") or []
     if is_dependency_skip_summary:
         detail = ""
     elif constraint:
         detail = f"{exception_name}; constraint {constraint}"
+    elif rules:
+        detail = f"{exception_name}; {', '.join(rules)}"
+    elif unrecognized:
+        # Wording only; value-bearing tokens are masked before they get here.
+        detail = f"{exception_name}; {'; '.join(unrecognized)}"
     elif invalid_fields:
         detail = f"{exception_name}; invalid fields {', '.join(invalid_fields)}"
     else:

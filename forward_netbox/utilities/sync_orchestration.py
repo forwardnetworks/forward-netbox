@@ -16,6 +16,7 @@ from ..models import ForwardSync
 from ..models import ForwardValidationRun
 from ..utilities.logging import SyncLogging
 from .api_usage import record_forward_api_usage
+from .diagnostics import describe_failure
 from .diagnostics import exception_type
 from .diagnostics import safe_operation_failure
 from .diagnostics import structured_failure_diagnosis
@@ -89,12 +90,7 @@ def _record_forward_sync_failure(sync, job, executor, ingestion, exc):
     # visible without reading server logs — the values behind them still are not
     # captured.
     diagnosis = structured_failure_diagnosis(exc)
-    constraint = diagnosis.get("constraint_name") or ""
-    invalid_fields = diagnosis.get("invalid_fields") or []
-    if constraint:
-        message = f"{message[:-1]} on constraint {constraint}."
-    elif invalid_fields:
-        message = f"{message[:-1]} on invalid field(s) {', '.join(invalid_fields)}."
+    message = describe_failure(message, diagnosis)
     sync.logger.log_failure(message, obj=ingestion)
     ForwardIngestionIssue.objects.create(
         ingestion=ingestion,
