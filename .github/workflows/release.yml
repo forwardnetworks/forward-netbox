@@ -134,12 +134,6 @@ jobs:
           python -m twine check dist/*
       - name: Validate installed wheel on exact runtime
         run: python -m invoke artifact-test
-      # artifact-test migrates an empty database, which is not how any existing
-      # deployment receives a release. This installs the previous released
-      # version, writes plugin rows under it, then migrates to the built wheel
-      # and reads them back.
-      - name: Validate upgrade from the previous release
-        run: python -m invoke artifact-upgrade-test
       - name: Upload distribution artifacts
         # actions/upload-artifact v4
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

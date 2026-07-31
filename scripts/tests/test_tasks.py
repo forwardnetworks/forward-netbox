@@ -323,29 +323,81 @@ class ArtifactUpgradeTaskTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, 2)
         context.run.assert_not_called()
 
-    def test_previous_version_picks_the_highest_tag_below_the_build(self):
-        context = self._context(tags="v2.5.11\nv2.6.6\nv2.6.5\nv2.6.7\nnot-a-tag\n")
+    def _pypi(self, *versions, yanked=()):
+        import io
+        import json
 
-        self.assertEqual(
-            tasks._previous_released_version(context, "2.6.7"),
-            "2.6.6",
-        )
+        payload = {
+            "releases": {
+                v: [{"filename": f"forward_netbox-{v}.whl", "yanked": v in yanked}]
+                for v in versions
+            }
+        }
+        return io.BytesIO(json.dumps(payload).encode())
+
+    def test_previous_version_picks_the_highest_published_below_the_build(self):
+        with patch(
+            "urllib.request.urlopen",
+            return_value=self._pypi("2.5.11", "2.6.5", "2.6.6", "2.6.9"),
+        ) as urlopen:
+            urlopen.return_value.__enter__ = lambda s: s
+            urlopen.return_value.__exit__ = lambda *a: None
+            self.assertEqual(
+                tasks._previous_released_version(self._context(), "2.6.9"), "2.6.6"
+            )
+
+    def test_previous_version_ignores_a_version_that_was_never_published(self):
+        # The defect this replaced: v2.6.7 and v2.6.8 are git tags with no PyPI
+        # artifact, so resolving from tags produced an uninstallable version and
+        # the release failed *after* the tag was pushed.
+        with patch(
+            "urllib.request.urlopen", return_value=self._pypi("2.6.5", "2.6.6")
+        ) as urlopen:
+            urlopen.return_value.__enter__ = lambda s: s
+            urlopen.return_value.__exit__ = lambda *a: None
+            self.assertEqual(
+                tasks._previous_released_version(self._context(), "2.6.9"), "2.6.6"
+            )
+
+    def test_previous_version_skips_a_yanked_release(self):
+        with patch(
+            "urllib.request.urlopen",
+            return_value=self._pypi("2.6.5", "2.6.6", yanked=("2.6.6",)),
+        ) as urlopen:
+            urlopen.return_value.__enter__ = lambda s: s
+            urlopen.return_value.__exit__ = lambda *a: None
+            self.assertEqual(
+                tasks._previous_released_version(self._context(), "2.6.9"), "2.6.5"
+            )
 
     def test_previous_version_orders_numerically_not_lexically(self):
-        # "2.5.11" sorts below "2.5.9" as a string; the tag that shipped last is
-        # 2.5.11, and upgrading from the wrong one would test nothing real.
-        context = self._context(tags="v2.5.9\nv2.5.11\n")
+        with patch(
+            "urllib.request.urlopen", return_value=self._pypi("2.5.9", "2.5.11")
+        ) as urlopen:
+            urlopen.return_value.__enter__ = lambda s: s
+            urlopen.return_value.__exit__ = lambda *a: None
+            self.assertEqual(
+                tasks._previous_released_version(self._context(), "2.6.0"), "2.5.11"
+            )
 
-        self.assertEqual(
-            tasks._previous_released_version(context, "2.6.0"),
-            "2.5.11",
-        )
+    def test_previous_version_fails_closed_with_nothing_published(self):
+        with patch(
+            "urllib.request.urlopen", return_value=self._pypi("2.7.0")
+        ) as urlopen:
+            urlopen.return_value.__enter__ = lambda s: s
+            urlopen.return_value.__exit__ = lambda *a: None
+            with self.assertRaises(Exit) as raised:
+                tasks._previous_released_version(self._context(), "2.6.9")
+        self.assertEqual(raised.exception.code, 2)
 
-    def test_previous_version_fails_closed_without_a_tag(self):
-        context = self._context(tags="")
+    def test_previous_version_fails_closed_when_pypi_is_unreachable(self):
+        import urllib.error
 
-        with self.assertRaises(Exit) as raised:
-            tasks._previous_released_version(context, "2.6.7")
+        with patch(
+            "urllib.request.urlopen", side_effect=urllib.error.URLError("offline")
+        ):
+            with self.assertRaises(Exit) as raised:
+                tasks._previous_released_version(self._context(), "2.6.9")
         self.assertEqual(raised.exception.code, 2)
 
 

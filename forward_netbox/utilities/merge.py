@@ -86,7 +86,19 @@ class _MergeIssueRecorder:
         self._sync_logger = sync_logger
 
     def record(self, *, model_string, exc):
+        # The diagnosis has always been stored in `raw_data`, but the issue list
+        # shows only the message — so the constraint or field sat one click away
+        # while the list said nothing but the exception class. The sync-phase
+        # recorders were given this treatment and the merge recorder was not,
+        # which left the answer visible in two of three places.
+        diagnosis = structured_failure_diagnosis(exc)
+        constraint = diagnosis.get("constraint_name") or ""
+        invalid_fields = diagnosis.get("invalid_fields") or []
         message = safe_operation_failure(f"Merge for {model_string}", exc)
+        if constraint:
+            message = f"{message[:-1]} on constraint {constraint}."
+        elif invalid_fields:
+            message = f"{message[:-1]} on invalid field(s) {', '.join(invalid_fields)}."
         logger.error(
             "Merge row failed for %s (%s).",
             model_string,
@@ -106,7 +118,7 @@ class _MergeIssueRecorder:
             model=model_string,
             message=message,
             exception=exc.__class__.__name__,
-            raw_data=structured_failure_diagnosis(exc),
+            raw_data=diagnosis,
         )
 
 

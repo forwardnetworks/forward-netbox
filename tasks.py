@@ -1045,28 +1045,52 @@ _SERVICE_WAIT_SCRIPT = "\n".join(
 
 
 def _previous_released_version(context, version):
-    """The highest released tag strictly below `version`.
+    """The newest version on PyPI below `version`.
 
-    Read from tags rather than the changelog: a tag is the thing that was
-    actually published, and it is what an operator will be upgrading from.
+    Resolved from PyPI, not from git tags. A tag records what was *tagged*; it
+    does not establish that an artifact exists. This repository has three tags
+    with no artifact — v2.6.2, v2.6.7 and v2.6.8 — because a release can fail
+    after tagging, and the tag ruleset forbids deleting or moving it.
+
+    Reading tags therefore resolved 2.6.7 as the version to upgrade from, and
+    `pip install forward-netbox==2.6.7` has nothing to install. The question this
+    gate asks is "what could an operator actually be upgrading from", and only
+    the index can answer that.
     """
-    result = context.run("git tag --list 'v*'", hide=True, warn=True)
-    parsed = []
-    for tag in (result.stdout or "").split():
-        parts = tag.removeprefix("v").split(".")
+    import json
+    import urllib.error
+    import urllib.request
+
+    url = "https://pypi.org/pypi/forward-netbox/json"
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response:
+            payload = json.load(response)
+    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+        raise Exit(
+            f"Could not read released versions from PyPI ({exc}). Pass "
+            "--from-version explicitly to run this gate offline.",
+            code=2,
+        ) from exc
+
+    current = tuple(int(part) for part in version.split("."))
+    published = []
+    for candidate, files in (payload.get("releases") or {}).items():
+        # A yanked-only or file-less entry is not installable.
+        if not files or all(item.get("yanked") for item in files):
+            continue
+        parts = candidate.split(".")
         if len(parts) != 3 or not all(part.isdigit() for part in parts):
             continue
-        parsed.append(tuple(int(part) for part in parts))
-    current = tuple(int(part) for part in version.split("."))
-    candidates = sorted(entry for entry in parsed if entry < current)
-    if not candidates:
+        entry = tuple(int(part) for part in parts)
+        if entry < current:
+            published.append(entry)
+    if not published:
         raise Exit(
-            f"No released tag below {version} was found, so there is nothing to "
-            "upgrade from. Pass --from-version explicitly if the tag is not in "
-            "this checkout.",
+            f"PyPI has no installable release below {version}, so there is "
+            "nothing to upgrade from. Pass --from-version explicitly.",
             code=2,
         )
-    return ".".join(str(part) for part in candidates[-1])
+    return ".".join(str(part) for part in max(published))
 
 
 @task(name="artifact-test")

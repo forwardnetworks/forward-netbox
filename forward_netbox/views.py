@@ -2083,6 +2083,19 @@ class ForwardIngestionDeleteView(generic.ObjectDeleteView):
 
     queryset = ForwardIngestion.objects.all()
 
+    def get(self, request, *args, **kwargs):
+        # Refuse on the confirmation page too, not only on submit. NetBox's
+        # delete view renders every dependent object, and an ingestion owns one
+        # `ForwardDeviceIdentity` per synced device — so the operator met a wall
+        # of several hundred device names and only learned the delete was
+        # impossible after confirming it. The one ingestion in the system that
+        # legitimately cannot be deleted should say so first.
+        refusal = _ingestion_delete_refusal(self.get_object(**kwargs))
+        if refusal:
+            messages.error(request, refusal)
+            return redirect(self.get_return_url(request))
+        return super().get(request, *args, **kwargs)
+
     def post(self, request, *args, **kwargs):
         refusal = _ingestion_delete_refusal(self.get_object(**kwargs))
         if refusal:
