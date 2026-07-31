@@ -484,6 +484,52 @@ def _check_per_commit_plan_lifecycle(failures: list[str], base: str) -> None:
             )
 
 
+# Invoke tasks that resolve something from git tags. A workflow job running one
+# of these needs a checkout with tags; `actions/checkout` fetches none by
+# default.
+TAG_DEPENDENT_INVOKE_TASKS = ("artifact-upgrade-test",)
+
+
+def _check_tag_dependent_jobs_fetch_tags(failures: list[str]) -> None:
+    """A job running a tag-dependent task must check out with `fetch-depth: 0`.
+
+    `artifact-upgrade-test` resolves the version to upgrade *from* by reading
+    released tags. `actions/checkout` performs a shallow, tagless clone unless
+    told otherwise, so the task fails closed with "no released tag below
+    <version>". That is exactly what stopped `v2.6.7` publishing — after the tag
+    had already been pushed and could not be moved or deleted.
+
+    Nothing in the repository could catch it: the task works locally, where every
+    tag exists, and the gap only appears in a CI checkout. So assert the pairing
+    directly.
+    """
+    relative_path = ".github/workflows/release.yml"
+    path = REPO_ROOT / relative_path
+    if not path.exists():
+        return
+    lines = path.read_text(encoding="utf-8").splitlines()
+    # Job blocks are two-space-indented keys under `jobs:`.
+    job_starts = [
+        index
+        for index, line in enumerate(lines)
+        if re.fullmatch(r"  [A-Za-z0-9_-]+:", line)
+    ]
+    for position, start in enumerate(job_starts):
+        end = job_starts[position + 1] if position + 1 < len(job_starts) else len(lines)
+        block = "\n".join(lines[start:end])
+        used = [task for task in TAG_DEPENDENT_INVOKE_TASKS if task in block]
+        if not used:
+            continue
+        if "actions/checkout" not in block:
+            continue
+        if "fetch-depth: 0" not in block:
+            failures.append(
+                f"{relative_path}: job {lines[start].strip().rstrip(':')} runs "
+                f"{', '.join(used)}, which resolves released tags, but checks out "
+                "without `fetch-depth: 0` so the checkout carries no tags."
+            )
+
+
 def _check_compose_health_probe(failures: list[str]) -> None:
     relative_path = "development/docker-compose.yml"
     path = REPO_ROOT / relative_path
@@ -1087,6 +1133,7 @@ def main() -> int:
     _check_sensitive_guard_wiring(failures)
     _check_release_toolchain_lock(failures)
     _check_standard_release_tag_flow(failures)
+    _check_tag_dependent_jobs_fetch_tags(failures)
     if args.base:
         _check_per_commit_plan_lifecycle(failures, args.base)
 
