@@ -108,13 +108,18 @@ class IngestionDeleteRefusalTest(TestCase):
 
         self.assertTrue(refusal, "a protected ingestion must be refused")
         self.assertIn("ForwardContributorBaseline", refusal)
-        self.assertIn("cannot be deleted", refusal)
+        # The baseline case now says it is expected rather than reading as a
+        # fault; a customer reported the old red error as a defect twice.
+        self.assertIn("is the baseline for this sync", refusal)
+        self.assertIn("expected, not a failure", refusal)
 
     def test_the_refusal_names_what_to_do(self):
         from forward_netbox.models import ForwardContributorBaseline
 
         self._baseline(ForwardContributorBaseline)
-        self.assertIn("remove them first", _ingestion_delete_refusal(self.ingestion))
+        self.assertIn(
+            "remove those records first", _ingestion_delete_refusal(self.ingestion)
+        )
 
     def test_cascading_children_do_not_block_the_delete(self):
         # Issues cascade, so they must not be reported as protecting.
@@ -165,8 +170,8 @@ class BaselineDeleteRefusesOnConfirmationTest(TestCase):
         )
 
         with patch(
-            "forward_netbox.views._ingestion_delete_refusal",
-            return_value="held by convergence evidence",
+            "forward_netbox.views._ingestion_delete_refusal_detail",
+            return_value=("held by convergence evidence", False),
         ):
             response = client.get(url)
 

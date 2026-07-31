@@ -264,10 +264,63 @@ def _ingestion_log_export_payload(ingestion, *, active_stage):
                 generation=ingestion.pk,
             )
         ),
+        # The issues are the reason anybody downloads this. Without them the
+        # export described everything around a failure except the failure, and
+        # answering "which rule rejected the row" still meant clicking through
+        # the GUI one issue at a time - or reading server logs that never
+        # contained it.
+        "issues": _ingestion_issue_bundle_payload(ingestion),
         "job_results": json_safe_value(ingestion.get_job_logs(ingestion.job)),
         "merge_job_results": json_safe_value(
             ingestion.get_job_logs(ingestion.merge_job)
         ),
+    }
+
+
+_SUPPORT_BUNDLE_ISSUE_LIMIT = 200
+
+
+def _ingestion_issue_bundle_payload(ingestion):
+    """The issue rows behind a failed ingestion, for the support bundle.
+
+    The bundle carried change *counts* but never the issues themselves, so it
+    could not answer the one question anybody exports it to ask: what actually
+    failed. A customer's merge failure was diagnosable only by reading `raw_data`
+    in the GUI one row at a time, and the exported bundle - the thing meant to
+    remove that step - omitted it entirely.
+
+    `raw_data` is the structured diagnosis, which holds schema identifiers and
+    matched rule slugs rather than row values, so including it does not widen
+    what the bundle discloses beyond what the issue list already shows.
+    """
+    from .models import ForwardIngestionIssue
+
+    if ingestion is None:
+        return {"total": 0, "returned": 0, "issues": []}
+
+    queryset = ForwardIngestionIssue.objects.filter(ingestion=ingestion).order_by("pk")
+    total = queryset.count()
+    rows = []
+    for issue in queryset[:_SUPPORT_BUNDLE_ISSUE_LIMIT]:
+        rows.append(
+            {
+                "pk": issue.pk,
+                "timestamp": (issue.timestamp.isoformat() if issue.timestamp else None),
+                "phase": issue.phase,
+                "model": issue.model or "",
+                "exception": issue.exception or "",
+                "message": issue.message or "",
+                "diagnosis": json_safe_value(issue.raw_data or {}),
+            }
+        )
+    # A truncated export that looks complete is worse than one that says so:
+    # a large ingestion can produce thousands of rows, and silently keeping the
+    # first 200 would read as "these are all of them".
+    return {
+        "total": total,
+        "returned": len(rows),
+        "truncated": total > len(rows),
+        "issues": rows,
     }
 
 
@@ -337,6 +390,7 @@ def _sync_support_bundle_payload(sync):
             sync,
             latest_ingestion,
         ),
+        "latest_ingestion_issues": _ingestion_issue_bundle_payload(latest_ingestion),
         "latest_ingestion": (
             {
                 "pk": latest_ingestion.pk,
@@ -2061,15 +2115,41 @@ def _ingestion_delete_refusal(ingestion) -> str:
     ingestion that produced it would strand it. Reporting that up front turns an
     unhandled `ProtectedError` into something an operator can act on.
     """
+    return _ingestion_delete_refusal_detail(ingestion)[0]
+
+
+def _ingestion_delete_refusal_detail(ingestion) -> tuple[str, bool]:
+    """The refusal text, and whether it is expected rather than a fault.
+
+    A customer reported this twice as a bug: one ingestion in a sequence would
+    not delete while every other one did, and the UI announced it in red as an
+    error. It is neither an error nor specific to that ingestion - it is the
+    baseline, the record of what has already converged, and NetBox protects it
+    on purpose. Saying so plainly is the difference between a support ticket and
+    a shrug.
+    """
     references = describe_protecting_references(type(ingestion), ingestion.pk)
     if not references:
-        return ""
+        return "", False
     held_by = ", ".join(f"{label} ({count})" for label, count in references)
+    baseline_held = any(
+        "baseline" in str(label).casefold() for label, _count in references
+    )
+    if baseline_held:
+        return (
+            f"{ingestion} is the baseline for this sync - the durable record of "
+            "what has already converged - so NetBox protects it from deletion. "
+            "This is expected, not a failure, and it is why one ingestion in a "
+            "sequence will not delete when the others do. It is held by "
+            f"{held_by}. Deleting it would strand that evidence and force the "
+            "next sync to re-establish a baseline from scratch; if that is "
+            "genuinely what you want, remove those records first."
+        ), True
     return (
         f"{ingestion} cannot be deleted while it is still referenced by "
         f"{held_by}. Those records are convergence evidence for this ingestion; "
         "remove them first if you genuinely intend to discard it."
-    )
+    ), False
 
 
 @register_model_view(ForwardIngestion, "delete")
@@ -2090,16 +2170,20 @@ class ForwardIngestionDeleteView(generic.ObjectDeleteView):
         # of several hundred device names and only learned the delete was
         # impossible after confirming it. The one ingestion in the system that
         # legitimately cannot be deleted should say so first.
-        refusal = _ingestion_delete_refusal(self.get_object(**kwargs))
+        refusal, expected = _ingestion_delete_refusal_detail(self.get_object(**kwargs))
         if refusal:
-            messages.error(request, refusal)
+            # An expected protection is a warning, not an error: red text is
+            # what made a customer report this as a defect twice.
+            (messages.warning if expected else messages.error)(request, refusal)
             return redirect(self.get_return_url(request))
         return super().get(request, *args, **kwargs)
 
     def post(self, request, *args, **kwargs):
-        refusal = _ingestion_delete_refusal(self.get_object(**kwargs))
+        refusal, expected = _ingestion_delete_refusal_detail(self.get_object(**kwargs))
         if refusal:
-            messages.error(request, refusal)
+            # An expected protection is a warning, not an error: red text is
+            # what made a customer report this as a defect twice.
+            (messages.warning if expected else messages.error)(request, refusal)
             return redirect(self.get_return_url(request))
         return super().post(request, *args, **kwargs)
 
@@ -2121,8 +2205,9 @@ class ForwardIngestionBulkDeleteView(generic.BulkDeleteView):
         ]
         if not protected:
             return queryset
-        for refusal in (_ingestion_delete_refusal(item) for item in protected):
-            messages.error(request, refusal)
+        for item in protected:
+            refusal, expected = _ingestion_delete_refusal_detail(item)
+            (messages.warning if expected else messages.error)(request, refusal)
         return queryset.exclude(pk__in=[item.pk for item in protected])
 
     def post(self, request, *args, **kwargs):

@@ -38,6 +38,7 @@ from ..models import ForwardIngestionIssue
 from .bulk_delete import lock_related_writes_for_delete
 from .bulk_merge import _ApplyOneFailure
 from .bulk_merge import bulk_merge_changes
+from .diagnostics import describe_failure
 from .diagnostics import exception_type
 from .diagnostics import safe_operation_failure
 from .diagnostics import structured_failure_diagnosis
@@ -59,6 +60,26 @@ MERGE_LOG_ROW_INTERVAL = 5000
 MERGE_LOG_SECONDS = 300
 
 RESOLVED_MERGE_ISSUES_KEY = "resolved_merge_issues"
+
+
+def _is_destination_rule_rejection(exc) -> bool:
+    """True when the destination refused the row on a validation rule.
+
+    A `ValidationError` at merge is NetBox declining a row on one of its own
+    model rules — an address that may not sit on an interface, a reassignment
+    it forbids. Re-running cannot change the answer: nothing about the incoming
+    data is retryable, because the rule is a property of the destination.
+
+    That distinction matters because any failed row blocks baseline promotion
+    outright, so a handful of permanently unsatisfiable rows could hold a
+    customer's entire convergence hostage indefinitely — one address stopping
+    thousands of correct changes from ever being attested. Integrity errors and
+    everything else stay failures: those are usually ordering or contention and
+    a retry is exactly the right response.
+    """
+    from django.core.exceptions import ValidationError
+
+    return isinstance(exc, ValidationError)
 
 
 def _replication_side_effect_exists(collapsed_change) -> bool:
@@ -92,13 +113,10 @@ class _MergeIssueRecorder:
         # recorders were given this treatment and the merge recorder was not,
         # which left the answer visible in two of three places.
         diagnosis = structured_failure_diagnosis(exc)
-        constraint = diagnosis.get("constraint_name") or ""
-        invalid_fields = diagnosis.get("invalid_fields") or []
-        message = safe_operation_failure(f"Merge for {model_string}", exc)
-        if constraint:
-            message = f"{message[:-1]} on constraint {constraint}."
-        elif invalid_fields:
-            message = f"{message[:-1]} on invalid field(s) {', '.join(invalid_fields)}."
+        message = describe_failure(
+            safe_operation_failure(f"Merge for {model_string}", exc),
+            diagnosis,
+        )
         logger.error(
             "Merge row failed for %s (%s).",
             model_string,
@@ -392,6 +410,7 @@ def merge_branch(
 
     progress_merged = 0
     progress_failed = 0
+    progress_unsatisfiable = 0
     model_progress = defaultdict(lambda: {"merged": 0, "failed": 0})
     progress_started_at = time.monotonic()
     last_heartbeat_at = time.monotonic()
@@ -472,12 +491,15 @@ def merge_branch(
             return _ApplyOneFailure(exc)
 
     def _record_failed(collapsed_change, exc):
-        nonlocal progress_failed, last_heartbeat_at, last_log_at
+        nonlocal progress_failed, progress_unsatisfiable
+        nonlocal last_heartbeat_at, last_log_at
         model_string = _model_string(collapsed_change.model_class)
         issue_recorder.record(
             model_string=model_string,
             exc=exc,
         )
+        if _is_destination_rule_rejection(exc):
+            progress_unsatisfiable += 1
         progress_failed += 1
         model_progress[model_string]["failed"] += 1
         if sync_logger:
@@ -587,11 +609,28 @@ def merge_branch(
         deleted=deleted,
     )
 
-    if failed and not accept_reported_failures:
+    # Rows the destination refused on its own validation rules are recorded and
+    # skipped rather than treated as retryable failures. Retrying cannot change
+    # the outcome, so counting them here is what turns a handful of
+    # unsatisfiable addresses into a baseline that can never promote at all.
+    # They stay visible as ingestion issues and reappear in drift every run.
+    unsatisfiable = min(progress_unsatisfiable, failed)
+    retryable_failed = failed - unsatisfiable
+    if unsatisfiable:
+        skipped_note = (
+            f"{unsatisfiable} row(s) were rejected by NetBox validation rules "
+            "and skipped; they remain recorded as ingestion issues."
+        )
+        logger.warning(skipped_note)
+        if sync_logger:
+            sync_logger.log_warning(skipped_note)
+
+    if retryable_failed and not accept_reported_failures:
         branch.status = BranchStatusChoices.READY
         branch.save(update_fields=["status", "last_updated"])
         summary = (
-            f"Merge incomplete: {applied_count} applied, {failed} failed. "
+            f"Merge incomplete: {applied_count} applied, "
+            f"{retryable_failed} failed. "
             "The branch remains ready for inspection and retry."
         )
         logger.error(summary)
@@ -600,15 +639,15 @@ def merge_branch(
         raise ForwardPartialMergeError(
             summary,
             applied=applied_count,
-            failed=failed,
+            failed=retryable_failed,
         )
 
-    if failed:
+    if retryable_failed:
         # Operator-accepted. Record it durably before attesting, so evidence of
         # the exception can never be lost by a later crash between the two.
-        _record_accepted_failures(ingestion, failed=failed, user=user)
+        _record_accepted_failures(ingestion, failed=retryable_failed, user=user)
         accepted = (
-            f"Merge completed with {failed} accepted failure(s): "
+            f"Merge completed with {retryable_failed} accepted failure(s): "
             f"{applied_count} applied. The failures remain recorded as "
             "ingestion issues and the baseline was promoted over them by an "
             "explicit operator action."

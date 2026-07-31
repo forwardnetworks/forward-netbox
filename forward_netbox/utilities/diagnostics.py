@@ -122,6 +122,113 @@ def sanitize_job_diagnostics(value):
     return deepcopy(value)
 
 
+# Non-field validation errors report `__all__` as their field name, which is
+# the absence of a field rather than the name of one - so a diagnosis that only
+# records field names says nothing at all about them. The messages themselves
+# cannot be persisted: NetBox interpolates before raising
+# (`_("{ip} is a network ID...").format(ip=...)`), so by the time the exception
+# exists the address is inside the string.
+#
+# Matching against an allowlist keeps the rule identifiable while persisting
+# only slugs this module defines. An unrecognised message records that it was
+# unrecognised and nothing else, which is a prompt to extend this table rather
+# than a reason to start storing message text.
+_NON_FIELD_VALIDATION_RULES = (
+    ("network-id-not-assignable", "is a network id, which may not be assigned"),
+    ("broadcast-not-assignable", "is a broadcast address, which may not be assigned"),
+    (
+        "primary-ip-reassignment-blocked",
+        "cannot reassign ip address while it is designated as the primary ip",
+    ),
+    (
+        "oob-ip-reassignment-blocked",
+        "cannot reassign ip address while it is designated as the oob ip",
+    ),
+    (
+        "primary-mac-reassignment-blocked",
+        "cannot reassign mac address while it is designated as the primary mac",
+    ),
+)
+
+
+def redacted_message_shape(message: str) -> str:
+    """The wording of a message with every value-bearing token removed.
+
+    An allowlist can only describe rules already known, so an unrecognised
+    message would still reach the UI saying nothing - which is the exact failure
+    this whole line of work exists to remove. Keeping the *wording* makes any
+    future rule legible on first sight instead of after a release.
+
+    A token survives only if it is purely alphabetic. Addresses, prefixes,
+    interface names, device names and hostnames all carry a digit, dot, colon,
+    slash, hyphen or underscore, so they are masked; ordinary English words are
+    not. This is deliberately stricter than it needs to be for the messages
+    known today, because the ones it has to stay safe for are the ones nobody
+    has read yet.
+    """
+    kept = []
+    for token in str(message).split():
+        stripped = token.strip(".,;:()[]{}'\"")
+        if stripped.isalpha():
+            kept.append(stripped)
+        elif kept and kept[-1] != REDACTED_DIAGNOSTIC:
+            kept.append(REDACTED_DIAGNOSTIC)
+        elif not kept:
+            kept.append(REDACTED_DIAGNOSTIC)
+    return " ".join(kept)
+
+
+def _non_field_validation_rules(exc) -> tuple[list[str], list[str]]:
+    """Recognised rule slugs, plus redacted wording for anything unrecognised."""
+    # Only a dict-constructed ValidationError has `message_dict`; a bare one
+    # raises AttributeError, which `getattr` swallows into None. `full_clean()`
+    # produces the dict form, but a ValidationError raised directly still has
+    # to be diagnosable - reading only `message_dict` would silently record
+    # nothing for it.
+    if hasattr(exc, "error_dict"):
+        non_field = list(getattr(exc, "message_dict", {}).get("__all__", ()))
+    else:
+        non_field = list(getattr(exc, "messages", ()) or ())
+    matched = set()
+    unrecognized = []
+    for message in non_field:
+        haystack = str(message).casefold()
+        for slug, needle in _NON_FIELD_VALIDATION_RULES:
+            if needle in haystack:
+                matched.add(slug)
+                break
+        else:
+            shape = redacted_message_shape(message)
+            if shape and shape not in unrecognized:
+                unrecognized.append(shape)
+    return sorted(matched), unrecognized
+
+
+def describe_failure(message: str, diagnosis: dict) -> str:
+    """Append the schema-level cause to an operator-facing failure message.
+
+    Three recorders - sync orchestration, sync reporting and merge - each grew
+    their own copy of this, and the merge one was added a release late, so the
+    same failure read differently depending on which phase caught it. One
+    function, three call sites.
+    """
+    constraint = diagnosis.get("constraint_name") or ""
+    rules = diagnosis.get("validation_rules") or []
+    unrecognized = diagnosis.get("unrecognized_validation_rules") or []
+    invalid_fields = diagnosis.get("invalid_fields") or []
+    stem = message[:-1] if message.endswith(".") else message
+    if constraint:
+        return f"{stem} on constraint {constraint}."
+    if rules:
+        return f"{stem} violating {', '.join(rules)}."
+    if unrecognized:
+        # Wording only - every value-bearing token has already been masked.
+        return f"{stem}: {'; '.join(unrecognized)}."
+    if invalid_fields:
+        return f"{stem} on invalid field(s) {', '.join(invalid_fields)}."
+    return message
+
+
 def structured_failure_diagnosis(exc) -> dict:
     """Schema-level detail about a failure, never the values that caused it.
 
@@ -147,10 +254,21 @@ def structured_failure_diagnosis(exc) -> dict:
 
     # Django ValidationError names the offending fields; the messages can quote
     # submitted values, so only the field names are kept.
-    message_dict = getattr(exc, "message_dict", None)
+    message_dict = (
+        getattr(exc, "message_dict", None) if hasattr(exc, "error_dict") else None
+    )
     if isinstance(message_dict, dict) and message_dict:
         diagnosis["invalid_fields"] = sorted(
             str(field) for field in message_dict if str(field)
         )
+    # `__all__` names no field, so field names alone leave a non-field
+    # validation failure exactly as opaque as recording nothing. This runs for
+    # a bare ValidationError too, which has no `message_dict` at all and would
+    # otherwise be recorded as nothing but its exception class.
+    rules, unrecognized = _non_field_validation_rules(exc)
+    if rules:
+        diagnosis["validation_rules"] = rules
+    if unrecognized:
+        diagnosis["unrecognized_validation_rules"] = unrecognized
 
     return diagnosis
