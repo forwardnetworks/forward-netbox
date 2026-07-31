@@ -24,6 +24,32 @@ class OwnershipConflictError(RuntimeError):
     """Raised after durable claims expose incompatible desired relationships."""
 
 
+# Eight call sites raise this bare, and `safe_operation_failure` strips the
+# message before it reaches the job record - so a customer's failed scope
+# reconciliation read `Forward scope reconciliation failed
+# (OwnershipConflictError).` and nothing else, with eight possible causes.
+#
+# The messages cannot be persisted: they embed source device keys, which are
+# device names. Matching against an allowlist keeps the cause identifiable while
+# persisting only slugs this module defines - the same approach the merge and
+# sync recorders use for non-field validation rules.
+_CONFLICT_REASONS = (
+    ("identity-ambiguous", "forward device identity is ambiguous"),
+    ("identity-evidence-mismatch", "identity evidence does not match merged"),
+    ("source-key-multiple-devices", "maps to multiple live netbox devices"),
+    ("device-already-mapped", "is already mapped to forward source key"),
+)
+
+
+def ownership_conflict_reason(exc) -> str:
+    """A schema-safe slug for why ownership reconciliation refused, or ""."""
+    haystack = str(exc).casefold()
+    for slug, needle in _CONFLICT_REASONS:
+        if needle in haystack:
+            return slug
+    return "unrecognized-ownership-conflict"
+
+
 def _object_pk(value):
     try:
         return int(value)
