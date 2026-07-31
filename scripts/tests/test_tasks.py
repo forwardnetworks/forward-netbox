@@ -1232,3 +1232,43 @@ class SharedRuntimeTestGuardTaskTest(unittest.TestCase):
         self.assertEqual(
             compose_calls[-1], ("forward-netbox-test", "down --remove-orphans -v")
         )
+
+
+class UpgradeFromConstraintsTests(unittest.TestCase):
+    """The two constraint sets must differ only in the branching pin.
+
+    The upgrade gate's from side needs its own constraints because releases
+    before 2.6.7 pin `netboxlabs-netbox-branching==1.1.1` exactly, which the
+    current pin of 1.1.2 cannot satisfy. That is the only difference the
+    upgrade is meant to exercise; anything else drifting between the two sides
+    would silently change what the gate compares.
+    """
+
+    @staticmethod
+    def _pins(path):
+        pins = {}
+        for line in path.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            name, _, pinned = line.partition("==")
+            pins[name.strip().lower()] = pinned.strip()
+        return pins
+
+    def setUp(self):
+        self.current = self._pins(tasks.REPO_ROOT / "constraints.txt")
+        self.upgrade_from = self._pins(
+            tasks.REPO_ROOT / "development/constraints-upgrade-from.txt"
+        )
+
+    def test_branching_is_absent_from_the_upgrade_source_constraints(self):
+        self.assertIn("netboxlabs-netbox-branching", self.current)
+        self.assertNotIn("netboxlabs-netbox-branching", self.upgrade_from)
+
+    def test_every_other_pin_is_identical(self):
+        expected = {
+            name: pin
+            for name, pin in self.current.items()
+            if name != "netboxlabs-netbox-branching"
+        }
+        self.assertEqual(expected, self.upgrade_from)

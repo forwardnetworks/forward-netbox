@@ -1,0 +1,23 @@
+# Constraints for the *from* side of `invoke artifact-upgrade-test`.
+#
+# The upgrade gate installs a previously released wheel, and a previous release
+# supports the runtime it shipped against — not the current one. Releases before
+# 2.6.7 pinned `netboxlabs-netbox-branching==1.1.1` exactly and capped NetBox at
+# 4.6.5, so applying the current `constraints.txt` (branching 1.1.2) to that
+# install is unsatisfiable, not merely out of date. The gate failed closed on
+# exactly this for every available from-version.
+#
+# Everything except the branching pin is held identical to `constraints.txt`, so
+# the only difference between the two sides of the upgrade is what the upgrade
+# is actually meant to exercise. `scripts/tests/test_tasks.py` asserts that
+# invariant, so this file cannot silently drift.
+#
+# Branching is deliberately absent: the previous release's own metadata pins it,
+# and letting that resolve is the point.
+cryptography==49.0.0
+httpx==0.28.1
+netbox-cisco-aci==0.4.0
+netbox-dlm==0.4.1
+netbox-peering-manager==0.3.0
+netbox-routing==0.4.3
+pyzipper==0.4.0

@@ -64,6 +64,22 @@ synced device. A customer deleting the baseline ingestion met several hundred
 device names and learned the delete was impossible only after confirming it.
 `get` now refuses the same way.
 
+**The gate was also unrunnable, which moving it revealed.** Once
+`artifact-upgrade-test` ran in PR CI it failed on its first honest attempt:
+it built both sides of the upgrade on the target runtime under one constraints
+file, and no available input satisfies that. Releases before 2.6.7 declare
+`max_version = "4.6.5"` and pin `netboxlabs-netbox-branching==1.1.1` exactly, so
+constraining the from side to 1.1.2 is unsatisfiable rather than stale, and the
+plugin would refuse to load on 4.6.6 even if it resolved. With 2.6.7 and 2.6.8
+tagged but absent from PyPI, 2.6.6 is the only reachable from-version — so the
+gate had never passed, in either release it consumed.
+
+An upgrade moves the whole runtime. The from side now seeds on the runtime that
+release supported and migrates onto the current one, so the NetBox upgrade is
+exercised too: `2.6.6 on v4.6.5 → 2.6.9 on v4.6.6`. The from-side constraints
+hold every pin identical to `constraints.txt` except branching, whose resolution
+is the point, and a test asserts that invariant so the two cannot drift.
+
 ## Validation
 
 - `test_ingestion_delete`, `test_issue_diagnosis`, `test_issue_rendering`,
@@ -74,6 +90,12 @@ device names and learned the delete was impossible only after confirming it.
   configuration.
 - The PyPI resolver is tested against a version present as a tag but absent from
   the index — the exact case that burned `v2.6.8`.
+- `invoke artifact-upgrade-test` passed locally end to end for the first time
+  since it was written: seeded under 2.6.6 on NetBox v4.6.5, migrated to 2.6.9 on
+  v4.6.6, with the rows written under the previous release read back after the
+  upgrade.
+- The two constraints files are asserted to differ only in the branching pin, in
+  both directions.
 
 ## Rollback
 
@@ -92,6 +114,15 @@ state.
   releases. A test that asserts a wrong assumption is not evidence.
 - 2026-07-31: The upgrade gate stays a blocking gate, just earlier. Making it
   non-blocking would have removed the failure without removing the risk.
+- 2026-07-31: The from side seeds on its own supported runtime rather than the
+  gate being scoped to skip cross-runtime upgrades. Skipping would have kept the
+  release moving while leaving the only upgrade anyone will actually perform —
+  4.6.5 to 4.6.6, across the branching pin — untested by the gate whose entire
+  purpose is to test it.
+- 2026-07-31: `UPGRADE_FROM_NETBOX_VER` is a constant with a stated meaning, not
+  a lookup. Nothing in packaging metadata exposes a release's supported NetBox
+  ceiling, so deriving it is not available; naming it and saying when to raise it
+  is honest about that.
 
 ## Evidence
 

@@ -24,6 +24,13 @@ ISOLATED_TEST_PROJECT_NAME = "forward-netbox-test"
 ISOLATED_PLAYWRIGHT_PROJECT_NAME = "forward-netbox-ui-test"
 RELEASE_ARTIFACT_PROJECT_NAME = "forward-netbox-artifact-test"
 RELEASE_UPGRADE_PROJECT_NAME = "forward-netbox-artifact-upgrade"
+
+# The runtime the oldest supported upgrade source shipped against. Releases
+# before 2.6.7 declare `max_version = "4.6.5"`, so the from side of the upgrade
+# gate seeds there and migrates onto the current runtime. Raise this only when
+# the oldest release reachable from PyPI supports something newer.
+UPGRADE_FROM_NETBOX_VER = "v4.6.5"
+UPGRADE_FROM_CONSTRAINTS = "/source/development/constraints-upgrade-from.txt"
 ISOLATED_REDIS_DATABASE = 14
 ISOLATED_REDIS_CACHE_DATABASE = 15
 CYCLONEDX_BOM_VERSION = "7.3.0"
@@ -959,20 +966,31 @@ def _prepare_sbom_output(version):
     return sbom_path
 
 
-def _build_artifact_image(context, *, netbox_version, package, image_tag):
+def _build_artifact_image(
+    context, *, netbox_version, package, image_tag, constraints=None
+):
     """Build the exact runtime image with `package` installed.
 
     `package` goes straight to `uv pip install`, so it is either a path to the
     built wheel or a PyPI requirement such as `forward-netbox==2.6.5` - which is
     what lets the upgrade gate stand up a previous release.
+
+    `constraints` is a container path; it defaults to the current pinned set.
+    The from-side of an upgrade overrides it, because a previous release's
+    pins and the current ones are not jointly satisfiable by design.
     """
+    build_args = [
+        f"--build-arg NETBOX_VER={shlex.quote(netbox_version)}",
+        f"--build-arg PACKAGE={shlex.quote(package)}",
+    ]
+    if constraints:
+        build_args.append(f"--build-arg CONSTRAINTS={shlex.quote(constraints)}")
     context.run(
         " ".join(
             (
                 "docker build",
                 f"--file {shlex.quote(str(REPO_ROOT / 'development/Dockerfile'))}",
-                f"--build-arg NETBOX_VER={shlex.quote(netbox_version)}",
-                f"--build-arg PACKAGE={shlex.quote(package)}",
+                *build_args,
                 f"--tag {shlex.quote(image_tag)}",
                 shlex.quote(str(REPO_ROOT)),
             )
@@ -1200,7 +1218,7 @@ def artifact_test(context):
         )
     },
 )
-def artifact_upgrade_test(context, from_version=None):
+def artifact_upgrade_test(context, from_version=None, from_netbox_ver=None):
     """Upgrade a populated previous-release install to the built wheel.
 
     `artifact-test` installs into an empty database, which is not how any
@@ -1227,6 +1245,13 @@ def artifact_upgrade_test(context, from_version=None):
             code=2,
         )
 
+    # An upgrade moves the whole runtime, not just the plugin: releases before
+    # 2.6.7 cap NetBox at 4.6.5 and pin branching 1.1.1, so standing the from
+    # side up on the *target* runtime cannot work - the plugin refuses to load
+    # and its pins do not resolve. Seeding on the runtime that release actually
+    # supported and migrating onto the current one is the operator's real path,
+    # and it exercises the NetBox upgrade as well as the plugin upgrade.
+    from_netbox_version = str(from_netbox_ver or UPGRADE_FROM_NETBOX_VER).strip()
     previous_image = f"forward-netbox-upgrade-from:{from_version}"
     upgraded_image = f"forward-netbox-upgrade-to:{version}"
     upgrade_context = _compose_project_context(context, RELEASE_UPGRADE_PROJECT_NAME)
@@ -1262,9 +1287,10 @@ def artifact_upgrade_test(context, from_version=None):
     try:
         _build_artifact_image(
             context,
-            netbox_version=netbox_version,
+            netbox_version=from_netbox_version,
             package=f"forward-netbox=={from_version}",
             image_tag=previous_image,
+            constraints=UPGRADE_FROM_CONSTRAINTS,
         )
         _build_artifact_image(
             context,
@@ -1273,20 +1299,27 @@ def artifact_upgrade_test(context, from_version=None):
             image_tag=upgraded_image,
         )
         docker_compose(upgrade_context, "up -d postgres redis")
-        print(f"artifact-upgrade-test: seeding under {from_version}")
+        print(
+            f"artifact-upgrade-test: seeding under {from_version} "
+            f"on NetBox {from_netbox_version}"
+        )
         context.run(
             _artifact_run_command(
                 previous_image, seed_script, RELEASE_UPGRADE_PROJECT_NAME
             )
         )
-        print(f"artifact-upgrade-test: upgrading {from_version} -> {version}")
+        print(
+            f"artifact-upgrade-test: upgrading {from_version} -> {version} "
+            f"(NetBox {from_netbox_version} -> {netbox_version})"
+        )
         context.run(
             _artifact_run_command(
                 upgraded_image, upgrade_script, RELEASE_UPGRADE_PROJECT_NAME
             )
         )
         print(
-            f"artifact-upgrade-test passed: {from_version} -> {version} "
+            f"artifact-upgrade-test passed: {from_version} on NetBox "
+            f"{from_netbox_version} -> {version} on NetBox {netbox_version}; "
             "migrated and the rows seeded under the previous release survived."
         )
     finally:
