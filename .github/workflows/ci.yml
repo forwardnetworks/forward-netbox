@@ -143,6 +143,20 @@ jobs:
             manage.py test --keepdb --noinput forward_netbox.tests && \
             python -m coverage report --rcfile=/source/.coveragerc \
             --fail-under=70"
+      - name: Validate upgrade from the previous release
+        # Deliberately here and NOT in release.yml. artifact-test migrates an
+        # empty database, which is not how any deployment receives a release, so
+        # this installs the previous published version, writes plugin rows under
+        # it, then migrates to the built wheel and reads them back.
+        #
+        # It sits in PR CI because a gate in the tag-triggered publish can only
+        # fail *after* an immutable tag exists — and the tag ruleset forbids
+        # moving or deleting one. That placement cost two version numbers
+        # (v2.6.7, v2.6.8) for what were one-line defects. Here a failure blocks
+        # a merge, which costs nothing.
+        run: |
+          python scripts/build_reproducible_distribution.py
+          python -m invoke artifact-upgrade-test
       - name: Validate validation-org query sync
         env:
           VAL_SRC: ${{ secrets.FORWARD_VALIDATION_SOURCE_NAME }}

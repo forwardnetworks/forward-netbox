@@ -484,50 +484,44 @@ def _check_per_commit_plan_lifecycle(failures: list[str], base: str) -> None:
             )
 
 
-# Invoke tasks that resolve something from git tags. A workflow job running one
-# of these needs a checkout with tags; `actions/checkout` fetches none by
-# default.
-TAG_DEPENDENT_INVOKE_TASKS = ("artifact-upgrade-test",)
+# A gate in the tag-triggered publish workflow can only fail after an immutable
+# tag exists, and the tag ruleset forbids moving or deleting one.
+PUBLISH_FORBIDDEN_INVOKE_TASKS = ("artifact-upgrade-test",)
 
 
-def _check_tag_dependent_jobs_fetch_tags(failures: list[str]) -> None:
-    """A job running a tag-dependent task must check out with `fetch-depth: 0`.
+def _check_publish_gate_placement(failures: list[str]) -> None:
+    """Long-running validation gates must run before the tag, not after it.
 
-    `artifact-upgrade-test` resolves the version to upgrade *from* by reading
-    released tags. `actions/checkout` performs a shallow, tagless clone unless
-    told otherwise, so the task fails closed with "no released tag below
-    <version>". That is exactly what stopped `v2.6.7` publishing — after the tag
-    had already been pushed and could not be moved or deleted.
+    `artifact-upgrade-test` was wired into `release.yml`, where the earliest it
+    can run is after the tag has been pushed. It failed twice for one-line
+    reasons — a tagless checkout, then resolving a version that was tagged but
+    never published — and each failure permanently consumed a version number,
+    because `v*` tags cannot be deleted or moved.
 
-    Nothing in the repository could catch it: the task works locally, where every
-    tag exists, and the gap only appears in a CI checkout. So assert the pairing
-    directly.
+    The defects were trivial; the placement is what made them expensive. In PR
+    CI the same gate blocks a merge instead, which costs nothing.
     """
-    relative_path = ".github/workflows/release.yml"
-    path = REPO_ROOT / relative_path
-    if not path.exists():
-        return
-    lines = path.read_text(encoding="utf-8").splitlines()
-    # Job blocks are two-space-indented keys under `jobs:`.
-    job_starts = [
-        index
-        for index, line in enumerate(lines)
-        if re.fullmatch(r"  [A-Za-z0-9_-]+:", line)
-    ]
-    for position, start in enumerate(job_starts):
-        end = job_starts[position + 1] if position + 1 < len(job_starts) else len(lines)
-        block = "\n".join(lines[start:end])
-        used = [task for task in TAG_DEPENDENT_INVOKE_TASKS if task in block]
-        if not used:
-            continue
-        if "actions/checkout" not in block:
-            continue
-        if "fetch-depth: 0" not in block:
-            failures.append(
-                f"{relative_path}: job {lines[start].strip().rstrip(':')} runs "
-                f"{', '.join(used)}, which resolves released tags, but checks out "
-                "without `fetch-depth: 0` so the checkout carries no tags."
-            )
+    release_path = ".github/workflows/release.yml"
+    ci_path = ".github/workflows/ci.yml"
+    release = REPO_ROOT / release_path
+    ci = REPO_ROOT / ci_path
+    if release.exists():
+        text = release.read_text(encoding="utf-8")
+        for task in PUBLISH_FORBIDDEN_INVOKE_TASKS:
+            if f"invoke {task}" in text:
+                failures.append(
+                    f"{release_path} runs `{task}`, which can then only fail "
+                    "after the release tag exists and cannot be moved. Run it in "
+                    f"{ci_path}, where a failure blocks the merge instead."
+                )
+    if ci.exists():
+        text = ci.read_text(encoding="utf-8")
+        for task in PUBLISH_FORBIDDEN_INVOKE_TASKS:
+            if f"invoke {task}" not in text:
+                failures.append(
+                    f"{ci_path} no longer runs `{task}`; the upgrade path would "
+                    "then be validated nowhere before publication."
+                )
 
 
 def _check_compose_health_probe(failures: list[str]) -> None:
@@ -1133,7 +1127,7 @@ def main() -> int:
     _check_sensitive_guard_wiring(failures)
     _check_release_toolchain_lock(failures)
     _check_standard_release_tag_flow(failures)
-    _check_tag_dependent_jobs_fetch_tags(failures)
+    _check_publish_gate_placement(failures)
     if args.base:
         _check_per_commit_plan_lifecycle(failures, args.base)
 

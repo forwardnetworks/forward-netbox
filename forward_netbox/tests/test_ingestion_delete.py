@@ -11,6 +11,8 @@ produced it would strand it. That case must be reported, not surfaced as an
 unhandled `ProtectedError`.
 """
 
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
@@ -124,3 +126,81 @@ class IngestionDeleteRefusalTest(TestCase):
             exception="ProbeError",
         )
         self.assertEqual(_ingestion_delete_refusal(self.ingestion), "")
+
+
+class BaselineDeleteRefusesOnConfirmationTest(TestCase):
+    """The refusal must come before the dependent-object wall, not after it.
+
+    NetBox's delete view lists every dependent object on the confirmation page,
+    and an ingestion owns one `ForwardDeviceIdentity` per synced device. A
+    customer deleting the baseline ingestion met several hundred device names
+    rendered into a popup and only learned the delete was impossible after
+    confirming it — for the one ingestion in the system that is *meant* to
+    refuse, because it holds the contributor baseline.
+    """
+
+    def test_the_confirmation_page_refuses_instead_of_listing_dependents(self):
+        from django.contrib.auth import get_user_model
+        from django.test import Client
+        from django.urls import reverse
+
+        from forward_netbox.models import ForwardIngestion
+        from forward_netbox.models import ForwardSource
+        from forward_netbox.models import ForwardSync
+
+        source = ForwardSource.objects.create(
+            name="confirm-source", url="https://fwd.example.invalid"
+        )
+        sync = ForwardSync.objects.create(name="confirm-sync", source=source)
+        ingestion = ForwardIngestion.objects.create(sync=sync)
+
+        user = get_user_model().objects.create_superuser(
+            username="confirm-user", email="", password="x"
+        )
+        client = Client()
+        client.force_login(user)
+        url = reverse(
+            "plugins:forward_netbox:forwardingestion_delete",
+            kwargs={"pk": ingestion.pk},
+        )
+
+        with patch(
+            "forward_netbox.views._ingestion_delete_refusal",
+            return_value="held by convergence evidence",
+        ):
+            response = client.get(url)
+
+        # Redirected away rather than rendering the dependent-object list.
+        self.assertEqual(response.status_code, 302)
+
+    def test_a_deletable_ingestion_still_reaches_the_confirmation_page(self):
+        # The guard must not block the ordinary case; every non-baseline
+        # ingestion still deletes normally.
+        from django.contrib.auth import get_user_model
+        from django.test import Client
+        from django.urls import reverse
+
+        from forward_netbox.models import ForwardIngestion
+        from forward_netbox.models import ForwardSource
+        from forward_netbox.models import ForwardSync
+
+        source = ForwardSource.objects.create(
+            name="ok-source", url="https://fwd.example.invalid"
+        )
+        sync = ForwardSync.objects.create(name="ok-sync", source=source)
+        ingestion = ForwardIngestion.objects.create(sync=sync)
+
+        user = get_user_model().objects.create_superuser(
+            username="ok-user", email="", password="x"
+        )
+        client = Client()
+        client.force_login(user)
+        url = reverse(
+            "plugins:forward_netbox:forwardingestion_delete",
+            kwargs={"pk": ingestion.pk},
+        )
+
+        with patch("forward_netbox.views._ingestion_delete_refusal", return_value=""):
+            response = client.get(url)
+
+        self.assertEqual(response.status_code, 200)
