@@ -237,8 +237,6 @@ class ReleaseProvenanceTest(unittest.TestCase):
 
     def _git_bytes(self, *arguments):
         """Serve the reviewed bootstrap bytes for the release commit."""
-        import hashlib
-
         if arguments[:1] == ("show",):
             _, _separator, path = arguments[1].partition(":")
             for candidate, digest in provenance.BOOTSTRAP_FILE_DIGESTS.items():
