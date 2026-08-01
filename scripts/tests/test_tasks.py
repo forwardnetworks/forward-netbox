@@ -208,6 +208,70 @@ class ReleaseArtifactTaskTest(unittest.TestCase):
         )
 
 
+class PreviousReleasedVersionTest(unittest.TestCase):
+    """Cover the index resolution itself, against a fixed payload.
+
+    The three upgrade-task tests stub this helper so the release gate does not
+    depend on a live PyPI request. The selection rules still need coverage, so
+    they are exercised here without a socket.
+    """
+
+    PAYLOAD = {
+        "releases": {
+            "2.6.6": [{"yanked": False}],
+            "2.6.5": [{"yanked": False}],
+            "2.6.9": [{"yanked": False}],
+            "2.6.4": [{"yanked": True}],
+            "2.6.3": [],
+            "2.6.2.post1": [{"yanked": False}],
+        }
+    }
+
+    def _resolve(self, version, payload=None):
+        import contextlib
+        import io
+
+        body = json.dumps(self.PAYLOAD if payload is None else payload)
+
+        @contextlib.contextmanager
+        def fake_urlopen(url, timeout=None):
+            yield io.StringIO(body)
+
+        with patch("urllib.request.urlopen", fake_urlopen):
+            return tasks._previous_released_version(Mock(), version)
+
+    def test_picks_the_highest_release_below_the_target(self):
+        # 2.6.9 is published but above the target, so it is not what an
+        # operator upgrading to 2.6.7 could be coming from.
+        self.assertEqual(self._resolve("2.6.7"), "2.6.6")
+
+    def test_skips_yanked_and_fileless_and_non_three_part_entries(self):
+        # 2.6.4 is yanked, 2.6.3 has no files, 2.6.2.post1 is not a three-part
+        # version: the highest installable below 2.6.6 is 2.6.5.
+        self.assertEqual(self._resolve("2.6.6"), "2.6.5")
+
+    def test_fails_closed_when_nothing_is_installable_below_the_target(self):
+        with self.assertRaises(Exit) as raised:
+            self._resolve("2.0.0")
+        self.assertEqual(raised.exception.code, 2)
+
+    def test_a_connection_reset_reports_how_to_run_offline(self):
+        # A reset during the read is not a URLError; it used to escape raw and
+        # fail the release gate with a bare socket error.
+        import contextlib
+
+        @contextlib.contextmanager
+        def reset(url, timeout=None):
+            raise ConnectionResetError(104, "Connection reset by peer")
+            yield  # pragma: no cover
+
+        with patch("urllib.request.urlopen", reset):
+            with self.assertRaises(Exit) as raised:
+                tasks._previous_released_version(Mock(), "2.6.7")
+        self.assertEqual(raised.exception.code, 2)
+        self.assertIn("--from-version", str(raised.exception))
+
+
 class ArtifactUpgradeTaskTest(unittest.TestCase):
     """The upgrade gate: a clean install cannot show an upgrade defect.
 
@@ -231,12 +295,18 @@ class ArtifactUpgradeTaskTest(unittest.TestCase):
         )
 
     def _run(self, context, **kwargs):
+        # Stub the index lookup. Resolving it for real made these tests - and
+        # therefore the release gate - depend on a live PyPI request, which
+        # failed twice in one release with a read timeout and a connection
+        # reset. The resolution logic itself is covered against a fixed payload
+        # by PreviousReleasedVersionTest below.
         with (
             patch.object(
                 tasks,
                 "_release_artifact_inputs",
                 return_value=("2.6.7", tasks.REPO_ROOT / self.WHEEL),
             ),
+            patch.object(tasks, "_previous_released_version", return_value="2.6.6"),
             patch.object(tasks, "docker_compose") as docker_compose,
         ):
             tasks.artifact_upgrade_test.body(context, **kwargs)
@@ -296,6 +366,23 @@ class ArtifactUpgradeTaskTest(unittest.TestCase):
 
         builds = [command for command in commands if command.startswith("docker build")]
         self.assertIn("--build-arg PACKAGE=forward-netbox==2.6.4", builds[0])
+
+    def test_resolution_is_covered_without_touching_the_network(self):
+        # Guard the stub in _run: if the index lookup ever stops being patched
+        # there, the release gate silently depends on a live PyPI request again.
+        context = self._context()
+        with (
+            patch.object(
+                tasks,
+                "_release_artifact_inputs",
+                return_value=("2.6.7", tasks.REPO_ROOT / self.WHEEL),
+            ),
+            patch.object(tasks, "docker_compose"),
+            patch.object(tasks, "_previous_released_version") as resolve,
+        ):
+            resolve.return_value = "2.6.6"
+            tasks.artifact_upgrade_test.body(context)
+        resolve.assert_called_once()
 
     def test_rejects_upgrading_a_version_from_itself(self):
         context = self._context()
