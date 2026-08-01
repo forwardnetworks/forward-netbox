@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -24,6 +25,19 @@ BOOTSTRAP_REQUIRED_FILES = (
     "scripts/check_sensitive_content.py",
     "scripts/sensitive_content.py",
 )
+# SHA-256 of each bootstrap file as reviewed. Update these in the same pull
+# request that changes the file; a release whose tree disagrees fails closed.
+BOOTSTRAP_FILE_DIGESTS = {
+    TRUSTED_SCANNER_WORKFLOW: (
+        "741e3d353f5fa9c862f3b07be383b41e06b72e32cf7d18bd3e33f2d04ac3e97c"
+    ),
+    "scripts/check_sensitive_content.py": (
+        "69ccf428f255bc158217e0cb3e167d44fe3dbb68f0dc3bb47bc26bf054e747a8"
+    ),
+    "scripts/sensitive_content.py": (
+        "769660482d01fb5c25484c4baeb21ee263e0c233a2a77db87f6f058a8f5fc6a0"
+    ),
+}
 REQUIRED_WORKFLOWS = (
     ".github/workflows/ci.yml",
     ".github/workflows/codeql.yml",
@@ -55,6 +69,17 @@ def _git_capture(*arguments: str) -> str:
         text=True,
     )
     return result.stdout.strip()
+
+
+def _git_capture_bytes(*arguments: str) -> bytes:
+    """Capture raw bytes. Digests must not depend on decoding or stripping."""
+    result = subprocess.run(
+        ["git", *arguments],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+    )
+    return result.stdout
 
 
 def _github_json(path: str, token: str) -> object:
@@ -581,25 +606,37 @@ def _require_prior_release_bridge(release_commit: str) -> list[str]:
     return lineage[1:]
 
 
-def _require_security_bootstrap(parent: str, commit: str) -> None:
-    changed = [
-        line
-        for line in _git_capture(
-            "diff",
-            "--name-only",
-            parent,
-            commit,
-        ).splitlines()
-        if line
-    ]
-    missing = sorted(set(BOOTSTRAP_REQUIRED_FILES) - set(changed))
-    if missing:
+def _require_security_bootstrap(release_commit: str) -> None:
+    """Require the trusted scanner to be present, byte for byte, at the release.
+
+    This used to diff `PRIOR_POST_RELEASE_DOC_COMMIT` against the first reviewed
+    commit and require the three files to appear in that diff. That only ever
+    held because the anchor was pinned immediately before `3b6fe4d`, the single
+    commit that introduced them - so the anchor could never move forward, while
+    the retention walk in `_require_merged_main_pr` needs it to. Those two
+    requirements are not jointly satisfiable: with a fixed anchor the reviewed
+    chain grows until GitHub expires a run, which is what burned `v2.6.10`, and
+    with a moved anchor the diff no longer contains the bootstrap, which is what
+    burned `v2.6.11`.
+
+    Pinning content is strictly stronger than the diff test it replaces. The old
+    check accepted any change that touched all three paths, including one that
+    gutted them; this one accepts only the exact reviewed bytes. Changing the
+    scanner means updating these digests in the same reviewed pull request,
+    which the trusted scanner and CodeQL both gate.
+    """
+    mismatched = []
+    for path, expected in sorted(BOOTSTRAP_FILE_DIGESTS.items()):
+        try:
+            blob = _git_capture_bytes("show", f"{release_commit}:{path}")
+        except subprocess.CalledProcessError:
+            mismatched.append(f"{path} (absent)")
+            continue
+        if hashlib.sha256(blob).hexdigest() != expected:
+            mismatched.append(f"{path} (content)")
+    if mismatched:
         raise ProvenanceError(
-            f"security bootstrap is missing required files: {missing}"
-        )
-    if any(path.startswith(("forward_netbox/", "development/")) for path in changed):
-        raise ProvenanceError(
-            "security bootstrap must not contain production runtime changes"
+            f"security bootstrap does not match reviewed content: {mismatched}"
         )
 
 
@@ -628,7 +665,7 @@ def verify_release_commit_provenance(
         raise ProvenanceError(
             "release must end with the production and evidence pull requests"
         )
-    _require_security_bootstrap(PRIOR_POST_RELEASE_DOC_COMMIT, reviewed_commits[0])
+    _require_security_bootstrap(release_commit)
 
     for index, commit in enumerate(reviewed_commits):
         _require_release_commit_shape(commit, token)
@@ -646,7 +683,7 @@ def verify_release_commit_provenance(
     return {
         "release_commit": release_commit,
         "production_commit": production_commit,
-        "security_bootstrap_commit": reviewed_commits[0],
+        "first_reviewed_commit": reviewed_commits[0],
         "reviewed_commits": reviewed_commits,
         "release_plan": plan,
         "workflows": list(REQUIRED_WORKFLOWS),
