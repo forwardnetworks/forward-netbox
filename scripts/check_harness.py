@@ -1063,6 +1063,7 @@ def _check_standard_release_tag_flow(failures: list[str]) -> None:
     for fragment in (
         'PRIOR_RELEASE_TAG = "v2.6.10"',
         "BOOTSTRAP_REQUIRED_FILES",
+        "BOOTSTRAP_FILE_DIGESTS",
         "BASE_REQUIRED_STATUS_CHECKS",
         "TRUSTED_STATUS_CONTEXT",
         'operation.add_argument("--controls-only", action="store_true")',

@@ -235,9 +235,33 @@ class ReleaseProvenanceTest(unittest.TestCase):
                 }
         raise AssertionError(path)
 
-    def _verify(self, *, github=None, git=None):
+    def _git_bytes(self, *arguments):
+        """Serve the reviewed bootstrap bytes for the release commit."""
+        if arguments[:1] == ("show",):
+            _, _separator, path = arguments[1].partition(":")
+            for candidate, digest in provenance.BOOTSTRAP_FILE_DIGESTS.items():
+                if path == candidate:
+                    return self._bootstrap_bytes.get(candidate, b"")
+            raise AssertionError(arguments)
+        raise AssertionError(arguments)
+
+    @property
+    def _bootstrap_bytes(self):
+        # Preimages chosen so their digests are the pinned ones: the fixture
+        # reads the real files, which is what the release tree contains.
+        return {
+            path: (provenance.REPO_ROOT / path).read_bytes()
+            for path in provenance.BOOTSTRAP_FILE_DIGESTS
+        }
+
+    def _verify(self, *, github=None, git=None, git_bytes=None):
         with (
             patch.object(provenance, "_git_capture", side_effect=git or self._git),
+            patch.object(
+                provenance,
+                "_git_capture_bytes",
+                side_effect=git_bytes or self._git_bytes,
+            ),
             patch.object(
                 provenance, "_github_json", side_effect=github or self._github
             ),
@@ -249,7 +273,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
 
         self.assertEqual(result["release_commit"], self.release_commit)
         self.assertEqual(result["production_commit"], self.production_commit)
-        self.assertEqual(result["security_bootstrap_commit"], self.anchor_commit)
+        self.assertEqual(result["first_reviewed_commit"], self.anchor_commit)
         self.assertEqual(
             result["reviewed_commits"],
             [self.anchor_commit, self.production_commit, self.release_commit],
@@ -495,22 +519,31 @@ class ReleaseProvenanceTest(unittest.TestCase):
         with self.assertRaisesRegex(provenance.ProvenanceError, "no exact"):
             self._verify(github=github)
 
-    def test_rejects_runtime_changes_in_security_bootstrap(self):
-        def git(*arguments):
-            result = self._git(*arguments)
-            if arguments == (
-                "diff",
-                "--name-only",
-                provenance.PRIOR_POST_RELEASE_DOC_COMMIT,
-                self.anchor_commit,
+    def test_rejects_altered_security_bootstrap_content(self):
+        # The old check accepted any change touching all three paths, including
+        # one that gutted them. Pinned content rejects a modified scanner.
+        def git_bytes(*arguments):
+            if arguments[:1] == ("show",) and arguments[1].endswith(
+                "scripts/check_sensitive_content.py"
             ):
-                return "\n".join(
-                    (*provenance.BOOTSTRAP_REQUIRED_FILES, "forward_netbox/models.py")
-                )
-            return result
+                return b"# neutered\n"
+            return self._git_bytes(*arguments)
 
-        with self.assertRaisesRegex(provenance.ProvenanceError, "runtime changes"):
-            self._verify(git=git)
+        with self.assertRaisesRegex(
+            provenance.ProvenanceError, "does not match reviewed content"
+        ):
+            self._verify(git_bytes=git_bytes)
+
+    def test_rejects_absent_security_bootstrap_file(self):
+        def git_bytes(*arguments):
+            if arguments[:1] == ("show",) and arguments[1].endswith(
+                "scripts/sensitive_content.py"
+            ):
+                raise subprocess.CalledProcessError(128, ["git", *arguments])
+            return self._git_bytes(*arguments)
+
+        with self.assertRaisesRegex(provenance.ProvenanceError, "absent"):
+            self._verify(git_bytes=git_bytes)
 
     def test_rejects_non_plan_evidence_commit(self):
         def git(*arguments):
