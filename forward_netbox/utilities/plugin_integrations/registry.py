@@ -477,7 +477,9 @@ def _integration_availability_reason(
         )
         if len(versions) == 1:
             return f"Installed plugin version must equal {versions[0]}."
-        return "Installed plugin version must equal one of: " + ", ".join(versions) + "."
+        return (
+            "Installed plugin version must equal one of: " + ", ".join(versions) + "."
+        )
     return "Plugin capability is available."
 
 

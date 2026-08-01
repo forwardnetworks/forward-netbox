@@ -2409,7 +2409,10 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]]):
             with transaction.atomic(using=using):
                 if released_primary_devices:
                     Device.objects.bulk_update(
-                        [device for device, _fields in released_primary_devices.values()],
+                        [
+                            device
+                            for device, _fields in released_primary_devices.values()
+                        ],
                         fields=["primary_ip4", "primary_ip6"],
                         batch_size=1000,
                     )
@@ -2451,10 +2454,7 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]]):
                 emit_branch_object_changes(
                     list(create_objects.values()),
                     list(update_objects.values())
-                    + [
-                        device
-                        for device, _fields in released_primary_devices.values()
-                    ],
+                    + [device for device, _fields in released_primary_devices.values()],
                 )
 
     runner.events_clearer.clear()

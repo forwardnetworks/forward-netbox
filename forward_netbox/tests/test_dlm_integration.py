@@ -610,7 +610,9 @@ class DlmInstalledPluginAssociationTest(TestCase):
                 },
             )
 
-        self.assertEqual(raised.exception.model_string, "netbox_dlm.inventoryitemsoftware")
+        self.assertEqual(
+            raised.exception.model_string, "netbox_dlm.inventoryitemsoftware"
+        )
         self.assertEqual(raised.exception.context, {"dependency": "dcim.inventoryitem"})
 
     def test_missing_inventory_item_is_counted_as_a_row_application_skip(self):
@@ -653,7 +655,9 @@ class DlmInstalledPluginAssociationTest(TestCase):
         )
 
         self.assertEqual(
-            logger.log_data["statistics"]["netbox_dlm.inventoryitemsoftware"]["skipped"],
+            logger.log_data["statistics"]["netbox_dlm.inventoryitemsoftware"][
+                "skipped"
+            ],
             1,
         )
         self.assertTrue(

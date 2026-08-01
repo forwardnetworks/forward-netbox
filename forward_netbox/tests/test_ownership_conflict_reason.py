@@ -8,7 +8,6 @@
 # passed its own tests and changed nothing they saw. These tests pin the
 # behaviour at the shared formatter *and* at that job's path, because covering
 # only the helper is what let the gap through.
-
 from unittest.mock import patch
 
 from django.test import TestCase
@@ -22,7 +21,10 @@ from forward_netbox.utilities.ownership import OwnershipConflictError
 
 class OwnershipConflictReasonTest(TestCase):
     CONDITIONS = (
-        ("Forward device identity is ambiguous for source key abc", "identity-ambiguous"),
+        (
+            "Forward device identity is ambiguous for source key abc",
+            "identity-ambiguous",
+        ),
         (
             "Identity evidence does not match merged device state",
             "identity-evidence-mismatch",

@@ -656,10 +656,12 @@ def release_owned_primary_ip_claims(runner, ip_address, *, destination_device_id
     # and incorrectly suppress a safe, in-scope release. Keep the holder
     # lookup/mutation branch-native, but read ownership proof from main.
     owned_ids = set(
-        ForwardDeviceIdentity.objects.using("default").filter(
+        ForwardDeviceIdentity.objects.using("default")
+        .filter(
             sync=runner.sync,
             device_id__in=holder_ids,
-        ).values_list("device_id", flat=True)
+        )
+        .values_list("device_id", flat=True)
     )
     if not owned_ids:
         return []

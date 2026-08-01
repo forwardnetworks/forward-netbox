@@ -9,8 +9,8 @@ from forward_netbox.utilities.plugin_integrations import integration_summary
 from forward_netbox.utilities.plugin_integrations import iter_integrations
 from forward_netbox.utilities.plugin_integrations import optional_integration_for_model
 from forward_netbox.utilities.plugin_integrations.registry import DLM_INTEGRATION
-from forward_netbox.utilities.plugin_integrations.registry import ROUTING_INTEGRATION
 from forward_netbox.utilities.plugin_integrations.registry import integration_capability
+from forward_netbox.utilities.plugin_integrations.registry import ROUTING_INTEGRATION
 from forward_netbox.utilities.query_fetch import ForwardQueryFetcher
 
 

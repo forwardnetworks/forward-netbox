@@ -13,7 +13,6 @@
 # These tests pin the relation discovery itself, not one caller, because the
 # same blind spot sat in two functions: the delete-refusal message and the
 # merge's blocked-delete prediction.
-
 from django.db import models
 from django.test import TestCase
 
