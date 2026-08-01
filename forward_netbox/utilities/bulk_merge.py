@@ -1689,6 +1689,66 @@ def _add_ip_adoption_dependencies(collapsed_changes, change_logger):
     return added
 
 
+def _add_primary_ip_reassignment_release_dependencies(collapsed_changes, change_logger):
+    """Apply a staged Device primary release before its IP moves away.
+
+    `IPAddress.clean()` checks the destination for a Device which still names
+    the address primary. The safe staging path emits a Device UPDATE that clears
+    that pointer, but the framework has no UPDATE->UPDATE dependency for this
+    reverse relation. The release is a different row from the IP, unlike the
+    LAG/cable case where both fields belonged to the Interface payload.
+    """
+    ip_updates = {
+        collapsed.key[1]: collapsed
+        for collapsed in collapsed_changes.values()
+        if collapsed.final_action == ActionType.UPDATE
+        and collapsed.model_class._meta.label_lower == "ipam.ipaddress"
+    }
+    if not ip_updates:
+        return 0
+
+    candidate_edges = []
+    for device_change in collapsed_changes.values():
+        if (
+            device_change.final_action != ActionType.UPDATE
+            or device_change.model_class._meta.label_lower != "dcim.device"
+        ):
+            continue
+        prechange = device_change.prechange_data or {}
+        postchange = device_change.postchange_data or {}
+        for field_name in ("primary_ip4", "primary_ip6"):
+            released_ip = _serialized_fk_id(prechange.get(field_name))
+            if not released_ip or postchange.get(field_name) is not None:
+                continue
+            ip_change = ip_updates.get(released_ip)
+            if ip_change is None or device_change.key in ip_change.depends_on:
+                continue
+            candidate_edges.append((ip_change.key, device_change.key))
+
+    if not candidate_edges:
+        return 0
+    accepted = _acyclic_delete_edges(
+        collapsed_changes,
+        candidate_edges,
+        change_logger,
+        edge_label="primary-IP-reassignment-release",
+    )
+    added = 0
+    for dependent_key, dependency_key in accepted:
+        dependent = collapsed_changes[dependent_key]
+        if dependency_key in dependent.depends_on:
+            continue
+        dependent.depends_on.add(dependency_key)
+        collapsed_changes[dependency_key].depended_by.add(dependent_key)
+        added += 1
+    if added:
+        change_logger.debug(
+            "Ordered %d Device primary-IP release(s) before IP reassignment.",
+            added,
+        )
+    return added
+
+
 def _order_collapsed_changes_fast(collapsed_changes, change_logger, operation):
     """O((V+E) log V) replacement for ``_order_collapsed_changes``.
 
@@ -1748,6 +1808,7 @@ def _order_collapsed_changes_fast(collapsed_changes, change_logger, operation):
         _add_destination_fk_release_dependencies(to_process, change_logger)
         _add_protected_child_delete_dependencies(to_process, change_logger)
         # UPDATE->UPDATE ordering, which the framework graph has no case for.
+        _add_primary_ip_reassignment_release_dependencies(to_process, change_logger)
         _add_ip_adoption_dependencies(to_process, change_logger)
         squash_dependency_graph_built.send(
             sender=SquashMergeStrategy,
