@@ -27,7 +27,7 @@ from forward_netbox.utilities.version_series import series_matches
 
 
 class OptionalDistributionVersionSetTest(SimpleTestCase):
-    def test_every_gate_accepts_both_validated_dlm_versions(self):
+    def test_every_gate_accepts_all_validated_dlm_versions(self):
         for name, supported in (
             ("copy_sql", COPY_SQL_SUPPORTED_OPTIONAL_DISTRIBUTIONS),
             ("set_based", SET_BASED_MERGE_SUPPORTED_OPTIONAL_DISTRIBUTIONS),
@@ -35,6 +35,7 @@ class OptionalDistributionVersionSetTest(SimpleTestCase):
             with self.subTest(gate=name):
                 self.assertIn("0.4.1", supported["netbox-dlm"])
                 self.assertIn("0.5.0", supported["netbox-dlm"])
+                self.assertIn("0.6.0", supported["netbox-dlm"])
 
     def test_an_unvalidated_version_is_still_refused(self):
         # The gates fail closed; widening must not become "any version".
@@ -42,7 +43,7 @@ class OptionalDistributionVersionSetTest(SimpleTestCase):
             COPY_SQL_SUPPORTED_OPTIONAL_DISTRIBUTIONS,
             SET_BASED_MERGE_SUPPORTED_OPTIONAL_DISTRIBUTIONS,
         ):
-            self.assertNotIn("0.6.0", supported["netbox-dlm"])
+            self.assertNotIn("0.6.1", supported["netbox-dlm"])
             self.assertNotIn("0.3.3", supported["netbox-dlm"])
 
     def test_the_other_distributions_stay_single_valued(self):
@@ -149,7 +150,7 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
         )
 
     def test_an_unvalidated_version_still_fails_closed(self):
-        decision = self._decide("0.6.0")
+        decision = self._decide("0.6.1")
 
         self.assertFalse(decision.enabled)
         self.assertEqual(decision.reason_code, "unsupported_runtime_tuple")
@@ -159,11 +160,12 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
         # render as sorted lists rather than blow up on JSON encoding.
         import json
 
-        detail = self._decide("0.6.0").context
+        detail = self._decide("0.6.1").context
 
         json.dumps(detail)
         self.assertEqual(
-            detail["expected"]["optional_plugins"]["netbox-dlm"], ["0.4.1", "0.5.0"]
+            detail["expected"]["optional_plugins"]["netbox-dlm"],
+            ["0.4.1", "0.5.0", "0.6.0"],
         )
 
 

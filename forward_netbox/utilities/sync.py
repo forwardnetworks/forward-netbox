@@ -324,6 +324,7 @@ class ForwardSyncRunner(ForwardSyncRunnerContractMixin, ForwardSyncRunnerAdapter
         # at staging is the only place the fix is safe.
         "netbox_dlm.cve": "reuse_on_unique_conflict",
         "netbox_dlm.softwareversion": "reuse_on_unique_conflict",
+        "netbox_dlm.inventoryitemroleplatform": "reuse_on_unique_conflict",
         "dcim.cable": "skip_warn_aggregate",
     }
 

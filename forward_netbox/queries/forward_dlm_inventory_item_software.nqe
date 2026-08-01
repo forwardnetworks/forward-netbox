@@ -1,0 +1,45 @@
+/**
+ * @intent Forward CIMC Inventory Item Software (netbox-dlm)
+ * @description The firmware running on each Cisco CIMC management controller,
+ * for the optional netbox-dlm plugin's InventoryItemSoftware model. The version
+ * is read from the SNMP sysDescr Forward already collects on the CIMC endpoint,
+ * so this map requests no additional collection. An endpoint whose sysDescr
+ * carries no firmware clause yields no row: a management controller is never
+ * reported as running a version that was not actually read. Rows attach to the
+ * inventory items created by the Forward CIMC Endpoint Inventory map, which
+ * must be enabled alongside this one.
+ */
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach endpoint in network.endpoints
+where !isEmpty(endpoint.snmpOutputs)
+let endpointName = toString(endpoint.name)
+let endpointNameLower = toLowerCase(endpointName)
+where matches(endpointNameLower, "*-cimc")
+let parentName = substring(endpointName, 0, length(endpointName) - 5)
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where device.name == parentName
+where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
+let sysDescrOpt = max(
+  foreach output in endpoint.snmpOutputs
+  where output.requestedOid == "1.3.6.1.2.1.1.1"
+  select max(foreach entry in output.rawOidEntries select entry.rawValue)
+)
+where isPresent(sysDescrOpt) && sysDescrOpt != ""
+let versionOpt = max(
+  foreach firmware in regexMatches(sysDescrOpt, re`Firmware Version (?<version>[^,]+)`)
+  select firmware.data.version
+)
+where isPresent(versionOpt) && versionOpt != ""
+select distinct {
+  device: device.name,
+  inventory_item: "CIMC",
+  role: "MANAGEMENT CONTROLLER",
+  role_slug: "management-controller",
+  platform: "CIMC",
+  platform_slug: "cimc",
+  version: substring(versionOpt, 0, 50)
+};

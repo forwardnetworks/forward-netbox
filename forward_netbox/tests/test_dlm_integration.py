@@ -29,6 +29,7 @@ DLM_MODEL_STRINGS = (
     "netbox_dlm.softwareversion",
     "netbox_dlm.hardwarenotice",
     "netbox_dlm.devicesoftware",
+    "netbox_dlm.inventoryitemsoftware",
     "netbox_dlm.cve",
     "netbox_dlm.vulnerability",
 )
@@ -69,8 +70,21 @@ class DlmRegistryWiringTest(SimpleTestCase):
             APPLY_DEPENDENCY_MODEL_ORDER.index("netbox_dlm.softwareversion"),
         )
 
+    def test_inventory_item_software_applies_after_its_inventory_item(self):
+        self.assertLess(
+            APPLY_DEPENDENCY_MODEL_ORDER.index("dcim.inventoryitem"),
+            APPLY_DEPENDENCY_MODEL_ORDER.index("netbox_dlm.inventoryitemsoftware"),
+        )
+
 
 class DlmQueryStructureTest(SimpleTestCase):
+    def test_cimc_inventory_item_software_query_shape(self):
+        src = _read_query("forward_dlm_inventory_item_software.nqe")
+        self.assertIn('inventory_item: "CIMC"', src)
+        self.assertIn('platform_slug: "cimc"', src)
+        self.assertIn("regexMatches", src)
+        self.assertIn("Firmware Version (?<version>[^,]+)", src)
+
     def test_software_versions_query_shape(self):
         src = _read_query("forward_dlm_software_versions.nqe")
         self.assertIn("device.platform.osSupport", src)
@@ -415,6 +429,8 @@ class DlmInstalledPluginAssociationTest(TestCase):
         from dcim.models import Device
         from dcim.models import DeviceRole
         from dcim.models import DeviceType
+        from dcim.models import InventoryItem
+        from dcim.models import InventoryItemRole
         from dcim.models import Manufacturer
         from dcim.models import Platform
         from dcim.models import Site
@@ -445,6 +461,16 @@ class DlmInstalledPluginAssociationTest(TestCase):
             device_type=device_type,
             platform=cls.platform,
             status="active",
+        )
+        cls.management_controller_role = InventoryItemRole.objects.create(
+            name="MANAGEMENT CONTROLLER",
+            slug="management-controller",
+            color="607d8b",
+        )
+        cls.cimc_inventory_item = InventoryItem.objects.create(
+            device=cls.device,
+            name="CIMC",
+            role=cls.management_controller_role,
         )
 
     def _runner(self):
@@ -519,6 +545,123 @@ class DlmInstalledPluginAssociationTest(TestCase):
         self.assertEqual(
             SoftwareVersion.objects.exclude(devices_running__isnull=False).count(),
             0,
+        )
+
+    def test_inventory_item_software_create_is_valid_and_idempotent(self):
+        from forward_netbox.utilities.sync_dlm import (
+            apply_netbox_dlm_inventoryitemsoftware,
+        )
+
+        InventoryItemRolePlatform = apps.get_model(
+            "netbox_dlm", "InventoryItemRolePlatform"
+        )
+        InventoryItemSoftware = apps.get_model("netbox_dlm", "InventoryItemSoftware")
+        SoftwareVersion = apps.get_model("netbox_dlm", "SoftwareVersion")
+        row = {
+            "device": self.device.name,
+            "inventory_item": "CIMC",
+            "role": "MANAGEMENT CONTROLLER",
+            "role_slug": "management-controller",
+            "platform": "CIMC",
+            "platform_slug": "cimc",
+            "version": "4.3(2.230270)",
+        }
+
+        first = apply_netbox_dlm_inventoryitemsoftware(self._runner(), row)
+        second = apply_netbox_dlm_inventoryitemsoftware(self._runner(), row)
+
+        self.assertEqual(first.pk, second.pk)
+        self.assertEqual(InventoryItemRolePlatform.objects.count(), 1)
+        self.assertEqual(InventoryItemSoftware.objects.count(), 1)
+        self.assertEqual(SoftwareVersion.objects.count(), 1)
+        first.full_clean()
+        mapping = InventoryItemRolePlatform.objects.get(
+            role=self.management_controller_role
+        )
+        self.assertEqual(first.software_version.platform, mapping.platform)
+
+        apply_netbox_dlm_inventoryitemsoftware(
+            self._runner(), {**row, "version": "4.1(3f)"}
+        )
+        self.assertEqual(InventoryItemRolePlatform.objects.count(), 1)
+        self.assertEqual(InventoryItemSoftware.objects.count(), 1)
+        self.assertEqual(SoftwareVersion.objects.count(), 2)
+        InventoryItemSoftware.objects.get(
+            inventory_item=self.cimc_inventory_item
+        ).full_clean()
+
+    def test_inventory_item_software_skips_missing_inventory_item(self):
+        from forward_netbox.exceptions import ForwardDependencySkipError
+        from forward_netbox.utilities.sync_dlm import (
+            apply_netbox_dlm_inventoryitemsoftware,
+        )
+
+        with self.assertRaises(ForwardDependencySkipError) as raised:
+            apply_netbox_dlm_inventoryitemsoftware(
+                self._runner(),
+                {
+                    "device": self.device.name,
+                    "inventory_item": "CIMC absent",
+                    "role": "MANAGEMENT CONTROLLER",
+                    "role_slug": "management-controller",
+                    "platform": "CIMC",
+                    "platform_slug": "cimc",
+                    "version": "4.1(3f)",
+                },
+            )
+
+        self.assertEqual(raised.exception.model_string, "netbox_dlm.inventoryitemsoftware")
+        self.assertEqual(raised.exception.context, {"dependency": "dcim.inventoryitem"})
+
+    def test_missing_inventory_item_is_counted_as_a_row_application_skip(self):
+        """The adapter's dependency skip must not escape the sync row boundary."""
+        from forward_netbox.models import ForwardIngestion
+        from forward_netbox.models import ForwardIngestionIssue
+        from forward_netbox.models import ForwardSource
+        from forward_netbox.models import ForwardSync
+        from forward_netbox.utilities.logging import SyncLogging
+        from forward_netbox.utilities.sync_reporting import apply_model_rows
+
+        source = ForwardSource.objects.create(
+            name="cimc-skip-source",
+            type="saas",
+            url="https://forward.example.test",
+            parameters={"username": "test", "password": "test", "network_id": "test"},
+        )
+        sync = ForwardSync.objects.create(name="cimc-skip-sync", source=source)
+        ingestion = ForwardIngestion.objects.create(sync=sync)
+        logger = SyncLogging()
+        runner = self._runner()
+        runner.sync = sync
+        runner.ingestion = ingestion
+        runner.logger = logger
+
+        apply_model_rows(
+            runner,
+            "netbox_dlm.inventoryitemsoftware",
+            [
+                {
+                    "device": self.device.name,
+                    "inventory_item": "CIMC absent",
+                    "role": "MANAGEMENT CONTROLLER",
+                    "role_slug": "management-controller",
+                    "platform": "CIMC",
+                    "platform_slug": "cimc",
+                    "version": "4.1(3f)",
+                }
+            ],
+        )
+
+        self.assertEqual(
+            logger.log_data["statistics"]["netbox_dlm.inventoryitemsoftware"]["skipped"],
+            1,
+        )
+        self.assertTrue(
+            ForwardIngestionIssue.objects.filter(
+                ingestion=ingestion,
+                model="netbox_dlm.inventoryitemsoftware",
+                exception="ForwardDependencySkipError",
+            ).exists()
         )
 
     def test_upgrade_reconciliation_classifies_dlm_catalog_relations(self):

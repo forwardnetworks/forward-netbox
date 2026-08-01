@@ -27,6 +27,7 @@ DEFAULT_MODEL_CHANGE_DENSITY = {
     "netbox_dlm.softwareversion": 1.0,
     "netbox_dlm.hardwarenotice": 1.0,
     "netbox_dlm.devicesoftware": 1.0,
+    "netbox_dlm.inventoryitemsoftware": 1.0,
     "netbox_dlm.cve": 1.0,
     # ~16 vulnerable CVEs per device (73,973 pairs / 4,728 devices observed).
     "netbox_dlm.vulnerability": 16.0,
@@ -80,6 +81,7 @@ APPLY_DEPENDENCY_MODEL_ORDER = (
     "netbox_routing.bgppeeraddressfamily",
     "netbox_peering_manager.peeringsession",
     "netbox_dlm.devicesoftware",
+    "netbox_dlm.inventoryitemsoftware",
     "netbox_dlm.softwareversion",
     "netbox_dlm.hardwarenotice",
     "netbox_dlm.cve",
@@ -124,6 +126,9 @@ APPLY_PARENT_MODEL_DEPENDENCIES = {
     "netbox_dlm.hardwarenotice": ("dcim.devicetype",),
     # The adapter creates SoftwareVersion and DeviceSoftware atomically.
     "netbox_dlm.devicesoftware": ("dcim.device", "dcim.platform"),
+    # The adapter creates the role-platform mapping, SoftwareVersion, and
+    # InventoryItemSoftware association atomically.
+    "netbox_dlm.inventoryitemsoftware": ("dcim.inventoryitem", "dcim.platform"),
     "netbox_dlm.vulnerability": (
         "dcim.device",
         "netbox_dlm.cve",
@@ -152,6 +157,7 @@ DELETE_DEPENDENCY_MODEL_ORDER = (
     "netbox_dlm.vulnerability",
     "netbox_dlm.cve",
     "netbox_dlm.devicesoftware",
+    "netbox_dlm.inventoryitemsoftware",
     "netbox_dlm.hardwarenotice",
     "netbox_dlm.softwareversion",
     "dcim.cable",

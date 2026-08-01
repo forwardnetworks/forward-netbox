@@ -604,6 +604,12 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "enabled": False,
     },
     {
+        "model_string": "netbox_dlm.inventoryitemsoftware",
+        "name": "Forward CIMC Inventory Item Software",
+        "filename": "forward_dlm_inventory_item_software.nqe",
+        "enabled": False,
+    },
+    {
         "model_string": "netbox_dlm.cve",
         "name": "Forward DLM CVEs",
         "filename": "forward_dlm_cves.nqe",

@@ -17,6 +17,7 @@ FORWARD_DLM_MODELS = (
     "netbox_dlm.softwareversion",
     "netbox_dlm.hardwarenotice",
     "netbox_dlm.devicesoftware",
+    "netbox_dlm.inventoryitemsoftware",
     # cve before vulnerability: runtime apply order follows this tuple, and a
     # Vulnerability row's cve FK must already exist.
     "netbox_dlm.cve",

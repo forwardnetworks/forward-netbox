@@ -2360,6 +2360,7 @@ select {name: "vendor", slug: "vendor"}
             "softwareversion",
             "hardwarenotice",
             "devicesoftware",
+            "inventoryitemsoftware",
             "cve",
             "vulnerability",
         ):
@@ -2379,6 +2380,7 @@ select {name: "vendor", slug: "vendor"}
                 "Forward DLM Hardware Notices",
                 "Forward DLM Hardware Notices with NetBox Aliases",
                 "Forward DLM Device Software",
+                "Forward CIMC Inventory Item Software",
                 "Forward DLM CVEs",
                 "Forward DLM Vulnerabilities",
             },
