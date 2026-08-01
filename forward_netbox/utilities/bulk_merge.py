@@ -1356,6 +1356,40 @@ def _add_destination_fk_release_dependencies(collapsed_changes, change_logger):
             )
 
 
+def protecting_relations(model_class):
+    """Every PROTECT/RESTRICT relation pointing at this model, hidden included.
+
+    `_meta.related_objects` omits relations declared with ``related_name="+"``,
+    and Django calls those hidden. Reading protection from it therefore misses
+    exactly the relations this plugin uses for ownership evidence:
+    `ForwardIngestionProvenanceMixin` declares its ingestion FK as PROTECT with
+    ``related_name="+"``, so `ForwardDeviceIdentity`, `ForwardDeviceTagClaim`,
+    `ForwardVirtualParentClaim` and `ForwardOwnershipReconciliation` were all
+    invisible to protection checks while still refusing the delete in the
+    database.
+
+    That gap had two customer-visible faces. An ingestion held only by device
+    identities reported no refusal at all, so the delete view rendered its wall
+    of dependent rows and then failed with `ProtectedError` on confirm — every
+    ingestion, since each owns one identity per synced device. And a merge
+    delete blocked by one of these was never predicted, so it was scheduled and
+    failed at apply time, and a failed row blocks baseline promotion.
+
+    Ask for hidden relations explicitly so protection is read from the database
+    truth rather than from what happens to have a reverse accessor.
+    """
+    return [
+        relation
+        for relation in model_class._meta._get_fields(
+            forward=False, reverse=True, include_hidden=True
+        )
+        if getattr(relation, "field", None) is not None
+        and not relation.many_to_many
+        and getattr(relation.field.remote_field, "on_delete", None)
+        in (models.PROTECT, models.RESTRICT)
+    ]
+
+
 def describe_protecting_references(model_class, pk):
     """Which surviving rows still reference this one, as ``[(label, count)]``.
 
@@ -1366,13 +1400,8 @@ def describe_protecting_references(model_class, pk):
     """
     found = []
     try:
-        for relation in model_class._meta.related_objects:
+        for relation in protecting_relations(model_class):
             field = relation.field
-            if getattr(field.remote_field, "on_delete", None) not in (
-                models.PROTECT,
-                models.RESTRICT,
-            ):
-                continue
             count = (
                 relation.related_model.objects.using(DEFAULT_DB_ALIAS)
                 .filter(**{field.name: pk})
@@ -1428,6 +1457,15 @@ def protecting_reference_blocked_deletes(collapsed_changes):
     blocked = defaultdict(list)
     for model_class, deletes_by_pk in delete_pks_by_model.items():
         target_pks = list(deletes_by_pk)
+        # Deliberately the visible relations only, NOT `protecting_relations`.
+        # Widening this to hidden relations makes plugin provenance rows look
+        # like static blockers: `ForwardDeviceIdentity.device` is PROTECT, so an
+        # owned device delete is predicted blocked and skipped — but the identity
+        # is removed in the same atomic merge, so the delete would have
+        # succeeded. Measured: it silently kept a device that should have been
+        # deleted, which is the failure mode this function's docstring calls out
+        # as the worse one. Teaching the predictor which referencing rows this
+        # plugin cleans up in-transaction is a separate change.
         for relation in model_class._meta.related_objects:
             field = relation.field
             on_delete = getattr(field.remote_field, "on_delete", None)
