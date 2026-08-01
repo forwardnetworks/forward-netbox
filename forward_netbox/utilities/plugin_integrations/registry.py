@@ -201,7 +201,10 @@ DLM_INTEGRATION = OptionalPluginIntegration(
         "netbox_dlm.hardwarenotice",
         "netbox_dlm.devicesoftware",
         "netbox_dlm.inventoryitemsoftware",
-        "netbox_dlm.inventoryitemroleplatform",
+        # InventoryItemRolePlatform is deliberately absent: every supported
+        # model needs a sync contract, and this one has no query map. The
+        # software adapter maintains it as a dependency, the same way it
+        # maintains the Platform it points at.
         "netbox_dlm.cve",
         "netbox_dlm.vulnerability",
     ),

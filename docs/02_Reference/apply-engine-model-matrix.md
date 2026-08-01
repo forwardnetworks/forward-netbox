@@ -62,6 +62,7 @@ These models remain adapter-required with explicit blocker codes:
 - `netbox_dlm.cve` | `plugin_model_dependencies`
 - `netbox_dlm.devicesoftware` | `plugin_model_dependencies`
 - `netbox_dlm.hardwarenotice` | `plugin_model_dependencies`
+- `netbox_dlm.inventoryitemsoftware` | `plugin_model_dependencies`
 - `netbox_dlm.softwareversion` | `plugin_model_dependencies`
 - `netbox_dlm.vulnerability` | `plugin_model_dependencies`
 - `netbox_routing.bgpaddressfamily` | `plugin_model_dependencies`

@@ -103,6 +103,16 @@ ADAPTER_MODEL_BLOCKERS = {
             "dependency resolution handled by the adapter."
         ),
     },
+    "netbox_dlm.inventoryitemsoftware": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": (
+            "DLM inventory-item-software writes require inventory item, "
+            "role-platform mapping and software-version dependency resolution "
+            "handled by the adapter; the plugin validates the software version "
+            "against the platform mapped to the item's role, so the four writes "
+            "have to agree."
+        ),
+    },
     "netbox_dlm.cve": {
         "blocker_code": "plugin_model_dependencies",
         "blocker_reason": (
