@@ -1079,12 +1079,24 @@ def _scope_reconciliation_work(job):
         job.save(update_fields=["data"])
     except Exception as exc:
         from .utilities.api_usage import record_forward_api_usage
+        from .utilities.ownership import OwnershipConflictError
+        from .utilities.ownership import ownership_conflict_reason
 
-        job.data = {
-            "error": safe_operation_failure("Forward scope reconciliation", exc),
+        message = safe_operation_failure("Forward scope reconciliation", exc)
+        data = {
             "error_type": exception_type(exc),
             "forward_api_usage": record_forward_api_usage(sync, client),
         }
+        # Eight causes raise OwnershipConflictError bare, and the message is
+        # stripped before it lands here - so the job record named the class and
+        # nothing else. The slug is ours; the source device keys in the original
+        # message are customer data and stay out.
+        if isinstance(exc, OwnershipConflictError):
+            reason = ownership_conflict_reason(exc)
+            data["conflict_reason"] = reason
+            message = f"{message[:-1]} ({reason})."
+        data["error"] = message
+        job.data = data
         job.save(update_fields=["data"])
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(

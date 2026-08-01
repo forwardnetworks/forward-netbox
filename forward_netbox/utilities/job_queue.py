@@ -68,6 +68,17 @@ def enqueue_forward_job(
             "enqueue_forward_job() cannot combine schedule_at and immediate."
         )
 
+    # RQ rejects a class outright, but only at dispatch - which happens on
+    # transaction commit, after the Job row is written. A caller that passed
+    # `SomeJob` instead of `SomeJob.handle` therefore produced a 500 *and* a
+    # background job that never ran, which is what an operator hit on the scope
+    # reconciliation page. Fail here, where the mistake is, and name the fix.
+    if isinstance(func, type):
+        raise TypeError(
+            "enqueue_forward_job() takes a callable, not a job class; pass "
+            f"{func.__name__}.handle or call {func.__name__}.enqueue()."
+        )
+
     with advisory_lock(ADVISORY_LOCK_KEYS["job-schedules"]):
         if instance is not None:
             object_type = ObjectType.objects.get_for_model(

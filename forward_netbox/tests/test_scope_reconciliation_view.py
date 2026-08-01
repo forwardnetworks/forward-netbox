@@ -114,8 +114,19 @@ class ScopeReconciliationViewTest(TestCase):
             "plugins:forward_netbox:forwardsync_refresh_scope_reconciliation",
             kwargs={"pk": self.sync.pk},
         )
-        with patch("forward_netbox.utilities.job_queue.enqueue_forward_job") as enqueue:
+        # Patch where `jobs` bound the name, not where it is defined: the view
+        # now goes through `ScopeReconciliationJob.enqueue`, and `jobs.py`
+        # imports `enqueue_forward_job` at module load, so patching the source
+        # module would not intercept the call.
+        from forward_netbox.jobs import ScopeReconciliationJob
+
+        with patch("forward_netbox.jobs.enqueue_forward_job") as enqueue:
             response = self.client.post(refresh_url)
 
         self.assertEqual(response.status_code, 302)
         enqueue.assert_called_once()
+        # The bug was handing RQ a class instead of a callable, which it
+        # rejects at dispatch - after the Job row is written. Pin the callable.
+        # `handle` is a classmethod, so each access is a fresh bound method:
+        # compare by equality, not identity.
+        self.assertEqual(enqueue.call_args.args[0], ScopeReconciliationJob.handle)

@@ -1189,11 +1189,14 @@ class ForwardSyncRefreshScopeReconciliationView(BaseObjectView):
 
     def post(self, request, pk):
         from .jobs import ScopeReconciliationJob
-        from .utilities.job_queue import enqueue_forward_job
 
         sync = get_object_or_404(self.queryset, pk=pk)
-        enqueue_forward_job(
-            ScopeReconciliationJob,
+        # Go through the runner's own `enqueue`, which passes `cls.handle` to
+        # RQ. Handing `enqueue_forward_job` the class instead reached
+        # `queue.enqueue()` as a class object, which RQ rejects outright -
+        # "Expected a callable or a string" - after the Job row was already
+        # written, so the work looked queued and the operator got a 500.
+        ScopeReconciliationJob.enqueue(
             instance=sync,
             user=request.user,
             name=f"{sync.name} - scope reconciliation",

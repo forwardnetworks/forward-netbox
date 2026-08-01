@@ -214,7 +214,7 @@ REQUIRED_TEXT = {
     ],
     ".github/workflows/release.yml": [
         "fetch-depth: 0",
-        "refs/tags/v2.5.11",
+        "refs/tags/v2.6.10",
         "verify_release_provenance.py",
         "--git-files",
         "--protected-history",
@@ -852,7 +852,7 @@ def _check_sensitive_guard_wiring(failures: list[str]) -> None:
         if fragment not in ci_commands:
             failures.append(f".github/workflows/ci.yml must execute {fragment}")
     for fragment in (
-        "refs/tags/v2.5.11",
+        "refs/tags/v2.6.10",
         "verify_release_provenance.py",
         "--tag",
         "check_sensitive_content.py --git-files --protected-history",
@@ -1061,7 +1061,7 @@ def _check_standard_release_tag_flow(failures: list[str]) -> None:
         if fragment not in texts["release"]:
             failures.append(f"standard release tag flow must contain: {fragment}")
     for fragment in (
-        'PRIOR_RELEASE_TAG = "v2.5.11"',
+        'PRIOR_RELEASE_TAG = "v2.6.10"',
         "BOOTSTRAP_REQUIRED_FILES",
         "BASE_REQUIRED_STATUS_CHECKS",
         "TRUSTED_STATUS_CONTEXT",
