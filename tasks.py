@@ -1083,7 +1083,11 @@ def _previous_released_version(context, version):
     try:
         with urllib.request.urlopen(url, timeout=60) as response:
             payload = json.load(response)
-    except (urllib.error.URLError, TimeoutError, ValueError) as exc:
+    # OSError, not just TimeoutError: the read can also fail with
+    # ConnectionResetError, which is not a URLError and was escaping raw -
+    # failing the release gate with a bare socket error instead of the message
+    # that says how to run it offline.
+    except (urllib.error.URLError, OSError, ValueError) as exc:
         raise Exit(
             f"Could not read released versions from PyPI ({exc}). Pass "
             "--from-version explicitly to run this gate offline.",
