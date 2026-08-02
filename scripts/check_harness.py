@@ -1040,6 +1040,59 @@ def _check_release_toolchain_lock(failures: list[str]) -> None:
         failures.append("CI workflow must install the reviewed hash-locked toolchain")
 
 
+def _check_release_anchor_tracks_current_release(failures: list[str]) -> None:
+    """The provenance anchor must name the release the table calls current.
+
+    Two post-release steps are easy to skip because nothing failed when they
+    were: advancing `PRIOR_RELEASE_TAG`, and promoting the shipped release in
+    the compatibility table. Skipping either is silent at the time and expensive
+    later - a stale anchor grows the reviewed commit range until GitHub expires
+    a run and burns a release at the tag, which is what happened to `v2.6.10`,
+    and a stale table told operators for two releases that `2.6.9` was current
+    while `2.6.12` and `2.7.0` sat as candidates.
+
+    Both were previously pinned by hand, including a literal copy of the anchor
+    in this file, so the checks moved only when someone remembered to move them.
+    Tying the two together removes the hand-maintained copy and makes skipping
+    either step fail here instead of at a tag months later.
+    """
+    provenance_path = REPO_ROOT / "scripts/verify_release_provenance.py"
+    readme_path = REPO_ROOT / "README.md"
+    if not provenance_path.exists() or not readme_path.exists():
+        return
+
+    anchor_match = re.search(
+        r'^PRIOR_RELEASE_TAG = "(?P<tag>v[0-9]+\.[0-9]+\.[0-9]+)"$',
+        provenance_path.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    if anchor_match is None:
+        failures.append(
+            "release provenance must pin PRIOR_RELEASE_TAG to a vX.Y.Z release tag"
+        )
+        return
+
+    current = re.findall(
+        r"^\| `(?P<version>v[0-9]+\.[0-9]+\.[0-9]+)` \|[^|]*\| Current release;",
+        readme_path.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    if len(current) != 1:
+        failures.append(
+            "README release table must name exactly one current release, found "
+            f"{len(current)}"
+        )
+        return
+
+    if anchor_match.group("tag") != current[0]:
+        failures.append(
+            "release provenance anchor "
+            f"{anchor_match.group('tag')} does not match the current release "
+            f"{current[0]} in the README table: advance the anchor after a "
+            "release, or promote the shipped release in the table"
+        )
+
+
 def _check_standard_release_tag_flow(failures: list[str]) -> None:
     paths = {
         "release": REPO_ROOT / "scripts/release.py",
@@ -1061,7 +1114,7 @@ def _check_standard_release_tag_flow(failures: list[str]) -> None:
         if fragment not in texts["release"]:
             failures.append(f"standard release tag flow must contain: {fragment}")
     for fragment in (
-        'PRIOR_RELEASE_TAG = "v2.7.0"',
+        "PRIOR_RELEASE_TAG = ",
         "BOOTSTRAP_REQUIRED_FILES",
         "BOOTSTRAP_FILE_DIGESTS",
         "BASE_REQUIRED_STATUS_CHECKS",
@@ -1127,6 +1180,7 @@ def main() -> int:
     _check_harness_gardening_dependency(failures)
     _check_sensitive_guard_wiring(failures)
     _check_release_toolchain_lock(failures)
+    _check_release_anchor_tracks_current_release(failures)
     _check_standard_release_tag_flow(failures)
     _check_publish_gate_placement(failures)
     if args.base:
