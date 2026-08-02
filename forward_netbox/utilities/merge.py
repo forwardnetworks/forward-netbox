@@ -550,6 +550,7 @@ def merge_branch(
             record_failed=_record_failed,
             result_metadata=merge_metadata,
             set_based_decision=set_based_decision,
+            merge_sync_id=ingestion.sync_id,
         )
         failed += bulk_failed
         models_touched |= bulk_models
