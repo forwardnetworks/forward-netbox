@@ -1071,6 +1071,83 @@ class BulkMergeIntegrationTest(CleanTransactionTestCase):
             SoftwareVersion.objects.filter(pk=software_version.pk).exists()
         )
 
+    def test_m2m_target_create_precedes_existing_source_update_on_first_merge(self):
+        from django.apps import apps
+
+        SoftwareVersion = apps.get_model("netbox_dlm", "SoftwareVersion")
+        CVE = apps.get_model("netbox_dlm", "CVE")
+        platform = Platform.objects.create(
+            name="DLM M2M Dependency OS",
+            slug="dlm-m2m-dependency-os",
+        )
+        cve = CVE.objects.create(
+            cve_id="CVE-2026-22002",
+            description="before",
+        )
+        branch = provision_branch(user=self.user, name="DLM M2M Create Dependency")
+        ingestion = self._ingestion_for_branch(branch, "dlm-m2m-create-dependency")
+
+        with activate_branch(branch):
+            with event_tracking(self.request):
+                self.request.id = uuid.uuid4()
+                branch_cve = CVE.objects.get(pk=cve.pk)
+                branch_cve.description = "after"
+                branch_cve.save(update_fields=["description"])
+            with event_tracking(self.request):
+                self.request.id = uuid.uuid4()
+                software_version = SoftwareVersion.objects.create(
+                    platform=platform,
+                    version="1.0",
+                )
+                branch_cve = CVE.objects.get(pk=cve.pk)
+                branch_cve.affected_software.add(software_version)
+
+            self.assertTrue(
+                branch_cve.affected_software.filter(pk=software_version.pk).exists()
+            )
+
+        self.assertFalse(
+            SoftwareVersion.objects.filter(pk=software_version.pk).exists()
+        )
+
+        # This must succeed on the first call. Before the M2M dependency edge,
+        # UPDATE priority applied the CVE before the SoftwareVersion CREATE,
+        # failed its through-table FK, and only a second merge could converge.
+        merge_branch(ingestion, user=self.user)
+
+        self.assertTrue(
+            SoftwareVersion.objects.filter(pk=software_version.pk).exists()
+        )
+        cve.refresh_from_db()
+        self.assertEqual(cve.description, "after")
+        self.assertTrue(
+            cve.affected_software.filter(pk=software_version.pk).exists()
+        )
+        self.assertFalse(ingestion.issues.filter(phase="merge").exists())
+
+    def test_candidate_dependency_closing_a_multihop_cycle_is_rejected(self):
+        from forward_netbox.utilities.bulk_merge import _acyclic_delete_edges
+
+        dependent_key = ("test.dependent", 1)
+        target_key = ("test.target", 2)
+        intermediate_key = ("test.intermediate", 3)
+        tail_key = ("test.tail", 4)
+        collapsed_changes = {
+            dependent_key: Mock(depends_on=set()),
+            target_key: Mock(depends_on={intermediate_key}),
+            intermediate_key: Mock(depends_on={tail_key}),
+            tail_key: Mock(depends_on={dependent_key}),
+        }
+
+        accepted = _acyclic_delete_edges(
+            collapsed_changes,
+            [(dependent_key, target_key)],
+            self.logger,
+            edge_label="test",
+        )
+
+        self.assertEqual(accepted, [])
+
     def test_dlm_protected_version_delete_follows_destination_fk_reassignment(self):
         from django.apps import apps
         from netbox_branching.merge_strategies.squash import SquashMergeStrategy
