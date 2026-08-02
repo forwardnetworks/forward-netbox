@@ -240,6 +240,26 @@ class PreviousReleasedVersionTest(unittest.TestCase):
         with patch("urllib.request.urlopen", fake_urlopen):
             return tasks._previous_released_version(Mock(), version)
 
+    def test_a_dev_marker_resolves_from_the_release_it_heads_for(self):
+        # `main` is deliberately moved onto a `.dev0` marker after a release so
+        # an install from it is not indistinguishable from the published one.
+        # Splitting on "." and calling int() crashed on exactly that
+        # (`invalid literal for int() with base 10: 'dev0'`), so the marker and
+        # this gate could not coexist and `main` kept being left on the released
+        # version. A dev tree upgrades from the newest release below the version
+        # it is heading for.
+        self.assertEqual(self._resolve("2.6.7.dev0"), "2.6.6")
+
+    def test_a_dev_marker_does_not_sort_lexicographically(self):
+        payload = {"releases": {"2.6.9": [{"yanked": False}], "2.6.10": [{"yanked": False}]}}
+        self.assertEqual(self._resolve("2.6.11.dev0", payload), "2.6.10")
+
+    def test_an_unparseable_version_fails_closed(self):
+        # Better to stop and ask for --from-version than to resolve an upgrade
+        # source from a version nobody can read.
+        with self.assertRaises(Exit):
+            self._resolve("not-a-version")
+
     def test_picks_the_highest_release_below_the_target(self):
         # 2.6.9 is published but above the target, so it is not what an
         # operator upgrading to 2.6.7 could be coming from.
