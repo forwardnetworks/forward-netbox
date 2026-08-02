@@ -1356,6 +1356,40 @@ def _add_destination_fk_release_dependencies(collapsed_changes, change_logger):
             )
 
 
+def protecting_relations(model_class):
+    """Every PROTECT/RESTRICT relation pointing at this model, hidden included.
+
+    `_meta.related_objects` omits relations declared with ``related_name="+"``,
+    and Django calls those hidden. Reading protection from it therefore misses
+    exactly the relations this plugin uses for ownership evidence:
+    `ForwardIngestionProvenanceMixin` declares its ingestion FK as PROTECT with
+    ``related_name="+"``, so `ForwardDeviceIdentity`, `ForwardDeviceTagClaim`,
+    `ForwardVirtualParentClaim` and `ForwardOwnershipReconciliation` were all
+    invisible to protection checks while still refusing the delete in the
+    database.
+
+    That gap had two customer-visible faces. An ingestion held only by device
+    identities reported no refusal at all, so the delete view rendered its wall
+    of dependent rows and then failed with `ProtectedError` on confirm — every
+    ingestion, since each owns one identity per synced device. And a merge
+    delete blocked by one of these was never predicted, so it was scheduled and
+    failed at apply time, and a failed row blocks baseline promotion.
+
+    Ask for hidden relations explicitly so protection is read from the database
+    truth rather than from what happens to have a reverse accessor.
+    """
+    return [
+        relation
+        for relation in model_class._meta._get_fields(
+            forward=False, reverse=True, include_hidden=True
+        )
+        if getattr(relation, "field", None) is not None
+        and not relation.many_to_many
+        and getattr(relation.field.remote_field, "on_delete", None)
+        in (models.PROTECT, models.RESTRICT)
+    ]
+
+
 def describe_protecting_references(model_class, pk):
     """Which surviving rows still reference this one, as ``[(label, count)]``.
 
@@ -1366,13 +1400,8 @@ def describe_protecting_references(model_class, pk):
     """
     found = []
     try:
-        for relation in model_class._meta.related_objects:
+        for relation in protecting_relations(model_class):
             field = relation.field
-            if getattr(field.remote_field, "on_delete", None) not in (
-                models.PROTECT,
-                models.RESTRICT,
-            ):
-                continue
             count = (
                 relation.related_model.objects.using(DEFAULT_DB_ALIAS)
                 .filter(**{field.name: pk})
@@ -1428,6 +1457,15 @@ def protecting_reference_blocked_deletes(collapsed_changes):
     blocked = defaultdict(list)
     for model_class, deletes_by_pk in delete_pks_by_model.items():
         target_pks = list(deletes_by_pk)
+        # Deliberately the visible relations only, NOT `protecting_relations`.
+        # Widening this to hidden relations makes plugin provenance rows look
+        # like static blockers: `ForwardDeviceIdentity.device` is PROTECT, so an
+        # owned device delete is predicted blocked and skipped — but the identity
+        # is removed in the same atomic merge, so the delete would have
+        # succeeded. Measured: it silently kept a device that should have been
+        # deleted, which is the failure mode this function's docstring calls out
+        # as the worse one. Teaching the predictor which referencing rows this
+        # plugin cleans up in-transaction is a separate change.
         for relation in model_class._meta.related_objects:
             field = relation.field
             on_delete = getattr(field.remote_field, "on_delete", None)
@@ -1689,6 +1727,66 @@ def _add_ip_adoption_dependencies(collapsed_changes, change_logger):
     return added
 
 
+def _add_primary_ip_reassignment_release_dependencies(collapsed_changes, change_logger):
+    """Apply a staged Device primary release before its IP moves away.
+
+    `IPAddress.clean()` checks the destination for a Device which still names
+    the address primary. The safe staging path emits a Device UPDATE that clears
+    that pointer, but the framework has no UPDATE->UPDATE dependency for this
+    reverse relation. The release is a different row from the IP, unlike the
+    LAG/cable case where both fields belonged to the Interface payload.
+    """
+    ip_updates = {
+        collapsed.key[1]: collapsed
+        for collapsed in collapsed_changes.values()
+        if collapsed.final_action == ActionType.UPDATE
+        and collapsed.model_class._meta.label_lower == "ipam.ipaddress"
+    }
+    if not ip_updates:
+        return 0
+
+    candidate_edges = []
+    for device_change in collapsed_changes.values():
+        if (
+            device_change.final_action != ActionType.UPDATE
+            or device_change.model_class._meta.label_lower != "dcim.device"
+        ):
+            continue
+        prechange = device_change.prechange_data or {}
+        postchange = device_change.postchange_data or {}
+        for field_name in ("primary_ip4", "primary_ip6"):
+            released_ip = _serialized_fk_id(prechange.get(field_name))
+            if not released_ip or postchange.get(field_name) is not None:
+                continue
+            ip_change = ip_updates.get(released_ip)
+            if ip_change is None or device_change.key in ip_change.depends_on:
+                continue
+            candidate_edges.append((ip_change.key, device_change.key))
+
+    if not candidate_edges:
+        return 0
+    accepted = _acyclic_delete_edges(
+        collapsed_changes,
+        candidate_edges,
+        change_logger,
+        edge_label="primary-IP-reassignment-release",
+    )
+    added = 0
+    for dependent_key, dependency_key in accepted:
+        dependent = collapsed_changes[dependent_key]
+        if dependency_key in dependent.depends_on:
+            continue
+        dependent.depends_on.add(dependency_key)
+        collapsed_changes[dependency_key].depended_by.add(dependent_key)
+        added += 1
+    if added:
+        change_logger.debug(
+            "Ordered %d Device primary-IP release(s) before IP reassignment.",
+            added,
+        )
+    return added
+
+
 def _order_collapsed_changes_fast(collapsed_changes, change_logger, operation):
     """O((V+E) log V) replacement for ``_order_collapsed_changes``.
 
@@ -1748,6 +1846,7 @@ def _order_collapsed_changes_fast(collapsed_changes, change_logger, operation):
         _add_destination_fk_release_dependencies(to_process, change_logger)
         _add_protected_child_delete_dependencies(to_process, change_logger)
         # UPDATE->UPDATE ordering, which the framework graph has no case for.
+        _add_primary_ip_reassignment_release_dependencies(to_process, change_logger)
         _add_ip_adoption_dependencies(to_process, change_logger)
         squash_dependency_graph_built.send(
             sender=SquashMergeStrategy,

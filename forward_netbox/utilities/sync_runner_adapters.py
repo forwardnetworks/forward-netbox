@@ -37,11 +37,13 @@ from .sync_device import delete_dcim_virtualchassis
 from .sync_dlm import apply_netbox_dlm_cve
 from .sync_dlm import apply_netbox_dlm_devicesoftware
 from .sync_dlm import apply_netbox_dlm_hardwarenotice
+from .sync_dlm import apply_netbox_dlm_inventoryitemsoftware
 from .sync_dlm import apply_netbox_dlm_softwareversion
 from .sync_dlm import apply_netbox_dlm_vulnerability
 from .sync_dlm import delete_netbox_dlm_cve
 from .sync_dlm import delete_netbox_dlm_devicesoftware
 from .sync_dlm import delete_netbox_dlm_hardwarenotice
+from .sync_dlm import delete_netbox_dlm_inventoryitemsoftware
 from .sync_dlm import delete_netbox_dlm_softwareversion
 from .sync_dlm import delete_netbox_dlm_vulnerability
 from .sync_interface import apply_dcim_interface
@@ -956,6 +958,9 @@ class ForwardSyncRunnerAdapterMixin:
     def _apply_netbox_dlm_devicesoftware(self, row):
         return apply_netbox_dlm_devicesoftware(self, row)
 
+    def _apply_netbox_dlm_inventoryitemsoftware(self, row):
+        return apply_netbox_dlm_inventoryitemsoftware(self, row)
+
     def _apply_netbox_dlm_cve(self, row):
         return apply_netbox_dlm_cve(self, row)
 
@@ -970,6 +975,9 @@ class ForwardSyncRunnerAdapterMixin:
 
     def _delete_netbox_dlm_devicesoftware(self, row):
         return delete_netbox_dlm_devicesoftware(self, row)
+
+    def _delete_netbox_dlm_inventoryitemsoftware(self, row):
+        return delete_netbox_dlm_inventoryitemsoftware(self, row)
 
     def _delete_netbox_dlm_cve(self, row):
         return delete_netbox_dlm_cve(self, row)

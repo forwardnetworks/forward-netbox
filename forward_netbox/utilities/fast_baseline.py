@@ -200,7 +200,7 @@ def _runtime_decision():
     expected = {
         "netbox_series": "4.6",
         "branching_series": "1.1",
-        "forward_netbox": "2.6.12",
+        "forward_netbox": "2.7.0",
         # Each optional distribution lists every version validated against this
         # engine, not a single pin. An exact pin meant a customer upgrading one
         # optional plugin silently lost the fast baseline — no error, just a
@@ -208,7 +208,7 @@ def _runtime_decision():
         # tuple stopped matching.
         "optional_plugins": {
             "netbox-cisco-aci": frozenset({"0.4.0"}),
-            "netbox-dlm": frozenset({"0.4.1", "0.5.0"}),
+            "netbox-dlm": frozenset({"0.4.1", "0.5.0", "0.6.0"}),
             "netbox-peering-manager": frozenset({"0.3.0"}),
             "netbox-routing": frozenset({"0.4.3"}),
         },

@@ -5445,6 +5445,20 @@ class IPAdoptionOrderingTest(TestCase):
             at=at,
         )
 
+    def _device_primary_release(self, at):
+        from dcim.models import Device
+
+        from forward_netbox.utilities.bulk_merge import ActionType
+
+        return self._change(
+            ("dcim.device", self.DEVICE_PK),
+            Device,
+            ActionType.UPDATE,
+            prechange={"name": "sw1", "primary_ip4": self.IP_PK},
+            postchange={"name": "sw1", "primary_ip4": None},
+            at=at,
+        )
+
     def _order(self, *changes):
         from forward_netbox.utilities.bulk_merge import (
             _order_collapsed_changes_fast,
@@ -5483,6 +5497,22 @@ class IPAdoptionOrderingTest(TestCase):
             order.index(("ipam.ipaddress", self.IP_PK)),
             order.index(("dcim.device", self.DEVICE_PK)),
         )
+
+    def test_orders_primary_release_before_reassignment_whichever_is_older(self):
+        for device_at, ip_at in ((1, 2), (2, 1)):
+            with self.subTest(device_at=device_at, ip_at=ip_at):
+                release = self._device_primary_release(device_at)
+                ip = self._ip_assignment(ip_at)
+                order, collapsed = self._order(release, ip)
+
+                self.assertLess(
+                    order.index(("dcim.device", self.DEVICE_PK)),
+                    order.index(("ipam.ipaddress", self.IP_PK)),
+                )
+                self.assertIn(
+                    ("dcim.device", self.DEVICE_PK),
+                    collapsed[("ipam.ipaddress", self.IP_PK)].depends_on,
+                )
 
     def test_orders_a_virtual_machine_adoption(self):
         from virtualization.models import VirtualMachine

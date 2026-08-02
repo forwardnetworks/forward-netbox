@@ -240,6 +240,15 @@ class ForwardSingleBranchExecutor(ForwardExecutorBase):
                 warned_models.add(item.model_string)
         total = len(plan)
         context_dict = context.as_dict()
+        # This is deliberately ephemeral. `ForwardQueryContext.as_dict()` is
+        # also used by persisted reporting paths, while this guard needs the
+        # concrete current scope only during branch staging.
+        context_dict["_forward_primary_ip_scope_names"] = frozenset(
+            context.scoped_device_names
+        )
+        context_dict["_forward_primary_ip_scope_restricted"] = bool(
+            context.device_tag_include_tags or context.device_tag_exclude_tags
+        )
         for item in plan:
             run_item_in_branch(
                 self,

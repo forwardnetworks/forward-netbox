@@ -33,21 +33,9 @@ class OwnershipConflictError(RuntimeError):
 # device names. Matching against an allowlist keeps the cause identifiable while
 # persisting only slugs this module defines - the same approach the merge and
 # sync recorders use for non-field validation rules.
-_CONFLICT_REASONS = (
-    ("identity-ambiguous", "forward device identity is ambiguous"),
-    ("identity-evidence-mismatch", "identity evidence does not match merged"),
-    ("source-key-multiple-devices", "maps to multiple live netbox devices"),
-    ("device-already-mapped", "is already mapped to forward source key"),
-)
-
-
-def ownership_conflict_reason(exc) -> str:
-    """A schema-safe slug for why ownership reconciliation refused, or ""."""
-    haystack = str(exc).casefold()
-    for slug, needle in _CONFLICT_REASONS:
-        if needle in haystack:
-            return slug
-    return "unrecognized-ownership-conflict"
+# Defined in diagnostics, which is where every failure path formats through.
+# Re-exported here so existing importers keep working.
+from .diagnostics import ownership_conflict_reason  # noqa: E402,F401
 
 
 def _object_pk(value):

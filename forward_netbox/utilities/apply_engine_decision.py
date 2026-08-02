@@ -65,7 +65,7 @@ COPY_SQL_SUPPORTED_NETBOX_SERIES = "4.6"
 COPY_SQL_SUPPORTED_BRANCHING_SERIES = "1.1"
 COPY_SQL_SUPPORTED_OPTIONAL_DISTRIBUTIONS = {
     "netbox-cisco-aci": frozenset({"0.4.0"}),
-    "netbox-dlm": frozenset({"0.4.1", "0.5.0"}),
+    "netbox-dlm": frozenset({"0.4.1", "0.5.0", "0.6.0"}),
     "netbox-peering-manager": frozenset({"0.3.0"}),
     "netbox-routing": frozenset({"0.4.3"}),
 }
@@ -101,6 +101,16 @@ ADAPTER_MODEL_BLOCKERS = {
         "blocker_reason": (
             "DLM device-software writes require device and software-version "
             "dependency resolution handled by the adapter."
+        ),
+    },
+    "netbox_dlm.inventoryitemsoftware": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": (
+            "DLM inventory-item-software writes require inventory item, "
+            "role-platform mapping and software-version dependency resolution "
+            "handled by the adapter; the plugin validates the software version "
+            "against the platform mapped to the item's role, so the four writes "
+            "have to agree."
         ),
     },
     "netbox_dlm.cve": {

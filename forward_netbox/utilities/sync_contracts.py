@@ -288,6 +288,19 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
         allowed_coalesce_fields=("name",),
         default_coalesce_fields=(("name",),),
     ),
+    "netbox_dlm.inventoryitemsoftware": ModelSyncContract(
+        required_fields=(
+            "device",
+            "inventory_item",
+            "role",
+            "role_slug",
+            "platform",
+            "platform_slug",
+            "version",
+        ),
+        allowed_coalesce_fields=("device", "inventory_item"),
+        default_coalesce_fields=(("device", "inventory_item"),),
+    ),
     "netbox_dlm.cve": ModelSyncContract(
         required_fields=("cve_id",),
         allowed_coalesce_fields=("cve_id",),

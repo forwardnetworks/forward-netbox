@@ -2113,10 +2113,14 @@ class ForwardIngestionIssuesView(generic.ObjectChildrenView):
 def _ingestion_delete_refusal(ingestion) -> str:
     """Why the database will refuse this delete, or "" when it will not.
 
-    Most relations to an ingestion cascade, but `ForwardContributorBaseline` is
-    PROTECT: a baseline is durable convergence evidence, and dropping the
-    ingestion that produced it would strand it. Reporting that up front turns an
-    unhandled `ProtectedError` into something an operator can act on.
+    Five relations to an ingestion are PROTECT, not one. `ForwardContributorBaseline`
+    holds durable convergence evidence, and the four ownership models carried by
+    `ForwardIngestionProvenanceMixin` hold identity and claim evidence. This
+    docstring previously named only the baseline, and the check behind it could
+    only see the baseline, because the other four declare ``related_name="+"``
+    and Django hides those from `_meta.related_objects` — see
+    `protecting_relations`. Reporting all of them up front turns an unhandled
+    `ProtectedError` into something an operator can act on.
     """
     return _ingestion_delete_refusal_detail(ingestion)[0]
 

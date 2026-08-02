@@ -23,7 +23,11 @@ class OptionalPluginIntegration:
     command_inventory: tuple[dict, ...] = ()
     package_name: str = ""
     adapter_module: str = ""
+    # Keep the original scalar for API and support-bundle compatibility.  An
+    # integration can opt into an explicit allowlist without changing the
+    # exact-version behavior of integrations that leave this empty.
     required_package_version: str = ""
+    supported_package_versions: tuple[str, ...] = ()
     enabled_by_default: bool = False
     status: str = "supported"
     notes: tuple[str, ...] = field(default_factory=tuple)
@@ -196,6 +200,11 @@ DLM_INTEGRATION = OptionalPluginIntegration(
         "netbox_dlm.softwareversion",
         "netbox_dlm.hardwarenotice",
         "netbox_dlm.devicesoftware",
+        "netbox_dlm.inventoryitemsoftware",
+        # InventoryItemRolePlatform is deliberately absent: every supported
+        # model needs a sync contract, and this one has no query map. The
+        # software adapter maintains it as a dependency, the same way it
+        # maintains the Platform it points at.
         "netbox_dlm.cve",
         "netbox_dlm.vulnerability",
     ),
@@ -204,12 +213,14 @@ DLM_INTEGRATION = OptionalPluginIntegration(
         "Forward DLM Hardware Notices",
         "Forward DLM Hardware Notices with NetBox Aliases",
         "Forward DLM Device Software",
+        "Forward CIMC Inventory Item Software",
         "Forward DLM CVEs",
         "Forward DLM Vulnerabilities",
     ),
     package_name="netbox-dlm",
     adapter_module="forward_netbox.utilities.sync_dlm",
-    required_package_version="0.4.1",
+    required_package_version="0.6.0",
+    supported_package_versions=("0.4.1", "0.5.0", "0.6.0"),
     enabled_by_default=False,
     status="supported",
     notes=(
@@ -281,7 +292,7 @@ def _integration_capability_summary(integration: OptionalPluginIntegration):
         package_metadata_available=installed_version is not None,
         version_matches=_version_matches(
             installed_version,
-            integration.required_package_version,
+            _supported_versions(integration),
         ),
     )
     return {
@@ -293,14 +304,15 @@ def _integration_capability_summary(integration: OptionalPluginIntegration):
         "availability_reason": _integration_availability_reason(
             availability_status,
             integration.package_name,
-            integration.required_package_version,
+            _supported_versions(integration),
         ),
         "package_name": integration.package_name,
         "version": installed_version,
         "required_version": integration.required_package_version,
+        "supported_versions": list(_supported_versions(integration)),
         "version_matches": _version_matches(
             installed_version,
-            integration.required_package_version,
+            _supported_versions(integration),
         ),
         "required_model_count": len(integration.required_models),
         "supported_model_count": len(integration.supported_models),
@@ -405,14 +417,28 @@ def _integration_package_version(package_name: str) -> str | None:
         return None
 
 
+def _supported_versions(integration: OptionalPluginIntegration) -> tuple[str, ...]:
+    return integration.supported_package_versions or (
+        integration.required_package_version,
+    )
+
+
 def _version_matches(
     installed_version: str | None,
-    required_version: str,
+    required_versions: str | tuple[str, ...],
 ) -> bool:
-    if not installed_version or not required_version:
+    if not installed_version or not required_versions:
         return False
     try:
-        return Version(installed_version) == Version(required_version)
+        installed = Version(installed_version)
+        versions = (
+            (required_versions,)
+            if isinstance(required_versions, str)
+            else required_versions
+        )
+        return any(
+            installed == Version(required_version) for required_version in versions
+        )
     except InvalidVersion:
         return False
 
@@ -438,7 +464,7 @@ def _integration_availability_status(
 def _integration_availability_reason(
     availability_status: str,
     package_name: str,
-    required_version: str,
+    required_versions: str | tuple[str, ...],
 ) -> str:
     if availability_status == "not_installed":
         return "Target plugin app is not installed."
@@ -447,7 +473,16 @@ def _integration_availability_reason(
     if availability_status == "package_metadata_unavailable":
         return f"Canonical package metadata is unavailable for {package_name}."
     if availability_status == "unsupported_version":
-        return f"Installed plugin version must equal {required_version}."
+        versions = (
+            (required_versions,)
+            if isinstance(required_versions, str)
+            else required_versions
+        )
+        if len(versions) == 1:
+            return f"Installed plugin version must equal {versions[0]}."
+        return (
+            "Installed plugin version must equal one of: " + ", ".join(versions) + "."
+        )
     return "Plugin capability is available."
 
 

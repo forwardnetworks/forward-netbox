@@ -589,6 +589,12 @@ def apply_ipam_ipaddress(runner, row):
             existing.assigned_object_id = interface.pk
             update_fields.append("assigned_object_id")
         if update_fields:
+            for previous_owner, primary_fields in release_owned_primary_ip_claims(
+                runner,
+                existing,
+                destination_device_id=device.pk,
+            ):
+                previous_owner.save(update_fields=primary_fields)
             existing.save(update_fields=update_fields)
         return True
     runner._upsert_values_from_defaults(
@@ -606,3 +612,69 @@ def apply_ipam_ipaddress(runner, row):
             [("address", "vrf")],
         ),
     )
+
+
+def release_owned_primary_ip_claims(runner, ip_address, *, destination_device_id):
+    """Stage safe releases of primary pointers blocking an IP reassignment.
+
+    The pointer belongs to a Device, not the IPAddress, so it has to be its own
+    branch-native update. An exact-sync identity proves the holder is managed;
+    a tag-scoped run additionally requires current scope membership. Missing
+    runner scope is deliberately fail-closed.
+
+    Returns ``[(device, update_fields), ...]`` with snapshotted, mutated branch
+    objects. The adapter persists them; the bulk path writes them in its batch.
+    """
+    from dcim.models import Device
+    from django.db.models import Q
+    from netbox_branching.contextvars import active_branch
+
+    from ..models import ForwardDeviceIdentity
+
+    if active_branch.get() is None or getattr(ip_address, "pk", None) is None:
+        return []
+    scope_names = getattr(runner, "_primary_ip_reassignment_scope_names", None)
+    if scope_names is None:
+        return []
+    scope_restricted = bool(
+        getattr(runner, "_primary_ip_reassignment_scope_restricted", True)
+    )
+    if scope_restricted and not scope_names:
+        return []
+
+    holders = Device.objects.filter(
+        Q(primary_ip4_id=ip_address.pk) | Q(primary_ip6_id=ip_address.pk)
+    ).exclude(pk=destination_device_id)
+    if scope_restricted:
+        holders = holders.filter(name__in=scope_names)
+    holder_ids = list(holders.values_list("pk", flat=True))
+    if not holder_ids:
+        return []
+    # Identity provenance is control-plane evidence in main. A branch only
+    # contains the snapshot it was provisioned from; querying it through the
+    # active branch can therefore miss an identity finalized after provision
+    # and incorrectly suppress a safe, in-scope release. Keep the holder
+    # lookup/mutation branch-native, but read ownership proof from main.
+    owned_ids = set(
+        ForwardDeviceIdentity.objects.using("default")
+        .filter(
+            sync=runner.sync,
+            device_id__in=holder_ids,
+        )
+        .values_list("device_id", flat=True)
+    )
+    if not owned_ids:
+        return []
+
+    releases = []
+    for holder in holders.filter(pk__in=owned_ids):
+        update_fields = []
+        for attr in ("primary_ip4", "primary_ip6"):
+            if getattr(holder, f"{attr}_id") == ip_address.pk:
+                if not update_fields:
+                    holder.snapshot()
+                setattr(holder, attr, None)
+                update_fields.append(attr)
+        if update_fields:
+            releases.append((holder, update_fields))
+    return releases

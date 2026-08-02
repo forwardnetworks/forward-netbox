@@ -224,6 +224,110 @@ def apply_netbox_dlm_devicesoftware(runner, row):
     return device_software
 
 
+def _lookup_inventory_item(runner, row):
+    from dcim.models import InventoryItem
+
+    device_name = str(row.get("device") or "").strip()
+    item_name = str(row.get("inventory_item") or "").strip()
+    try:
+        device = runner._get_device_by_name(device_name)
+    except ObjectDoesNotExist as exc:
+        raise ForwardDependencySkipError(
+            "Skipping DLM inventory item software because its device is not "
+            "in the current NetBox branch.",
+            model_string="netbox_dlm.inventoryitemsoftware",
+            context={"dependency": "dcim.inventoryitem"},
+            data=row,
+        ) from exc
+    inventory_item = runner._get_unique_or_raise(
+        InventoryItem, {"device": device, "name": item_name}
+    )
+    if inventory_item is None:
+        raise ForwardDependencySkipError(
+            "Skipping DLM inventory item software because the target inventory "
+            "item is not in the current NetBox branch. Enable Forward CIMC "
+            "Endpoint Inventory alongside this map.",
+            model_string="netbox_dlm.inventoryitemsoftware",
+            context={"dependency": "dcim.inventoryitem"},
+            data=row,
+        )
+    return inventory_item
+
+
+def ensure_dlm_inventory_item_role_platform(runner, inventory_item, row):
+    """Ensure the role-wide platform mapping required by InventoryItemSoftware."""
+    role = inventory_item.role
+    if role is None:
+        raise ForwardDependencySkipError(
+            "Skipping DLM inventory item software because the target inventory "
+            "item has no role.",
+            model_string="netbox_dlm.inventoryitemsoftware",
+            context={"dependency": "dcim.inventoryitemrole"},
+            data=row,
+        )
+    cache_key = (role.pk, str(row.get("platform_slug") or "").strip())
+    cache = getattr(runner, "_dlm_inventory_item_role_platform_cache", None)
+    if not isinstance(cache, dict):
+        cache = runner._dlm_inventory_item_role_platform_cache = {}
+    if cache_key in cache:
+        return cache[cache_key]
+
+    platform = runner._ensure_platform(
+        {"name": row["platform"], "slug": row["platform_slug"]}
+    )
+    InventoryItemRolePlatform = _dlm_model(
+        runner,
+        "InventoryItemRolePlatform",
+        "netbox_dlm.inventoryitemroleplatform",
+    )
+    mapping, _ = runner._upsert_values_from_defaults(
+        "netbox_dlm.inventoryitemroleplatform",
+        InventoryItemRolePlatform,
+        values=runner._model_field_values(
+            InventoryItemRolePlatform,
+            {"role": role, "platform": platform},
+        ),
+        coalesce_sets=[("role",)],
+    )
+    cache[cache_key] = (platform, mapping)
+    return cache[cache_key]
+
+
+def apply_netbox_dlm_inventoryitemsoftware(runner, row):
+    InventoryItemSoftware = _dlm_model(
+        runner, "InventoryItemSoftware", "netbox_dlm.inventoryitemsoftware"
+    )
+    # Resolve the opt-in parent first: disabled CIMC endpoint inventory must
+    # count as a dependency skip, not create an unattached DLM catalogue row.
+    inventory_item = _lookup_inventory_item(runner, row)
+    platform, _ = ensure_dlm_inventory_item_role_platform(runner, inventory_item, row)
+    software_version = ensure_dlm_software_version(
+        runner,
+        {**row, "platform": platform.name, "platform_slug": platform.slug},
+        with_dates=False,
+    )
+    inventory_item_software, _ = runner._upsert_values_from_defaults(
+        "netbox_dlm.inventoryitemsoftware",
+        InventoryItemSoftware,
+        values=runner._model_field_values(
+            InventoryItemSoftware,
+            {
+                "inventory_item": inventory_item,
+                "software_version": software_version,
+            },
+        ),
+        coalesce_sets=[("inventory_item",)],
+    )
+    return inventory_item_software
+
+
+def apply_netbox_dlm_inventoryitemroleplatform(runner, row):
+    """The mapping is an atomic side effect of InventoryItemSoftware rows."""
+    inventory_item = _lookup_inventory_item(runner, row)
+    _, mapping = ensure_dlm_inventory_item_role_platform(runner, inventory_item, row)
+    return mapping
+
+
 def ensure_dlm_cve(runner, row):
     """Create-if-missing CVE by unique cve_id. update_values is empty so this
     never clobbers the rich catalog row the cve map applies first (matches the
@@ -327,6 +431,26 @@ def delete_netbox_dlm_devicesoftware(runner, row):
     if device is None:
         return False
     return runner._delete_by_coalesce(DeviceSoftware, [{"device": device}])
+
+
+def delete_netbox_dlm_inventoryitemsoftware(runner, row):
+    InventoryItemSoftware = _dlm_model(
+        runner, "InventoryItemSoftware", "netbox_dlm.inventoryitemsoftware"
+    )
+    try:
+        inventory_item = _lookup_inventory_item(runner, row)
+    except ForwardDependencySkipError:
+        return False
+    return runner._delete_by_coalesce(
+        InventoryItemSoftware, [{"inventory_item": inventory_item}]
+    )
+
+
+def delete_netbox_dlm_inventoryitemroleplatform(runner, row):
+    # No query targets this side-effect model, so source deletion never owns
+    # the role-wide mapping. Keeping it prevents one item disappearing from
+    # removing the platform contract required by other items of that role.
+    return False
 
 
 def delete_netbox_dlm_cve(runner, row):

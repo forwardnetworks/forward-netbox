@@ -115,6 +115,14 @@ def run_item_in_branch(executor, item, context, ingestion, branch, *, total_plan
     runner._scope_matched_tags = {
         str(k): list(v) for k, v in (context.get("scoped_matched_tags") or {}).items()
     }
+    # Device names are customer data, so keep this resolved scope only on the
+    # short-lived runner; do not copy it into persisted execution evidence.
+    runner._primary_ip_reassignment_scope_names = context.get(
+        "_forward_primary_ip_scope_names"
+    )
+    runner._primary_ip_reassignment_scope_restricted = bool(
+        context.get("_forward_primary_ip_scope_restricted")
+    )
     ingestion.snapshot_selector = context["snapshot_selector"]
     ingestion.snapshot_id = context["snapshot_id"]
     ingestion.snapshot_info = context["snapshot_info"]
@@ -197,6 +205,12 @@ def run_item_direct_to_main(executor, item, context, ingestion, *, total_plan_it
     runner._scope_matched_tags = {
         str(k): list(v) for k, v in (context.get("scoped_matched_tags") or {}).items()
     }
+    runner._primary_ip_reassignment_scope_names = context.get(
+        "_forward_primary_ip_scope_names"
+    )
+    runner._primary_ip_reassignment_scope_restricted = bool(
+        context.get("_forward_primary_ip_scope_restricted")
+    )
     ingestion.sync_mode = item.sync_mode
     ingestion.model_results = [
         plan_item_model_result(item, context, total_plan_items=total_plan_items)

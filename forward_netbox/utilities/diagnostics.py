@@ -23,9 +23,42 @@ def exception_type(exc) -> str:
     return exc.__class__.__name__
 
 
+# An OwnershipConflictError is raised bare from eight call sites and its
+# message is stripped before anything persists it, so every job record and UI
+# error read "failed (OwnershipConflictError)" and nothing more - identical
+# whatever refused the reconciliation. The messages embed source device keys,
+# which are device names, so the message itself cannot be persisted: an
+# allowlist maps it to a slug this module defines, and an unmatched message
+# records that it was unrecognised rather than falling silent.
+#
+# This lives here, in the one function every failure path formats through,
+# rather than at a call site. The first attempt enriched a single job's error
+# path; the job a customer actually hit was a different one that formats the
+# same sentence, so the fix appeared to work and changed nothing they saw.
+_OWNERSHIP_CONFLICT_EXCEPTION = "OwnershipConflictError"
+_OWNERSHIP_CONFLICT_REASONS = (
+    ("identity-ambiguous", "forward device identity is ambiguous"),
+    ("identity-evidence-mismatch", "identity evidence does not match merged"),
+    ("source-key-multiple-devices", "maps to multiple live netbox devices"),
+    ("device-already-mapped", "is already mapped to forward source key"),
+)
+
+
+def ownership_conflict_reason(exc) -> str:
+    """A schema-safe slug for why ownership reconciliation refused."""
+    haystack = str(exc).casefold()
+    for slug, needle in _OWNERSHIP_CONFLICT_REASONS:
+        if needle in haystack:
+            return slug
+    return "unrecognized-ownership-conflict"
+
+
 def safe_operation_failure(operation: str, exc) -> str:
     """Return an operator-safe failure message with a stable classifier."""
-    return f"{operation} failed ({exception_type(exc)})."
+    classifier = exception_type(exc)
+    if classifier == _OWNERSHIP_CONFLICT_EXCEPTION:
+        return f"{operation} failed ({classifier}: {ownership_conflict_reason(exc)})."
+    return f"{operation} failed ({classifier})."
 
 
 def diff_fallback_summary(model_results) -> list[dict]:

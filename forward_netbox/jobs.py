@@ -922,13 +922,15 @@ def _reconcile_forward_device_scope_tags_work(job, *args, **kwargs):
         )
         # Record the failure on the job so it is visible in the UI (the Data
         # panel) instead of an empty Error field with null data.
-        job.data = _overlay_job_data(
-            {
-                "error": safe_operation_failure("Forward scope reconciliation", exc),
-                "error_type": exception_type(exc),
-            },
-            kwargs,
-        )
+        overlay_error = {
+            "error": safe_operation_failure("Forward scope reconciliation", exc),
+            "error_type": exception_type(exc),
+        }
+        if type(exc).__name__ == "OwnershipConflictError":
+            from .utilities.diagnostics import ownership_conflict_reason
+
+            overlay_error["conflict_reason"] = ownership_conflict_reason(exc)
+        job.data = _overlay_job_data(overlay_error, kwargs)
         job.save(update_fields=["data"])
         if type(exc) in (SyncError, JobTimeoutException):
             logger.error(
@@ -1087,14 +1089,10 @@ def _scope_reconciliation_work(job):
             "error_type": exception_type(exc),
             "forward_api_usage": record_forward_api_usage(sync, client),
         }
-        # Eight causes raise OwnershipConflictError bare, and the message is
-        # stripped before it lands here - so the job record named the class and
-        # nothing else. The slug is ours; the source device keys in the original
-        # message are customer data and stay out.
+        # safe_operation_failure already names the refusing rule in the
+        # message; record it as a field too so it can be filtered on.
         if isinstance(exc, OwnershipConflictError):
-            reason = ownership_conflict_reason(exc)
-            data["conflict_reason"] = reason
-            message = f"{message[:-1]} ({reason})."
+            data["conflict_reason"] = ownership_conflict_reason(exc)
         data["error"] = message
         job.data = data
         job.save(update_fields=["data"])

@@ -4,6 +4,7 @@
 # against a device whose Vlan211 interface carries an IP, and proves the resolved
 # primary_ip4 stages in the branch and merges into main.
 import logging
+import uuid
 from unittest.mock import Mock
 
 from dcim.models import Device
@@ -18,12 +19,19 @@ from django.test import RequestFactory
 from django.test import TransactionTestCase
 from django.urls import reverse
 from ipam.models import IPAddress
+from netbox.context import current_request
+from netbox.context_managers import event_tracking
 from netbox_branching.models import Branch
 from netbox_branching.utilities import activate_branch
 
+from forward_netbox.models import ForwardDeviceIdentity
+from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
+from forward_netbox.utilities.apply_engine_bulk import bulk_orm_apply_ipaddress
+from forward_netbox.utilities.merge import merge_branch
 from forward_netbox.utilities.primary_ip import apply_primary_ip_from_mgmt_tags
+from forward_netbox.utilities.sync import ForwardSyncRunner
 
 
 def provision_branch(*, user, name="Primary IP Branch"):
@@ -88,6 +96,73 @@ class PrimaryIpFromMgmtTagIntegrationTest(TransactionTestCase):
             logger=Mock(),
         )
 
+    def _target_device(self):
+        return Device.objects.create(
+            name="target-device",
+            device_type=self.device.device_type,
+            role=self.device.role,
+            site=self.device.site,
+            status="active",
+        )
+
+    def _reassignment_branch(self, *, name):
+        """Provision from the primary-pointer state the merge must resolve.
+
+        A Branch is a snapshot: setting the source pointer after provisioning
+        makes the branch correctly show its old ``None`` value, which cannot
+        exercise either the scope guard or the release-before-reassignment
+        dependency.
+        """
+        self.device.primary_ip4 = self.ip
+        self.device.save(update_fields=["primary_ip4"])
+        target = self._target_device()
+        target_interface = Interface.objects.create(
+            device=target, name="Loopback0", type="virtual"
+        )
+        return provision_branch(user=self.user, name=name), target, target_interface
+
+    def _stage_reassignment(
+        self, branch, target, target_interface, *, scope_names, owned_previous=True
+    ):
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector="latestProcessed",
+            snapshot_id="snapshot",
+            branch=branch,
+        )
+        if owned_previous:
+            ForwardDeviceIdentity.objects.create(
+                sync=self.sync,
+                ingestion=ingestion,
+                source_device_key=self.device.name,
+                device=self.device,
+                snapshot_id="snapshot",
+            )
+        runner = ForwardSyncRunner(self.sync, ingestion, None, Mock())
+        runner._primary_ip_reassignment_scope_names = frozenset(scope_names)
+        runner._primary_ip_reassignment_scope_restricted = True
+        token = current_request.set(self.request)
+        try:
+            with activate_branch(branch), event_tracking(self.request):
+                self.request.id = uuid.uuid4()
+                self.assertTrue(
+                    bulk_orm_apply_ipaddress(
+                        runner,
+                        [
+                            {
+                                "device": target.name,
+                                "interface": target_interface.name,
+                                "address": str(self.ip.address),
+                                "status": self.ip.status,
+                                "vrf": None,
+                            }
+                        ],
+                    )
+                )
+        finally:
+            current_request.reset(token)
+        return ingestion, target, target_interface
+
     def test_sets_primary_ip_and_merges_into_main(self):
         # Device starts with no primary IP.
         self.assertIsNone(self.device.primary_ip4_id)
@@ -132,3 +207,45 @@ class PrimaryIpFromMgmtTagIntegrationTest(TransactionTestCase):
         self.assertEqual(updated, 0)
         self.device.refresh_from_db()
         self.assertIsNone(self.device.primary_ip4_id)
+
+    def test_owned_in_scope_primary_release_merges_before_ip_reassignment(self):
+        branch, target, target_interface = self._reassignment_branch(
+            name="Primary IP Reassignment"
+        )
+        ingestion, _target, target_interface = self._stage_reassignment(
+            branch,
+            target,
+            target_interface,
+            scope_names={self.device.name, "target-device"},
+        )
+
+        with activate_branch(branch):
+            self.assertIsNone(Device.objects.get(pk=self.device.pk).primary_ip4_id)
+            self.assertEqual(
+                IPAddress.objects.get(pk=self.ip.pk).assigned_object_id,
+                target_interface.pk,
+            )
+
+        merge_branch(ingestion, user=self.user)
+
+        self.device.refresh_from_db()
+        self.ip.refresh_from_db()
+        self.assertIsNone(self.device.primary_ip4_id)
+        self.assertEqual(self.ip.assigned_object_id, target_interface.pk)
+
+    def test_out_of_scope_primary_owner_is_not_released(self):
+        branch, target, target_interface = self._reassignment_branch(
+            name="Primary IP Out Of Scope"
+        )
+        _ingestion, _target, _target_interface = self._stage_reassignment(
+            branch,
+            target,
+            target_interface,
+            scope_names={"target-device"},
+        )
+
+        with activate_branch(branch):
+            self.assertEqual(
+                Device.objects.get(pk=self.device.pk).primary_ip4_id,
+                self.ip.pk,
+            )
