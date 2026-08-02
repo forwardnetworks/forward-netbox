@@ -806,6 +806,63 @@ def stage_finish(version: str) -> None:
             "tagged release workflow did not publish identical PyPI and GitHub "
             f"artifacts (conclusion={conclusion!r})"
         )
+    stage_post_release(version, tag)
+
+
+def _next_patch_version(version: str) -> str:
+    major, minor, patch = (int(part) for part in version.split("."))
+    return f"{major}.{minor}.{patch + 1}"
+
+
+def stage_post_release(version: str, tag: str) -> None:
+    """Open the branch that closes out a shipped release.
+
+    Three steps follow a release. Only one of them was ever automated, and all
+    three have been skipped at least once:
+
+    * promote the shipped release in the compatibility table - `stage_finish`
+      already does this before the tag;
+    * move `main` onto the next `.dev0`, so an install from `main` is not
+      indistinguishable from the published release. A customer hit exactly that;
+    * advance `PRIOR_RELEASE_TAG` and `PRIOR_POST_RELEASE_DOC_COMMIT`, which no
+      part of this script has ever done. A stale anchor grows the reviewed
+      commit range until GitHub expires a run and burns a release at the tag,
+      which is what happened to `v2.6.10`.
+
+    This opens the `.dev0` bump as a pull request. The anchor cannot be advanced
+    in the same commit: `PRIOR_POST_RELEASE_DOC_COMMIT` must equal the first
+    first-parent commit *after* the tag, and squash-merging mints that commit's
+    hash only when the pull request lands. So this prints the exact follow-up
+    rather than guessing a hash that does not exist yet.
+
+    Forgetting the follow-up is no longer silent:
+    `_check_release_anchor_tracks_current_release` fails the harness while the
+    anchor disagrees with the release the table calls current.
+    """
+    next_version = _next_patch_version(version)
+    branch = f"release/{next_version}-post-release"
+    print(f"[post-release] opening {branch} for v{version}")
+
+    run(["git", "fetch", "origin", "main"])
+    run(["git", "checkout", "-B", branch, "origin/main"])
+    stage_open_next(next_version, write=True)
+    run(["git", "add", "-A"])
+    run(["git", "commit", "-m", f"release: open {next_version} on main"])
+    run([sys.executable, "scripts/check_harness.py", "--base", "origin/main"])
+    run(["git", "push", "--no-verify", "-u", "origin", branch])
+
+    print(
+        "\n[post-release] merge that pull request, then advance the anchor:\n"
+        "\n"
+        f"    git fetch origin main\n"
+        f"    BRIDGE=$(git rev-list --first-parent {tag}..origin/main | tail -1)\n"
+        f"    # in scripts/verify_release_provenance.py set:\n"
+        f'    #   PRIOR_RELEASE_TAG = "{tag}"\n'
+        f'    #   PRIOR_POST_RELEASE_DOC_COMMIT = "$BRIDGE"\n'
+        "\n"
+        "The harness fails until that lands, so this cannot be forgotten "
+        "quietly - only deferred.\n"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
