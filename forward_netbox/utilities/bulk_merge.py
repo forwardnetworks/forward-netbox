@@ -64,6 +64,34 @@ BULK_MERGE_INPUT_CHUNK_SIZE = 2000
 RELATIONSHIP_LOCK_RETRY_ATTEMPTS = 20
 RELATIONSHIP_LOCK_RETRY_MAX_DELAY_SECONDS = 0.5
 
+# Protecting rows absent from Branching's collapsed changes are blockers unless
+# this plugin resolves the reference itself. Keep this list deliberately narrow.
+#
+# The one entry holds because `ForwardDeviceIdentity` rows live in main rather
+# than in the branch: `delete_dcim_device` collects the branch-local cascade
+# with that model in `ignored_related_models`, so the branch delete is not
+# refused by a row the branch cannot see, and the orphaned identity is removed
+# afterwards by `finalize_device_identities_locked` during post-merge
+# bookkeeping. It is resolved by that split, not by a deletion ordered ahead of
+# the device delete.
+#
+# Peer-sync identities, tag claims, virtual-parent claims and every other hidden
+# relation have no such path and must remain blockers.
+#
+# Each tuple is (protected target label, referencing model label, FK field).
+# Adding an entry requires a real production path that makes the reference stop
+# protecting the target by the time the delete applies, plus regression coverage
+# for both the exemption and a surviving row of the same model.
+MERGE_RESOLVED_PROTECTING_RELATIONS = frozenset(
+    {
+        (
+            "dcim.device",
+            "forward_netbox.forwarddeviceidentity",
+            "device",
+        ),
+    }
+)
+
 # NetBox serializes these read-only relationship summaries into ObjectChange
 # payloads. They can legitimately change when a later branch-owned child row is
 # applied, so they are not scalar provenance. The child objects retain their own
@@ -1237,7 +1265,12 @@ def _skip_updates_missing_in_main_batched(collapsed_changes, change_logger):
             )
 
 
-def _skip_protecting_reference_blocked_deletes(collapsed_changes, change_logger):
+def _skip_protecting_reference_blocked_deletes(
+    collapsed_changes,
+    change_logger,
+    *,
+    merge_sync_id=None,
+):
     """Skip deletes the database will refuse, instead of failing them at apply.
 
     `protecting_reference_blocked_deletes` identifies a delete whose PROTECT or
@@ -1247,12 +1280,13 @@ def _skip_protecting_reference_blocked_deletes(collapsed_changes, change_logger)
     So one operator-owned object the plugin does not manage could wedge an
     entire sync's convergence bookkeeping indefinitely.
 
-    The plugin cannot resolve these itself. The three PROTECT references into
-    `dcim.Device` are `dcim.VirtualChassis.master`,
-    `dcim.VirtualDeviceContext.device` and `virtualization.VirtualMachine.device`,
-    and only virtualchassis is a synced model — the other two are operator data.
-    Deleting them to clear the path would destroy records the operator owns, and
-    the sync has no mandate for that.
+    The plugin cannot resolve most of these itself. The one explicit exception
+    is the current sync's `ForwardDeviceIdentity.device` reference, which the
+    branch delete does not see and post-merge bookkeeping clears - see
+    `MERGE_RESOLVED_PROTECTING_RELATIONS` for why that holds. Peer-sync
+    identities and other hidden references remain protected operator or
+    ownership data; deleting them merely to clear the path would exceed the
+    sync's mandate.
 
     So report and skip: the delete intent stays exact and visible as an issue,
     the row stays in drift where an operator can act on it, and the merge is not
@@ -1261,7 +1295,10 @@ def _skip_protecting_reference_blocked_deletes(collapsed_changes, change_logger)
 
     Returns the skipped keys mapped to what holds them.
     """
-    blocked = protecting_reference_blocked_deletes(collapsed_changes)
+    blocked = protecting_reference_blocked_deletes(
+        collapsed_changes,
+        merge_sync_id=merge_sync_id,
+    )
     if not blocked:
         return {}
     for key, references in blocked.items():
@@ -1416,7 +1453,7 @@ def describe_protecting_references(model_class, pk):
     return sorted(found)
 
 
-def protecting_reference_blocked_deletes(collapsed_changes):
+def protecting_reference_blocked_deletes(collapsed_changes, *, merge_sync_id=None):
     """Deletes that a surviving PROTECT/RESTRICT reference would reject.
 
     Delete protection is otherwise plugin-ownership based, so a row that the
@@ -1425,7 +1462,7 @@ def protecting_reference_blocked_deletes(collapsed_changes):
     how a device kept two BGP peers and never converged.
 
     A reference only blocks when the referencing row is **not changing at all**
-    in this run. Two ways it can be changing, and both resolve the block:
+    in this run. Three ways it can be changing, and all resolve the block:
 
     * it is deleted here — ordering puts the child before the parent
       (`_add_protected_child_delete_dependencies`);
@@ -1436,6 +1473,12 @@ def protecting_reference_blocked_deletes(collapsed_changes):
       protects. Treating an updated referrer as blocking would skip a delete
       that in fact succeeds — which is how the DLM protected-version delete,
       the exact case that release-ordering exists for, regressed.
+    * it matches an exact entry in `MERGE_RESOLVED_PROTECTING_RELATIONS` and is
+      scoped to the sync performing this merge. These plugin-owned rows do not
+      appear in `collapsed_changes`; they live in main rather than the branch,
+      so the branch delete never sees them, and post-merge bookkeeping clears
+      the orphan. No sync context means no exemption, so standalone callers
+      fail closed.
 
     Erring this way is deliberate: wrongly skipping loses a real delete
     silently, while wrongly allowing one just restores the pre-existing
@@ -1457,33 +1500,39 @@ def protecting_reference_blocked_deletes(collapsed_changes):
     blocked = defaultdict(list)
     for model_class, deletes_by_pk in delete_pks_by_model.items():
         target_pks = list(deletes_by_pk)
-        # Deliberately the visible relations only, NOT `protecting_relations`.
-        # Widening this to hidden relations makes plugin provenance rows look
-        # like static blockers: `ForwardDeviceIdentity.device` is PROTECT, so an
-        # owned device delete is predicted blocked and skipped — but the identity
-        # is removed in the same atomic merge, so the delete would have
-        # succeeded. Measured: it silently kept a device that should have been
-        # deleted, which is the failure mode this function's docstring calls out
-        # as the worse one. Teaching the predictor which referencing rows this
-        # plugin cleans up in-transaction is a separate change.
-        for relation in model_class._meta.related_objects:
+        for relation in protecting_relations(model_class):
             field = relation.field
-            on_delete = getattr(field.remote_field, "on_delete", None)
-            if on_delete not in (models.PROTECT, models.RESTRICT):
-                continue
             referencing_model = relation.related_model
             changing = changing_pks_by_model.get(referencing_model, set())
+            relation_signature = (
+                model_class._meta.label_lower,
+                referencing_model._meta.label_lower,
+                field.name,
+            )
+            resolves_current_sync = bool(
+                merge_sync_id is not None
+                and relation_signature in MERGE_RESOLVED_PROTECTING_RELATIONS
+            )
             counts = defaultdict(int)
             for offset in range(0, len(target_pks), BULK_MERGE_FLUSH_THRESHOLD):
                 chunk = target_pks[offset : offset + BULK_MERGE_FLUSH_THRESHOLD]
+                value_fields = ["pk", field.attname]
+                if resolves_current_sync:
+                    value_fields.append("sync_id")
                 rows = (
                     referencing_model.objects.using(DEFAULT_DB_ALIAS)
                     .filter(**{f"{field.name}__in": chunk})
-                    .values_list("pk", field.attname)
+                    .values_list(*value_fields)
                 )
-                for referencing_pk, target_pk in rows:
+                for row in rows:
+                    referencing_pk, target_pk = row[:2]
                     if referencing_pk in changing:
                         # Deleted or updated in this run; ordering handles it.
+                        continue
+                    if resolves_current_sync and row[2] == merge_sync_id:
+                        # This exact current-sync identity lives in main, is
+                        # excluded from the branch delete's cascade, and is
+                        # cleared by post-merge bookkeeping.
                         continue
                     counts[target_pk] += 1
             for target_pk, count in counts.items():
@@ -1927,6 +1976,7 @@ def bulk_merge_changes(
     record_failed=None,
     result_metadata=None,
     set_based_decision=None,
+    merge_sync_id=None,
 ):
     """Merge branch changes into main regardless of caller branch context."""
     with deactivate_branch():
@@ -1941,6 +1991,7 @@ def bulk_merge_changes(
             record_failed=record_failed,
             result_metadata=result_metadata,
             set_based_decision=set_based_decision,
+            merge_sync_id=merge_sync_id,
         )
 
 
@@ -1956,6 +2007,7 @@ def _bulk_merge_changes_main(
     record_failed=None,
     result_metadata=None,
     set_based_decision=None,
+    merge_sync_id=None,
 ):
     """Merge ``changes`` (a branch's unmerged ObjectChanges) into main.
 
@@ -1995,7 +2047,9 @@ def _bulk_merge_changes_main(
         "skip_protected_blocked_deletes", owner="ours", rows=len(collapsed)
     ):
         protected_blocked_deletes = _skip_protecting_reference_blocked_deletes(
-            collapsed, change_logger
+            collapsed,
+            change_logger,
+            merge_sync_id=merge_sync_id,
         )
     ordered = _order_collapsed_changes_fast(collapsed, change_logger, "merge")
     affected_prefix_vrf_ids = _affected_prefix_vrf_ids(ordered)

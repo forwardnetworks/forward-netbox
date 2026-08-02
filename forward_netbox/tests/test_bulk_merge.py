@@ -413,6 +413,107 @@ class BulkMergeIntegrationTest(CleanTransactionTestCase):
         self.assertFalse(Device.objects.filter(pk=device.pk).exists())
         self.assertFalse(ForwardDeviceIdentity.objects.filter(pk=identity.pk).exists())
 
+    def test_hidden_protect_blocker_is_predicted_and_reported_before_apply(self):
+        from extras.models import Tag
+
+        from forward_netbox.models import ForwardDeviceTagClaim
+        from forward_netbox.utilities import ownership as ownership_module
+
+        branch, ingestion, device, identity = self._stage_owned_device_delete(
+            "hidden-protect-blocker"
+        )
+        tag = Tag.objects.create(
+            name="Hidden Protect Blocker",
+            slug="hidden-protect-blocker",
+        )
+        claim = ForwardDeviceTagClaim.objects.create(
+            sync=ingestion.sync,
+            ingestion=ingestion,
+            device=device,
+            tag=tag,
+            claim_type=ForwardDeviceTagClaim.ClaimType.SCOPE,
+            snapshot_id=ingestion.snapshot_id,
+        )
+
+        with (
+            patch.object(
+                ownership_module,
+                "release_authoritative_device_delete_ownership",
+            ) as release_ownership,
+            self.assertLogs("forward_netbox.merge", level="WARNING") as captured,
+        ):
+            merge_branch(ingestion, user=self.user)
+
+        release_ownership.assert_not_called()
+        self.assertTrue(
+            any(
+                "still referenced by forward_netbox.ForwardDeviceTagClaim (1)"
+                in message
+                for message in captured.output
+            ),
+            captured.output,
+        )
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "merged")
+        self.assertTrue(Device.objects.filter(pk=device.pk).exists())
+        self.assertTrue(type(identity).objects.filter(pk=identity.pk).exists())
+        self.assertTrue(type(claim).objects.filter(pk=claim.pk).exists())
+        self.assertFalse(
+            ForwardIngestionIssue.objects.filter(ingestion=ingestion).exists()
+        )
+
+    def test_peer_identity_hidden_protect_remains_blocking(self):
+        from forward_netbox.models import ForwardDeviceIdentity
+        from forward_netbox.utilities import ownership as ownership_module
+
+        branch, ingestion, device, identity = self._stage_owned_device_delete(
+            "peer-identity-blocker"
+        )
+        peer_sync = ForwardSync.objects.create(
+            name="bulk-merge-sync-peer-identity-blocker-peer",
+            source=ingestion.sync.source,
+            user=self.user,
+            auto_merge=False,
+            parameters={"snapshot_id": "LATEST_PROCESSED", "dcim.site": True},
+        )
+        peer_ingestion = ForwardIngestion.objects.create(
+            sync=peer_sync,
+            snapshot_selector="LATEST_PROCESSED",
+            snapshot_id="snapshot-peer-identity-blocker",
+        )
+        peer_identity = ForwardDeviceIdentity.objects.create(
+            sync=peer_sync,
+            ingestion=peer_ingestion,
+            source_device_key=device.name,
+            device=device,
+        )
+
+        with (
+            patch.object(
+                ownership_module,
+                "release_authoritative_device_delete_ownership",
+            ) as release_ownership,
+            self.assertLogs("forward_netbox.merge", level="WARNING") as captured,
+        ):
+            merge_branch(ingestion, user=self.user)
+
+        release_ownership.assert_not_called()
+        self.assertTrue(
+            any(
+                "still referenced by forward_netbox.ForwardDeviceIdentity (1)"
+                in message
+                for message in captured.output
+            ),
+            captured.output,
+        )
+        branch.refresh_from_db()
+        self.assertEqual(branch.status, "merged")
+        self.assertTrue(Device.objects.filter(pk=device.pk).exists())
+        self.assertTrue(type(identity).objects.filter(pk=identity.pk).exists())
+        self.assertTrue(
+            type(peer_identity).objects.filter(pk=peer_identity.pk).exists()
+        )
+
     def test_device_delete_serializes_concurrent_claim_writer(self):
         from django.db import IntegrityError
         from extras.models import Tag
