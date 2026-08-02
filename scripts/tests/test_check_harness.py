@@ -986,3 +986,75 @@ class CheckHarnessTrustedPrivateFetchTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReleaseAnchorTracksCurrentReleaseTest(unittest.TestCase):
+    """Two post-release steps that were repeatedly skipped, tied together.
+
+    Advancing `PRIOR_RELEASE_TAG` and promoting the shipped release in the
+    compatibility table are both silent when omitted. A stale anchor grows the
+    reviewed commit range until an expired run burns a release at the tag; a
+    stale table told operators `2.6.9` was current while two later releases were
+    already published. After a release the two name the same version, so they
+    can check each other.
+    """
+
+    PROVENANCE = 'PRIOR_RELEASE_TAG = "{tag}"\n'
+    TABLE = (
+        "| Plugin Release | NetBox Version | Status |\n"
+        "| --- | --- | --- |\n"
+        "| `{current}` | `4.6.x` | Current release; shipped. |\n"
+        "| `v2.6.9` | `4.6.x` | Superseded by `{current}`; shipped. |\n"
+    )
+
+    def _run(self, *, tag, current, table=None):
+        failures = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "scripts").mkdir()
+            (root / "scripts/verify_release_provenance.py").write_text(
+                self.PROVENANCE.format(tag=tag), encoding="utf-8"
+            )
+            (root / "README.md").write_text(
+                table if table is not None else self.TABLE.format(current=current),
+                encoding="utf-8",
+            )
+            with patch.object(check_harness, "REPO_ROOT", root):
+                check_harness._check_release_anchor_tracks_current_release(failures)
+        return failures
+
+    def test_anchor_matching_the_current_release_passes(self):
+        self.assertEqual(self._run(tag="v2.7.0", current="v2.7.0"), [])
+
+    def test_stale_anchor_is_reported_with_both_remedies(self):
+        # The exact shape that burned v2.6.10: the anchor left behind while the
+        # table moved on.
+        failures = self._run(tag="v2.6.10", current="v2.7.0")
+        self.assertEqual(len(failures), 1)
+        self.assertIn("v2.6.10", failures[0])
+        self.assertIn("v2.7.0", failures[0])
+        self.assertIn("advance the anchor", failures[0])
+        self.assertIn("promote the shipped release", failures[0])
+
+    def test_unpromoted_table_is_reported(self):
+        # The other direction: the anchor advanced but the release was never
+        # promoted, so the table still calls an older version current.
+        failures = self._run(tag="v2.7.0", current="v2.6.12")
+        self.assertEqual(len(failures), 1)
+        self.assertIn("does not match the current release", failures[0])
+
+    def test_a_table_without_exactly_one_current_release_is_reported(self):
+        # The promotion step edits this column, so a botched edit is the likely
+        # way it breaks; taking the first match would hide it.
+        table = (
+            "| `v2.7.0` | `4.6.x` | Current release; shipped. |\n"
+            "| `v2.6.12` | `4.6.x` | Current release; shipped. |\n"
+        )
+        failures = self._run(tag="v2.7.0", current="v2.7.0", table=table)
+        self.assertEqual(len(failures), 1)
+        self.assertIn("exactly one current release", failures[0])
+
+    def test_a_missing_anchor_constant_is_reported(self):
+        failures = self._run(tag="not-a-tag", current="v2.7.0")
+        self.assertEqual(len(failures), 1)
+        self.assertIn("PRIOR_RELEASE_TAG", failures[0])
