@@ -2222,6 +2222,30 @@ class ForwardIngestionBulkDeleteView(generic.BulkDeleteView):
         return super().post(request, *args, **kwargs)
 
 
+@register_model_view(ForwardIngestionIssue, "list", path="", detail=False)
+class ForwardIngestionIssueListView(generic.ObjectListView):
+    """The list route the issue detail page reverses for its breadcrumb.
+
+    Registering a detail view without its list is a 500: NetBox reverses
+    `<app>:<model>_list` from the object view, so opening an issue raised
+    `NoReverseMatch: Reverse for 'forwardingestionissue_list' not found`. A
+    customer hit it on the one page that exists to explain a failed merge.
+
+    2.6.3 met the same class of bug on the Ingestions list and resolved it by
+    dropping the action that pointed at the missing view, which left ingestions
+    undeletable for three releases. Register the route instead.
+
+    The installed-route probe did not catch this because it renders menu lists,
+    and this model has no menu entry - it is reached only from an ingestion.
+    """
+
+    queryset = ForwardIngestionIssue.objects.all()
+    filterset = ForwardIngestionIssueFilterSet
+    table = ForwardIngestionIssueTable
+    # Read-only diagnostic evidence: written by a sync, never hand-edited.
+    actions = (BulkExport,)
+
+
 @register_model_view(ForwardIngestionIssue)
 class ForwardIngestionIssueView(generic.ObjectView):
     """Detail for one ingestion issue.

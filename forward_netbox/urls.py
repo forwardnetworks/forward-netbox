@@ -30,6 +30,16 @@ urlpatterns = (
         "ingestion/<int:pk>/",
         include(get_model_urls("forward_netbox", "forwardingestion")),
     ),
+    # Both includes are required. Registering the view is not enough: without
+    # the `detail=False` include there is no URL for the list route to attach
+    # to, so the object view's breadcrumb reverse still raises NoReverseMatch
+    # and opening an issue is a 500.
+    path(
+        "ingestion-issue/",
+        include(
+            get_model_urls("forward_netbox", "forwardingestionissue", detail=False)
+        ),
+    ),
     path(
         "ingestion-issue/<int:pk>/",
         include(get_model_urls("forward_netbox", "forwardingestionissue")),
