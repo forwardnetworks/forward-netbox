@@ -1706,6 +1706,171 @@ def _collapse_alias_variant_duplicates(builtin_maps):
     ]
 
 
+# --- Alias-variant coverage -------------------------------------------------
+#
+# Recurrence guard for the 2.4.2 defect class: behavior added to a base query and
+# never ported to the variant operators actually run. A base query that resolves
+# (or produces) a NetBox identity the alias-aware device query owns must either
+# ship its own ``*_with_netbox_aliases`` variant or say, in writing, why it does
+# not. Silence is the failure mode we are removing.
+
+# Row fields naming an object the alias-aware device query created. A query
+# emitting one of these has to spell that object exactly as the device query did,
+# or its dependency lookup misses and every row is skipped.
+_ALIAS_SENSITIVE_IDENTITY_FIELDS = (
+    "device_type",
+    "device_type_slug",
+    "platform",
+    "platform_slug",
+)
+# Maps that *produce* one of those identities rather than resolving it: whatever
+# spelling they write is the spelling every consumer must reproduce, so they are
+# candidates for the same reason.
+_ALIAS_SENSITIVE_IDENTITY_MODELS = ("dcim.devicetype", "dcim.platform")
+
+# Base queries that are alias-sensitive by the rule above and deliberately have
+# no alias variant. Each entry records the reason; an unexplained omission is a
+# check failure, not a default.
+ALIAS_VARIANT_EXEMPT_QUERY_FILENAMES = {
+    "forward_platforms.nqe": (
+        "Produces dcim.platform. The netbox_device_type_aliases data file "
+        "carries only `device_type_alias` and `manufacturer_override` records "
+        "-- there is no platform record type -- so an alias variant would have "
+        "nothing to map. Platform naming is instead kept consistent by every "
+        "device-scoped query using the shared normalizeDevicePlatformName "
+        "helper."
+    ),
+    "forward_dlm_software_versions.nqe": (
+        "Resolves dcim.platform, not dcim.devicetype. Its platform value comes "
+        "from normalizeDevicePlatformName(device), which is verbatim what "
+        "forward_devices_with_netbox_aliases.nqe writes -- the alias variant of "
+        "the device query does not rename platforms. An alias variant would be "
+        "semantically identical to this file, so it would add a catalogue entry "
+        "an operator could enable expecting a fix and get none."
+    ),
+    "forward_dlm_device_software.nqe": (
+        "Resolves dcim.device and dcim.platform. Same reasoning as "
+        "forward_dlm_software_versions.nqe: device names are never aliased and "
+        "the platform value already matches the alias-aware device query "
+        "verbatim."
+    ),
+    "forward_dlm_vulnerabilities.nqe": (
+        "Resolves dcim.device and dcim.platform via the same "
+        "normalizeDevicePlatformName(device) value as the alias-aware device "
+        "query. Nothing on this row is alias-mapped."
+    ),
+    "forward_dlm_inventory_item_software.nqe": (
+        'Emits the hardcoded Platform "CIMC", which its own apply adapter '
+        "creates alongside the InventoryItemRolePlatform mapping. The value "
+        "never comes from Forward's device model, so no alias mapping applies."
+    ),
+}
+
+
+def _alias_variant_filename(base_filename: str) -> str:
+    return base_filename.removesuffix(".nqe") + "_with_netbox_aliases.nqe"
+
+
+def _alias_variant_base_filename(alias_filename: str) -> str:
+    return alias_filename.replace("_with_netbox_aliases.nqe", ".nqe")
+
+
+def _query_resolves_alias_sensitive_identity(filename: str, model_string: str) -> bool:
+    """Whether a query names a NetBox object the alias-aware device query owns."""
+    if model_string in _ALIAS_SENSITIVE_IDENTITY_MODELS:
+        return True
+    source = _read_query_source(filename)
+    return any(
+        re.search(rf"^[ \t]*{field}:", source, flags=re.MULTILINE)
+        for field in _ALIAS_SENSITIVE_IDENTITY_FIELDS
+    )
+
+
+def alias_variant_coverage_violations(query_defaults=None) -> list[str]:
+    """Report every alias-variant coverage gap in a set of builtin map defaults.
+
+    An empty list means the shipped set of alias variants is complete *and*
+    intentional: every alias-sensitive base query either has a variant or an
+    exemption with a recorded reason, every exemption is still live, and every
+    variant resolves back to a base map name so
+    :func:`_collapse_alias_variant_duplicates` can supersede it.
+    """
+    query_defaults = list(
+        BUILTIN_SEEDED_QUERY_MAPS if query_defaults is None else query_defaults
+    )
+    filenames = {query_default["filename"] for query_default in query_defaults}
+    names = {query_default["name"] for query_default in query_defaults}
+    violations: list[str] = []
+
+    for query_default in query_defaults:
+        filename = query_default["filename"]
+        name = query_default["name"]
+        if _query_contract_variant(filename) == "aliases":
+            base_filename = _alias_variant_base_filename(filename)
+            if base_filename not in filenames:
+                violations.append(
+                    f"alias variant `{filename}` has no registered base query "
+                    f"`{base_filename}`"
+                )
+            if name.endswith(_ALIAS_VARIANT_NAME_SUFFIX):
+                base_name = name[: -len(_ALIAS_VARIANT_NAME_SUFFIX)]
+            else:
+                base_name = _EXPLICIT_ALIAS_VARIANT_BASE_NAMES.get(name)
+            if not base_name or base_name not in names:
+                violations.append(
+                    f"alias variant map `{name}` does not resolve to a "
+                    "registered base map name; "
+                    "_collapse_alias_variant_duplicates would let both run and "
+                    "flip the shared object between the two spellings every "
+                    "sync. Add it to _EXPLICIT_ALIAS_VARIANT_BASE_NAMES."
+                )
+            continue
+
+        if not _query_resolves_alias_sensitive_identity(
+            filename, query_default["model_string"]
+        ):
+            continue
+        if _alias_variant_filename(filename) in filenames:
+            continue
+        if filename in ALIAS_VARIANT_EXEMPT_QUERY_FILENAMES:
+            continue
+        violations.append(
+            f"base query `{filename}` (map `{name}`) names a NetBox object the "
+            "alias-aware device query owns but has neither a registered "
+            f"`{_alias_variant_filename(filename)}` variant nor an entry in "
+            "ALIAS_VARIANT_EXEMPT_QUERY_FILENAMES recording why it needs none"
+        )
+
+    for filename, reason in ALIAS_VARIANT_EXEMPT_QUERY_FILENAMES.items():
+        if not (QUERY_DIR / filename).exists():
+            violations.append(
+                f"alias-variant exemption `{filename}` names a query file that "
+                "no longer exists"
+            )
+            continue
+        if not str(reason).strip():
+            violations.append(f"alias-variant exemption `{filename}` records no reason")
+        if filename not in filenames:
+            continue
+        exempt_model_string = next(
+            query_default["model_string"]
+            for query_default in query_defaults
+            if query_default["filename"] == filename
+        )
+        if not _query_resolves_alias_sensitive_identity(filename, exempt_model_string):
+            violations.append(
+                f"alias-variant exemption `{filename}` is stale: the query no "
+                "longer names an alias-sensitive NetBox object"
+            )
+        if _alias_variant_filename(filename) in filenames:
+            violations.append(
+                f"alias-variant exemption `{filename}` contradicts the "
+                f"registered `{_alias_variant_filename(filename)}` variant"
+            )
+
+    return violations
+
+
 def _resolve_map_query_specs(model_string: str, maps) -> list[QuerySpec]:
     selected_maps = [
         query_map
