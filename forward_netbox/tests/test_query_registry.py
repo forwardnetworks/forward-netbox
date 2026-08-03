@@ -13,6 +13,10 @@ from forward_netbox.utilities.query_execution_contract import query_source_sha25
 from forward_netbox.utilities.query_execution_contract import resolve_execution_contract
 from forward_netbox.utilities.query_registry import _collapse_alias_variant_duplicates
 from forward_netbox.utilities.query_registry import _query_contract_gap_remediation
+from forward_netbox.utilities.query_registry import alias_variant_coverage_violations
+from forward_netbox.utilities.query_registry import (
+    ALIAS_VARIANT_EXEMPT_QUERY_FILENAMES,
+)
 from forward_netbox.utilities.query_registry import builtin_nqe_map_rows
 from forward_netbox.utilities.query_registry import BUILTIN_OPTIONAL_QUERY_MAPS
 from forward_netbox.utilities.query_registry import builtin_query_contract_summary
@@ -2061,6 +2065,128 @@ select {name: "vendor", slug: "vendor"}
             "Forward Device Feature Tags with Rules",
             {query_default["name"] for query_default in BUILTIN_QUERY_MAPS},
         )
+
+    def test_alias_variant_coverage_is_complete_and_intentional(self):
+        """No alias-sensitive base map may ship without a variant or a reason."""
+        self.assertEqual(alias_variant_coverage_violations(), [])
+
+    def test_alias_variant_coverage_flags_a_missing_variant(self):
+        """The check fails when a base map that needs a variant lacks one.
+
+        Registering the alias-sensitive hardware-notice base map on its own --
+        exactly the state the catalogue was in before 2.5.3 -- must be reported,
+        not tolerated.
+        """
+        violations = alias_variant_coverage_violations(
+            [
+                {
+                    "model_string": "netbox_dlm.hardwarenotice",
+                    "name": "Forward DLM Hardware Notices",
+                    "filename": "forward_dlm_hardware_notices.nqe",
+                }
+            ]
+        )
+
+        self.assertTrue(
+            any(
+                "forward_dlm_hardware_notices.nqe" in violation
+                and "ALIAS_VARIANT_EXEMPT_QUERY_FILENAMES" in violation
+                for violation in violations
+            ),
+            violations,
+        )
+
+    def test_alias_variant_coverage_flags_an_unresolvable_variant_name(self):
+        """A variant whose display name has no base map would double-apply.
+
+        ``_collapse_alias_variant_duplicates`` supersedes a base map by name. A
+        variant named outside the " with NetBox Device Type Aliases" convention
+        and missing from _EXPLICIT_ALIAS_VARIANT_BASE_NAMES silently runs
+        alongside its base and flips the shared object every sync.
+        """
+        violations = alias_variant_coverage_violations(
+            [
+                {
+                    "model_string": "netbox_dlm.hardwarenotice",
+                    "name": "Forward DLM Hardware Notices",
+                    "filename": "forward_dlm_hardware_notices.nqe",
+                },
+                {
+                    "model_string": "netbox_dlm.hardwarenotice",
+                    "name": "Forward DLM Hardware Notices (aliased)",
+                    "filename": (
+                        "forward_dlm_hardware_notices_with_netbox_aliases.nqe"
+                    ),
+                },
+            ]
+        )
+
+        self.assertTrue(
+            any(
+                "does not resolve to a registered base map name" in violation
+                for violation in violations
+            ),
+            violations,
+        )
+
+    def test_alias_variant_exemptions_are_live_and_reasoned(self):
+        registered = {
+            query_default["filename"]
+            for query_default in BUILTIN_QUERY_MAPS + BUILTIN_OPTIONAL_QUERY_MAPS
+        }
+
+        self.assertTrue(ALIAS_VARIANT_EXEMPT_QUERY_FILENAMES)
+        for filename, reason in ALIAS_VARIANT_EXEMPT_QUERY_FILENAMES.items():
+            self.assertIn(filename, registered)
+            self.assertNotIn(
+                filename.removesuffix(".nqe") + "_with_netbox_aliases.nqe",
+                registered,
+            )
+            # A reason has to explain, not label.
+            self.assertGreater(len(reason.split()), 12, filename)
+
+        # The CIMC firmware map is exempt by design, not by oversight: it emits
+        # a hardcoded Platform its own adapter creates.
+        self.assertIn(
+            "forward_dlm_inventory_item_software.nqe",
+            ALIAS_VARIANT_EXEMPT_QUERY_FILENAMES,
+        )
+        self.assertIn(
+            "CIMC",
+            ALIAS_VARIANT_EXEMPT_QUERY_FILENAMES[
+                "forward_dlm_inventory_item_software.nqe"
+            ],
+        )
+
+    def test_dlm_platform_maps_match_the_alias_device_query_verbatim(self):
+        """Why the DLM platform maps need no alias variant, asserted not assumed.
+
+        The alias-aware device query creates the Platform rows these maps look
+        up, and it derives the platform name with the same shared helper as the
+        base device query. If that ever diverges, the exemptions above stop
+        being true and this test says so.
+        """
+        alias_device_query = read_builtin_query_source(
+            "forward_devices_with_netbox_aliases.nqe"
+        )
+        base_device_query = read_builtin_query_source("forward_devices.nqe")
+        platform_expression = "let platform_name = normalizeDevicePlatformName(device)"
+
+        self.assertIn(platform_expression, alias_device_query)
+        self.assertIn(platform_expression, base_device_query)
+        # The alias data file has no platform record type to map through.
+        self.assertNotIn("platform_alias", alias_device_query)
+
+        for filename in (
+            "forward_dlm_software_versions.nqe",
+            "forward_dlm_device_software.nqe",
+            "forward_dlm_vulnerabilities.nqe",
+        ):
+            self.assertIn(
+                platform_expression,
+                read_builtin_query_source(filename),
+                filename,
+            )
 
     def test_optional_module_maps_are_seeded_enabled(self):
         rows = {
