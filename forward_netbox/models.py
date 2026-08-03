@@ -870,6 +870,11 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
     catchup_checked_at = models.DateTimeField(blank=True, null=True)
     applied_change_count = models.PositiveIntegerField(default=0)
     failed_change_count = models.PositiveIntegerField(default=0)
+    # Rows the destination refused on one of its own validation rules. They are
+    # exceptions, but no retry can satisfy them, so they are held apart from
+    # `failed_change_count`: everything that reads readiness treats a failed row
+    # as something a rerun could clear, and these rows never will be.
+    skipped_change_count = models.PositiveIntegerField(default=0)
     created_change_count = models.PositiveIntegerField(default=0)
     updated_change_count = models.PositiveIntegerField(default=0)
     deleted_change_count = models.PositiveIntegerField(default=0)
@@ -973,6 +978,7 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
         *,
         applied,
         failed,
+        skipped=0,
         created=0,
         updated=0,
         deleted=0,
@@ -981,6 +987,7 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
             self,
             applied=applied,
             failed=failed,
+            skipped=skipped,
             created=created,
             updated=updated,
             deleted=deleted,

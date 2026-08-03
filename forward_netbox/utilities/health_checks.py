@@ -499,6 +499,18 @@ def ingestion_check_message(ingestion):
                 "the ingestion to complete it over these rows."
             )
         return message
+    skipped = int(getattr(ingestion, "skipped_change_count", 0) or 0)
+    if skipped:
+        # Naming the disposition, because the issue rows read exactly like a
+        # failure and the operator otherwise has no way to tell that this run
+        # completed, promoted its baseline, and cannot be improved by a rerun.
+        return (
+            f"Latest ingestion {ingestion.pk} skipped {skipped} row(s) that "
+            "NetBox refused on its own validation rules. Re-running cannot "
+            "change a validation rejection, so they were recorded as ingestion "
+            "issues and the baseline was promoted over them. Resolve the "
+            "underlying rows in NetBox to converge them."
+        )
     if has_blocking_issues(ingestion):
         issue_count = ingestion.issues.count()
         return (
