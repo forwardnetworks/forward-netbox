@@ -1094,13 +1094,38 @@ def _previous_released_version(context, version):
             code=2,
         ) from exc
 
-    current = tuple(int(part) for part in version.split("."))
+    # `version` is whatever the tree carries, and between releases that is a
+    # `.dev0` marker - `main` is deliberately moved onto one so an install from
+    # it is not indistinguishable from the published release. Splitting on "."
+    # and calling int() crashed on exactly that (`invalid literal for int() with
+    # base 10: 'dev0'`), which meant the dev marker could not coexist with this
+    # gate and `main` kept being left on the released version instead.
+    #
+    # Take the leading numeric components and stop at the first that is not,
+    # so `2.7.1.dev0` resolves to `(2, 7, 1)` and upgrades from the newest
+    # release below the version it is heading for. Done without `packaging`
+    # deliberately: this runs from the pinned release toolchain, and the gate
+    # should not gain a dependency to read three integers.
+    leading = []
+    for part in version.split("."):
+        if not part.isdigit():
+            break
+        leading.append(int(part))
+    if len(leading) != 3:
+        raise Exit(
+            f"Cannot resolve an upgrade source for unparseable version "
+            f"{version!r}. Pass --from-version explicitly.",
+            code=2,
+        )
+    current = tuple(leading)
     published = []
     for candidate, files in (payload.get("releases") or {}).items():
         # A yanked-only or file-less entry is not installable.
         if not files or all(item.get("yanked") for item in files):
             continue
         parts = candidate.split(".")
+        # Keep the released-only filter: a pre-release on the index is not an
+        # upgrade path an operator can be on.
         if len(parts) != 3 or not all(part.isdigit() for part in parts):
             continue
         entry = tuple(int(part) for part in parts)
