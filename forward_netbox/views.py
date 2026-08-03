@@ -2113,16 +2113,47 @@ class ForwardIngestionIssuesView(generic.ObjectChildrenView):
 def _ingestion_delete_refusal(ingestion) -> str:
     """Why the database will refuse this delete, or "" when it will not.
 
-    Five relations to an ingestion are PROTECT, not one. `ForwardContributorBaseline`
-    holds durable convergence evidence, and the four ownership models carried by
-    `ForwardIngestionProvenanceMixin` hold identity and claim evidence. This
+    Four relations to an ingestion are PROTECT, not one. `ForwardContributorBaseline`
+    holds durable convergence evidence, and three of the four ownership models
+    carried by `ForwardIngestionProvenanceMixin` hold identity and claim
+    evidence. (The fourth, `ForwardOwnershipReconciliation`, cascades - see
+    `_ingestion_holds_current_ownership` for what guards it instead.) This
     docstring previously named only the baseline, and the check behind it could
-    only see the baseline, because the other four declare ``related_name="+"``
-    and Django hides those from `_meta.related_objects` — see
+    only see the baseline, because every provenance relation declares
+    ``related_name="+"`` and Django hides those from `_meta.related_objects` — see
     `protecting_relations`. Reporting all of them up front turns an unhandled
     `ProtectedError` into something an operator can act on.
     """
     return _ingestion_delete_refusal_detail(ingestion)[0]
+
+
+def _ingestion_holds_current_ownership(ingestion) -> bool:
+    """Whether this ingestion is the one proving ownership complete right now.
+
+    `ForwardOwnershipReconciliation` rows cascade with their ingestion, which is
+    what makes a stale ingestion deletable at all. That leaves one case the
+    database can no longer refuse on its own: a sync whose ingestion is held
+    *only* by reconciliation rows, where deleting it would discard the very
+    evidence that ownership has converged and silently regress the sync to
+    Incomplete. "Currently complete" is not a guess here - it is exactly
+    `ownership_generation_complete`, which requires a COMPLETED row at this
+    generation for every domain `required_ownership_domains` names. Since there
+    is one row per (sync, domain) and STATUS_TAGS is always required, at most
+    one ingestion per sync can satisfy it.
+
+    A check that cannot complete refuses. A wrong refusal costs a support
+    question; a wrong delete costs evidence that no reverse migration can bring
+    back.
+    """
+    from .utilities.ownership import ownership_generation_complete
+
+    sync = getattr(ingestion, "sync", None)
+    if sync is None or not ingestion.pk:
+        return False
+    try:
+        return bool(ownership_generation_complete(sync, ingestion.pk))
+    except Exception:  # noqa: BLE001 - unprovable safety is not safety
+        return True
 
 
 def _ingestion_delete_refusal_detail(ingestion) -> tuple[str, bool]:
@@ -2134,15 +2165,34 @@ def _ingestion_delete_refusal_detail(ingestion) -> tuple[str, bool]:
     baseline, the record of what has already converged, and NetBox protects it
     on purpose. Saying so plainly is the difference between a support ticket and
     a shrug.
+
+    Two refusals are expected rather than faults, and both name a way forward
+    that the product actually offers. The baseline is permanent. Current
+    ownership evidence is not: it moves to the next ingestion as soon as one
+    reconciles, so the answer is "sync again, then delete this" rather than
+    "remove these records", which was the instruction that had no supported
+    action behind it.
     """
     references = describe_protecting_references(type(ingestion), ingestion.pk)
+    baseline_reference = any(
+        "baseline" in str(label).casefold() for label, _count in references
+    )
+    if not baseline_reference and _ingestion_holds_current_ownership(ingestion):
+        return (
+            f"{ingestion} is the ingestion whose ownership reconciliation is "
+            "currently complete for this sync, so it is the record that proves "
+            "every ownership domain this sync reconciles - status tags, and "
+            "scope tags and virtual parents where enabled - has converged. "
+            "Deleting it would discard that proof and report this sync's "
+            "ownership as incomplete until a later ingestion reconciles. This "
+            "is expected, not a failure. Run the sync again; once a newer "
+            "ingestion has taken over the reconciliation, this one deletes "
+            "normally."
+        ), True
     if not references:
         return "", False
     held_by = ", ".join(f"{label} ({count})" for label, count in references)
-    baseline_held = any(
-        "baseline" in str(label).casefold() for label, _count in references
-    )
-    if baseline_held:
+    if baseline_reference:
         return (
             f"{ingestion} is the baseline for this sync - the durable record of "
             "what has already converged - so NetBox protects it from deletion. "
