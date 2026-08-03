@@ -1400,10 +1400,12 @@ def protecting_relations(model_class):
     and Django calls those hidden. Reading protection from it therefore misses
     exactly the relations this plugin uses for ownership evidence:
     `ForwardIngestionProvenanceMixin` declares its ingestion FK as PROTECT with
-    ``related_name="+"``, so `ForwardDeviceIdentity`, `ForwardDeviceTagClaim`,
-    `ForwardVirtualParentClaim` and `ForwardOwnershipReconciliation` were all
-    invisible to protection checks while still refusing the delete in the
-    database.
+    ``related_name="+"``, so `ForwardDeviceIdentity`, `ForwardDeviceTagClaim`
+    and `ForwardVirtualParentClaim` were all invisible to protection checks
+    while still refusing the delete in the database. (The fourth,
+    `ForwardOwnershipReconciliation`, later became CASCADE - it is a child
+    record of the ingestion, not evidence held against it - so discovery still
+    sees it and correctly declines to report it.)
 
     That gap had two customer-visible faces. An ingestion held only by device
     identities reported no refusal at all, so the delete view rendered its wall
@@ -1604,10 +1606,14 @@ def _acyclic_delete_edges(
     to deletes; `edge_label` only names the edge class in the warning.
     """
     nodes = {key for edge in candidate_edges for key in edge}
-    for key in list(nodes):
-        nodes.update(
-            dep for dep in collapsed_changes[key].depends_on if dep in collapsed_changes
-        )
+    pending = list(nodes)
+    while pending:
+        key = pending.pop()
+        for dependency in collapsed_changes[key].depends_on:
+            if dependency not in collapsed_changes or dependency in nodes:
+                continue
+            nodes.add(dependency)
+            pending.append(dependency)
     existing = {
         key: {
             dep
@@ -1645,8 +1651,8 @@ def _acyclic_delete_edges(
             return []
         change_logger.warning(
             "Bulk merge: dropped %d %s ordering edge(s) that would "
-            "have made the change graph unsortable; those rows stay mutually "
-            "protected and their deletes are reported rather than reordered.",
+            "have made the change graph unsortable; those changes retain "
+            "status-quo ordering and may be rejected individually instead.",
             len(accepted) - len(kept),
             edge_label,
         )
@@ -1654,6 +1660,80 @@ def _acyclic_delete_edges(
         if not accepted:
             return []
     return []
+
+
+def _add_m2m_create_dependencies(collapsed_changes, change_logger):
+    """Order branch-created M2M targets before changes that reference them.
+
+    Branching's dependency graph models scalar ForeignKey and GenericForeignKey
+    values, but not writable ManyToManyField values. An existing object's UPDATE
+    can therefore replay before a referenced target's CREATE and fail when the
+    M2M manager writes its through-table FK.
+
+    Only exact serialized ids which identify an in-merge CREATE are candidates.
+    Unknown shapes, absent targets, and non-CREATE targets retain existing
+    ordering. Every candidate is admitted through the shared acyclic-edge guard;
+    a relationship which would close a direct or transitive cycle is dropped.
+    """
+    candidate_edges = set()
+    for dependent_key, dependent in collapsed_changes.items():
+        if dependent.final_action not in {ActionType.CREATE, ActionType.UPDATE}:
+            continue
+        postchange_data = getattr(dependent, "postchange_data", None) or {}
+        if not isinstance(postchange_data, dict) or not postchange_data:
+            continue
+        model_class = getattr(dependent, "model_class", None)
+        model_meta = getattr(model_class, "_meta", None)
+        if model_meta is None:
+            continue
+        for field in model_meta.get_fields():
+            if not isinstance(field, models.ManyToManyField):
+                continue
+            if field.name not in postchange_data:
+                continue
+            serialized_values = postchange_data.get(field.name)
+            if not isinstance(serialized_values, (list, tuple, set)):
+                continue
+            target_label = field.related_model._meta.label_lower
+            for serialized_value in serialized_values:
+                target_pk = _serialized_fk_id(serialized_value)
+                if target_pk in (None, "") or isinstance(target_pk, bool):
+                    continue
+                try:
+                    hash(target_pk)
+                except TypeError:
+                    continue
+                target_key = (target_label, target_pk)
+                target = collapsed_changes.get(target_key)
+                if target is None or target.final_action != ActionType.CREATE:
+                    continue
+                if target_key in dependent.depends_on:
+                    continue
+                candidate_edges.add((dependent_key, target_key))
+
+    if not candidate_edges:
+        return 0
+    accepted = _acyclic_delete_edges(
+        collapsed_changes,
+        sorted(candidate_edges, key=repr),
+        change_logger,
+        edge_label="M2M CREATE-reference",
+    )
+    added = 0
+    for dependent_key, target_key in accepted:
+        dependent = collapsed_changes[dependent_key]
+        if target_key in dependent.depends_on:
+            continue
+        dependent.depends_on.add(target_key)
+        collapsed_changes[target_key].depended_by.add(dependent_key)
+        added += 1
+    if added:
+        change_logger.debug(
+            "Ordered %d writable M2M reference(s) after their branch-created "
+            "targets.",
+            added,
+        )
+    return added
 
 
 def _add_protected_child_delete_dependencies(collapsed_changes, change_logger):
@@ -1894,6 +1974,7 @@ def _order_collapsed_changes_fast(collapsed_changes, change_logger, operation):
         # receiver sees the completed graph.
         _add_destination_fk_release_dependencies(to_process, change_logger)
         _add_protected_child_delete_dependencies(to_process, change_logger)
+        _add_m2m_create_dependencies(to_process, change_logger)
         # UPDATE->UPDATE ordering, which the framework graph has no case for.
         _add_primary_ip_reassignment_release_dependencies(to_process, change_logger)
         _add_ip_adoption_dependencies(to_process, change_logger)
