@@ -25,7 +25,9 @@ class StagePostReleaseTest(unittest.TestCase):
     def _run(self):
         calls = []
         with (
-            patch.object(release, "run", side_effect=lambda cmd, **kw: calls.append(cmd)),
+            patch.object(
+                release, "run", side_effect=lambda cmd, **kw: calls.append(cmd)
+            ),
             patch.object(release, "stage_open_next") as open_next,
         ):
             release.stage_post_release("2.7.0", "v2.7.0")
@@ -42,7 +44,10 @@ class StagePostReleaseTest(unittest.TestCase):
         joined = [" ".join(call) for call in calls]
         self.assertIn("git checkout -B release/2.7.1-post-release origin/main", joined)
         self.assertTrue(
-            any(call.startswith("git push") and "release/2.7.1-post-release" in call for call in joined),
+            any(
+                call.startswith("git push") and "release/2.7.1-post-release" in call
+                for call in joined
+            ),
             joined,
         )
 
@@ -62,7 +67,9 @@ class StagePostReleaseTest(unittest.TestCase):
             patch("builtins.print") as printed,
         ):
             release.stage_post_release("2.7.0", "v2.7.0")
-        text = "\n".join(str(call.args[0]) for call in printed.call_args_list if call.args)
+        text = "\n".join(
+            str(call.args[0]) for call in printed.call_args_list if call.args
+        )
         self.assertIn("PRIOR_RELEASE_TAG", text)
         self.assertIn("PRIOR_POST_RELEASE_DOC_COMMIT", text)
         self.assertIn("v2.7.0..origin/main", text)
