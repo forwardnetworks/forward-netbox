@@ -12,7 +12,6 @@
 # The installed-route probe does not cover this: it renders the plugin's *menu*
 # lists, and a model reachable only from its parent has no menu entry. So the
 # guard belongs here, over every registered model rather than every menu item.
-
 from django.apps import apps
 from django.test import TestCase
 from django.urls import NoReverseMatch
