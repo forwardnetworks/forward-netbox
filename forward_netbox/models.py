@@ -1370,7 +1370,12 @@ class ForwardPreservedDeviceTagAssignment(ForwardPluginModelDocsMixin, models.Mo
 
 
 class ForwardIngestionProvenanceMixin(models.Model):
-    """Protected ownership evidence tied to one exact merged ingestion."""
+    """Protected ownership evidence tied to one exact merged ingestion.
+
+    `ForwardOwnershipReconciliation` overrides ``ingestion`` to cascade; it is a
+    child record of the ingestion rather than evidence held against it. See that
+    model for why.
+    """
 
     ingestion = models.ForeignKey(
         ForwardIngestion,
@@ -1567,7 +1572,40 @@ class ForwardOwnershipReconciliation(
     ForwardIngestionProvenanceMixin,
     ForwardPluginModelDocsMixin,
 ):
-    """Latest baseline generation reconciled for one ownership domain."""
+    """Latest baseline generation reconciled for one ownership domain.
+
+    Unlike its three sibling provenance models, this one cascades with the
+    ingestion it names rather than protecting it. Those three describe a live
+    NetBox object - a device identity, a tag assignment, a virtual parent - so
+    they outlive any single ingestion and must keep their provenance intact.
+    A reconciliation row describes no NetBox object at all: it records only
+    that this sync finished this domain at this exact ingestion. Once that
+    ingestion is gone the row is a statement about nothing, and it can never be
+    repaired, because the only thing that rewrites it is the next reconciliation
+    of the same domain.
+
+    Holding it as PROTECT made a sequence of ingestions permanently undeletable
+    with no supported way out: no UI, API, or command deletes these rows, so the
+    refusal named records an operator could not reach. Two conditions produce
+    that. The row re-points only when its domain reconciles again, so a domain
+    that stops running - scope tags switched off, virtual parents disabled -
+    freezes its row on an old ingestion and pins it forever. And because
+    `required_ownership_domains` treats the row's existence as proof the domain
+    is required, that same frozen row also keeps ownership permanently
+    incomplete. Cascading clears both together.
+
+    What must not be lost is the *current* evidence: the ingestion whose rows
+    prove ownership complete right now. The database cannot express "protect
+    only the newest", so that one is refused explicitly at the delete path
+    instead - see `_ingestion_delete_refusal_detail`.
+    """
+
+    ingestion = models.ForeignKey(
+        ForwardIngestion,
+        db_column="generation",
+        on_delete=models.CASCADE,
+        related_name="+",
+    )
 
     class Domain(models.TextChoices):
         SCOPE_TAGS = "scope_tags", _("Managed scope tags")

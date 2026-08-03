@@ -21,10 +21,18 @@ from forward_netbox.utilities.bulk_merge import protecting_relations
 
 
 class ProtectingRelationsSeesHiddenRelationsTest(TestCase):
+    # `ForwardOwnershipReconciliation` was the fourth entry here. It now
+    # cascades: it is a child record of the ingestion rather than evidence held
+    # against it, and holding it as PROTECT made ingestions undeletable while
+    # naming rows no supported action could remove. It is still hidden, so it
+    # still belongs in HIDDEN_MODELS below — discovery must keep seeing it, it
+    # just must not be reported as protecting.
     OWNERSHIP_MODELS = {
         "forward_netbox.ForwardDeviceIdentity",
         "forward_netbox.ForwardDeviceTagClaim",
         "forward_netbox.ForwardVirtualParentClaim",
+    }
+    HIDDEN_MODELS = OWNERSHIP_MODELS | {
         "forward_netbox.ForwardOwnershipReconciliation",
     }
 
@@ -60,6 +68,18 @@ class ProtectingRelationsSeesHiddenRelationsTest(TestCase):
                     (models.PROTECT, models.RESTRICT),
                 )
 
+    def test_reconciliation_is_not_reported_as_protecting(self):
+        # A reconciliation row records only that a sync finished a domain at an
+        # ingestion, so it means nothing once that ingestion is gone and it
+        # cascades. Reporting it would refuse a delete the database allows —
+        # and name rows the operator has no supported way to remove, which is
+        # exactly the dead end this replaced.
+        found = {
+            relation.related_model._meta.label
+            for relation in protecting_relations(ForwardIngestion)
+        }
+        self.assertNotIn("forward_netbox.ForwardOwnershipReconciliation", found)
+
     def test_related_objects_alone_would_have_missed_them(self):
         # Pins the reason this helper exists. If a future Django release starts
         # including hidden relations in related_objects, this test fails and the
@@ -69,6 +89,6 @@ class ProtectingRelationsSeesHiddenRelationsTest(TestCase):
             for relation in ForwardIngestion._meta.related_objects
         }
         self.assertFalse(
-            self.OWNERSHIP_MODELS & visible,
+            self.HIDDEN_MODELS & visible,
             "related_objects now exposes hidden relations; revisit protecting_relations",
         )
