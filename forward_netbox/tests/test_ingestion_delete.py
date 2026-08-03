@@ -22,6 +22,7 @@ from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.views import _ingestion_delete_refusal
+from forward_netbox.views import _ingestion_delete_refusal_detail
 
 
 class IngestionDeleteRouteTest(TestCase):
@@ -209,3 +210,242 @@ class BaselineDeleteRefusesOnConfirmationTest(TestCase):
             response = client.get(url)
 
         self.assertEqual(response.status_code, 200)
+
+
+class ReconciliationNoLongerPinsAnIngestionTest(TestCase):
+    """Reconciliation rows are children of an ingestion, not a lock on it.
+
+    On 2.7.0 the refusal became honest and named every PROTECT reference, which
+    exposed the real problem: it named `ForwardOwnershipReconciliation`, and no
+    UI, API, or management command can delete those rows. The message asked for
+    an action the product does not offer, so the ingestion was undeletable
+    forever.
+
+    A reconciliation row records only "this sync finished this domain at this
+    ingestion". It re-points when its domain reconciles again — but a domain
+    that stops running freezes its row on an old ingestion, and
+    `required_ownership_domains` then treats that frozen row as proof the domain
+    is still required, so the same row also keeps ownership permanently
+    incomplete. Cascading clears both.
+    """
+
+    def setUp(self):
+        self.source = ForwardSource.objects.create(
+            name="cascade-source",
+            type="saas",
+            url="https://fwd.example.invalid",
+            parameters={"network_id": "net-cascade"},
+        )
+        self.sync = ForwardSync.objects.create(
+            name="cascade-sync",
+            source=self.source,
+            parameters={"snapshot_id": LATEST_PROCESSED_SNAPSHOT},
+        )
+        self.older = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_id="snapshot-older",
+            baseline_ready=True,
+        )
+        self.newer = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_id="snapshot-newer",
+            baseline_ready=True,
+        )
+
+    def _reconcile(self, ingestion, domain, status=None):
+        from forward_netbox.models import ForwardOwnershipReconciliation
+
+        return ForwardOwnershipReconciliation.objects.update_or_create(
+            sync=self.sync,
+            domain=domain,
+            defaults={
+                "ingestion_id": ingestion.pk,
+                "snapshot_id": ingestion.snapshot_id,
+                "status": status or ForwardOwnershipReconciliation.Status.COMPLETED,
+            },
+        )[0]
+
+    def test_the_reconciliation_fk_cascades_and_its_siblings_still_protect(self):
+        # The whole fix rests on exactly one of the four provenance models
+        # cascading. Pin that split so a future edit to the shared mixin cannot
+        # quietly take the other three with it — those describe live NetBox
+        # rows and must keep protecting their provenance.
+        from django.db import models as django_models
+
+        from forward_netbox.models import ForwardDeviceIdentity
+        from forward_netbox.models import ForwardDeviceTagClaim
+        from forward_netbox.models import ForwardOwnershipReconciliation
+        from forward_netbox.models import ForwardVirtualParentClaim
+
+        self.assertIs(
+            ForwardOwnershipReconciliation._meta.get_field(
+                "ingestion"
+            ).remote_field.on_delete,
+            django_models.CASCADE,
+        )
+        for model in (
+            ForwardDeviceIdentity,
+            ForwardDeviceTagClaim,
+            ForwardVirtualParentClaim,
+        ):
+            with self.subTest(model=model._meta.label):
+                self.assertIs(
+                    model._meta.get_field("ingestion").remote_field.on_delete,
+                    django_models.PROTECT,
+                )
+
+    def test_an_ingestion_held_only_by_reconciliation_rows_is_deletable(self):
+        # The customer's shape: a domain reconciled at an old ingestion and
+        # never again, so its row froze there and pinned it.
+        from forward_netbox.models import ForwardOwnershipReconciliation
+
+        stale = self._reconcile(
+            self.older,
+            ForwardOwnershipReconciliation.Domain.VIRTUAL_PARENTS,
+        )
+        self._reconcile(
+            self.newer,
+            ForwardOwnershipReconciliation.Domain.STATUS_TAGS,
+        )
+
+        self.assertEqual(_ingestion_delete_refusal(self.older), "")
+
+        self.older.delete()
+
+        self.assertFalse(ForwardIngestion.objects.filter(pk=self.older.pk).exists())
+        self.assertFalse(
+            ForwardOwnershipReconciliation.objects.filter(pk=stale.pk).exists(),
+            "the reconciliation row must go with the ingestion it describes",
+        )
+
+    def test_the_newest_completed_ingestion_is_refused_and_says_why(self):
+        # Cascading alone would let an operator delete the evidence that
+        # ownership has converged and regress the sync to Incomplete. That is
+        # the one case the database can no longer refuse for us.
+        from forward_netbox.models import ForwardOwnershipReconciliation
+
+        for domain in (
+            ForwardOwnershipReconciliation.Domain.STATUS_TAGS,
+            ForwardOwnershipReconciliation.Domain.VIRTUAL_PARENTS,
+        ):
+            self._reconcile(self.newer, domain)
+
+        refusal, expected = _ingestion_delete_refusal_detail(self.newer)
+
+        self.assertTrue(refusal)
+        self.assertIn("ownership reconciliation is currently complete", refusal)
+        # Names an action the product actually offers, which is precisely what
+        # the old "remove them first" message did not.
+        self.assertIn("Run the sync again", refusal)
+        self.assertTrue(expected, "an intact ownership record is not a fault")
+
+    def test_a_pending_reconciliation_does_not_make_an_ingestion_current(self):
+        # Only COMPLETED evidence is worth protecting; a pending row is a note
+        # that work is outstanding, and it would otherwise pin forever.
+        from forward_netbox.models import ForwardOwnershipReconciliation
+
+        self._reconcile(
+            self.newer,
+            ForwardOwnershipReconciliation.Domain.STATUS_TAGS,
+            status=ForwardOwnershipReconciliation.Status.PENDING,
+        )
+
+        self.assertEqual(_ingestion_delete_refusal(self.newer), "")
+
+    def test_the_refusal_lifts_once_a_newer_ingestion_reconciles(self):
+        # The refusal must be a wait, not a wall: what the message promises has
+        # to actually happen.
+        from forward_netbox.models import ForwardOwnershipReconciliation
+
+        domains = (
+            ForwardOwnershipReconciliation.Domain.STATUS_TAGS,
+            ForwardOwnershipReconciliation.Domain.VIRTUAL_PARENTS,
+        )
+        for domain in domains:
+            self._reconcile(self.older, domain)
+        self.assertTrue(_ingestion_delete_refusal(self.older))
+
+        for domain in domains:
+            self._reconcile(self.newer, domain)
+
+        self.assertEqual(_ingestion_delete_refusal(self.older), "")
+        self.older.delete()
+        self.assertFalse(ForwardIngestion.objects.filter(pk=self.older.pk).exists())
+        self.assertEqual(
+            ForwardOwnershipReconciliation.objects.filter(sync=self.sync).count(),
+            len(domains),
+            "the surviving rows belong to the newer ingestion and must remain",
+        )
+
+    def test_virtual_parent_claims_still_pin_their_ingestion(self):
+        # Unchanged on purpose: a claim describes a live NetBox device, so its
+        # provenance must survive.
+        from dcim.models import Device
+        from dcim.models import DeviceRole
+        from dcim.models import DeviceType
+        from dcim.models import Manufacturer
+        from dcim.models import Site
+        from django.db.models.deletion import ProtectedError
+
+        from forward_netbox.models import ForwardVirtualParentClaim
+
+        manufacturer = Manufacturer.objects.create(
+            name="Cascade Manufacturer", slug="cascade-manufacturer"
+        )
+        device_type = DeviceType.objects.create(
+            manufacturer=manufacturer, model="Cascade Model", slug="cascade-model"
+        )
+        role = DeviceRole.objects.create(name="Cascade Role", slug="cascade-role")
+        site = Site.objects.create(name="Cascade Site", slug="cascade-site")
+        child = Device.objects.create(
+            name="cascade-child", device_type=device_type, role=role, site=site
+        )
+        parent = Device.objects.create(
+            name="cascade-parent", device_type=device_type, role=role, site=site
+        )
+        ForwardVirtualParentClaim.objects.create(
+            sync=self.sync,
+            device=child,
+            parent_device=parent,
+            ingestion=self.newer,
+            snapshot_id=self.newer.snapshot_id,
+        )
+
+        refusal, expected = _ingestion_delete_refusal_detail(self.newer)
+
+        self.assertIn("ForwardVirtualParentClaim", refusal)
+        self.assertFalse(expected)
+        with self.assertRaises(ProtectedError):
+            self.newer.delete()
+
+    def test_the_baseline_ingestion_is_still_refused_and_still_protected(self):
+        # The baseline protection must not be weakened by any of this, and its
+        # message must stay the baseline one even when the ingestion also holds
+        # current ownership evidence.
+        from django.db.models.deletion import ProtectedError
+
+        from forward_netbox.models import ForwardContributorBaseline
+        from forward_netbox.models import ForwardOwnershipReconciliation
+
+        for domain in (
+            ForwardOwnershipReconciliation.Domain.STATUS_TAGS,
+            ForwardOwnershipReconciliation.Domain.VIRTUAL_PARENTS,
+        ):
+            self._reconcile(self.newer, domain)
+        ForwardContributorBaseline.objects.create(
+            sync=self.sync,
+            ingestion=self.newer,
+            snapshot_id=self.newer.snapshot_id,
+            network_fingerprint="nf",
+            map_set_fingerprint="mf",
+            scope_config_fingerprint="cf",
+            scope_membership_fingerprint="sf",
+            scope_payload_checksum="pc",
+        )
+
+        refusal, expected = _ingestion_delete_refusal_detail(self.newer)
+
+        self.assertIn("is the baseline for this sync", refusal)
+        self.assertTrue(expected)
+        with self.assertRaises(ProtectedError):
+            self.newer.delete()

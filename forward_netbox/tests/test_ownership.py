@@ -121,6 +121,11 @@ class OwnershipControlPlaneTest(TestCase):
                 "forward_netbox.migrations.0036_protect_ownership_provenance"
             ).fake_on_branch
         )
+        self.assertTrue(
+            importlib.import_module(
+                "forward_netbox.migrations.0047_ownership_reconciliation_cascade"
+            ).fake_on_branch
+        )
 
     def test_generation_claim_materializes_and_sync_delete_releases(self):
         result = reconcile_sync_scope_tag_claims(

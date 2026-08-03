@@ -1400,10 +1400,12 @@ def protecting_relations(model_class):
     and Django calls those hidden. Reading protection from it therefore misses
     exactly the relations this plugin uses for ownership evidence:
     `ForwardIngestionProvenanceMixin` declares its ingestion FK as PROTECT with
-    ``related_name="+"``, so `ForwardDeviceIdentity`, `ForwardDeviceTagClaim`,
-    `ForwardVirtualParentClaim` and `ForwardOwnershipReconciliation` were all
-    invisible to protection checks while still refusing the delete in the
-    database.
+    ``related_name="+"``, so `ForwardDeviceIdentity`, `ForwardDeviceTagClaim`
+    and `ForwardVirtualParentClaim` were all invisible to protection checks
+    while still refusing the delete in the database. (The fourth,
+    `ForwardOwnershipReconciliation`, later became CASCADE - it is a child
+    record of the ingestion, not evidence held against it - so discovery still
+    sees it and correctly declines to report it.)
 
     That gap had two customer-visible faces. An ingestion held only by device
     identities reported no refusal at all, so the delete view rendered its wall
