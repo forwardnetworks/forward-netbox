@@ -251,7 +251,9 @@ class PreviousReleasedVersionTest(unittest.TestCase):
         self.assertEqual(self._resolve("2.6.7.dev0"), "2.6.6")
 
     def test_a_dev_marker_does_not_sort_lexicographically(self):
-        payload = {"releases": {"2.6.9": [{"yanked": False}], "2.6.10": [{"yanked": False}]}}
+        payload = {
+            "releases": {"2.6.9": [{"yanked": False}], "2.6.10": [{"yanked": False}]}
+        }
         self.assertEqual(self._resolve("2.6.11.dev0", payload), "2.6.10")
 
     def test_an_unparseable_version_fails_closed(self):
