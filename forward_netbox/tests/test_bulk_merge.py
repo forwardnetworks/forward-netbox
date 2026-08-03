@@ -1115,14 +1115,10 @@ class BulkMergeIntegrationTest(CleanTransactionTestCase):
         # failed its through-table FK, and only a second merge could converge.
         merge_branch(ingestion, user=self.user)
 
-        self.assertTrue(
-            SoftwareVersion.objects.filter(pk=software_version.pk).exists()
-        )
+        self.assertTrue(SoftwareVersion.objects.filter(pk=software_version.pk).exists())
         cve.refresh_from_db()
         self.assertEqual(cve.description, "after")
-        self.assertTrue(
-            cve.affected_software.filter(pk=software_version.pk).exists()
-        )
+        self.assertTrue(cve.affected_software.filter(pk=software_version.pk).exists())
         self.assertFalse(ingestion.issues.filter(phase="merge").exists())
 
     def test_candidate_dependency_closing_a_multihop_cycle_is_rejected(self):
