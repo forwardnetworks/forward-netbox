@@ -19,6 +19,8 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
+import subprocess
 import sys
 import tomllib
 from pathlib import Path
@@ -125,6 +127,52 @@ def check_ui_harness_dependencies() -> str:
     return ", ".join(required)
 
 
+CONSTRAINTS = REPO_ROOT / "constraints.txt"
+
+
+def check_dependency_advisories() -> str:
+    """No pinned dependency may carry a known advisory.
+
+    `pip-audit` ran only in GitHub CI, and an advisory can be published against
+    a version that was clean when it was pinned - nothing in the repository has
+    to change for it to start failing. That turned every open pull request red
+    within a minute of `cryptography` CVE-2026-69247 landing.
+
+    The dangerous case is the release, not the pull request. `release.yml`
+    audits the same file, so an advisory published between the gate passing and
+    the tag being pushed fails *after* the tag exists - and a tag cannot be
+    moved or reused, so the version number is spent. `v2.6.10` and `v2.6.11`
+    were both lost to failures discovered at that point.
+
+    Ten seconds here, ahead of a forty-minute gate, is the cheapest place to
+    find out.
+    """
+    if not CONSTRAINTS.exists():
+        raise PreflightError(
+            "constraints.txt is missing; dependencies cannot be audited"
+        )
+    executable = shutil.which("pip-audit")
+    if executable is None:
+        raise PreflightError(
+            "pip-audit is not installed, so pinned dependencies cannot be audited "
+            "before the gate. Install it (`pip install pip-audit`) or the release "
+            "workflow will be the first thing to notice an advisory."
+        )
+    completed = subprocess.run(
+        [executable, "--progress-spinner", "off", "-r", str(CONSTRAINTS)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stdout or completed.stderr or "").strip()
+        raise PreflightError(
+            "pinned dependencies carry a known advisory, which will fail CI and "
+            f"the release workflow:\n{detail}"
+        )
+    return "no known advisories in constraints.txt"
+
+
 def _git(*arguments: str) -> str:
     import subprocess
 
@@ -207,6 +255,7 @@ def main() -> int:
     try:
         version = check_version_surfaces()
         dependencies = check_ui_harness_dependencies()
+        advisories = check_dependency_advisories()
         evidence_base = check_release_plan_evidence_base(version)
     except PreflightError as exc:
         print(f"release preflight failed: {exc}", file=sys.stderr)
@@ -215,6 +264,7 @@ def main() -> int:
     result = {
         "version": version,
         "ui_harness_dependencies": dependencies,
+        "dependency_advisories": advisories,
         "evidence_base_commit": evidence_base,
     }
     if arguments.json:
@@ -224,6 +274,7 @@ def main() -> int:
         print(
             f"release preflight passed: UI harness dependencies present ({dependencies})"
         )
+        print(f"release preflight passed: {advisories}")
         print(f"release preflight passed: evidence base commit {evidence_base}")
     return 0
 
