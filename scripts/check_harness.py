@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -1093,6 +1094,107 @@ def _check_release_anchor_tracks_current_release(failures: list[str]) -> None:
         )
 
 
+def _documentation_bridge_rule():
+    """Return the release verifier's own post-release bridge path rule.
+
+    The rule is loaded from the module beside this one rather than restated
+    here. A second copy drifts the moment either side moves, and a harness
+    check that passes while the verifier fails is worse than no check at all -
+    the entire value of checking early is that the two agree.
+    """
+    path = Path(__file__).resolve().parent / "verify_release_provenance.py"
+    spec = importlib.util.spec_from_file_location(
+        "forward_netbox_release_provenance_rule",
+        path,
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load release provenance rule from {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module._is_documentation_path
+
+
+def _check_post_release_bridge_is_documentation_only(failures: list[str]) -> None:
+    """The commit the anchor pins must be a documentation-only bridge.
+
+    `_require_prior_release_bridge` requires the first first-parent commit after
+    `PRIOR_RELEASE_TAG` - the bridge - to touch documentation only. That slot is
+    fixed by definition: the bridge *is* the first commit after the tag, so once
+    a commit carrying anything else lands there no later commit can reclaim it,
+    and the anchor cannot be re-pointed past it without reintroducing the
+    expiring-review-range problem that spent `v2.6.10` and `v2.6.11`.
+
+    `v2.7.0` was promoted without first being archived, so the promotion commit
+    took the slot. Every release after it became unverifiable and `2.7.1` was
+    blocked until the rule was widened - and widening made that ordering
+    non-fatal, not correct. Nothing caught it at the time:
+    `_check_release_anchor_tracks_current_release` asserts only that the anchor
+    names the current release, never what the bridge contains, and the
+    re-anchoring pull request pinned a commit that could never satisfy the
+    check with nothing re-running the verifier.
+
+    Running the verifier's own rule against the pinned pairing on every harness
+    run moves that failure to where it is still one commit away from being
+    fixed, instead of to a tag that cannot be moved or deleted.
+    """
+    provenance_path = REPO_ROOT / "scripts/verify_release_provenance.py"
+    if not provenance_path.exists():
+        return
+
+    text = provenance_path.read_text(encoding="utf-8")
+    tag_match = re.search(
+        r'^PRIOR_RELEASE_TAG = "(?P<tag>v[0-9]+\.[0-9]+\.[0-9]+)"$',
+        text,
+        re.MULTILINE,
+    )
+    bridge_match = re.search(
+        r'^PRIOR_POST_RELEASE_DOC_COMMIT = "(?P<commit>[0-9a-f]{40})"$',
+        text,
+        re.MULTILINE,
+    )
+    if tag_match is None or bridge_match is None:
+        failures.append(
+            "release provenance must pin PRIOR_RELEASE_TAG and a 40-character "
+            "PRIOR_POST_RELEASE_DOC_COMMIT so the post-release bridge shape can "
+            "be checked before a tag depends on it"
+        )
+        return
+
+    tag = tag_match.group("tag")
+    bridge = bridge_match.group("commit")
+
+    try:
+        is_documentation_path = _documentation_bridge_rule()
+    except Exception as exc:
+        failures.append(
+            "release provenance bridge rule is not loadable, so the post-release "
+            f"bridge cannot be checked: {exc}"
+        )
+        return
+
+    changed = _git_names("diff", "--name-only", tag, bridge)
+    if not changed:
+        failures.append(
+            f"post-release bridge {bridge[:10]} against {tag} lists no changed "
+            "paths: check out the full history and tags (fetch-depth: 0) or "
+            "correct the anchor. An unreadable or empty bridge is not evidence "
+            "that the bridge is documentation-only"
+        )
+        return
+
+    disqualifying = sorted(path for path in changed if not is_documentation_path(path))
+    if disqualifying:
+        failures.append(
+            f"post-release bridge {bridge[:10]} after {tag} is not "
+            "documentation-only; these paths disqualify it: "
+            f"{', '.join(disqualifying)}. The bridge is the first first-parent "
+            "commit after the tag, so this slot cannot be reclaimed by a later "
+            "commit and the anchor cannot be re-pointed past it: the close-out "
+            "must land its documentation commit (archive, then promote) as the "
+            "first commit after the tag"
+        )
+
+
 def _check_standard_release_tag_flow(failures: list[str]) -> None:
     paths = {
         "release": REPO_ROOT / "scripts/release.py",
@@ -1181,6 +1283,7 @@ def main() -> int:
     _check_sensitive_guard_wiring(failures)
     _check_release_toolchain_lock(failures)
     _check_release_anchor_tracks_current_release(failures)
+    _check_post_release_bridge_is_documentation_only(failures)
     _check_standard_release_tag_flow(failures)
     _check_publish_gate_placement(failures)
     if args.base:
