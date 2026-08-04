@@ -204,6 +204,11 @@ class ResolvedExecutionContract:
     diff_revision: ResolvedQueryRevision | None
     full_eligible: bool
     full_reason_code: str
+    # True when this map runs a full query by ID with no commit pinned, letting
+    # Forward resolve the latest commit. Not a defect - it is the intended path
+    # for an ID-bound map - but the executed revision is whatever is at head, so
+    # reporting says so instead of implying a pinned revision.
+    full_unpinned_head: bool
     diff_reason_code: str
     coalesce_fields: tuple[tuple[str, ...], ...]
     variant: str
@@ -373,6 +378,31 @@ def resolve_execution_contract(
     is_raw_query = getattr(spec, "query", None) is not None and not getattr(
         spec, "run_query_id", None
     )
+    # A map bound directly to a query ID needs no commit to run a FULL query.
+    # Forward's execution endpoint takes `queryId` and resolves the latest commit
+    # server-side; `_commit_id_for_nqe_execution` already omits an empty or
+    # "head" `commitId` from the POST body, and execution never sends a path, so
+    # the bound ID always runs the query the operator chose.
+    #
+    # If a commit is not specified it is not required. Demanding one turned a
+    # repository reorganisation, a permissions gap, or a single history lookup
+    # that did not answer into `unresolved_full_commit` on every enabled map -
+    # and, via the preflight in `_build_workload_jobs`, into a sync that planned
+    # zero jobs and applied nothing.
+    #
+    # This relaxes ONLY the full contract. Diff execution is not comparable: a
+    # diff names two revisions by definition, so `diff_reason_code` below still
+    # requires a concrete `diff_commit_id` and is unchanged.
+    #
+    # The shape protection is NOT dropped with the commit: the source, declared
+    # parameter, and data-file checks below still run. A built-in map carries its
+    # bundled query source and hash, so its declarations are still parsed and
+    # still matched against the parameters this plugin injects.
+    runs_by_direct_query_id = bool(getattr(spec, "query_id", None))
+    # What this plugin holds locally: the bundled `.nqe` for a built-in map, the
+    # stored text for a map that carries its own query. A pinned commit also
+    # fills it in, because the committed source is read back for that revision.
+    has_local_full_source = bool(normalize_query_source(full_source))
     full_reason_code = "eligible"
     if is_raw_query:
         if full_declarations is None:
@@ -383,8 +413,20 @@ def resolve_execution_contract(
             full_reason_code = "raw_query"
     elif not full_revision.query_id:
         full_reason_code = "unresolved_query_id"
-    elif not full_revision.commit_id or full_revision.commit_id == "head":
+    elif not runs_by_direct_query_id and (
+        not full_revision.commit_id or full_revision.commit_id == "head"
+    ):
         full_reason_code = "unresolved_full_commit"
+    elif runs_by_direct_query_id and not has_local_full_source:
+        # An ID-bound map whose query this plugin does not hold a copy of. A
+        # built-in map never lands here: it ships its `.nqe`, so the checks below
+        # verify it for free. This is the operator's own query, bound by ID and
+        # never stored in NetBox - there is no local expectation to check the
+        # server's copy against, and the previous "verification" was circular
+        # (it hashed the fetched source and compared it to itself). Reported as
+        # its own code rather than folded into `eligible`, so an operator can see
+        # which maps are executed on trust.
+        full_reason_code = "remote_source_only"
     elif not full_revision.source_verified:
         full_reason_code = "unverified_full_source"
     elif full_declarations is None:
@@ -430,8 +472,13 @@ def resolve_execution_contract(
             "eligible",
             "raw_query",
             "missing_variant_data_hash",
+            "remote_source_only",
         },
         full_reason_code=full_reason_code,
+        full_unpinned_head=bool(
+            runs_by_direct_query_id
+            and (not full_revision.commit_id or full_revision.commit_id == "head")
+        ),
         diff_reason_code=diff_reason_code,
         diff_revision=diff_revision,
         coalesce_fields=tuple(
@@ -457,7 +504,12 @@ def resolve_execution_contract(
             or QUERY_CONTRACT_VERSION
         ),
         diff_eligible=(
-            diff_reason_code == "eligible" and full_reason_code == "eligible"
+            diff_reason_code == "eligible"
+            # `remote_source_only` is a full-side eligible outcome, not a
+            # degradation, so it must not silently demote a working diff to a
+            # full-only sync. The diff side is still verified on its own terms:
+            # its commit is concrete and its source is read back and checked.
+            and full_reason_code in {"eligible", "remote_source_only"}
         ),
         reason_code=(
             full_reason_code if full_reason_code != "eligible" else diff_reason_code

@@ -79,13 +79,15 @@ def _spec(**overrides):
 
 
 class QueryIdBindingResolutionTest(SimpleTestCase):
-    def test_an_unpinned_customer_map_resolves_head(self):
-        [resolved] = resolve_query_specs_for_client([_spec()], _Client())
-        self.assertEqual(resolved.commit_id, HEAD)
+    def test_an_unpinned_customer_map_reads_no_commit_at_all(self):
+        client = _Client()
+        [resolved] = resolve_query_specs_for_client([_spec()], client)
+        self.assertIsNone(resolved.commit_id)
+        self.assertEqual(client.committed_lookups, [])
 
     def test_the_resolved_contract_is_executable(self):
-        # The whole point: a resolved map must not be refused as
-        # unresolved_full_commit, which is what emptied a customer's sync.
+        # The whole point: a bound map must not be refused, which is what
+        # emptied a customer's sync.
         [resolved] = resolve_query_specs_for_client([_spec()], _Client())
         contract = resolve_execution_contract(resolved, effective_parameters={})
         self.assertNotEqual(contract.full_reason_code, "unresolved_full_commit")
@@ -94,27 +96,43 @@ class QueryIdBindingResolutionTest(SimpleTestCase):
             f"contract refused the map: {contract.full_reason_code}",
         )
 
+    def test_a_map_running_a_query_we_do_not_hold_says_so(self):
+        # This map stores no query text, so there is nothing local to verify the
+        # server's copy against. Reported as its own code rather than hidden
+        # inside `eligible`, and never as a refusal.
+        [resolved] = resolve_query_specs_for_client([_spec()], _Client())
+        contract = resolve_execution_contract(resolved, effective_parameters={})
+        self.assertEqual(contract.full_reason_code, "remote_source_only")
+        self.assertTrue(contract.full_unpinned_head)
+
     def test_a_pinned_commit_is_preserved(self):
         [resolved] = resolve_query_specs_for_client(
             [_spec(commit_id="pinned_commit_value")], _Client()
         )
         self.assertEqual(resolved.commit_id, "pinned_commit_value")
 
-    def test_a_path_resolving_to_another_query_is_refused(self):
-        client = _Client(query_id="Q_someone_else")
-        [resolved] = resolve_query_specs_for_client([_spec()], client)
-        self.assertFalse(resolved.commit_id)
-
-    def test_a_repository_failure_leaves_the_map_unresolved(self):
+    def test_a_repository_failure_can_no_longer_refuse_the_map(self):
+        # The failure mode being removed. A repository that will not answer used
+        # to leave the map with no commit and the contract refused it; now
+        # nothing asks the repository anything on this path.
         class _Failing(_Client):
             def get_committed_nqe_query(self, **kwargs):
                 raise RuntimeError("repository unavailable")
 
-        [resolved] = resolve_query_specs_for_client([_spec()], _Failing())
-        self.assertFalse(resolved.commit_id)
+            def get_nqe_repository_query_index(self, **kwargs):
+                raise RuntimeError("repository unavailable")
 
-    def test_a_map_without_any_path_is_left_alone(self):
+        [resolved] = resolve_query_specs_for_client([_spec()], _Failing())
+        contract = resolve_execution_contract(resolved, effective_parameters={})
+
+        self.assertIsNone(resolved.commit_id)
+        self.assertTrue(contract.full_eligible)
+
+    def test_a_map_without_any_path_is_still_runnable(self):
         [resolved] = resolve_query_specs_for_client(
             [_spec(resolved_query_path=None)], _Client()
         )
-        self.assertFalse(resolved.commit_id)
+        contract = resolve_execution_contract(resolved, effective_parameters={})
+
+        self.assertIsNone(resolved.commit_id)
+        self.assertTrue(contract.full_eligible)
