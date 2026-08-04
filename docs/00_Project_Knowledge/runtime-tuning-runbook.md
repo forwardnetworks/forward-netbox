@@ -128,7 +128,8 @@ Delete-heavy work may appear later than early shard staging/apply. Do not assume
 When delete/prune phase begins, capture:
 
 - deleted count
-- `failed_change_count`
+- `failed_change_count` (retryable failures only) and `skipped_change_count`
+  (rows NetBox refused on its own validation rules, which no rerun can satisfy)
 - first shard index where deletes are observed
 
 If prune/delete phase starts and delete count remains zero unexpectedly, escalate with the sync, ingestion, and NetBox job IDs plus the latest hourly metrics.

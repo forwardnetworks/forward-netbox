@@ -69,6 +69,11 @@ class Command(BaseCommand):
         self.stdout.write(f"Ingestion {ingestion.pk} ({ingestion.sync.name})")
         self.stdout.write(f"  applied            : {ingestion.applied_change_count}")
         self.stdout.write(f"  failed             : {failed}")
+        # Rule rejections are already skipped and need no acceptance; showing
+        # them keeps the issue list below accountable.
+        self.stdout.write(
+            f"  skipped (rule)     : {int(ingestion.skipped_change_count or 0)}"
+        )
         self.stdout.write(f"  baseline_ready     : {ingestion.baseline_ready}")
         self.stdout.write(f"  merge_applied_at   : {ingestion.merge_applied_at}")
         for issue in issues:

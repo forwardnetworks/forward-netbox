@@ -60,6 +60,14 @@
       <i class="mdi mdi-alert-circle me-2" aria-hidden="true"></i>
       <div>{% trans "The latest sync recorded failures and cannot confirm convergence. Resolve the failures, then rerun the same snapshot." %}</div>
     </div>
+  {% elif latest_sync_evidence.status == "unsatisfiable_rows" %}
+    <div class="alert alert-warning d-flex align-items-center" role="alert">
+      <i class="mdi mdi-alert me-2" aria-hidden="true"></i>
+      <div>
+        {% blocktrans with n=latest_sync_evidence.skipped %}The latest sync merged and promoted its baseline, but {{ n }} row(s) were refused by NetBox validation rules and skipped.{% endblocktrans %}
+        {% trans "Re-running cannot change a validation rejection, because the rule belongs to NetBox rather than the incoming data. The rows are recorded as ingestion issues; drift is measured, and convergence stays unconfirmed until they are resolved in NetBox." %}
+      </div>
+    </div>
   {% elif latest_sync_evidence.status == "incomplete" %}
     <div class="alert alert-warning d-flex align-items-center" role="alert">
       <i class="mdi mdi-progress-clock me-2" aria-hidden="true"></i>
@@ -178,6 +186,7 @@
             <tr><th scope="row">{% trans "Updated" %}</th><td>{{ latest_sync_evidence.updated }}</td></tr>
             <tr><th scope="row">{% trans "Deleted" %}</th><td>{{ latest_sync_evidence.deleted }}</td></tr>
             <tr><th scope="row">{% trans "Failed" %}</th><td>{{ latest_sync_evidence.failed }}</td></tr>
+            <tr><th scope="row">{% trans "Skipped (rule rejections)" %}</th><td>{{ latest_sync_evidence.skipped }}</td></tr>
             <tr><th scope="row">{% trans "Completed" %}</th><td>{{ latest_sync_evidence.completed_at|placeholder }}</td></tr>
           </table>
         </div>
