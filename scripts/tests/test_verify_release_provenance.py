@@ -597,6 +597,63 @@ class ReleaseProvenanceTest(unittest.TestCase):
         ):
             self._verify(git=git)
 
+    def _bridge_diff(self, changed):
+        def git(*arguments):
+            if arguments == (
+                "diff",
+                "--name-only",
+                self.prior_release_commit,
+                provenance.PRIOR_POST_RELEASE_DOC_COMMIT,
+            ):
+                return changed
+            return self._git(*arguments)
+
+        return git
+
+    def test_accepts_post_release_bridge_that_archives_the_plan(self):
+        git = self._bridge_diff("docs/03_Plans/completed/2026-01-01-release.md")
+
+        result = self._verify(git=git)
+
+        self.assertEqual(result["release_commit"], self.release_commit)
+
+    def test_accepts_post_release_bridge_that_promotes_the_release(self):
+        # The shape `release.py --finish` actually produces. `v2.7.0` was
+        # promoted without being archived, so this commit took the bridge slot;
+        # rejecting it made every later release unverifiable, because the bridge
+        # is fixed at the first commit after the tag and cannot be reclaimed.
+        git = self._bridge_diff(
+            "CHANGELOG.md\nREADME.md\ndocs/README.md\ndocs/01_User_Guide/README.md"
+        )
+
+        result = self._verify(git=git)
+
+        self.assertEqual(result["release_commit"], self.release_commit)
+
+    def test_rejects_post_release_bridge_carrying_code(self):
+        git = self._bridge_diff("CHANGELOG.md\nforward_netbox/models.py")
+
+        with self.assertRaisesRegex(
+            provenance.ProvenanceError, "post-release bridge must be documentation-only"
+        ):
+            self._verify(git=git)
+
+    def test_rejects_post_release_bridge_carrying_a_workflow(self):
+        git = self._bridge_diff("docs/README.md\n.github/workflows/release.yml")
+
+        with self.assertRaisesRegex(
+            provenance.ProvenanceError, "post-release bridge must be documentation-only"
+        ):
+            self._verify(git=git)
+
+    def test_rejects_empty_post_release_bridge(self):
+        git = self._bridge_diff("")
+
+        with self.assertRaisesRegex(
+            provenance.ProvenanceError, "post-release bridge must be documentation-only"
+        ):
+            self._verify(git=git)
+
 
 class GitHubReleaseControlsTest(unittest.TestCase):
 
