@@ -572,6 +572,34 @@ def _first_parent_commits(start: str, end: str) -> list[str]:
     ]
 
 
+# Exactly which paths a post-release commit may touch. The rule is the intent
+# the narrower predecessor was reaching for - the bridge carries no executable
+# code - expressed as an allowlist rather than as a single hard-coded filename.
+DOCUMENTATION_BRIDGE_FILES = frozenset({"CHANGELOG.md", "README.md"})
+
+
+def _is_documentation_path(path: str) -> bool:
+    """Return whether a post-release bridge may legitimately touch ``path``.
+
+    Two commit shapes legitimately follow a release, and the previous rule
+    admitted only the first: archiving the release plan under
+    ``docs/03_Plans/completed/``, and promoting the release candidate, which
+    rewrites the changelog and the three compatibility tables. `v2.7.0` was
+    promoted without being archived, so promotion took the slot the check
+    reserved for archival and no later commit could reclaim it - the bridge is
+    fixed at the first commit after the tag. That made every subsequent release
+    unverifiable, which is the same shape of unsatisfiable pairing that spent
+    `v2.6.10` and `v2.6.11`.
+
+    Widening to a path allowlist accepts both shapes and still refuses anything
+    executable: a bridge touching plugin code, scripts, or workflows fails
+    exactly as before.
+    """
+    if path in DOCUMENTATION_BRIDGE_FILES:
+        return True
+    return path.startswith("docs/") and path.endswith(".md")
+
+
 def _require_prior_release_bridge(release_commit: str) -> list[str]:
     prior_release = _require_annotated_tag(PRIOR_RELEASE_TAG)
     lineage = _first_parent_commits(prior_release, release_commit)
@@ -591,11 +619,7 @@ def _require_prior_release_bridge(release_commit: str) -> list[str]:
         ).splitlines()
         if line
     ]
-    if (
-        len(changed) != 1
-        or not changed[0].startswith("docs/03_Plans/completed/")
-        or not changed[0].endswith(".md")
-    ):
+    if not changed or not all(_is_documentation_path(path) for path in changed):
         raise ProvenanceError(
             f"post-release bridge must be documentation-only; changed={changed}"
         )
