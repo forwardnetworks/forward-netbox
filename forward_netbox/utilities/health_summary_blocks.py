@@ -194,6 +194,7 @@ def ingestion_summary(ingestion):
         "issue_count": ingestion.issues.count(),
         "applied_change_count": ingestion.applied_change_count,
         "failed_change_count": ingestion.failed_change_count,
+        "skipped_change_count": ingestion.skipped_change_count,
         "analysis_summary": ingestion.get_analysis_summary(),
         "execution_summary": execution_summary,
         "workload_preview": ingestion.get_workload_summary(),
@@ -379,19 +380,26 @@ def throughput_summary(sync, latest_ingestion):
     stage_job = getattr(latest_ingestion, "job", None)
     merge_job = getattr(latest_ingestion, "merge_job", None)
     failed = int(getattr(latest_ingestion, "failed_change_count", 0) or 0)
+    skipped = int(getattr(latest_ingestion, "skipped_change_count", 0) or 0)
     issue_count = latest_ingestion.issues.count() if latest_ingestion is not None else 0
+    if failed:
+        message = "Latest ingestion has failed changes and remains incomplete."
+    elif skipped:
+        # Completed, baseline promoted, and permanently short of these rows.
+        message = (
+            f"Latest ingestion skipped {skipped} row(s) refused by NetBox "
+            "validation rules; the merge completed over them."
+        )
+    elif latest_ingestion is not None:
+        message = "Latest ingestion branch and job state is available."
+    else:
+        message = "No ingestion is available yet."
     return {
         "available": latest_ingestion is not None,
-        "status": "warn" if failed else "pass" if latest_ingestion else "info",
-        "message": (
-            "Latest ingestion has failed changes and remains incomplete."
-            if failed
-            else (
-                "Latest ingestion branch and job state is available."
-                if latest_ingestion is not None
-                else "No ingestion is available yet."
-            )
+        "status": (
+            "warn" if failed or skipped else "pass" if latest_ingestion else "info"
         ),
+        "message": message,
         "ingestion_id": getattr(latest_ingestion, "pk", None),
         "branch": getattr(branch, "name", ""),
         "branch_status": getattr(branch, "status", ""),
@@ -401,6 +409,7 @@ def throughput_summary(sync, latest_ingestion):
             getattr(latest_ingestion, "applied_change_count", 0) or 0
         ),
         "failed_change_count": failed,
+        "skipped_change_count": skipped,
         "issue_count": issue_count,
         "worker_timeout_seconds": configured_rq_default_timeout(),
         "forward_job_timeout_seconds": effective_forward_job_timeout(),

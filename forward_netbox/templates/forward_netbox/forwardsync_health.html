@@ -716,8 +716,8 @@
             <td>{{ health.latest_ingestion.merge_job_status|placeholder }}</td>
           </tr>
           <tr>
-            <th scope="row">{% trans "Applied / failed changes" %}</th>
-            <td>{{ health.latest_ingestion.applied_change_count|placeholder }} / {{ health.latest_ingestion.failed_change_count|placeholder }}</td>
+            <th scope="row">{% trans "Applied / failed / skipped changes" %}</th>
+            <td>{{ health.latest_ingestion.applied_change_count|placeholder }} / {{ health.latest_ingestion.failed_change_count|placeholder }} / {{ health.latest_ingestion.skipped_change_count|placeholder }}</td>
           </tr>
           <tr>
             <th scope="row">{% trans "Ingestion issues" %}</th>

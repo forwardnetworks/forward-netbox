@@ -499,18 +499,21 @@ def record_change_totals(
     *,
     applied,
     failed,
+    skipped=0,
     created=0,
     updated=0,
     deleted=0,
 ):
     ingestion.applied_change_count = max(0, int(applied))
     ingestion.failed_change_count = max(0, int(failed))
+    ingestion.skipped_change_count = max(0, int(skipped))
     ingestion.created_change_count = max(0, int(created))
     ingestion.updated_change_count = max(0, int(updated))
     ingestion.deleted_change_count = max(0, int(deleted))
     ingestion.__class__.objects.filter(pk=ingestion.pk).update(
         applied_change_count=ingestion.applied_change_count,
         failed_change_count=ingestion.failed_change_count,
+        skipped_change_count=ingestion.skipped_change_count,
         created_change_count=ingestion.created_change_count,
         updated_change_count=ingestion.updated_change_count,
         deleted_change_count=ingestion.deleted_change_count,
