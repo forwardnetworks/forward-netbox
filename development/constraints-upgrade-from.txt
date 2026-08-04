@@ -14,7 +14,7 @@
 #
 # Branching is deliberately absent: the previous release's own metadata pins it,
 # and letting that resolve is the point.
-cryptography==49.0.0
+cryptography==50.0.0
 httpx==0.28.1
 netbox-cisco-aci==0.4.0
 netbox-dlm==0.6.0
