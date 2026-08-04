@@ -376,6 +376,9 @@ def sync_health_summary(sync):
                 ),
             )
         )
+    fetch_failure_check = _fetch_failure_check(latest_ingestion)
+    if fetch_failure_check is not None:
+        checks.append(fetch_failure_check)
     if ownership_finalization["required_domains"]:
         if ownership_finalization["complete"]:
             ownership_status = "pass"
@@ -455,10 +458,10 @@ def sync_health_summary(sync):
 
 _CONTRACT_ISSUE_REMEDIATION = {
     "unresolved_full_commit": (
-        "no commit is stored on the map. This is the normal state for a map "
-        "bound by query ID or repository path, because head is resolved at "
-        "sync time and not persisted, so it does not by itself mean the model "
-        "will be skipped. Pin a commit only if you need the revision frozen"
+        "no commit is stored on the path-bound map. Its commit is resolved from "
+        "the repository path at sync time and not persisted, so this alone does "
+        "not skip the model. Bind the map to a query ID (Resolve to Query ID) if "
+        "you want it to run without depending on the path resolving"
     ),
     "identical_full_diff_commit": (
         "the full and diff contracts point at the same commit, so a diff would "
@@ -471,15 +474,17 @@ _CONTRACT_ISSUE_REMEDIATION = {
 }
 
 
-# `unresolved_full_commit` here means "no commit stored on the map", which is the
-# normal resting state for a query-ID or path binding: head is resolved during
-# the sync and never written back. It is NOT the runtime execution contract's
-# reason code of the same name, which does mean the model was refused.
+# `unresolved_full_commit` here means "no commit stored on a path-bound map",
+# which is the normal resting state for that binding: the commit is resolved
+# during the sync and never written back. It is NOT the runtime execution
+# contract's reason code of the same name.
 #
 # Proven by a customer bundle: 32 of 32 maps reported this both while the sync
 # applied nothing AND after the same sync applied 24,748 changes. A signal that
 # is identical when broken and when healthy cannot gate a sync, and reporting it
-# as a failure sent an investigation down the wrong path.
+# as a failure sent an investigation down the wrong path. Whether a run actually
+# fetched nothing is answered by `_fetch_failure_check`, which reads what the
+# last run really did instead of inferring it from persisted map state.
 _NON_BLOCKING_CONTRACT_ISSUES = {"unresolved_full_commit"}
 
 
@@ -521,12 +526,89 @@ def _query_contract_preflight_message(issues):
     blocking = _query_contract_preflight_status(issues) == "fail"
     lead = (
         "Enabled NQE maps have persisted execution contract issues that will "
-        "skip those models. "
+        "skip those models, so those models will not sync until this is "
+        "resolved. Re-resolve the affected maps (Refresh Query IDs, or "
+        "republish the bundled queries) and confirm the Forward account can "
+        "read the org query repository. "
         if blocking
-        else "Enabled NQE maps have no stored commit. This is informational: "
-        "head is resolved at sync time. "
+        else "Path-bound NQE maps have no stored commit. This is "
+        "informational: their commit is resolved from the repository path at "
+        "sync time. Maps bound to a query ID are not listed here because they "
+        "need no commit. "
     )
     return lead + " ".join(parts)
+
+
+# The refusal codes the execution contract can report per map. Support needs the
+# family named on the page, because the code itself only reaches the job log.
+_FETCH_CONTRACT_REASON_CODES = (
+    "unresolved_query_id",
+    "unresolved_full_commit",
+    "unverified_full_source",
+    "unverified_full_declarations",
+    "unsupported_full_parameters",
+)
+
+
+def _fetch_failure_check(latest_ingestion):
+    """What the last run actually fetched, not what the maps look like at rest.
+
+    A run in which every model failed to fetch applies nothing. That outcome was
+    reported only as a `warn` row saying "1 issue(s)", beside a contract check
+    that said "informational" - so consecutive dead runs read as healthy and a
+    human skipped the line that mattered. Severity here follows the consequence:
+    nothing fetched is blocking, some models fetched is a warning that names
+    them.
+    """
+    if latest_ingestion is None:
+        return None
+    rows = [
+        row
+        for row in (getattr(latest_ingestion, "model_results", None) or [])
+        if isinstance(row, dict)
+    ]
+    if not rows:
+        return None
+    attempted = {str(row.get("model") or "") for row in rows} - {""}
+    failed = sorted(
+        {
+            str(row.get("model") or "")
+            for row in rows
+            if int(row.get("failure_count") or 0) > 0
+        }
+        - {""}
+    )
+    if not failed:
+        return None
+    sample = ", ".join(failed[:3])
+    if len(failed) > 3:
+        sample += f", +{len(failed) - 3} more"
+    remedy = (
+        "Re-resolve the affected maps (Refresh Query IDs, or republish the "
+        "bundled queries) and confirm the Forward account can read the org "
+        "query repository, then re-run. The job log names the refusal for each "
+        f"map ({', '.join(_FETCH_CONTRACT_REASON_CODES)})."
+    )
+    if len(failed) >= len(attempted):
+        return _check(
+            name="Latest run fetch",
+            status="fail",
+            message=(
+                f"Every enabled model failed to fetch on ingestion "
+                f"{latest_ingestion.pk} ({len(failed)} of {len(attempted)}) "
+                f"[{sample}]. That run applied nothing, and nothing will sync "
+                f"while this persists. {remedy}"
+            ),
+        )
+    return _check(
+        name="Latest run fetch",
+        status="warn",
+        message=(
+            f"{len(failed)} of {len(attempted)} model(s) failed to fetch on "
+            f"ingestion {latest_ingestion.pk} [{sample}], so those models did "
+            f"not sync. {remedy}"
+        ),
+    )
 
 
 def _persisted_query_contract_preflight(maps):
@@ -534,7 +616,14 @@ def _persisted_query_contract_preflight(maps):
     for query_map in maps:
         full_commit_id = str(getattr(query_map, "commit_id", "") or "").strip()
         diff_commit_id = str(getattr(query_map, "diff_commit_id", "") or "").strip()
-        if query_map.execution_mode != "query" and (
+        # A map bound to a query ID needs no commit at all: the full query runs
+        # by ID and Forward resolves the latest commit server-side, so an empty
+        # `commit_id` is the intended resting state and not an issue to report.
+        # Reporting it produced one indistinguishable row per enabled map - 32
+        # of them on one support bundle - which buried the rows that mattered.
+        # A path-bound map is different: its commit is resolved from the path at
+        # sync time, so an empty commit there is still worth stating.
+        if query_map.execution_mode == "query_path" and (
             not full_commit_id or full_commit_id == "head"
         ):
             issues.append(

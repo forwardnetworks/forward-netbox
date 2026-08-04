@@ -1883,6 +1883,7 @@ class ForwardQueryFetcher:
                         rows,
                         delete_rows,
                         coalesce_fields,
+                        contract=contract,
                     )
                 break
             except (
@@ -2205,13 +2206,40 @@ class ForwardQueryFetcher:
         rows: list[dict],
         delete_rows: list[dict],
         coalesce_fields: list[list[str]],
+        contract=None,
     ) -> None:
+        # A map bound to a query ID runs at whatever Forward has at head, so the
+        # row shape is confirmed here, against the rows actually returned, not
+        # by pre-reading a commit. Name the map when it fails: a bare
+        # "Row for `dcim.device` is missing required fields" does not say which
+        # of several enabled maps produced it, and this failure stops one model
+        # rather than the whole run.
         for row in rows:
-            validate_row_shape_for_model(model_string, row, coalesce_fields)
+            self._validate_row_shape(model_string, row, coalesce_fields, contract)
         for row in delete_rows:
-            validate_row_shape_for_model(model_string, row, coalesce_fields)
+            self._validate_row_shape(model_string, row, coalesce_fields, contract)
         if model_string == "dcim.virtualchassis":
             self._validate_virtual_chassis_positions(rows)
+
+    def _validate_row_shape(self, model_string, row, coalesce_fields, contract) -> None:
+        try:
+            validate_row_shape_for_model(model_string, row, coalesce_fields)
+        except ForwardQueryError as exc:
+            if contract is None:
+                raise
+            query_name = getattr(contract, "query_name", "") or model_string
+            map_id = getattr(contract, "map_id", None)
+            revision = (
+                "unpinned head"
+                if getattr(contract, "full_unpinned_head", False)
+                else "the pinned commit"
+            )
+            raise ForwardQueryError(
+                f"{exc} Returned by map `{query_name}`"
+                f"{f' [{map_id}]' if map_id is not None else ''} running at "
+                f"{revision}. The query no longer returns the fields "
+                f"{model_string} requires; re-resolve or republish that query."
+            ) from exc
 
     def _validate_virtual_chassis_positions(self, rows: list[dict]) -> None:
         seen_positions = {}

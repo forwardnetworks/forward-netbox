@@ -284,8 +284,17 @@ select {endpoint: endpoint.name}
                 "unsupported_diff_ownership",
                 True,
             ),
-            "unpinned_full": (
-                replace(_eligible_spec(), commit_id=None),
+            # Only a PATH-bound map still needs a commit: its revision is
+            # resolved from the repository path. An ID-bound map runs by ID and
+            # Forward resolves head, so it is covered by the eligibility tests
+            # below rather than here.
+            "unpinned_full_path_bound": (
+                replace(
+                    _eligible_spec(),
+                    query_id=None,
+                    query_path="/Forward/forward_locations",
+                    commit_id=None,
+                ),
                 "unresolved_full_commit",
                 False,
             ),
@@ -392,14 +401,62 @@ select {name: x}
         self.assertFalse(contract.full_eligible)
         self.assertEqual(contract.full_reason_code, "unsupported_full_parameters")
 
-    def test_map_without_full_commit_is_unresolved_full(self):
+    def test_path_bound_map_without_full_commit_is_unresolved_full(self):
         contract = _contract(
-            replace(_eligible_spec(), commit_id=""),
+            replace(
+                _eligible_spec(),
+                query_id=None,
+                query_path="/Forward/forward_locations",
+                commit_id="",
+            ),
             effective_parameters={"scope": []},
         )
 
         self.assertEqual(contract.full_reason_code, "unresolved_full_commit")
         self.assertFalse(contract.full_eligible)
+
+    def test_query_id_bound_map_runs_full_without_any_commit(self):
+        """Forward resolves the latest commit for a query ID server-side.
+
+        Requiring a pre-read commit here is what turned one repository move or
+        one failed history lookup into `unresolved_full_commit` on every enabled
+        map, and the preflight in `_build_workload_jobs` then planned zero jobs
+        for the whole sync. There is nothing to resolve on this path.
+        """
+        for commit_id in (None, "", "head"):
+            with self.subTest(commit_id=commit_id):
+                contract = _contract(
+                    replace(_eligible_spec(), commit_id=commit_id),
+                    effective_parameters={"scope": []},
+                )
+
+                self.assertEqual(contract.full_reason_code, "eligible")
+                self.assertTrue(contract.full_eligible)
+                self.assertTrue(contract.full_unpinned_head)
+
+    def test_a_pinned_query_id_map_is_not_reported_as_unpinned_head(self):
+        self.assertFalse(_contract().full_unpinned_head)
+
+    def test_dropping_the_commit_does_not_drop_the_shape_checks(self):
+        """The commit went away; the declaration and source checks did not.
+
+        This is the protection the commit requirement was standing in for, and
+        it still runs for an ID-bound map because a built-in carries its bundled
+        source and hash.
+        """
+        oversupplied = _contract(
+            replace(_eligible_spec(), commit_id=None),
+            effective_parameters={"scope": [], "extra": True},
+        )
+        self.assertEqual(oversupplied.full_reason_code, "unsupported_full_parameters")
+        self.assertFalse(oversupplied.full_eligible)
+
+        drifted = _contract(
+            replace(_eligible_spec(), commit_id=None, full_source_sha256="deadbeef"),
+            effective_parameters={"scope": []},
+        )
+        self.assertEqual(drifted.full_reason_code, "unverified_full_source")
+        self.assertFalse(drifted.full_eligible)
 
     def test_full_parameter_set_must_match_exactly(self):
         contract = _contract(
@@ -640,8 +697,15 @@ select {name: x}
                 {"scope": [], "extra": True},
                 "unsupported_full_parameters",
             ),
-            "query_id_without_pinned_full_commit": (
-                replace(_eligible_spec(), commit_id=""),
+            # A query-ID map without a commit is no longer a rejection: it runs
+            # by ID at head. A PATH-bound map without one still is.
+            "path_bound_without_resolved_commit": (
+                replace(
+                    _eligible_spec(),
+                    query_id=None,
+                    query_path="/Forward/forward_locations",
+                    commit_id="",
+                ),
                 {"scope": []},
                 "unresolved_full_commit",
             ),

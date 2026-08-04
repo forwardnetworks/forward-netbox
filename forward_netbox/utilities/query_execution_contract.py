@@ -204,6 +204,11 @@ class ResolvedExecutionContract:
     diff_revision: ResolvedQueryRevision | None
     full_eligible: bool
     full_reason_code: str
+    # True when this map runs a full query by ID with no commit pinned, letting
+    # Forward resolve the latest commit. Not a defect - it is the intended path
+    # for an ID-bound map - but the executed revision is whatever is at head, so
+    # reporting says so instead of implying a pinned revision.
+    full_unpinned_head: bool
     diff_reason_code: str
     coalesce_fields: tuple[tuple[str, ...], ...]
     variant: str
@@ -373,6 +378,29 @@ def resolve_execution_contract(
     is_raw_query = getattr(spec, "query", None) is not None and not getattr(
         spec, "run_query_id", None
     )
+    # A map bound directly to a query ID needs no commit to run a FULL query.
+    # Forward's execution endpoint takes `queryId` and resolves the latest
+    # commit server-side; `_commit_id_for_nqe_execution` already omits an empty
+    # or "head" `commitId` from the POST body, and execution never sends a path,
+    # so the bound ID always runs the query the operator chose.
+    #
+    # Requiring us to pre-read a commit first is what turned a repository
+    # reorganisation, a permissions gap, or one transient history lookup into
+    # `unresolved_full_commit` on every enabled map - and, via the preflight in
+    # `_build_workload_jobs`, into a sync that planned zero jobs and applied
+    # nothing. There is nothing for us to resolve on this path, so the
+    # requirement is removed rather than made lenient.
+    #
+    # This relaxes ONLY the full contract. Diff execution is not comparable:
+    # `run_nqe_diff` POSTs to `/nqe-diffs/{before}/{after}`, where the two
+    # commits are path segments, not optional body fields, so a diff genuinely
+    # cannot run without concrete commits. `diff_reason_code` below is unchanged.
+    #
+    # The shape protection is NOT dropped with the commit: the source, declared
+    # parameter, and data-file checks below still run. A built-in map carries its
+    # bundled query source and hash, so its declarations are still parsed and
+    # still matched against the parameters this plugin injects.
+    runs_by_direct_query_id = bool(getattr(spec, "query_id", None))
     full_reason_code = "eligible"
     if is_raw_query:
         if full_declarations is None:
@@ -383,7 +411,9 @@ def resolve_execution_contract(
             full_reason_code = "raw_query"
     elif not full_revision.query_id:
         full_reason_code = "unresolved_query_id"
-    elif not full_revision.commit_id or full_revision.commit_id == "head":
+    elif not runs_by_direct_query_id and (
+        not full_revision.commit_id or full_revision.commit_id == "head"
+    ):
         full_reason_code = "unresolved_full_commit"
     elif not full_revision.source_verified:
         full_reason_code = "unverified_full_source"
@@ -432,6 +462,10 @@ def resolve_execution_contract(
             "missing_variant_data_hash",
         },
         full_reason_code=full_reason_code,
+        full_unpinned_head=bool(
+            runs_by_direct_query_id
+            and (not full_revision.commit_id or full_revision.commit_id == "head")
+        ),
         diff_reason_code=diff_reason_code,
         diff_revision=diff_revision,
         coalesce_fields=tuple(
