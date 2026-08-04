@@ -71,6 +71,7 @@ from .tables import ForwardValidationRunTable
 from .utilities.bulk_merge import describe_protecting_references
 from .utilities.change_explainability import change_explainability_summary
 from .utilities.diagnostics import diff_fallback_summary
+from .utilities.diagnostics import model_failure_summary
 from .utilities.diagnostics import safe_job_error_summary
 from .utilities.diagnostics import sanitize_job_diagnostics
 from .utilities.direct_changes import object_changes_for_ingestion
@@ -421,6 +422,10 @@ def _sync_support_bundle_payload(sync):
                     "deleted": int(latest_ingestion.deleted_change_count or 0),
                 },
                 "diff_fallbacks": diff_fallback_summary(latest_ingestion.model_results),
+                # On a successful dependency preview the bundle carries per-model
+                # evidence; on the run that actually failed it carried none, so a
+                # wholesale fetch failure exported as N copies of one sentence.
+                "model_failures": model_failure_summary(latest_ingestion.model_results),
                 "branch": (
                     latest_ingestion.branch.name if latest_ingestion.branch else ""
                 ),
@@ -494,6 +499,8 @@ def _dependency_model_result_summary(result):
         "row_count": row_count,
         "delete_count": delete_count,
         "failure_count": int(data.get("failure_count") or 0),
+        "failure_exception": str(data.get("failure_exception") or ""),
+        "failure_reason": str(data.get("failure_reason") or ""),
         # Per-model change estimate: upsert rows + deletes (as_dict has no
         # estimated_changes field). The plan-level total is plan_preview.
         "estimated_changes": row_count + delete_count,

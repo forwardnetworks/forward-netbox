@@ -7885,7 +7885,10 @@ select {device: value, name: value}
         self.assertEqual(ingestion.issues.count(), 1)
         self.assertEqual(
             ingestion.issues.first().message,
-            "dcim.device row processing failed (ForwardQueryError).",
+            # The classifier now carries the reason slug. Before this, a row
+            # rejected for its shape and a row lost to an NQE transport failure
+            # recorded the identical sentence.
+            "dcim.device row processing failed (ForwardQueryError: shape-error).",
         )
 
     def test_record_issue_redacts_unexpected_failure_content(self):
