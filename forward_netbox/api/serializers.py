@@ -276,6 +276,8 @@ class ForwardDriftPolicySerializer(NestedGroupModelSerializer):
             "block_on_zero_rows",
             "max_deleted_objects",
             "max_deleted_percent",
+            "block_on_row_shrink",
+            "max_row_shrink_percent",
             "created",
             "last_updated",
         )

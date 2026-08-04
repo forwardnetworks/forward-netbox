@@ -41,6 +41,14 @@
             <th scope="row">{% trans "Max Deleted Percent" %}</th>
             <td>{{ object.max_deleted_percent|placeholder }}</td>
           </tr>
+          <tr>
+            <th scope="row">{% trans "Block On Row Shrink" %}</th>
+            <td>{{ object.block_on_row_shrink|yesno:"Yes,No" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Max Row Shrink Percent" %}</th>
+            <td>{{ object.max_row_shrink_percent }}%</td>
+          </tr>
         </table>
       </div>
     </div>

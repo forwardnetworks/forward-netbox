@@ -111,6 +111,7 @@ from .utilities.sync_state import (
 from .utilities.sync_state import (
     set_model_change_density_profile as set_sync_model_change_density_profile,
 )
+from .utilities.validation import DEFAULT_MAX_ROW_SHRINK_PERCENT
 from .utilities.validation import force_allow_validation_run
 
 logger = logging.getLogger("forward_netbox.models")
@@ -736,6 +737,27 @@ class ForwardDriftPolicy(ForwardPluginModelDocsMixin, ChangeLoggedModel):
         blank=True,
         null=True,
         validators=(MinValueValidator(0), MaxValueValidator(100)),
+    )
+    # The row-count floor. Unlike the two delete limits above it is not
+    # optional-and-unset: a guard nobody enables does not protect anybody, and
+    # this one stands in for a source-hash check that used to run on every sync.
+    # It is therefore a default-on boolean with a concrete default threshold,
+    # matching `block_on_query_errors` rather than `max_deleted_objects`.
+    block_on_row_shrink = models.BooleanField(
+        default=True,
+        help_text=_(
+            "Refuse a sync when a model returns far fewer rows than it did in "
+            "the last successful ingestion. The missing rows would be "
+            "reconciled as deletions."
+        ),
+    )
+    max_row_shrink_percent = models.PositiveIntegerField(
+        default=DEFAULT_MAX_ROW_SHRINK_PERCENT,
+        validators=(MinValueValidator(0), MaxValueValidator(100)),
+        help_text=_(
+            "How far a model's row count may fall below the last successful "
+            "ingestion before the sync is refused."
+        ),
     )
 
     class Meta:

@@ -11,6 +11,159 @@ from .sync_primitives import DEPENDENCY_PARENT_DEVICE_MODELS
 
 FOUNDATIONAL_DEVICE_MODELS = ("dcim.platform", "dcim.devicetype")
 
+# How far a model's row count may fall below the last successful ingestion
+# before the run is refused. Deliberately loose: the guard exists to stop a
+# silent collapse, not to audit ordinary churn. On a multi-thousand-device
+# estate the routine causes of shrinkage - a decommissioned rack, a handful of
+# devices Forward failed to collect, one retired site - move the count by single
+# digit percentages, while the failure this stands in front of (a narrowed
+# `where` clause on an unpinned query head, or an emptied collection region) is
+# a step change of tens of percent. A tighter default would fire on ordinary
+# weeks, and a guard that fires on ordinary weeks gets turned off.
+DEFAULT_MAX_ROW_SHRINK_PERCENT = 30
+
+# A model must also lose at least this many rows outright. Without it, small
+# reference models trip constantly on arithmetic alone: a `dcim.manufacturer`
+# map going from 12 rows to 8 is a 33% drop and means nothing. Below this many
+# rows the blast radius is small enough for the per-model reporting and the
+# staged-branch review to be the right instruments.
+MIN_ROW_SHRINK_ROWS = 20
+
+# Stable marker on every row-count reason. Operators read it, and the one-time
+# acceptance below matches on it, so it must not be reworded casually.
+ROW_SHRINK_REASON_PREFIX = "Row-count drop:"
+
+
+def _comparable_row_counts(model_results):
+    """Total full-execution rows per model, for models that can be compared.
+
+    Only full execution is comparable. A diff run's `row_count` is the number of
+    changed rows, not the size of the row set, so comparing it against a full
+    run's count would read a quiet snapshot as a collapse. A model that reported
+    any failure is excluded too: its rows are missing because the fetch broke,
+    which is already a loud, separately reported failure, and counting it here
+    would only bury that under a second one.
+
+    Returns `(totals_by_model, scope_fingerprints_by_model)`.
+    """
+    totals: dict[str, int] = {}
+    scopes: dict[str, set[str]] = {}
+    excluded: set[str] = set()
+    for result in model_results or []:
+        model_string = str(result.get("model") or "")
+        if not model_string:
+            continue
+        if int(result.get("failure_count") or 0):
+            excluded.add(model_string)
+            continue
+        if str(result.get("sync_mode") or "") != "full":
+            excluded.add(model_string)
+            continue
+        totals[model_string] = totals.get(model_string, 0) + int(
+            result.get("row_count") or 0
+        )
+        fingerprint = str(result.get("scope_config_fingerprint") or "")
+        if fingerprint:
+            scopes.setdefault(model_string, set()).add(fingerprint)
+    return (
+        {
+            model_string: count
+            for model_string, count in totals.items()
+            if model_string not in excluded
+        },
+        scopes,
+    )
+
+
+def _scope_configuration_changed(before, after, model_string):
+    """Whether the operator's own scope configuration moved under this model.
+
+    `scope_config_fingerprint` covers the sync's declared scope - include and
+    exclude tags, the match mode, out-of-scope pruning, the endpoint and
+    device-tag toggles - and nothing derived from the snapshot. When it changes,
+    a smaller row set is the operator getting what they asked for, so there is
+    nothing to refuse. Membership fingerprints are deliberately not consulted:
+    they move whenever the network moves, which is the very thing being
+    measured.
+    """
+    before_fingerprints = before.get(model_string) or set()
+    after_fingerprints = after.get(model_string) or set()
+    if not before_fingerprints or not after_fingerprints:
+        # One side predates the fingerprint or ran without a contract. Unknown
+        # is not evidence of a change, so the comparison stands.
+        return False
+    return before_fingerprints != after_fingerprints
+
+
+def row_shrink_findings(
+    *,
+    current_results,
+    baseline_results,
+    enabled_models,
+    max_shrink_percent,
+    min_shrink_rows=MIN_ROW_SHRINK_ROWS,
+):
+    """Models whose fetched row count fell too far below the last baseline.
+
+    Pure and side-effect free so the thresholds can be exercised directly. A
+    model is compared only when both runs executed it in full, neither reported
+    a failure, the operator's scope configuration is unchanged, and the baseline
+    actually had rows. Every other case yields nothing: growth, a first run, a
+    newly enabled model, a model dropped from the sync.
+    """
+    current_counts, current_scopes = _comparable_row_counts(current_results)
+    baseline_counts, baseline_scopes = _comparable_row_counts(baseline_results)
+    enabled = set(enabled_models or ())
+
+    findings = []
+    for model_string in sorted(set(current_counts) & set(baseline_counts) & enabled):
+        baseline_rows = baseline_counts[model_string]
+        current_rows = current_counts[model_string]
+        if baseline_rows <= 0:
+            continue
+        dropped = baseline_rows - current_rows
+        if dropped < min_shrink_rows:
+            continue
+        if _scope_configuration_changed(
+            baseline_scopes,
+            current_scopes,
+            model_string,
+        ):
+            continue
+        dropped_percent = dropped / baseline_rows * 100
+        if dropped_percent <= max_shrink_percent:
+            continue
+        findings.append(
+            {
+                "model": model_string,
+                "baseline_rows": baseline_rows,
+                "current_rows": current_rows,
+                "dropped_rows": dropped,
+                "dropped_percent": round(dropped_percent, 1),
+            }
+        )
+    return findings
+
+
+def row_shrink_reason(finding, *, max_shrink_percent):
+    """The operator-facing sentence for one finding.
+
+    Names the model, both counts, why it matters, and the way through.
+    """
+    return (
+        f"{ROW_SHRINK_REASON_PREFIX} `{finding['model']}` returned "
+        f"{finding['current_rows']} row(s), down from {finding['baseline_rows']} "
+        f"in the last successful ingestion - a drop of {finding['dropped_rows']} "
+        f"({finding['dropped_percent']}%), past the {max_shrink_percent}% limit. "
+        "Rows the query no longer returns are reconciled as deletions, so this "
+        "run is refused before anything is staged. If the shrinkage is real - "
+        "devices decommissioned, a site retired, scope narrowed - force-allow "
+        "this validation run to accept it once, and the next run will compare "
+        "against the new, smaller baseline. If it is not, the query behind one "
+        "of this model's maps is returning less than it used to; pin a commit "
+        "on the map, or re-publish the bundled query."
+    )
+
 
 class ForwardValidationRunner:
     def __init__(self, sync, client, logger_, *, job=None):
@@ -54,7 +207,13 @@ class ForwardValidationRunner:
     ):
         validation_run = validation_run or self._create_run()
         policy = self.sync.drift_policy
-        blocking_reasons = self._blocking_reasons(context, plan, model_results, policy)
+        blocking_reasons = self._blocking_reasons(
+            context,
+            plan,
+            model_results,
+            policy,
+            validation_run=validation_run,
+        )
         allowed = not blocking_reasons
         status = (
             ForwardValidationStatusChoices.PASSED
@@ -111,12 +270,32 @@ class ForwardValidationRunner:
             started=timezone.now(),
         )
 
-    def _blocking_reasons(self, context, plan, model_results, policy):
+    def _blocking_reasons(
+        self,
+        context,
+        plan,
+        model_results,
+        policy,
+        *,
+        validation_run=None,
+    ):
         if self._forced_validation_override_applies(context, policy):
             return []
 
         reasons = []
         reasons.extend(self._required_query_failure_reasons(model_results))
+        # Deliberately above the policy early return. The row-count floor is on
+        # by default and applies to a sync with no drift policy at all, because
+        # it replaces a source-hash check that used to run unconditionally. A
+        # policy that exists can tune or disable it; the absence of a policy
+        # must not.
+        reasons.extend(
+            self._row_shrink_reasons(
+                model_results,
+                policy,
+                validation_run=validation_run,
+            )
+        )
 
         if policy is None or not policy.enabled:
             return reasons
@@ -175,6 +354,90 @@ class ForwardValidationRunner:
                 f"Delete percentage exceeds policy limit {policy.max_deleted_percent}%."
             )
         return reasons
+
+    def _row_shrink_reasons(self, model_results, policy, *, validation_run=None):
+        """Refuse a run whose models came back materially smaller than baseline.
+
+        This is the detection for a query head that is parameter-compatible and
+        shape-compatible but returns a narrower row set. Parameters validate,
+        row shape validates, the sync reports success, and the rows that are no
+        longer returned are reconciled as deletions. Nothing else in the
+        pipeline sees it, so it is measured here, against the only trustworthy
+        reference the plugin holds: what the same models returned in the last
+        ingestion that actually promoted a baseline.
+
+        Needs no Forward call.
+        """
+        if policy is not None and not policy.enabled:
+            return []
+        if policy is not None and not policy.block_on_row_shrink:
+            return []
+        if (
+            policy is not None
+            and policy.baseline_mode == ForwardDriftPolicyBaselineChoices.NONE
+        ):
+            # The operator has said this sync has no baseline. There is nothing
+            # to compare against by their own configuration.
+            return []
+        max_shrink_percent = (
+            policy.max_row_shrink_percent
+            if policy is not None
+            else DEFAULT_MAX_ROW_SHRINK_PERCENT
+        )
+
+        baseline = self.sync.latest_baseline_ingestion()
+        if baseline is None:
+            # First run, or no run has ever promoted a baseline. Nothing to
+            # compare against, and a first run must never be blocked.
+            return []
+
+        findings = row_shrink_findings(
+            current_results=model_results,
+            baseline_results=list(baseline.model_results or []),
+            enabled_models=self.sync.get_model_strings(),
+            max_shrink_percent=max_shrink_percent,
+        )
+        if not findings:
+            return []
+        if self._row_shrink_already_accepted(baseline, validation_run):
+            return []
+        return [
+            row_shrink_reason(finding, max_shrink_percent=max_shrink_percent)
+            for finding in findings
+        ]
+
+    def _row_shrink_already_accepted(self, baseline, validation_run):
+        """Whether an operator has already force-allowed this exact shrinkage.
+
+        Scoped to the baseline, not to the snapshot. What the operator accepted
+        is "smaller than baseline N", and that stays true for as long as N is
+        the baseline - which matters because a snapshot-scoped acceptance would
+        lapse the moment Forward processed the next snapshot and put the
+        operator in a loop they would escape by disabling the guard. Once a run
+        gets through and promotes a new baseline, the acceptance stops applying
+        on its own, because the comparison is then against the smaller count
+        the operator accepted.
+
+        `_forced_validation_override_applies` is not reused here: it reads
+        `sync.latest_validation_run`, which by this point is the run being
+        recorded, so it cannot see the previous run's override.
+        """
+        baseline_snapshot_id = str(getattr(baseline, "snapshot_id", "") or "")
+        if not baseline_snapshot_id:
+            return False
+        runs = self.sync.validation_runs.filter(override_applied=True)
+        pk = getattr(validation_run, "pk", None)
+        if pk is not None:
+            runs = runs.exclude(pk=pk)
+        previous = runs.order_by("-pk").first()
+        if previous is None:
+            return False
+        if str(previous.baseline_snapshot_id or "") != baseline_snapshot_id:
+            return False
+        return any(
+            str(reason or "").startswith(ROW_SHRINK_REASON_PREFIX)
+            for reason in previous.override_blocking_reasons or []
+        )
 
     def _required_query_failure_reasons(self, model_results):
         enabled_models = set(self.sync.get_model_strings())
