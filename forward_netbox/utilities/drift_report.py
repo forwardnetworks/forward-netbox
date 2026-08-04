@@ -42,6 +42,10 @@ def build_latest_sync_evidence(ingestion, preview_payload=None):
     counters = {
         "applied": _count(getattr(ingestion, "applied_change_count", 0)),
         "failed": _count(getattr(ingestion, "failed_change_count", 0)),
+        # Rows NetBox refused on its own validation rules. They are exceptions
+        # and stay visible, but no rerun can satisfy them, so they must not
+        # decide convergence status the way a retryable failure does.
+        "skipped": _count(getattr(ingestion, "skipped_change_count", 0)),
         "created": _count(getattr(ingestion, "created_change_count", 0)),
         "updated": _count(getattr(ingestion, "updated_change_count", 0)),
         "deleted": _count(getattr(ingestion, "deleted_change_count", 0)),
@@ -73,6 +77,11 @@ def build_latest_sync_evidence(ingestion, preview_payload=None):
         status = "ownership_incomplete"
     elif has_changes:
         status = "confirmation_required"
+    elif counters["skipped"]:
+        # Otherwise converged, but rows the destination will refuse on every
+        # run remain. The baseline promotes and drift is measured; convergence
+        # is still not confirmed, and saying so is the point.
+        status = "unsatisfiable_rows"
     elif same_snapshot is False:
         status = "snapshot_mismatch"
     elif same_snapshot is None:

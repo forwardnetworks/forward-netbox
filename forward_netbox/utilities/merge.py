@@ -117,6 +117,15 @@ class _MergeIssueRecorder:
             safe_operation_failure(f"Merge for {model_string}", exc),
             diagnosis,
         )
+        if _is_destination_rule_rejection(exc):
+            # The issue list is where an operator actually looks, and a row that
+            # was skipped reads there exactly like one that will be retried.
+            # Keep the machine-readable prefix; state the disposition after it.
+            message = (
+                f"{message} Recorded and skipped: re-running cannot change a "
+                "NetBox validation rejection, so the baseline was promoted "
+                "over this row."
+            )
         logger.error(
             "Merge row failed for %s (%s).",
             model_string,
@@ -299,6 +308,7 @@ def merge_branch(
 
     previous_applied = int(ingestion.applied_change_count or 0)
     previous_failed = int(ingestion.failed_change_count or 0)
+    previous_skipped = int(ingestion.skipped_change_count or 0)
     retrying_partial = previous_failed > 0
     prior_merge_issue_ids = list(
         ingestion.issues.filter(phase=ForwardIngestionPhaseChoices.MERGE).values_list(
@@ -309,9 +319,12 @@ def merge_branch(
     if not changes.exists():
         initialize_merge_attempt(merge_attempt, total_changes=0)
         if retrying_partial:
+            # Previously skipped rows were never applied, so they stay skipped
+            # rather than being folded into the applied total.
             ingestion.record_change_totals(
                 applied=previous_applied + previous_failed,
                 failed=0,
+                skipped=previous_skipped,
                 created=int(ingestion.created_change_count or 0),
                 updated=int(ingestion.updated_change_count or 0),
                 deleted=int(ingestion.deleted_change_count or 0),
@@ -320,6 +333,7 @@ def merge_branch(
             ingestion.record_change_totals(
                 applied=0,
                 failed=0,
+                skipped=0,
                 created=0,
                 updated=0,
                 deleted=0,
@@ -364,7 +378,7 @@ def merge_branch(
         sync_logger.log_info(
             f"Merge progress: 0/{logical_total_changes} changes merged; rate pending."
         )
-    previous_logical_total = previous_applied + previous_failed
+    previous_logical_total = previous_applied + previous_failed + previous_skipped
     if retrying_partial and logical_total_changes != previous_logical_total:
         raise RuntimeError(
             "Partial-merge retry changed the logical branch total: "
@@ -498,12 +512,19 @@ def merge_branch(
             model_string=model_string,
             exc=exc,
         )
-        if _is_destination_rule_rejection(exc):
+        unsatisfiable = _is_destination_rule_rejection(exc)
+        if unsatisfiable:
             progress_unsatisfiable += 1
         progress_failed += 1
         model_progress[model_string]["failed"] += 1
         if sync_logger:
-            sync_logger.increment_statistics(model_string, outcome="failed")
+            # The row is still an exception and still an ingestion issue; what
+            # differs is that no retry can satisfy it, so per-model statistics
+            # must not present it as something a rerun would clear.
+            sync_logger.increment_statistics(
+                model_string,
+                outcome="skipped" if unsatisfiable else "failed",
+            )
         last_heartbeat_at, last_log_at = _report_merge_progress(
             merge_attempt,
             sync_logger=sync_logger,
@@ -593,30 +614,49 @@ def merge_branch(
             f"{logical_total_changes} staged."
         )
 
-    failed_message = "no failed."
-    if failed:
-        failed_message = f"{failed} skipped (recorded as ingestion issues)."
+    # Rows the destination refused on its own validation rules are recorded and
+    # skipped rather than treated as retryable failures. Retrying cannot change
+    # the outcome, so counting them as failures is what turns a handful of
+    # unsatisfiable addresses into a baseline that can never promote at all.
+    # They stay visible as ingestion issues and reappear in drift every run.
+    #
+    # The split has to reach the persisted counters, not just the raise decision
+    # below. Every readiness surface downstream - drift evidence, the ingestion
+    # health check, throughput - keys off `failed_change_count`, so recording
+    # the raw total here left a skipped row presenting exactly like the hard
+    # block it was meant to stop being.
+    unsatisfiable = min(progress_unsatisfiable, failed)
+    retryable_failed = failed - unsatisfiable
+
+    reported = []
+    if retryable_failed:
+        reported.append(f"{retryable_failed} failed")
+    if unsatisfiable:
+        reported.append(f"{unsatisfiable} skipped")
+    failed_message = (
+        f"{', '.join(reported)} (recorded as ingestion issues)."
+        if reported
+        else "no failed."
+    )
     summary = f"Merge completed: {applied_count} applied, {failed_message}"
     cumulative_applied = applied_count
     logical_action_counts = merge_metadata.get("logical_action_counts", {})
     created = int(logical_action_counts.get("create", 0))
     updated = int(logical_action_counts.get("update", 0))
     deleted = int(logical_action_counts.get("delete", 0))
+    # `applied + failed + skipped` must stay equal to the logical branch total:
+    # a READY branch reports every change as unmerged, so a partial-merge retry
+    # recomputes the same total and refuses to run when it disagrees with the
+    # cumulative evidence recorded here.
     ingestion.record_change_totals(
         applied=cumulative_applied,
-        failed=failed,
+        failed=retryable_failed,
+        skipped=unsatisfiable,
         created=created,
         updated=updated,
         deleted=deleted,
     )
 
-    # Rows the destination refused on its own validation rules are recorded and
-    # skipped rather than treated as retryable failures. Retrying cannot change
-    # the outcome, so counting them here is what turns a handful of
-    # unsatisfiable addresses into a baseline that can never promote at all.
-    # They stay visible as ingestion issues and reappear in drift every run.
-    unsatisfiable = min(progress_unsatisfiable, failed)
-    retryable_failed = failed - unsatisfiable
     if unsatisfiable:
         skipped_note = (
             f"{unsatisfiable} row(s) were rejected by NetBox validation rules "

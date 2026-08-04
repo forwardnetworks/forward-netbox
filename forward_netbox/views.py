@@ -415,6 +415,7 @@ def _sync_support_bundle_payload(sync):
                 "change_counts": {
                     "applied": int(latest_ingestion.applied_change_count or 0),
                     "failed": int(latest_ingestion.failed_change_count or 0),
+                    "skipped": int(latest_ingestion.skipped_change_count or 0),
                     "created": int(latest_ingestion.created_change_count or 0),
                     "updated": int(latest_ingestion.updated_change_count or 0),
                     "deleted": int(latest_ingestion.deleted_change_count or 0),
