@@ -6,11 +6,13 @@ from unittest.mock import Mock
 from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
 
+from forward_netbox.exceptions import ForwardClientError
 from forward_netbox.exceptions import ForwardQueryError
 from forward_netbox.models import ForwardNQEMap
 from forward_netbox.signals import seed_builtin_nqe_maps
 from forward_netbox.utilities.query_execution_contract import query_source_sha256
 from forward_netbox.utilities.query_execution_contract import resolve_execution_contract
+from forward_netbox.utilities.query_fetch_execution import ForwardQueryFetcher
 from forward_netbox.utilities.query_registry import _collapse_alias_variant_duplicates
 from forward_netbox.utilities.query_registry import _query_contract_gap_remediation
 from forward_netbox.utilities.query_registry import alias_variant_coverage_violations
@@ -1774,7 +1776,22 @@ select {name: value, slug: value}
         for call in client.get_committed_nqe_query.call_args_list:
             self.assertTrue(call.kwargs["require_source_code"])
 
-    def test_unpinned_query_id_resolves_compatible_immutable_full_revision(self):
+    def test_unpinned_query_id_reads_no_commit_and_runs_at_forward_latest(self):
+        """A query ID with no commit is a complete binding, so nothing is read.
+
+        This used to search history for a revision whose source matched the
+        bundle, because a query head can legitimately move to a parameterless
+        diff revision that would reject our parameters. That search cost more
+        than it protected: any repository move, permissions gap, or lookup that
+        did not answer refused every enabled map, and one refused map plans zero
+        jobs for the whole sync - five dead syncs for one customer.
+
+        The parameterless-head case now fails at execution with a Forward
+        runtime error instead of at preflight, as one named per-model failure.
+        That is the accepted trade; see
+        `test_unpinned_query_id_with_a_parameterless_head_fails_at_execution`.
+        """
+
         full_source = """
 @query
 f(scope: List<String>) =
@@ -1827,9 +1844,13 @@ select {name: value, slug: value}
             effective_parameters={"scope": ["site-a"]},
         )
 
-        self.assertEqual(resolved.commit_id, "full-commit")
+        self.assertIsNone(resolved.commit_id)
         self.assertTrue(contract.full_eligible)
         self.assertEqual(contract.full_reason_code, "eligible")
+        self.assertTrue(contract.full_unpinned_head)
+        # The declaration check survives without Forward: a built-in map ships
+        # its `.nqe`, so the source is verified against its own bundled hash.
+        self.assertTrue(contract.full_revision.source_verified)
         self.assertEqual(
             {
                 parameter.name
@@ -1837,9 +1858,10 @@ select {name: value, slug: value}
             },
             {"scope"},
         )
-        client.get_nqe_query_history.assert_called_once_with(query_id)
+        client.get_nqe_query_history.assert_not_called()
+        client.get_committed_nqe_query.assert_not_called()
 
-    def test_unpinned_query_id_without_compatible_history_fails_closed(self):
+    def test_unpinned_query_id_with_a_parameterless_head_fails_at_execution(self):
         full_source = """
 @query
 f(scope: List<String>) =
@@ -1882,8 +1904,26 @@ select {name: value, slug: value}
         )
 
         self.assertIsNone(resolved.commit_id)
-        self.assertFalse(contract.full_eligible)
-        self.assertEqual(contract.full_reason_code, "unresolved_full_commit")
+        # It plans and runs. Forward then refuses the parameters, and that
+        # refusal is reported per model with the map named, rather than the
+        # plugin quietly planning nothing at all.
+        self.assertTrue(contract.full_eligible)
+        self.assertTrue(contract.full_unpinned_head)
+        client.get_nqe_query_history.assert_not_called()
+
+        fetcher = ForwardQueryFetcher(sync=None, client=None, logger_=None)
+        message = fetcher._failure_message(
+            "dcim.site",
+            resolved,
+            ForwardClientError(
+                "Forward API request failed with HTTP 400: NQE_RUNTIME_ERROR - "
+                "Provided argument, 'scope' is not a parameter to the given query."
+            ),
+        )
+
+        self.assertIn("Forward Locations", message)
+        self.assertIn(query_id, message)
+        self.assertIn("no longer declares them", message)
 
     def test_builtin_map_uses_shipped_full_hash_when_persisted_hash_is_empty(self):
         netbox_model = ContentType.objects.get(app_label="dcim", model="device")

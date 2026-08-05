@@ -165,6 +165,20 @@ def _safe_exception_summary(exc: Exception) -> str:
     return f"{exc.__class__.__name__}."
 
 
+# Shapes Forward uses when it refuses to RUN a query because the request does
+# not match the query's own declaration. Matched to select fixed wording; the
+# server's text is never carried into the message.
+_NQE_CONTRACT_REJECTION_MARKERS = (
+    "is not a parameter to the given query",
+    "nqe_runtime_error",
+)
+
+
+def _is_nqe_contract_rejection(exc: Exception) -> bool:
+    haystack = str(exc or "").casefold()
+    return any(marker in haystack for marker in _NQE_CONTRACT_REJECTION_MARKERS)
+
+
 @dataclass(frozen=True)
 class ForwardQueryContext:
     network_id: str
@@ -1589,6 +1603,24 @@ class ForwardQueryFetcher:
                 obj=self.sync,
             )
 
+        # Not a problem, but not nothing either: this map runs a query the
+        # plugin holds no copy of, so no source, declaration, or parameter check
+        # stands behind it and the first sign of a mismatch is Forward refusing
+        # the execution. Said once here so the state is visible rather than
+        # inferred from a reason code nothing prints.
+        unverifiable = _rows(
+            lambda contract: contract.full_reason_code == "remote_source_only",
+            lambda contract: "full:remote_source_only",
+        )
+        if unverifiable:
+            self.logger.log_info(
+                f"{len(unverifiable)} map(s) for {model_string} run a Forward "
+                "query this plugin holds no copy of, so their source and "
+                "parameters cannot be checked before execution: "
+                + _render(unverifiable),
+                obj=self.sync,
+            )
+
         # Still a warning: a map that cannot diff silently falls back to a full
         # fetch, which the operator should know about even in a full-only run.
         diff_only = _rows(
@@ -1883,6 +1915,7 @@ class ForwardQueryFetcher:
                         rows,
                         delete_rows,
                         coalesce_fields,
+                        contract=contract,
                     )
                 break
             except (
@@ -2082,6 +2115,9 @@ class ForwardQueryFetcher:
 
     def _failure_message(self, model_string: str, spec, exc: Exception) -> str:
         message = _safe_exception_summary(exc)
+        query_binding = self._query_id_binding_failure_message(spec, exc)
+        if query_binding:
+            message = f"{message} {query_binding}"
         if model_string != "dcim.virtualchassis" or spec is None:
             return message
 
@@ -2089,6 +2125,45 @@ class ForwardQueryFetcher:
         if not binding:
             return message
         return f"{message} {binding}"
+
+    def _query_id_binding_failure_message(self, spec, exc: Exception) -> str:
+        """Name the map behind a failed ID-bound execution.
+
+        A map bound to a query ID with no commit runs whatever Forward has at
+        head, so its query can change under us between one sync and the next.
+        When that happens the run fails HERE, per model, rather than at
+        preflight - which is the intended trade, but only if the failure says
+        which map it was. `_safe_exception_summary` deliberately keeps no
+        exception content, so without this the operator sees one word.
+
+        The rejection sentence below is fixed text chosen by matching a shape in
+        the exception, never the exception's own words, so no server-provided
+        content is persisted.
+        """
+
+        if spec is None or (getattr(spec, "execution_mode", "") or "") != "query_id":
+            return ""
+        query_name = str(getattr(spec, "query_name", "") or "").strip()
+        map_id = getattr(spec, "map_id", None)
+        label = f"`{query_name}`" if query_name else "the bound map"
+        if map_id is not None:
+            label = f"{label} [{map_id}]"
+        revision = (
+            "a pinned commit"
+            if str(getattr(spec, "commit_id", "") or "").strip()
+            else "Forward's latest commit"
+        )
+        binding = (
+            f"Map {label} is bound to Forward query ID "
+            f"`{getattr(spec, 'execution_value', '') or ''}` and ran at {revision}"
+        )
+        if _is_nqe_contract_rejection(exc):
+            return (
+                f"{binding}. Forward rejected the parameters this map supplies, "
+                "so the query behind that ID no longer declares them. Re-publish "
+                "the bundled query to that ID, or rebind the map."
+            )
+        return f"{binding}."
 
     def _virtual_chassis_binding_message(self, spec) -> str:
         mode = getattr(spec, "execution_mode", "") or ""
@@ -2205,13 +2280,40 @@ class ForwardQueryFetcher:
         rows: list[dict],
         delete_rows: list[dict],
         coalesce_fields: list[list[str]],
+        contract=None,
     ) -> None:
+        # A map bound to a query ID runs at whatever Forward has at head, so the
+        # row shape is confirmed here, against the rows actually returned, not by
+        # pre-reading a commit. Name the map when it fails: a bare "Row for
+        # `dcim.device` is missing required fields" does not say which of several
+        # enabled maps produced it, and this failure stops one model rather than
+        # the whole run.
         for row in rows:
-            validate_row_shape_for_model(model_string, row, coalesce_fields)
+            self._validate_row_shape(model_string, row, coalesce_fields, contract)
         for row in delete_rows:
-            validate_row_shape_for_model(model_string, row, coalesce_fields)
+            self._validate_row_shape(model_string, row, coalesce_fields, contract)
         if model_string == "dcim.virtualchassis":
             self._validate_virtual_chassis_positions(rows)
+
+    def _validate_row_shape(self, model_string, row, coalesce_fields, contract) -> None:
+        try:
+            validate_row_shape_for_model(model_string, row, coalesce_fields)
+        except ForwardQueryError as exc:
+            if contract is None:
+                raise
+            query_name = getattr(contract, "query_name", "") or model_string
+            map_id = getattr(contract, "map_id", None)
+            revision = (
+                "unpinned head"
+                if getattr(contract, "full_unpinned_head", False)
+                else "the pinned commit"
+            )
+            raise ForwardQueryError(
+                f"{exc} Returned by map `{query_name}`"
+                f"{f' [{map_id}]' if map_id is not None else ''} running at "
+                f"{revision}. The query no longer returns the fields "
+                f"{model_string} requires; re-resolve or republish that query."
+            ) from exc
 
     def _validate_virtual_chassis_positions(self, rows: list[dict]) -> None:
         seen_positions = {}

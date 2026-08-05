@@ -80,6 +80,7 @@ Expected result:
 - A `Forward Validation Run` is created without creating NetBox Branching branches.
 - The validation run records the resolved snapshot, optional baseline snapshot, per-model query results, drift summary, and blocking reasons.
 - If the selected drift policy blocks the run, the sync can be corrected before staging NetBox changes.
+- A model that returns far fewer rows than it did in the last successful ingestion blocks the run with a `Row-count drop:` reason, whether or not a drift policy is selected. See `Row-count drop: Blocked The Sync` in the troubleshooting guide.
 - If you intentionally accept the blocked result, open the validation run and use `Force allow` to record the override reason and reviewer before rerunning the sync.
 
 ![Forward Validation Detail](../images/forward-validation-detail.jpg)

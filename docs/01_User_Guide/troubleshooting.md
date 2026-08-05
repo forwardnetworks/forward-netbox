@@ -124,6 +124,34 @@ Checks:
 - If the run was force-allowed, verify the validation run shows the override reason and actor before rerunning.
 - Use `Validate` on the sync page to rerun policy checks before staging changes.
 
+### `Row-count drop:` Blocked The Sync
+
+A blocking reason beginning `Row-count drop:` means one model returned far fewer
+rows than it did in the last successful ingestion. The reason names the model,
+both counts, the size of the drop, and the limit. The rows that are no longer
+returned would be reconciled as deletions, so the run is refused before anything
+is staged.
+
+This check is on by default, including for a sync with no drift policy, because
+it is the only thing that sees a query which still declares the right parameters
+and still returns the right fields but has been narrowed to return less.
+
+- If the shrinkage is **not** expected, the query behind one of that model's NQE
+  Maps is returning less than it used to. Pin a commit on the map, or use
+  `Publish Bundled Queries` on the Health tab to restore the shipped query.
+- If the shrinkage **is** expected - devices decommissioned, a site retired,
+  scope narrowed - use `Force allow` on the blocked validation run. The
+  acceptance is recorded against the operator with their reason, and it applies
+  until a new baseline is promoted, so one force-allow is enough even if Forward
+  processes another snapshot in the meantime. Once the accepted run merges, the
+  smaller count becomes the baseline and the check is live again against it.
+- To tune or disable the check, set `Block On Row Shrink` and `Max Row Shrink
+  Percent` on the sync's drift policy. A disabled policy, or a policy whose
+  baseline mode is `No baseline`, turns it off entirely.
+- Changing the sync's own scope - include or exclude tags, the match mode,
+  out-of-scope pruning, the endpoint or device-tag toggles - suspends the check
+  for that run, because the smaller row set is what was asked for.
+
 ## Sync Or Merge Times Out
 
 Symptoms:

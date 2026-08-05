@@ -96,6 +96,26 @@ def _eligible_spec(**overrides):
     return QuerySpec(**values)
 
 
+def _path_bound_spec(**overrides):
+    """The binding that still has to resolve and verify a commit before it runs.
+
+    A repository path is not an identity - the folder can come to hold a
+    different query - so a commit reached through a path is only executed after
+    its source is verified. A direct query ID is the opposite case: it names the
+    query, so Forward resolving its latest commit is the whole of the binding.
+    """
+
+    values = {
+        "query_id": None,
+        "resolved_query_id": "Q_sites",
+        "query_path": "/Forward/forward_locations",
+        "query_repository": "org",
+        "resolved_query_path": "/Forward/forward_locations",
+    }
+    values.update(overrides)
+    return replace(_eligible_spec(), **values)
+
+
 def _contract(spec=None, *, effective_parameters=None):
     return resolve_execution_contract(
         spec or _eligible_spec(),
@@ -284,8 +304,8 @@ select {endpoint: endpoint.name}
                 "unsupported_diff_ownership",
                 True,
             ),
-            "unpinned_full": (
-                replace(_eligible_spec(), commit_id=None),
+            "unpinned_full_path_binding": (
+                _path_bound_spec(commit_id=None),
                 "unresolved_full_commit",
                 False,
             ),
@@ -392,14 +412,27 @@ select {name: x}
         self.assertFalse(contract.full_eligible)
         self.assertEqual(contract.full_reason_code, "unsupported_full_parameters")
 
-    def test_map_without_full_commit_is_unresolved_full(self):
+    def test_path_bound_map_without_full_commit_is_unresolved_full(self):
         contract = _contract(
-            replace(_eligible_spec(), commit_id=""),
+            _path_bound_spec(commit_id=""),
             effective_parameters={"scope": []},
         )
 
         self.assertEqual(contract.full_reason_code, "unresolved_full_commit")
         self.assertFalse(contract.full_eligible)
+
+    def test_id_bound_map_without_full_commit_runs_at_forward_latest(self):
+        # If a commit is not specified it is not required: Forward resolves the
+        # latest commit for a query ID server-side. Demanding one refused every
+        # such map, and one refused map plans zero jobs for the whole sync.
+        contract = _contract(
+            replace(_eligible_spec(), commit_id=""),
+            effective_parameters={"scope": []},
+        )
+
+        self.assertEqual(contract.full_reason_code, "eligible")
+        self.assertTrue(contract.full_eligible)
+        self.assertTrue(contract.full_unpinned_head)
 
     def test_full_parameter_set_must_match_exactly(self):
         contract = _contract(
@@ -578,8 +611,8 @@ select {name: x}
 
         client.run_nqe_diff.assert_not_called()
 
-    def test_unpinned_full_contract_blocks_all_workload_jobs_in_preflight(self):
-        unpinned = replace(_eligible_spec(), commit_id="")
+    def test_unpinned_path_binding_blocks_all_workload_jobs_in_preflight(self):
+        unpinned = _path_bound_spec(commit_id="")
         eligible_other = replace(
             _eligible_spec(),
             model_string="dcim.location",
@@ -624,6 +657,39 @@ select {name: x}
         client.run_nqe_query.assert_not_called()
         client.run_nqe_diff.assert_not_called()
 
+    def test_an_unpinned_id_binding_does_not_block_the_run(self):
+        # The same shape that used to empty an entire sync. One map bound to a
+        # query ID with no commit must plan its job, not refuse the run.
+        sync = SimpleNamespace(
+            pk=1,
+            parameters={},
+            source=SimpleNamespace(parameters={}),
+        )
+        client = Mock()
+        logger = Mock()
+        fetcher = ForwardQueryFetcher(sync=sync, client=client, logger_=logger)
+        fetcher._drop_unavailable_integration_models = Mock(return_value=["dcim.site"])
+        fetcher._resolve_specs_for_models = Mock(
+            return_value=({"dcim.site": [replace(_eligible_spec(), commit_id="")]}, {})
+        )
+        fetcher._scope_for_spec = Mock(return_value=None)
+        fetcher._incremental_baseline_for_specs = Mock(return_value=None)
+        fetcher._query_parameters_for_scope = Mock(return_value={"scope": []})
+
+        jobs = fetcher._build_workload_jobs(
+            _context(maps=[]),
+            model_strings=["dcim.site"],
+        )
+
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(fetcher._failed_model_results, {})
+        self.assertFalse(
+            any(
+                "blocked all Forward workload execution" in str(call)
+                for call in logger.log_warning.call_args_list
+            )
+        )
+
     def test_preflight_surfaces_each_unsafe_full_contract_before_forward_http(self):
         cases = {
             "parameterless_full": (
@@ -640,8 +706,8 @@ select {name: x}
                 {"scope": [], "extra": True},
                 "unsupported_full_parameters",
             ),
-            "query_id_without_pinned_full_commit": (
-                replace(_eligible_spec(), commit_id=""),
+            "path_binding_without_pinned_full_commit": (
+                _path_bound_spec(commit_id=""),
                 {"scope": []},
                 "unresolved_full_commit",
             ),

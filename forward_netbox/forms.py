@@ -1918,6 +1918,8 @@ class ForwardDriftPolicyForm(NetBoxModelForm):
             "block_on_zero_rows",
             "max_deleted_objects",
             "max_deleted_percent",
+            "block_on_row_shrink",
+            "max_row_shrink_percent",
         )
 
     fieldsets = (
@@ -1931,6 +1933,8 @@ class ForwardDriftPolicyForm(NetBoxModelForm):
         FieldSet(
             "max_deleted_objects",
             "max_deleted_percent",
+            "block_on_row_shrink",
+            "max_row_shrink_percent",
             name="Destructive Change Limits",
         ),
     )

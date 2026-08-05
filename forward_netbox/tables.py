@@ -204,6 +204,8 @@ class ForwardDriftPolicyTable(NetBoxTable):
             "block_on_zero_rows",
             "max_deleted_objects",
             "max_deleted_percent",
+            "block_on_row_shrink",
+            "max_row_shrink_percent",
         )
         default_columns = (
             "pk",

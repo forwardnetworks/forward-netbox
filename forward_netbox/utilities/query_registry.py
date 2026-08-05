@@ -1365,6 +1365,20 @@ def _resolve_unpinned_builtin_full_revision(
     )
 
 
+def runs_at_forward_latest_commit(spec) -> bool:
+    """True when a map is bound to a Forward query ID with no commit pinned.
+
+    That binding is complete on its own. Forward's full-execution endpoint takes
+    `queryId` and resolves the latest commit server-side, so a commit is
+    something the operator may specify, not something we have to supply. When it
+    is not specified it is not required, and we do not go looking for one.
+    """
+
+    return bool(getattr(spec, "query_id", None)) and str(
+        getattr(spec, "commit_id", "") or ""
+    ).strip().lower() in ("", "head")
+
+
 def _finalize_resolved_spec(
     spec: QuerySpec,
     client,
@@ -1372,57 +1386,32 @@ def _finalize_resolved_spec(
     full_was_unpinned: bool = False,
     preferred_commit_id: str = "",
 ) -> QuerySpec:
+    if runs_at_forward_latest_commit(spec):
+        # Bound by direct query ID with no commit specified: send `queryId`
+        # alone and let Forward resolve latest. Reading a commit on the
+        # operator's behalf is what failed - a repository reorganisation, a
+        # permissions gap, or one history lookup that did not answer produced
+        # `unresolved_full_commit` on every enabled map, and `_build_workload_jobs`
+        # turns a single ineligible map into zero jobs for the whole sync. There
+        # is nothing here for us to resolve, so we stop trying rather than
+        # trying more leniently.
+        #
+        # `head` is normalised away with the empty string because it is not a
+        # commit either: `_commit_id_for_nqe_execution` already drops it from the
+        # request body, so keeping it would only make reporting claim a pin that
+        # was never sent.
+        return _hydrate_diff_contract_sources(replace(spec, commit_id=None), client)
     if full_was_unpinned:
+        # Still reached by a PATH-bound built-in map. A path is not an identity:
+        # the folder can now hold a different query, so a commit there has to be
+        # verified against the shipped source before it is executed. Only the
+        # direct-ID binding above is exempt, because only it names the query.
         spec = _resolve_unpinned_builtin_full_revision(
             spec,
             client,
             preferred_commit_id=preferred_commit_id,
         )
-        spec = _resolve_unpinned_customer_full_revision(spec, client)
     return _hydrate_diff_contract_sources(spec, client)
-
-
-def _resolve_unpinned_customer_full_revision(spec: QuerySpec, client) -> QuerySpec:
-    """Resolve head for a customer map bound to a query ID without a pin.
-
-    Only built-in specs had unpinned head resolution, so a customer map bound
-    by query ID kept an empty commit, the execution contract refused it as
-    `unresolved_full_commit`, and every such model was skipped. Diff execution
-    is query-ID-only, so this is the primary binding, not an edge case.
-
-    Source verification is unchanged: `_hydrate_diff_contract_sources` still
-    loads the committed source for the resolved commit, and a lookup failure or
-    identity mismatch leaves the contract closed.
-    """
-    if spec.built_in or not spec.run_query_id:
-        return spec
-    if str(spec.commit_id or "").strip() not in ("", "head"):
-        return spec
-    query_path = str(spec.resolved_query_path or spec.query_path or "").strip()
-    if not query_path:
-        return spec
-    try:
-        resolved = client.get_committed_nqe_query(
-            repository=spec.query_repository or "org",
-            query_path=query_path,
-            commit_id="head",
-        )
-    except JobTimeoutException:
-        raise
-    except Exception:
-        return spec
-    if str(resolved.get("queryId") or "").strip() != str(spec.run_query_id).strip():
-        # The path now resolves to a different query; its head is not ours.
-        return spec
-    commit_id = str(
-        resolved.get("commitId")
-        or resolved.get("lastCommitId")
-        or (resolved.get("lastCommit") or {}).get("id")
-        or ""
-    ).strip()
-    if not commit_id or commit_id == "head":
-        return spec
-    return replace(spec, commit_id=commit_id)
 
 
 def _hydrate_diff_contract_sources(spec: QuerySpec, client) -> QuerySpec:
@@ -1431,9 +1420,21 @@ def _hydrate_diff_contract_sources(spec: QuerySpec, client) -> QuerySpec:
     Persisted hashes are assertions, not substitutes for source verification.
     A lookup failure or query-identity mismatch leaves the sources unverified,
     which keeps that side of the resolved execution contract closed.
+
+    The full side is hydrated only when a full commit is pinned. A map that runs
+    at Forward's latest commit has no revision to read a source back from, and
+    its full source is already on the spec - shipped for a built-in map,
+    persisted for a customer map. The diff side is NOT relaxed with it: a diff
+    names its own `diff_commit_id`, so it is still hydrated and still verified
+    here even when the full side runs unpinned. Dropping that would have turned
+    a working diff into a silent full-only fallback.
     """
 
-    if not spec.run_query_id or not spec.commit_id or spec.commit_id == "head":
+    if not spec.run_query_id:
+        return spec
+    full_commit_id = str(spec.commit_id or "").strip()
+    hydrate_full = bool(full_commit_id) and full_commit_id.lower() != "head"
+    if not hydrate_full and not spec.diff_commit_id:
         return spec
     if spec.built_in and not spec.full_source_sha256:
         return spec
@@ -1441,6 +1442,9 @@ def _hydrate_diff_contract_sources(spec: QuerySpec, client) -> QuerySpec:
         return spec
     query_path = str(spec.resolved_query_path or spec.query_path or "").strip()
     if not query_path:
+        lookup_commit_id = str(
+            full_commit_id if hydrate_full else spec.diff_commit_id or ""
+        )
         try:
             history = client.get_nqe_query_history(spec.run_query_id)
         except JobTimeoutException:
@@ -1453,7 +1457,7 @@ def _hydrate_diff_contract_sources(spec: QuerySpec, client) -> QuerySpec:
             str(row.get("path") or "").strip()
             for row in history or []
             if isinstance(row, dict)
-            and _history_commit_id(row) == str(spec.commit_id)
+            and _history_commit_id(row) == lookup_commit_id
             and str(row.get("path") or "").strip()
         }
         if len(matching_paths) == 1:
@@ -1461,42 +1465,44 @@ def _hydrate_diff_contract_sources(spec: QuerySpec, client) -> QuerySpec:
     if not query_path:
         return spec
     repository = str(spec.query_repository or "org").strip() or "org"
-    unverified = replace(
-        spec,
-        full_query_source=None,
-        diff_query_source=None,
-    )
-
-    try:
-        full_query = client.get_committed_nqe_query(
-            repository=repository,
-            query_path=query_path,
-            commit_id=spec.commit_id,
-            require_source_code=True,
-        )
-    except JobTimeoutException:
-        raise
-    except Exception:
-        return unverified
-
     expected_query_id = str(spec.run_query_id or "").strip()
-    if str(full_query.get("queryId") or "").strip() != expected_query_id:
-        return unverified
-    full_source = _committed_source(full_query)
-    if not full_source:
-        return unverified
-    full_source_hash = str(spec.full_source_sha256 or "").strip().lower()
-    if not full_source_hash and not spec.built_in:
-        full_source_hash = query_source_sha256(full_source)
-    if not full_source_hash:
-        return unverified
-    hydrated = replace(
-        spec,
-        query_repository=repository,
-        resolved_query_path=query_path,
-        full_query_source=full_source,
-        full_source_sha256=full_source_hash,
-    )
+    hydrated = spec
+    if hydrate_full:
+        unverified = replace(
+            spec,
+            full_query_source=None,
+            diff_query_source=None,
+        )
+
+        try:
+            full_query = client.get_committed_nqe_query(
+                repository=repository,
+                query_path=query_path,
+                commit_id=spec.commit_id,
+                require_source_code=True,
+            )
+        except JobTimeoutException:
+            raise
+        except Exception:
+            return unverified
+
+        if str(full_query.get("queryId") or "").strip() != expected_query_id:
+            return unverified
+        full_source = _committed_source(full_query)
+        if not full_source:
+            return unverified
+        full_source_hash = str(spec.full_source_sha256 or "").strip().lower()
+        if not full_source_hash and not spec.built_in:
+            full_source_hash = query_source_sha256(full_source)
+        if not full_source_hash:
+            return unverified
+        hydrated = replace(
+            spec,
+            query_repository=repository,
+            resolved_query_path=query_path,
+            full_query_source=full_source,
+            full_source_sha256=full_source_hash,
+        )
     if not spec.diff_commit_id:
         return hydrated
 
