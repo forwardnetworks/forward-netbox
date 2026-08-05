@@ -361,17 +361,26 @@ def record_issue(
     # through `safe_operation_failure`, said `shape-error`. Schema-level detail
     # is appended to the shared name; it does not replace it.
     named = failure_classifier(exception) if exception is not None else exception_name
+    # The field and the rule are different facts, and a rule is now recognised
+    # whatever field it names, so they are no longer alternatives - reporting
+    # only the field is what left a customer's `untagged_vlan` rejection
+    # ambiguous between two unrelated NetBox rules. `__all__` is the absence of
+    # a field name rather than one, so it is still never printed.
+    named_fields = [field for field in invalid_fields if field != "__all__"]
+    field_detail = f"invalid fields {', '.join(named_fields)}" if named_fields else ""
     if is_dependency_skip_summary:
         detail = ""
     elif constraint:
         detail = f"{named}; constraint {constraint}"
     elif rules:
-        detail = f"{named}; {', '.join(rules)}"
+        detail = "; ".join(p for p in (named, field_detail, ", ".join(rules)) if p)
     elif unrecognized:
         # Wording only; value-bearing tokens are masked before they get here.
-        detail = f"{named}; {'; '.join(unrecognized)}"
-    elif invalid_fields:
-        detail = f"{named}; invalid fields {', '.join(invalid_fields)}"
+        detail = "; ".join(
+            p for p in (named, field_detail, "; ".join(unrecognized)) if p
+        )
+    elif field_detail:
+        detail = f"{named}; {field_detail}"
     else:
         detail = named
     message = (

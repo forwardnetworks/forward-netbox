@@ -1248,10 +1248,12 @@ def bulk_orm_apply_interface(
     from dcim.models import Device
     from dcim.models import Interface
     from django.core.exceptions import ObjectDoesNotExist
+    from django.core.exceptions import ValidationError
     from django.db import transaction
 
     from ..exceptions import ForwardDependencySkipError
     from ..exceptions import ForwardSearchError
+    from .diagnostics import structured_failure_diagnosis
     from .interface_naming import canonical_interface_key
     from .sync_interface import _interface_untagged_vlan
     from .sync_primitives import forget_lookup_object
@@ -1267,18 +1269,77 @@ def bulk_orm_apply_interface(
         "lag",
     ]
 
-    def _validate_interface(interface):
+    def _validate_interface(interface, row, device, written_fields):
+        """Validate one interface. Returns "ok", "skipped" or "failed".
+
+        A `ValidationError` raised here used to leave this function, the apply
+        engine and the sync itself: it surfaced at `_record_forward_sync_failure`,
+        which records phase `sync` with no model and no row. So a single
+        interface NetBox would not accept failed an entire customer run of 172
+        staged changes, and the only evidence produced named neither the device
+        nor the interface — the row-oriented path and the cabled-LAG branch
+        below both capture per row, and this loop was the one that did not.
+
+        The caller counts the outcome, because only the caller knows whether an
+        outcome slot has already been appended for the row; recording the issue
+        happens here so all four call sites cannot describe it differently.
+
+        `written_fields` is what this row actually writes, which decides the
+        disposition. `full_clean` validates the whole object, so a rejection can
+        name a field the row never touched — an untagged VLAN left behind by a
+        device that moved sites is still on the interface when a later sync
+        changes only its MTU. Refusing to write is right either way, but calling
+        it *our* failure is not: it fails the row's dependents and it is not
+        retryable, since nothing about the incoming data can change the answer.
+        A rule the catalogue can name, on a field this row does not write, is
+        therefore recorded and skipped. Anything else stays a failure.
+        """
         # A device created earlier in the same native branch has no row in the
         # main schema. Django's ForeignKey field validation resolves its
         # queryset outside the active branch and rejects that valid branch-only
         # device. The device was already resolved explicitly above and the
         # branch FK enforces it at write time, so validate every other field and
         # the model contract without repeating that cross-schema lookup.
-        interface.full_clean(
-            exclude={"device"},
-            validate_unique=False,
-            validate_constraints=False,
-        )
+        try:
+            interface.full_clean(
+                exclude={"device"},
+                validate_unique=False,
+                validate_constraints=False,
+            )
+        except ValidationError as exc:
+            # The instance was mutated in place before validation, so a cached
+            # lookup would hand the rejected state to a later row in this same
+            # shard and write it under a different row's outcome.
+            forget_lookup_object(runner, interface)
+            diagnosis = structured_failure_diagnosis(exc)
+            rejected = set(diagnosis.get("invalid_fields") or ())
+            # An uncatalogued rule is left a failure deliberately: skipping is
+            # the disposition for a rejection we understand, and an unrecognised
+            # one is exactly the case where we should not be deciding it is
+            # someone else's problem.
+            if diagnosis.get("validation_rules") and not (rejected & written_fields):
+                runner._record_issue(
+                    "dcim.interface",
+                    f"Skipping interface `{row.get('name')}` on `{device.name}`: "
+                    "NetBox rejects existing state on this interface that the "
+                    "sync does not write.",
+                    row,
+                    exception=exc,
+                    context={"device": device.name, "name": row.get("name")},
+                    log_level="warning",
+                )
+                return "skipped"
+            runner._mark_dependency_failed("dcim.interface", row)
+            runner._record_issue(
+                "dcim.interface",
+                f"Interface `{row.get('name')}` on device `{device.name}` was "
+                "rejected by NetBox validation.",
+                row,
+                exception=exc,
+                context={"device": device.name, "name": row.get("name")},
+            )
+            return "failed"
+        return "ok"
 
     device_names = {row.get("device") for row in rows if row.get("device")}
     devices_by_name = {}
@@ -1501,7 +1562,17 @@ def bulk_orm_apply_interface(
                 interface = Interface(**defaults)
                 # Identity proven absent above; skip the per-row validate_unique
                 # DB query (constraint violations still surface via isolate).
-                _validate_interface(interface)
+                # Every field of a new interface is written by this row, so a
+                # rejection here is always ours and never pre-existing state.
+                disposition = _validate_interface(interface, row, device, set(defaults))
+                if disposition != "ok":
+                    # No outcome slot has been appended for this row yet, so the
+                    # tail loop will not count it; count it here as the
+                    # device-not-found paths above do.
+                    runner.logger.increment_statistics(
+                        "dcim.interface", outcome=disposition
+                    )
+                    continue
                 create_objects[key] = interface
                 if canon_key is not None:
                     pending_canonical[canon_key] = interface
@@ -1523,7 +1594,14 @@ def bulk_orm_apply_interface(
             _snapshot_once(existing)
             for field, value in changed_values:
                 setattr(existing, field, value)
-            _validate_interface(existing)
+            disposition = _validate_interface(
+                existing, row, device, {field for field, _ in changed_values}
+            )
+            if disposition != "ok":
+                # The outcome slot is already appended, so the tail loop counts
+                # this row; marking it here would count it twice.
+                outcome[0] = disposition
+                continue
             update_objects[existing.pk] = existing
             outcome[0] = "applied"
         if row.get("lag"):
@@ -1552,7 +1630,19 @@ def bulk_orm_apply_interface(
                 description="",
                 speed=None,
             )
-            _validate_interface(parent)
+            # The member row is what gets recorded: the parent is synthesised
+            # here and has no row of its own, so attributing the rejection to
+            # the member is the only attribution available. Every field of that
+            # synthesised parent is written here.
+            disposition = _validate_interface(
+                parent,
+                row,
+                device,
+                {"device", "name", "type", "enabled", "mtu", "description", "speed"},
+            )
+            if disposition != "ok":
+                outcome[0] = disposition
+                continue
             create_objects[(device.pk, lag_name)] = parent
             canon = canonical_interface_key(lag_name)
             if canon is not None:
@@ -1561,7 +1651,10 @@ def bulk_orm_apply_interface(
         elif parent.type != "lag":
             _snapshot_once(parent)
             parent.type = "lag"
-            _validate_interface(parent)
+            disposition = _validate_interface(parent, row, device, {"type"})
+            if disposition != "ok":
+                outcome[0] = disposition
+                continue
             if getattr(parent, "pk", None) is not None:
                 update_objects[parent.pk] = parent
             outcome[0] = "applied"
