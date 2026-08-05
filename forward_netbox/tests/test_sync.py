@@ -3600,6 +3600,46 @@ select {name: site.name, slug: site.name}
         self.assertIn("skipped", outcomes)
         self.assertNotIn("failed", outcomes)
 
+    def test_adapter_path_reaches_the_same_disposition_as_bulk(self):
+        # `_apply_model_rows` takes the row-oriented adapter, which validates
+        # inside the generic upsert rather than in the interface code. It reached
+        # the opposite conclusion about the same interface while being locally
+        # correct, so the predicate is shared and this pins both paths to it.
+        device = self._create_device("device-1")
+        self._reject_untagged_vlan_on_existing_interface(device, "eth1-1")
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=logger
+        )
+
+        runner._apply_model_rows(
+            "dcim.interface",
+            [
+                {
+                    "device": "device-1",
+                    "name": "eth1-1",
+                    "type": "1000base-t",
+                    "lag": None,
+                    "enabled": True,
+                    "mtu": 9000,
+                    "description": "",
+                    "speed": 1000000,
+                },
+            ],
+        )
+
+        outcomes = [
+            call.kwargs.get("outcome")
+            for call in logger.increment_statistics.call_args_list
+        ]
+        self.assertIn("skipped", outcomes)
+        self.assertNotIn("failed", outcomes)
+        # A skip must not fail the row's dependents: the interface still exists,
+        # so its IP and MAC rows can still resolve it.
+        self.assertFalse(
+            runner._dependency_failed("dcim.interface", ("device-1", "eth1-1"))
+        )
+
     def test_interface_rejected_on_a_field_the_row_writes_still_fails(self):
         self._create_device("device-1")
         logger = Mock()

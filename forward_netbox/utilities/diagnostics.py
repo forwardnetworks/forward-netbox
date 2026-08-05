@@ -600,6 +600,33 @@ def describe_failure(message: str, diagnosis: dict) -> str:
     return message
 
 
+def is_preexisting_rule_rejection(exc, written_fields) -> bool:
+    """True when a rejection is about state the change did not write.
+
+    `full_clean` validates the whole object, but a sync writes only the fields
+    that differ, so a rejection can name a field the row never touched — an
+    untagged VLAN left behind by a device that moved sites is still on the
+    interface when a later sync changes only its MTU. Refusing to write is right
+    either way; calling it *our* failure is not, because a failure also fails the
+    row's dependents and nothing about the incoming data makes it retryable.
+
+    Both halves matter. The rule must be one the catalogue can name: skipping is
+    the disposition for a rejection we understand, and treating anything we
+    cannot name as someone else's problem is how a real defect gets quietly
+    downgraded. And the rejected field must be outside what this change writes,
+    or it is ours by definition.
+
+    One predicate rather than one per apply path — the bulk engine and the
+    row-oriented adapter reached opposite conclusions about the same interface
+    while each was locally correct.
+    """
+    diagnosis = structured_failure_diagnosis(exc)
+    if not diagnosis.get("validation_rules"):
+        return False
+    rejected = set(diagnosis.get("invalid_fields") or ())
+    return not (rejected & set(written_fields or ()))
+
+
 def structured_failure_diagnosis(exc) -> dict:
     """Schema-level detail about a failure, never the values that caused it.
 
