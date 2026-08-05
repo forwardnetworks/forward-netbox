@@ -215,7 +215,7 @@ REQUIRED_TEXT = {
     ],
     ".github/workflows/release.yml": [
         "fetch-depth: 0",
-        "refs/tags/v2.7.1",
+        "refs/tags/v2.7.2",
         "verify_release_provenance.py",
         "--git-files",
         "--protected-history",
@@ -853,7 +853,7 @@ def _check_sensitive_guard_wiring(failures: list[str]) -> None:
         if fragment not in ci_commands:
             failures.append(f".github/workflows/ci.yml must execute {fragment}")
     for fragment in (
-        "refs/tags/v2.7.1",
+        "refs/tags/v2.7.2",
         "verify_release_provenance.py",
         "--tag",
         "check_sensitive_content.py --git-files --protected-history",

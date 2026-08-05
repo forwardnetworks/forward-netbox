@@ -18,8 +18,8 @@ GITHUB_API_URL = "https://api.github.com"
 TRUSTED_STATUS_CONTEXT = "Trusted sensitive-content scan"
 TRUSTED_STATUS_CREATOR = "github-actions[bot]"
 TRUSTED_SCANNER_WORKFLOW = ".github/workflows/trusted-sensitive-pr.yml"
-PRIOR_RELEASE_TAG = "v2.7.1"
-PRIOR_POST_RELEASE_DOC_COMMIT = "8480bdcf282acc1a5a7527aeb282e3e5f482b947"
+PRIOR_RELEASE_TAG = "v2.7.2"
+PRIOR_POST_RELEASE_DOC_COMMIT = "d6c886cdd654559de673ed7f7682201b4ab05671"
 BOOTSTRAP_REQUIRED_FILES = (
     TRUSTED_SCANNER_WORKFLOW,
     "scripts/check_sensitive_content.py",

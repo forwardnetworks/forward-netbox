@@ -602,7 +602,7 @@ jobs:
       - uses: actions/checkout@example
         with:
           fetch-depth: 0
-      - run: git fetch origin refs/tags/v2.7.1 && python scripts/verify_release_provenance.py --tag v2.6.0
+      - run: git fetch origin refs/tags/v2.7.2 && python scripts/verify_release_provenance.py --tag v2.6.0
       - env:
           FORWARD_SENSITIVE_PATTERNS: ${{ secrets.FORWARD_SENSITIVE_PATTERNS }}
           FORWARD_SENSITIVE_HISTORY_BASELINE: ${{ vars.FORWARD_SENSITIVE_HISTORY_BASELINE }}
