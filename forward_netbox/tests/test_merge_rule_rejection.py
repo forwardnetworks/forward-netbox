@@ -26,6 +26,7 @@ from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.diagnostics import describe_failure
+from forward_netbox.utilities.diagnostics import is_preexisting_rule_rejection
 from forward_netbox.utilities.diagnostics import redacted_message_shape
 from forward_netbox.utilities.diagnostics import structured_failure_diagnosis
 from forward_netbox.utilities.drift_report import build_latest_sync_evidence
@@ -168,6 +169,45 @@ class DescribeFailurePrecedenceTests(SimpleTestCase):
         )
         self.assertIn("on invalid field(s) untagged_vlan", message)
         self.assertIn("violating untagged-vlan-outside-device-site.", message)
+
+
+class PreexistingRuleRejectionTests(SimpleTestCase):
+    """One predicate for every apply path, so they cannot disagree again."""
+
+    CROSS_SITE = ValidationError(
+        {
+            "untagged_vlan": [
+                "The untagged VLAN (Vlan211 (211)) must belong to the same site "
+                "as the interface's parent device, or it must be global."
+            ]
+        }
+    )
+
+    def test_catalogued_rule_on_an_unwritten_field_is_preexisting(self):
+        self.assertTrue(is_preexisting_rule_rejection(self.CROSS_SITE, {"mtu"}))
+
+    def test_the_same_rule_on_a_written_field_is_ours(self):
+        self.assertFalse(
+            is_preexisting_rule_rejection(self.CROSS_SITE, {"mtu", "untagged_vlan"})
+        )
+
+    def test_an_uncatalogued_rule_is_never_preexisting(self):
+        # Skipping is the disposition for a rejection we understand. Treating
+        # what we cannot name as someone else's problem downgrades real defects.
+        self.assertFalse(
+            is_preexisting_rule_rejection(
+                ValidationError({"mtu": ["Ensure this value is less than 65536."]}),
+                {"description"},
+            )
+        )
+
+    def test_a_non_validation_error_is_never_preexisting(self):
+        self.assertFalse(is_preexisting_rule_rejection(IntegrityError("dup"), set()))
+
+    def test_no_written_fields_still_requires_a_catalogued_rule(self):
+        self.assertFalse(
+            is_preexisting_rule_rejection(ValidationError("something odd"), set())
+        )
 
 
 class FieldScopedValidationRuleTests(SimpleTestCase):

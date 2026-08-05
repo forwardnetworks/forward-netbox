@@ -1253,7 +1253,7 @@ def bulk_orm_apply_interface(
 
     from ..exceptions import ForwardDependencySkipError
     from ..exceptions import ForwardSearchError
-    from .diagnostics import structured_failure_diagnosis
+    from .diagnostics import is_preexisting_rule_rejection
     from .interface_naming import canonical_interface_key
     from .sync_interface import _interface_untagged_vlan
     from .sync_primitives import forget_lookup_object
@@ -1311,13 +1311,7 @@ def bulk_orm_apply_interface(
             # lookup would hand the rejected state to a later row in this same
             # shard and write it under a different row's outcome.
             forget_lookup_object(runner, interface)
-            diagnosis = structured_failure_diagnosis(exc)
-            rejected = set(diagnosis.get("invalid_fields") or ())
-            # An uncatalogued rule is left a failure deliberately: skipping is
-            # the disposition for a rejection we understand, and an unrecognised
-            # one is exactly the case where we should not be deciding it is
-            # someone else's problem.
-            if diagnosis.get("validation_rules") and not (rejected & written_fields):
+            if is_preexisting_rule_rejection(exc, written_fields):
                 runner._record_issue(
                     "dcim.interface",
                     f"Skipping interface `{row.get('name')}` on `{device.name}`: "

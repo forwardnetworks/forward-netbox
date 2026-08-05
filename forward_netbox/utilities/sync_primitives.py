@@ -137,6 +137,11 @@ def coalesce_update_or_create(
                 return obj, True, True
             return obj, True
         except (IntegrityError, ValidationError) as exc:
+            # Every field of a created row is written by that row, so a
+            # rejection here can never be pre-existing state. Saying so
+            # explicitly keeps the recorder from having to infer it.
+            if isinstance(exc, ValidationError):
+                exc.forward_written_fields = set(create_values)
             # A duplicate surfaces two different ways depending on who notices
             # first. `full_clean` checks uniqueness in Python and raises
             # ValidationError; a genuine race gets past that and the database
@@ -165,7 +170,14 @@ def coalesce_update_or_create(
             setattr(obj, field, value)
             update_fields.append(field)
     if update_fields:
-        obj.full_clean()
+        try:
+            obj.full_clean()
+        except ValidationError as exc:
+            # `full_clean` validates the whole object while this writes only the
+            # fields that differ, so the recorder needs to know which of the two
+            # it is looking at. It cannot work that out from the exception.
+            exc.forward_written_fields = set(update_fields)
+            raise
         obj.save(update_fields=update_fields)
     remember_lookup_object(runner, obj)
     _remember_unique_lookups(runner, model, lookups, obj)

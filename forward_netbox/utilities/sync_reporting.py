@@ -16,6 +16,7 @@ from ..exceptions import ForwardSyncDataError
 from .diagnostics import diagnostic_shape
 from .diagnostics import exception_type
 from .diagnostics import failure_classifier
+from .diagnostics import is_preexisting_rule_rejection
 from .diagnostics import structured_failure_diagnosis
 from .json_safe import json_safe_value
 from .sync_primitives import dependency_parent_coverage_summary
@@ -536,20 +537,40 @@ def apply_model_rows(runner, model_string, rows):
             )
         except (ValidationError, IntegrityError) as exc:
             runner.events_clearer.restore(pre_row_events)
+            # A rejection naming a catalogued rule on a field this row does not
+            # write is pre-existing state: recorded and skipped, not failed. The
+            # writer attaches what it wrote, because nothing about the exception
+            # says it. Absent that, the row keeps failing — inferring "not ours"
+            # from silence is exactly the wrong default.
+            written_fields = getattr(exc, "forward_written_fields", None)
+            preexisting = written_fields is not None and is_preexisting_rule_rejection(
+                exc, written_fields
+            )
             logger.error(
                 "Failed applying %s row (%s).",
                 model_string,
                 exception_type(exc),
             )
-            mark_dependency_failed(runner, model_string, row)
-            runner.logger.increment_statistics(model_string, outcome="failed")
-            record_issue(
-                runner,
-                model_string,
-                str(exc),
-                row,
-                exception=exc,
-            )
+            if preexisting:
+                runner.logger.increment_statistics(model_string, outcome="skipped")
+                record_issue(
+                    runner,
+                    model_string,
+                    str(exc),
+                    row,
+                    exception=exc,
+                    log_level="warning",
+                )
+            else:
+                mark_dependency_failed(runner, model_string, row)
+                runner.logger.increment_statistics(model_string, outcome="failed")
+                record_issue(
+                    runner,
+                    model_string,
+                    str(exc),
+                    row,
+                    exception=exc,
+                )
         except JobTimeoutException:
             raise
         except Exception as exc:
