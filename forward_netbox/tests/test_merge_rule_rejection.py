@@ -154,6 +154,84 @@ class DescribeFailurePrecedenceTests(SimpleTestCase):
         )
         self.assertIn("on invalid field(s) address.", message)
 
+    def test_a_named_field_and_its_rule_are_both_reported(self):
+        # They are different facts. The field says where the rejection landed,
+        # the rule says what rejected it, and reporting only the field is what
+        # left a customer's `untagged_vlan` failure ambiguous between two
+        # unrelated NetBox rules.
+        message = describe_failure(
+            "Forward ingestion failed (ValidationError).",
+            {
+                "invalid_fields": ["untagged_vlan"],
+                "validation_rules": ["untagged-vlan-outside-device-site"],
+            },
+        )
+        self.assertIn("on invalid field(s) untagged_vlan", message)
+        self.assertIn("violating untagged-vlan-outside-device-site.", message)
+
+
+class FieldScopedValidationRuleTests(SimpleTestCase):
+    """A rule must be nameable whether or not NetBox scoped it to a field.
+
+    Reading `__all__` alone made a rule legible exactly when NetBox declined to
+    say which field it concerned, and illegible whenever NetBox did say. One
+    field routinely carries several unrelated rules, so the field name alone
+    does not identify the rejection.
+    """
+
+    UNTAGGED_VLAN_SITE = ValidationError(
+        {
+            "untagged_vlan": [
+                "The untagged VLAN (Vlan211 (211)) must belong to the same site "
+                "as the interface's parent device, or it must be global."
+            ]
+        }
+    )
+    UNTAGGED_VLAN_MODE = ValidationError(
+        {"untagged_vlan": ["Interface mode does not support an untagged vlan."]}
+    )
+
+    def test_cross_site_untagged_vlan_is_named(self):
+        diagnosis = structured_failure_diagnosis(self.UNTAGGED_VLAN_SITE)
+        self.assertEqual(["untagged_vlan"], diagnosis["invalid_fields"])
+        self.assertEqual(
+            ["untagged-vlan-outside-device-site"], diagnosis["validation_rules"]
+        )
+
+    def test_untagged_vlan_without_mode_is_named(self):
+        diagnosis = structured_failure_diagnosis(self.UNTAGGED_VLAN_MODE)
+        self.assertEqual(
+            ["untagged-vlan-needs-interface-mode"], diagnosis["validation_rules"]
+        )
+
+    def test_the_two_untagged_vlan_rules_are_distinguishable(self):
+        # The whole point: a customer sync recorded `untagged_vlan` and nothing
+        # else, and these two have different causes and different fixes.
+        self.assertNotEqual(
+            structured_failure_diagnosis(self.UNTAGGED_VLAN_SITE)["validation_rules"],
+            structured_failure_diagnosis(self.UNTAGGED_VLAN_MODE)["validation_rules"],
+        )
+
+    def test_an_uncatalogued_field_rule_keeps_its_wording(self):
+        diagnosis = structured_failure_diagnosis(
+            ValidationError(
+                {"mtu": ["Ensure this value is less than or equal to 65536."]}
+            )
+        )
+        self.assertNotIn("validation_rules", diagnosis)
+        shape = " ".join(diagnosis["unrecognized_validation_rules"])
+        self.assertIn("Ensure this value is less than or equal to", shape)
+
+    def test_values_in_a_field_scoped_message_are_still_masked(self):
+        # Field-scoped messages quote submitted values just as freely as
+        # non-field ones; reading more messages must not start persisting them.
+        diagnosis = structured_failure_diagnosis(
+            ValidationError({"name": ["Device host-9.internal.example is invalid."]})
+        )
+        shape = " ".join(diagnosis["unrecognized_validation_rules"])
+        self.assertNotIn("host-9.internal.example", shape)
+        self.assertIn("invalid", shape)
+
 
 PRIMARY_IP_REJECTION = ValidationError(
     {

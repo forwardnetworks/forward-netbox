@@ -59,6 +59,9 @@ from forward_netbox.utilities.apply_engine import BULK_ORM_ENABLED_MODELS_WITHOU
 from forward_netbox.utilities.apply_engine import select_apply_engine
 from forward_netbox.utilities.apply_engine import UNCLASSIFIED_SUPPORTED_MODELS
 from forward_netbox.utilities.apply_engine_bulk import (
+    bulk_orm_apply_interface,
+)
+from forward_netbox.utilities.apply_engine_bulk import (
     bulk_orm_apply_tree_models,
 )
 from forward_netbox.utilities.branch_budget import APPLY_DEPENDENCY_MODEL_RANK
@@ -3523,6 +3526,112 @@ select {name: site.name, slug: site.name}
         self.assertTrue(
             any("VLAN was not imported" in message for message in warning_messages)
         )
+
+    def _reject_untagged_vlan_on_existing_interface(self, device, name):
+        """Leave a cross-site untagged VLAN NetBox will refuse.
+
+        Written with `queryset.update()` on purpose: `save()` and `full_clean()`
+        both refuse this pairing, and the point is that a real deployment gets
+        there anyway — a device whose Forward location changed is moved between
+        sites by `bulk_update`, which runs neither, and its interfaces keep the
+        VLAN of the site they were assigned in.
+        """
+        other_site = Site.objects.create(name="site-2", slug="site-2")
+        other_vlan = VLAN.objects.create(
+            site=other_site, vid=30, name="elsewhere", status="active"
+        )
+        interface = Interface.objects.create(
+            device=device, name=name, type="1000base-t", mode="access"
+        )
+        Interface.objects.filter(pk=interface.pk).update(untagged_vlan=other_vlan)
+        return interface
+
+    def test_interface_rejected_on_untouched_field_is_skipped_not_failed(self):
+        device = self._create_device("device-1")
+        self._reject_untagged_vlan_on_existing_interface(device, "eth1-1")
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=logger
+        )
+
+        # The bulk engine directly: this is the path that runs at customer
+        # scale, and the one whose uncaptured `ValidationError` ended a sync.
+        #
+        # No `mode`, so the row writes neither mode nor untagged_vlan; the only
+        # change it asks for is the MTU.
+        bulk_orm_apply_interface(
+            runner,
+            [
+                {
+                    "device": "device-1",
+                    "name": "eth1-1",
+                    "type": "1000base-t",
+                    "lag": None,
+                    "enabled": True,
+                    "mtu": 9000,
+                    "description": "",
+                    "speed": 1000000,
+                },
+                {
+                    "device": "device-1",
+                    "name": "eth1-2",
+                    "type": "1000base-t",
+                    "lag": None,
+                    "enabled": True,
+                    "mtu": 1500,
+                    "description": "",
+                    "speed": 1000000,
+                },
+            ],
+        )
+
+        # The rejected row does not stop the shard: the unrelated interface is
+        # still created. This is the failure that ended a customer sync with 172
+        # changes staged and nothing merged.
+        self.assertTrue(Interface.objects.filter(device=device, name="eth1-2").exists())
+        # And the rejected row is not written.
+        self.assertIsNone(
+            Interface.objects.get(device=device, name="eth1-1").mtu,
+        )
+        outcomes = [
+            call.kwargs.get("outcome")
+            for call in logger.increment_statistics.call_args_list
+        ]
+        self.assertIn("skipped", outcomes)
+        self.assertNotIn("failed", outcomes)
+
+    def test_interface_rejected_on_a_field_the_row_writes_still_fails(self):
+        self._create_device("device-1")
+        logger = Mock()
+        runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=logger
+        )
+
+        # An MTU outside NetBox's accepted range is this row's own doing, and it
+        # names no catalogued rule, so it must stay a failure - "skipped" is the
+        # disposition for a rejection we understand and did not cause.
+        bulk_orm_apply_interface(
+            runner,
+            [
+                {
+                    "device": "device-1",
+                    "name": "eth1-1",
+                    "type": "1000base-t",
+                    "lag": None,
+                    "enabled": True,
+                    "mtu": 99999999,
+                    "description": "",
+                    "speed": 1000000,
+                },
+            ],
+        )
+
+        self.assertFalse(Interface.objects.filter(name="eth1-1").exists())
+        outcomes = [
+            call.kwargs.get("outcome")
+            for call in logger.increment_statistics.call_args_list
+        ]
+        self.assertIn("failed", outcomes)
 
     def test_apply_dcim_interface_creates_lag_placeholder_across_shards(self):
         self._create_device("device-1")

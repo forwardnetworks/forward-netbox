@@ -461,11 +461,20 @@ def sanitize_job_diagnostics(value):
 # (`_("{ip} is a network ID...").format(ip=...)`), so by the time the exception
 # exists the address is inside the string.
 #
+# A field-scoped error is no better off. A field name identifies *where* the
+# rejection landed, not *which rule* rejected it, and one field routinely
+# carries several unrelated rules: NetBox raises on `untagged_vlan` both for an
+# interface whose mode does not admit one and for a VLAN outside the device's
+# site. Those have different causes and different fixes, and a customer sync
+# recorded only the field name for one of them - leaving the failure as
+# undiagnosable as the `__all__` case this table was built for. So every
+# message is matched here, whatever field it names.
+#
 # Matching against an allowlist keeps the rule identifiable while persisting
 # only slugs this module defines. An unrecognised message records that it was
 # unrecognised and nothing else, which is a prompt to extend this table rather
 # than a reason to start storing message text.
-_NON_FIELD_VALIDATION_RULES = (
+_VALIDATION_RULES = (
     ("network-id-not-assignable", "is a network id, which may not be assigned"),
     ("broadcast-not-assignable", "is a broadcast address, which may not be assigned"),
     (
@@ -479,6 +488,14 @@ _NON_FIELD_VALIDATION_RULES = (
     (
         "primary-mac-reassignment-blocked",
         "cannot reassign mac address while it is designated as the primary mac",
+    ),
+    (
+        "untagged-vlan-needs-interface-mode",
+        "interface mode does not support an untagged vlan",
+    ),
+    (
+        "untagged-vlan-outside-device-site",
+        "must belong to the same site as the interface's parent",
     ),
 )
 
@@ -510,22 +527,30 @@ def redacted_message_shape(message: str) -> str:
     return " ".join(kept)
 
 
-def _non_field_validation_rules(exc) -> tuple[list[str], list[str]]:
+def _validation_rules(exc) -> tuple[list[str], list[str]]:
     """Recognised rule slugs, plus redacted wording for anything unrecognised."""
     # Only a dict-constructed ValidationError has `message_dict`; a bare one
     # raises AttributeError, which `getattr` swallows into None. `full_clean()`
     # produces the dict form, but a ValidationError raised directly still has
     # to be diagnosable - reading only `message_dict` would silently record
     # nothing for it.
+    #
+    # Every field is read, not just `__all__`. Reading `__all__` alone was the
+    # whole gap: it made a rule legible exactly when NetBox declined to say
+    # which field it concerned, and illegible whenever NetBox did say.
     if hasattr(exc, "error_dict"):
-        non_field = list(getattr(exc, "message_dict", {}).get("__all__", ()))
+        messages = [
+            message
+            for field_messages in getattr(exc, "message_dict", {}).values()
+            for message in field_messages
+        ]
     else:
-        non_field = list(getattr(exc, "messages", ()) or ())
+        messages = list(getattr(exc, "messages", ()) or ())
     matched = set()
     unrecognized = []
-    for message in non_field:
+    for message in messages:
         haystack = str(message).casefold()
-        for slug, needle in _NON_FIELD_VALIDATION_RULES:
+        for slug, needle in _VALIDATION_RULES:
             if needle in haystack:
                 matched.add(slug)
                 break
@@ -557,13 +582,21 @@ def describe_failure(message: str, diagnosis: dict) -> str:
         return f"{stem} for {len(failed_models)} model(s): {listed}."
     if constraint:
         return f"{stem} on constraint {constraint}."
+    # `__all__` is the absence of a field name, so it is never worth printing;
+    # a real field name is, and now that rules are read from every field the two
+    # are no longer alternatives. Which field was rejected and which rule
+    # rejected it are different facts, and the field alone was what left a
+    # customer's `untagged_vlan` failure ambiguous between two unrelated causes.
+    named_fields = [field for field in invalid_fields if field != "__all__"]
+    if named_fields:
+        stem = f"{stem} on invalid field(s) {', '.join(named_fields)}"
     if rules:
         return f"{stem} violating {', '.join(rules)}."
     if unrecognized:
         # Wording only - every value-bearing token has already been masked.
         return f"{stem}: {'; '.join(unrecognized)}."
-    if invalid_fields:
-        return f"{stem} on invalid field(s) {', '.join(invalid_fields)}."
+    if named_fields:
+        return f"{stem}."
     return message
 
 
@@ -603,7 +636,7 @@ def structured_failure_diagnosis(exc) -> dict:
     # validation failure exactly as opaque as recording nothing. This runs for
     # a bare ValidationError too, which has no `message_dict` at all and would
     # otherwise be recorded as nothing but its exception class.
-    rules, unrecognized = _non_field_validation_rules(exc)
+    rules, unrecognized = _validation_rules(exc)
     if rules:
         diagnosis["validation_rules"] = rules
     if unrecognized:
