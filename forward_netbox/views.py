@@ -2164,6 +2164,44 @@ def _ingestion_holds_current_ownership(ingestion) -> bool:
         return True
 
 
+def _ingestion_baseline_state(ingestion) -> str:
+    """``"current"``, ``"spent"``, or ``""`` when no baseline holds this row.
+
+    The refusal used to decide this by looking for "baseline" in the protecting
+    model's label, which cannot distinguish the sync's live baseline from one
+    that was superseded years of syncs ago. Every ingestion that ever promoted
+    leaves a baseline row behind, and promotion only marks the previous one
+    superseded — it clears the relations and empties the payload but keeps the
+    row, which goes on protecting its ingestion forever. So a customer with
+    three undeletable ingestions was told three times that each was "the
+    baseline for this sync", which is true of at most one of them.
+
+    "Spent" is `status == SUPERSEDED` specifically, NOT `is_current is False`.
+    `is_current` defaults to False and `status` to PENDING, so a baseline that
+    has simply not been promoted yet is also not current — and calling that one
+    spent would tell an operator mid-sync that an intact payload is a dead
+    husk. Only promotion sets SUPERSEDED, and it is promotion that clears the
+    relations and empties the payload.
+
+    Fails closed to ``"current"``: the conservative wording promises nothing.
+    """
+    from .models import ForwardContributorBaseline
+
+    if not ingestion.pk:
+        return ""
+    try:
+        baseline = ForwardContributorBaseline.objects.filter(
+            ingestion=ingestion
+        ).first()
+    except Exception:  # noqa: BLE001 - a refusal must not become a 500
+        return "current"
+    if baseline is None:
+        return ""
+    if baseline.status == ForwardContributorBaseline.Status.SUPERSEDED:
+        return "spent"
+    return "current"
+
+
 def _ingestion_delete_refusal_detail(ingestion) -> tuple[str, bool]:
     """The refusal text, and whether it is expected rather than a fault.
 
@@ -2201,6 +2239,21 @@ def _ingestion_delete_refusal_detail(ingestion) -> tuple[str, bool]:
         return "", False
     held_by = ", ".join(f"{label} ({count})" for label, count in references)
     if baseline_reference:
+        if _ingestion_baseline_state(ingestion) == "spent":
+            # Do not repeat the durable-record wording here. This baseline is
+            # spent: promotion already cleared its relations and emptied its
+            # payload, so it protects nothing an operator would want kept, and
+            # telling them to "remove those records first" points at an action
+            # the product does not offer for this row.
+            return (
+                f"{ingestion} is held by a contributor baseline that has "
+                "already been superseded by a later sync. The record is spent - "
+                "its contents were cleared when the newer baseline was promoted "
+                "- but it still protects this ingestion, so the ingestion "
+                f"cannot be deleted. It is held by {held_by}. Nothing is wrong "
+                "with this sync and no action will release it today; collecting "
+                "spent baselines is a known gap."
+            ), True
         return (
             f"{ingestion} is the baseline for this sync - the durable record of "
             "what has already converged - so NetBox protects it from deletion. "
