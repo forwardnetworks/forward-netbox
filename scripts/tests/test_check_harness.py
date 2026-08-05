@@ -1058,3 +1058,94 @@ class ReleaseAnchorTracksCurrentReleaseTest(unittest.TestCase):
         failures = self._run(tag="not-a-tag", current="v2.7.0")
         self.assertEqual(len(failures), 1)
         self.assertIn("PRIOR_RELEASE_TAG", failures[0])
+
+
+class PostReleaseBridgeIsDocumentationOnlyTest(unittest.TestCase):
+    """The bridge slot is not reclaimable, so its shape is checked before a tag.
+
+    `v2.7.0` was promoted without being archived first, so the promotion commit
+    took the slot the verifier reserves for a documentation-only bridge. The
+    bridge is defined as the first first-parent commit after the tag, so no
+    later commit could reclaim it: every release after `v2.7.0` was unverifiable
+    until the rule was widened. Nothing failed at the time because the harness
+    only checked which release the anchor named, never what the bridge changed.
+
+    The rule itself is deliberately not restated here - these cases exercise the
+    verifier's own `_is_documentation_path` through the harness check.
+    """
+
+    BRIDGE = "b" * 40
+    PROVENANCE = (
+        'PRIOR_RELEASE_TAG = "v2.7.0"\n' f'PRIOR_POST_RELEASE_DOC_COMMIT = "{BRIDGE}"\n'
+    )
+
+    def _run(self, changed, *, provenance=None):
+        failures = []
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "scripts").mkdir()
+            (root / "scripts/verify_release_provenance.py").write_text(
+                self.PROVENANCE if provenance is None else provenance,
+                encoding="utf-8",
+            )
+            with (
+                patch.object(check_harness, "REPO_ROOT", root),
+                patch.object(
+                    check_harness,
+                    "_git_names",
+                    return_value=list(changed),
+                ) as git_names,
+            ):
+                check_harness._check_post_release_bridge_is_documentation_only(failures)
+                self.calls = git_names.call_args_list
+        return failures
+
+    def test_documentation_only_bridge_passes(self):
+        failures = self._run(
+            [
+                "CHANGELOG.md",
+                "README.md",
+                "docs/01_User_Guide/README.md",
+                "docs/03_Plans/completed/2026-08-03-release-2.7.1.md",
+            ]
+        )
+
+        self.assertEqual(failures, [])
+        self.assertEqual(
+            self.calls[0].args,
+            ("diff", "--name-only", "v2.7.0", self.BRIDGE),
+        )
+
+    def test_bridge_carrying_plugin_code_fails(self):
+        failures = self._run(["CHANGELOG.md", "forward_netbox/utilities/sync.py"])
+
+        self.assertEqual(len(failures), 1)
+        self.assertIn("forward_netbox/utilities/sync.py", failures[0])
+        # Only the disqualifying paths are named; the documentation it also
+        # carried is not what has to be removed.
+        self.assertNotIn("CHANGELOG.md", failures[0])
+        self.assertIn("cannot be reclaimed", failures[0])
+
+    def test_bridge_carrying_a_workflow_fails(self):
+        failures = self._run([".github/workflows/release.yml"])
+
+        self.assertEqual(len(failures), 1)
+        self.assertIn(".github/workflows/release.yml", failures[0])
+        self.assertIn("cannot be reclaimed", failures[0])
+
+    def test_an_unreadable_or_empty_bridge_fails_closed(self):
+        # `all()` is vacuously true on an empty sequence, and `_git_names`
+        # returns nothing when git fails, so silence must not read as a pass.
+        failures = self._run([])
+
+        self.assertEqual(len(failures), 1)
+        self.assertIn("no changed paths", failures[0])
+
+    def test_a_missing_bridge_constant_is_reported(self):
+        failures = self._run(
+            ["CHANGELOG.md"],
+            provenance='PRIOR_RELEASE_TAG = "v2.7.0"\n',
+        )
+
+        self.assertEqual(len(failures), 1)
+        self.assertIn("PRIOR_POST_RELEASE_DOC_COMMIT", failures[0])
