@@ -627,6 +627,30 @@ def is_preexisting_rule_rejection(exc, written_fields) -> bool:
     return not (rejected & set(written_fields or ()))
 
 
+def is_caused_rule_rejection(exc, written_fields) -> bool:
+    """True when a rejection is about a field this change itself writes.
+
+    NOT the complement of `is_preexisting_rule_rejection`. Both are False for a
+    rule the catalogue cannot name, and that is the point: the two are used
+    where the *default* differs, so each has to answer for itself rather than
+    invert the other.
+
+    At merge the default is to skip. Every `ValidationError` there was treated
+    as unsatisfiable, which is right for a rule that is a property of the
+    destination — retrying cannot change the answer, and counting it a failure
+    is what turns a handful of refused rows into a baseline that can never
+    promote. But it also swallowed rejections the merge itself caused, where a
+    retry is exactly the right response. Those are the ones this names, and only
+    those change disposition: an uncatalogued rule keeps skipping, so nothing
+    the catalogue has not been taught can newly wedge a baseline.
+    """
+    diagnosis = structured_failure_diagnosis(exc)
+    if not diagnosis.get("validation_rules"):
+        return False
+    rejected = set(diagnosis.get("invalid_fields") or ())
+    return bool(rejected & set(written_fields or ()))
+
+
 def structured_failure_diagnosis(exc) -> dict:
     """Schema-level detail about a failure, never the values that caused it.
 
