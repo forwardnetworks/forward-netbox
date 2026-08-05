@@ -208,7 +208,7 @@ def _runtime_decision():
         # tuple stopped matching.
         "optional_plugins": {
             "netbox-cisco-aci": frozenset({"0.4.0"}),
-            "netbox-dlm": frozenset({"0.4.1", "0.5.0", "0.6.0"}),
+            "netbox-dlm": frozenset({"0.4.1", "0.5.0", "0.6.0", "0.7.0"}),
             "netbox-peering-manager": frozenset({"0.3.0"}),
             "netbox-routing": frozenset({"0.4.3"}),
         },
