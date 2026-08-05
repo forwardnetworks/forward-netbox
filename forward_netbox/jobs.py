@@ -27,6 +27,7 @@ from .models import ForwardIngestion
 from .models import ForwardIngestionIssue
 from .models import ForwardSync
 from .utilities.diagnostics import exception_type
+from .utilities.diagnostics import failure_classifier
 from .utilities.diagnostics import REDACTED_DIAGNOSTIC
 from .utilities.diagnostics import safe_operation_failure
 from .utilities.job_queue import enqueue_forward_job
@@ -1333,7 +1334,7 @@ def merge_forwardingestion(
         if outcome == "finalization":
             message = (
                 "Forward branch merge was applied, but post-merge finalization "
-                f"requires recovery ({exception_type(exc)})."
+                f"requires recovery ({failure_classifier(exc)})."
             )
             if getattr(ingestion.sync, "logger", None) is None:
                 ingestion.sync.logger = SyncLogging(job=job.pk)
@@ -1353,7 +1354,7 @@ def merge_forwardingestion(
         if outcome == "finalized":
             message = (
                 "Forward merge finalization completed before the failed job "
-                f"unwound; the completed sync state was preserved ({exception_type(exc)})."
+                f"unwound; the completed sync state was preserved ({failure_classifier(exc)})."
             )
         else:
             message = safe_operation_failure("Forward merge job", exc)

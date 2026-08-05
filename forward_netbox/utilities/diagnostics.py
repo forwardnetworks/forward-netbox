@@ -186,6 +186,27 @@ def redacted_message_prefix(message: str) -> str:
     return " ".join(kept)
 
 
+def failure_classifier(exc) -> str:
+    """How a failure is named, everywhere: `ClassName` or `ClassName: reason`.
+
+    Every composer of an operator-facing or persisted failure string resolves
+    the name here. That is the whole point of the module: `exception_type`
+    alone answers *what class* raised and never *why*, and each place that
+    reached for it separately grew its own idea of how much of the reason to
+    keep. `record_issue` was the one that still did - it composed
+    `(IntegrityError; constraint ...)` from its own diagnosis while formatting
+    the classifier by hand, so a `ForwardQueryError` that knew perfectly well
+    it was a shape error persisted as `(ForwardQueryError)` into
+    `ForwardIngestionIssue.message`, the single row an operator actually reads.
+
+    Callers that want schema-level detail append it to this; they do not
+    re-derive the name.
+    """
+    classifier = exception_type(exc)
+    reason = failure_reason(exc)
+    return f"{classifier}: {reason}" if reason else classifier
+
+
 def safe_exception_summary(exc) -> str:
     """Classifier plus a value-free characterisation, never message content.
 
@@ -194,14 +215,18 @@ def safe_exception_summary(exc) -> str:
     downstream tooling, and the reason five identical customer ingestions could
     not be diagnosed at all.
     """
-    classifier = exception_type(exc)
-    reason = failure_reason(exc)
-    if reason:
-        return f"{classifier}: {reason}."
+    named = failure_classifier(exc)
+    if failure_reason(exc):
+        return f"{named}."
+    # Uncatalogued: fall back to bounded leading wording. This is the one thing
+    # `safe_exception_summary` does that `failure_classifier` does not, and it
+    # stays here rather than in the shared namer deliberately - the wording
+    # fallback is a best-effort read of arbitrary text, so it belongs to the
+    # inline summary and not to the name every other composer interpolates.
     prefix = redacted_message_prefix(str(exc))
     if prefix:
-        return f"{classifier}: {prefix}."
-    return f"{classifier}."
+        return f"{named}: {prefix}."
+    return f"{named}."
 
 
 def safe_operation_failure(operation: str, exc) -> str:
@@ -211,11 +236,7 @@ def safe_operation_failure(operation: str, exc) -> str:
     through, rather than at any call site - and it is resolved by the shared
     rule for every exception, not by a per-class branch.
     """
-    classifier = exception_type(exc)
-    reason = failure_reason(exc)
-    if reason:
-        return f"{operation} failed ({classifier}: {reason})."
-    return f"{operation} failed ({classifier})."
+    return f"{operation} failed ({failure_classifier(exc)})."
 
 
 def model_failure_summary(model_results) -> list[dict]:
@@ -284,30 +305,6 @@ def diff_fallback_summary(model_results) -> list[dict]:
     ]
 
 
-def safe_job_error_summary(error) -> str:
-    """Expose only an exception classifier from a persisted core Job error.
-
-    The pattern must accept the reason slug `safe_operation_failure` now writes
-    for every classified failure. It did not, so a job error that named its
-    reason was recognised as *unparseable* and exported as
-    `<redacted diagnostic>` - strictly worse than the bare classifier it
-    replaced. That was already latent for `OwnershipConflictError`; the reason
-    catalogue would have made it the common case.
-    """
-    error = str(error or "")
-    match = re.fullmatch(
-        r"[^()\r\n]* failed \(([A-Za-z_][A-Za-z0-9_.]*)"
-        r"(?::\s*([a-z][a-z0-9]*(?:[+-][a-z0-9]+)*))?\)\.",
-        error,
-    )
-    if not match:
-        return REDACTED_DIAGNOSTIC if error else ""
-    classifier, reason = match.group(1), match.group(2)
-    if reason:
-        return f"Job failed ({classifier}: {reason})."
-    return f"Job failed ({classifier})."
-
-
 def diagnostic_shape(value):
     """Describe diagnostic data without retaining customer-provided values."""
     if isinstance(value, dict):
@@ -336,6 +333,71 @@ _LOGGED_CLASSIFIER = re.compile(
 _MAX_LOGGED_CLASSIFIERS = 3
 
 
+def recovered_classifiers(text) -> list[str]:
+    """The classifiers this module wrote into `text`, in order, deduplicated.
+
+    One rule for reading a classifier back out of a message, shared by the log
+    renderer and the Job-error readback. They had two, and the stricter of them
+    - a full-sentence match requiring the literal word "failed" - silently
+    discarded the classifier from every message that phrased itself any other
+    way.
+    """
+    parts = []
+    for classifier, reason in _LOGGED_CLASSIFIER.findall(str(text or "")):
+        rendered = f"{classifier}: {reason}" if reason else classifier
+        if rendered not in parts:
+            parts.append(rendered)
+        if len(parts) >= _MAX_LOGGED_CLASSIFIERS:
+            break
+    return parts
+
+
+def safe_job_error_summary(error) -> str:
+    """Expose only an exception classifier from a persisted core Job error.
+
+    The pattern must accept the reason slug `safe_operation_failure` now writes
+    for every classified failure. It did not, so a job error that named its
+    reason was recognised as *unparseable* and exported as
+    `<redacted diagnostic>` - strictly worse than the bare classifier it
+    replaced. That was already latent for `OwnershipConflictError`; the reason
+    catalogue would have made it the common case.
+
+    The same was true of every job error that does not use the word "failed".
+    A merge whose finalization "requires recovery (ForwardQueryError)", or that
+    "was preserved (ForwardQueryError)", carries its classifier in plain sight
+    and was still exported as `<redacted diagnostic>` - the readback threw away
+    what the writer had just been fixed to record.
+
+    Two tiers, in this order. The first is the exact inverse of what
+    `safe_operation_failure` writes, so any identifier inside those parentheses
+    is known to be a class name and is kept whatever it is spelled like -
+    `ContributorBaselineUnavailable` and `JobAlreadyActive` carry no `Error`
+    suffix and must still read back. The second is the shared loose recovery,
+    which has to survive arbitrary sentences and therefore demands the suffix:
+    without it `Mgmt_Vl211` is a valid-looking class name. Anything matching
+    neither is redacted.
+    """
+    error = str(error or "")
+    if not error:
+        return ""
+    match = re.fullmatch(
+        r"[^()\r\n]* failed \(([A-Za-z_][A-Za-z0-9_.]*)"
+        r"(?::\s*([a-z][a-z0-9]*(?:[+-][a-z0-9]+)*))?\)\.",
+        error,
+    )
+    if match:
+        classifier, reason = match.group(1), match.group(2)
+        return (
+            f"Job failed ({classifier}: {reason})."
+            if reason
+            else f"Job failed ({classifier})."
+        )
+    parts = recovered_classifiers(error)
+    if not parts:
+        return REDACTED_DIAGNOSTIC
+    return f"Job failed ({'; '.join(parts)})."
+
+
 def safe_failure_log_message(message) -> str:
     """Keep a failure row's classifier instead of flattening it to one sentence.
 
@@ -345,16 +407,9 @@ def safe_failure_log_message(message) -> str:
     export and in the support bundle. The redaction still applies to the message
     body; what changes is that the classifier the row was given survives it.
     """
-    matches = _LOGGED_CLASSIFIER.findall(str(message or ""))
-    if not matches:
+    parts = recovered_classifiers(message)
+    if not parts:
         return SAFE_FAILURE_LOG_MESSAGE
-    parts = []
-    for classifier, reason in matches:
-        rendered = f"{classifier}: {reason}" if reason else classifier
-        if rendered not in parts:
-            parts.append(rendered)
-        if len(parts) >= _MAX_LOGGED_CLASSIFIERS:
-            break
     return f"{SAFE_FAILURE_LOG_PREFIX} ({'; '.join(parts)})."
 
 

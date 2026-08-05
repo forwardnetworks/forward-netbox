@@ -10,6 +10,7 @@ from ipaddress import ip_interface
 
 from rq.timeouts import JobTimeoutException
 
+from .diagnostics import failure_classifier
 from .interface_naming import parse_mgmt_tag
 from .interface_naming import resolve_mgmt_interface_name
 
@@ -178,7 +179,7 @@ def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
         raise
     except Exception as error:  # never break the ingest on the tag fetch
         logger.log_warning(
-            "primary_ip-from-tag: tag fetch failed " f"({error.__class__.__name__})."
+            "primary_ip-from-tag: tag fetch failed " f"({failure_classifier(error)})."
         )
         return 0
 

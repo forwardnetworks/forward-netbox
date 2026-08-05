@@ -447,6 +447,144 @@ class StructuredDiagnosisTest(unittest.TestCase):
         )
 
 
+class EnrichedRowShapeFailureTest(unittest.TestCase):
+    """The row-shape failure keeps resolving after it was given a map name.
+
+    `_validate_row_shape` re-raises the row-shape `ForwardQueryError` wrapped in
+    wording that names the map, its id and whether it ran at unpinned head. That
+    wording is prepended to nothing and appended to everything, so the catalogue
+    still has to see `missing required fields` at the front - and the map name,
+    which a customer chooses, still must not reach anything this module writes.
+
+    Neither change tested the other. This pins the seam.
+    """
+
+    # The exact shape `_validate_row_shape` raises, with a customer-authored map
+    # name and id standing in for the ones a real deployment would carry.
+    ENRICHED = (
+        "Row for `dcim.device` is missing required fields: name. "
+        "Returned by map `Acme DC11 Devices` [42] running at unpinned head. "
+        "The query no longer returns the fields dcim.device requires; "
+        "re-resolve or republish that query."
+    )
+    MAP_TOKENS = ("Acme DC11 Devices", "Acme", "DC11", "[42]", "unpinned head")
+
+    def test_the_reason_still_resolves_through_the_added_wording(self):
+        self.assertEqual(
+            diagnostics.failure_reason(ForwardQueryError(self.ENRICHED)),
+            "shape-error",
+        )
+
+    def test_the_persisted_sentence_names_the_reason(self):
+        self.assertEqual(
+            diagnostics.safe_operation_failure(
+                "dcim.device row processing", ForwardQueryError(self.ENRICHED)
+            ),
+            "dcim.device row processing failed (ForwardQueryError: shape-error).",
+        )
+
+    def test_the_map_name_reaches_nothing_this_module_writes(self):
+        exc = ForwardQueryError(self.ENRICHED)
+        outputs = (
+            diagnostics.failure_classifier(exc),
+            diagnostics.safe_operation_failure("dcim.device row processing", exc),
+            diagnostics.safe_exception_summary(exc),
+            diagnostics.safe_failure_log_message(self.ENRICHED),
+            diagnostics.safe_job_error_summary(self.ENRICHED),
+        )
+        for output in outputs:
+            for token in self.MAP_TOKENS:
+                with self.subTest(output=output, token=token):
+                    self.assertNotIn(token, output)
+
+
+class SharedNamingTest(unittest.TestCase):
+    """One function names a failure, and every composer defers to it.
+
+    The first pass added the reason catalogue and routed `safe_operation_failure`
+    and `safe_exception_summary` through it - but `record_issue`, which writes
+    `ForwardIngestionIssue.message`, composed its own `(ClassName; constraint
+    ...)` from `exception_type` and never consulted the catalogue. So the logger
+    said `shape-error` and the row a customer actually reads said
+    `(ForwardQueryError)`, in the same run, for the same exception. These pin
+    the shared namer that both now go through.
+    """
+
+    def test_the_namer_carries_the_reason(self):
+        self.assertEqual(
+            diagnostics.failure_classifier(
+                ForwardQueryError(
+                    "Row for `dcim.device` is missing required fields: name."
+                )
+            ),
+            "ForwardQueryError: shape-error",
+        )
+
+    def test_the_namer_falls_back_to_the_bare_class(self):
+        self.assertEqual(
+            diagnostics.failure_classifier(RuntimeError("boom")),
+            "RuntimeError",
+        )
+
+    def test_operation_failure_is_the_namer_in_a_sentence(self):
+        exc = ForwardQueryError("Query timed out after waiting.")
+        self.assertEqual(
+            diagnostics.safe_operation_failure("dcim.device row processing", exc),
+            f"dcim.device row processing failed ({diagnostics.failure_classifier(exc)}).",
+        )
+
+    def test_the_namer_never_emits_a_value_bearing_token(self):
+        named = diagnostics.failure_classifier(ForwardClientError(CUSTOMER_MESSAGE))
+        for token in CUSTOMER_TOKENS:
+            with self.subTest(token=token):
+                self.assertNotIn(token, named)
+
+
+class JobErrorReadbackTest(unittest.TestCase):
+    """A classifier that survived to the database must survive being read back.
+
+    The readback demanded the literal word "failed" in a full-sentence match, so
+    the two merge outcomes that phrase themselves otherwise - finalization
+    "requires recovery", state "was preserved" - exported as
+    `<redacted diagnostic>` while naming their exception in plain sight.
+    """
+
+    def test_a_classifier_outside_the_failed_shape_still_reads_back(self):
+        self.assertEqual(
+            diagnostics.safe_job_error_summary(
+                "Forward branch merge was applied, but post-merge finalization "
+                "requires recovery (ForwardQueryError)."
+            ),
+            "Job failed (ForwardQueryError).",
+        )
+
+    def test_a_suffixless_class_in_the_failed_shape_still_reads_back(self):
+        # `ContributorBaselineUnavailable` and `JobAlreadyActive` carry no
+        # `Error` suffix. The loose recovery cannot accept them - `Mgmt_Vl211`
+        # would qualify too - so the exact writer-shape tier must keep them.
+        self.assertEqual(
+            diagnostics.safe_job_error_summary(
+                "Contributor baseline promotion failed "
+                "(ContributorBaselineUnavailable)."
+            ),
+            "Job failed (ContributorBaselineUnavailable).",
+        )
+
+    def test_a_message_carrying_no_classifier_is_still_redacted(self):
+        self.assertEqual(
+            diagnostics.safe_job_error_summary("Forward sync ended with status x."),
+            diagnostics.REDACTED_DIAGNOSTIC,
+        )
+
+    def test_a_customer_shaped_class_name_is_not_invented(self):
+        self.assertEqual(
+            diagnostics.safe_job_error_summary(
+                "Device Mgmt_Vl211 on core-sw1.corp.example was rejected."
+            ),
+            diagnostics.REDACTED_DIAGNOSTIC,
+        )
+
+
 class NoCustomerDataAnywhereTest(unittest.TestCase):
     """One sweep across every public entry point, with one hostile message."""
 
@@ -455,9 +593,11 @@ class NoCustomerDataAnywhereTest(unittest.TestCase):
         outputs = [
             diagnostics.safe_exception_summary(exc),
             diagnostics.safe_operation_failure("Forward sync", exc),
+            diagnostics.failure_classifier(exc),
             diagnostics.failure_reason(exc),
             diagnostics.redacted_message_prefix(CUSTOMER_MESSAGE),
             diagnostics.safe_failure_log_message(CUSTOMER_MESSAGE),
+            diagnostics.safe_job_error_summary(CUSTOMER_MESSAGE),
             str(diagnostics.structured_failure_diagnosis(exc)),
             str(
                 diagnostics._sanitize_log_rows(

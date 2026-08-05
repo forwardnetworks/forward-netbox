@@ -36,6 +36,7 @@ from .contributor_baseline import ContributorRelationSeed
 from .contributor_baseline import ContributorWorkRelation
 from .contributor_baseline import decode_scope_payload
 from .contributor_baseline import stage_contributor_baseline
+from .diagnostics import failure_classifier
 from .diagnostics import failure_reason
 from .diagnostics import safe_exception_summary
 from .diagnostics import safe_operation_failure
@@ -2529,7 +2530,7 @@ class ForwardQueryFetcher:
                             self.logger.log_warning(
                                 "Tier 3 contributor reconstruction failed closed "
                                 f"for {model_string}; running full provenance "
-                                f"execution ({exc.__class__.__name__}).",
+                                f"execution ({failure_classifier(exc)}).",
                                 obj=self.sync,
                             )
         elif baseline is not None:
@@ -2792,7 +2793,7 @@ class ForwardQueryFetcher:
                     self.logger.log_warning(
                         "Bounded Forward NQE diff execution exceeded its budget for "
                         f"{model_string}; falling back to full query execution "
-                        f"({exc.__class__.__name__})."
+                        f"({failure_classifier(exc)})."
                         + (
                             " The per-contract diff circuit is now open for this run."
                             if circuit_open

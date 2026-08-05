@@ -158,9 +158,64 @@ repairs a regression that predates this work.
 - 2026-08-04: Put the failing-model list on the exception as structured data
   rather than trusting its message. The message is stripped for good reason and
   should stay stripped.
+- 2026-08-04 (second pass): The first pass routed `safe_exception_summary` and
+  `safe_operation_failure` through the catalogue and stopped there, which was
+  the same mistake in a new place. `record_issue` - which writes
+  `ForwardIngestionIssue.message`, the row an operator actually lands on -
+  composed its own detail from `exception_type` and never reached the
+  catalogue, so a `ForwardQueryError` raised by `validate_row_shape_for_model`
+  persisted as `dcim.device row processing failed (ForwardQueryError).` while
+  the logger, formatting the *same exception* one line later through
+  `safe_operation_failure`, correctly said `shape-error`. Introduced
+  `failure_classifier` as the single namer - `ClassName` or
+  `ClassName: reason` - and made `safe_exception_summary`,
+  `safe_operation_failure` and `record_issue` all defer to it. Schema-level
+  detail is appended to the shared name; it is no longer a reason to re-derive
+  it.
+- 2026-08-04 (second pass): `safe_job_error_summary` had the mirror-image
+  defect on readback. It full-matched one sentence shape requiring the literal
+  word "failed", so the two merge outcomes phrased otherwise - finalization
+  "requires recovery (ForwardQueryError)", state "was preserved
+  (ForwardQueryError)" - exported as `<redacted diagnostic>` while naming their
+  exception in plain sight. Folded the log renderer's recovery rule out into
+  `recovered_classifiers` and gave the readback two tiers: the exact inverse of
+  what `safe_operation_failure` writes (which may keep any identifier, so
+  suffixless classes such as `ContributorBaselineUnavailable` and
+  `JobAlreadyActive` still read back), then the shared loose recovery (which
+  must demand an `Error`/`Exception`/`Timeout`/`Warning` suffix, because
+  without it `Mgmt_Vl211` is a valid-looking class name).
+- 2026-08-04 (rebase onto #140): #140's `_validate_row_shape` re-raises the
+  row-shape `ForwardQueryError` wrapped in wording that names the map, its id
+  and whether it ran at unpinned head. The two changes touch the same failure
+  and neither tested the other, so the seam was verified rather than assumed:
+  the catalogue still sees `missing required fields` at the front of the
+  enriched message and resolves `shape-error`, and the map name - which a
+  customer chooses - reaches nothing this module writes, because `record_issue`
+  composes from `failure_classifier` and discards the message body it was
+  handed. Pinned as `EnrichedRowShapeFailureTest`. The two changes are
+  complementary: #140 makes the per-model *diagnostics* entry name the map,
+  this makes the *issue message* name the reason, and neither widens for the
+  other.
+- 2026-08-04 (rebase onto #140): #140's row-shrink blocking reasons are composed
+  from model strings and integers with no exception involved, so there is
+  nothing there for the catalogue to route. Its one exception-formatting site,
+  `validation.py`, already went through `safe_operation_failure` and therefore
+  gained the reason slug for free.
+- 2026-08-04 (second pass): Drew the line for the audit at *operator-facing and
+  persisted* messages - `ForwardIngestionIssue.message`, `Job.error`, and
+  `SyncLogging` rows. Python `logger.*` calls to the server log keep bare
+  `exception_type`: they are a different audience, and this plan's own Approach
+  argues that record is not the one to point an engineer at.
 
 ## Open
 
+- `Job.error` messages that carry no exception at all - `Forward sync ended
+  with status {status}.`, `Forward merge cannot be retried after the
+  interrupted job; the authoritative branch state is {state}.` - still export
+  as `<redacted diagnostic>`. Both are plugin-authored sentences interpolating
+  a plugin-defined enum, so nothing in them is customer data, but recovering
+  them needs an allowlist of whole sentences rather than a classifier rule.
+  Left out deliberately; it is a different mechanism, not a wider one.
 - The wording fallback can still emit a leading alphabetic word that happens to
   be customer data - a single-word tenant label at the very start of an
   otherwise uncatalogued message. The catalogue is the mitigation, and each

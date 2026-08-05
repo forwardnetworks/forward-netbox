@@ -15,6 +15,7 @@ from ..exceptions import ForwardSearchError
 from ..exceptions import ForwardSyncDataError
 from .diagnostics import diagnostic_shape
 from .diagnostics import exception_type
+from .diagnostics import failure_classifier
 from .diagnostics import structured_failure_diagnosis
 from .json_safe import json_safe_value
 from .sync_primitives import dependency_parent_coverage_summary
@@ -353,19 +354,26 @@ def record_issue(
     rules = diagnosis.get("validation_rules") or []
     unrecognized = diagnosis.get("unrecognized_validation_rules") or []
     invalid_fields = diagnosis.get("invalid_fields") or []
+    # The name of the failure is resolved by `failure_classifier`, not composed
+    # here. Composing it here is exactly what left `ForwardIngestionIssue` -
+    # the row an operator actually reads - recording `(ForwardQueryError)` for
+    # a row rejected on its shape while the logger, formatting the same failure
+    # through `safe_operation_failure`, said `shape-error`. Schema-level detail
+    # is appended to the shared name; it does not replace it.
+    named = failure_classifier(exception) if exception is not None else exception_name
     if is_dependency_skip_summary:
         detail = ""
     elif constraint:
-        detail = f"{exception_name}; constraint {constraint}"
+        detail = f"{named}; constraint {constraint}"
     elif rules:
-        detail = f"{exception_name}; {', '.join(rules)}"
+        detail = f"{named}; {', '.join(rules)}"
     elif unrecognized:
         # Wording only; value-bearing tokens are masked before they get here.
-        detail = f"{exception_name}; {'; '.join(unrecognized)}"
+        detail = f"{named}; {'; '.join(unrecognized)}"
     elif invalid_fields:
-        detail = f"{exception_name}; invalid fields {', '.join(invalid_fields)}"
+        detail = f"{named}; invalid fields {', '.join(invalid_fields)}"
     else:
-        detail = exception_name
+        detail = named
     message = (
         message
         if is_dependency_skip_summary
