@@ -80,7 +80,7 @@ class ForwardSingleBranchExecutor(ForwardExecutorBase):
             # indistinguishable from a converged one. Fail closed instead.
             failed_models = failed_model_strings(fetcher.model_results)
             if failed_models:
-                raise SyncError(
+                error = SyncError(
                     "No Forward changes were returned because "
                     f"{len(failed_models)} model(s) failed to fetch: "
                     f"{', '.join(failed_models)}. This run applied nothing and is "
@@ -88,6 +88,23 @@ class ForwardSingleBranchExecutor(ForwardExecutorBase):
                     "and re-run; see the execution contract preflight warnings "
                     "on this job for the failing maps."
                 )
+                # `safe_operation_failure` strips this message before the
+                # ingestion issue records it, which is correct for arbitrary
+                # exception text and wrong for facts the plugin itself derived.
+                # Attach them structurally so the issue names the models and
+                # reasons without persisting any message body.
+                error.safe_diagnosis = {
+                    "failed_models": failed_models,
+                    "failed_model_reasons": sorted(
+                        {
+                            str(getattr(result, "failure_reason", "") or "")
+                            for result in fetcher.model_results
+                            if getattr(result, "failure_count", 0)
+                        }
+                        - {""}
+                    ),
+                }
+                raise error
             self.logger.log_info("No Forward changes were returned for this run.")
             ingestion = create_noop_ingestion(self, context.as_dict())
             staged_contributor_relations = fetcher.stage_pending_contributor_baseline(

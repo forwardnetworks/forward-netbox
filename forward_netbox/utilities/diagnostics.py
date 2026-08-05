@@ -5,9 +5,17 @@ from collections import Counter
 from copy import deepcopy
 
 REDACTED_DIAGNOSTIC = "<redacted diagnostic>"
+SAFE_FAILURE_LOG_PREFIX = "The operation failed"
+# The previous wording told operators to use "the job identifier and exception
+# type for server-side investigation". No such server-side record exists: the
+# plugin writes no `logger.exception` and passes `exc_info` nowhere, so every
+# Python-logger call it makes records the exception *class* and nothing more -
+# exactly what the row already showed. Directing a support engineer at a log
+# that never held the answer is what made five identical ingestions
+# undiagnosable. Point at the evidence that is actually written instead.
 SAFE_FAILURE_LOG_MESSAGE = (
-    "The operation failed. Use the job identifier and exception type for "
-    "server-side investigation."
+    "The operation failed. No classifier was recorded on this row; see this "
+    "run's ingestion issues and per-model failure evidence."
 )
 _FAILURE_LEVELS = {"critical", "error", "failure", "warning"}
 _SENSITIVE_DIAGNOSTIC_KEYS = {
@@ -53,12 +61,219 @@ def ownership_conflict_reason(exc) -> str:
     return "unrecognized-ownership-conflict"
 
 
-def safe_operation_failure(operation: str, exc) -> str:
-    """Return an operator-safe failure message with a stable classifier."""
+# Three bespoke exemptions have now been carved out of "persist the class name
+# and nothing else": OwnershipConflictError, the ValidationError rule
+# catalogue, and - the reason this table exists - a wholesale fetch failure that
+# reduced thirty distinct model failures to thirty copies of "ForwardQueryError."
+# A fourth exemption would be the same mistake again, so the *rule* changed: a
+# failure is characterised by an allowlisted slug wherever one matches, and by
+# leading wording with every value-bearing token dropped where none does.
+#
+# Ordering is significant only in that the ownership rules stay first, so
+# `ownership_conflict_reason` and `failure_reason` agree on the same message.
+_FAILURE_REASON_RULES = (
+    # Transport and protocol: which of timeout / auth / shape / parse failed is
+    # the first question asked of any Forward call, and none of these needles
+    # can match a device name, address or tenant label.
+    ("auth-unauthorized", "unauthorized"),
+    ("auth-forbidden", "forbidden"),
+    ("auth-invalid-credentials", "invalid credentials"),
+    ("auth-token-expired", "token expired"),
+    ("timeout", "timed out"),
+    ("timeout", "timeout"),
+    ("connection-refused", "connection refused"),
+    ("connection-reset", "connection reset"),
+    ("connection-aborted", "connection aborted"),
+    ("connection-failed", "could not connect"),
+    ("tls-verification-failed", "certificate verify failed"),
+    ("dns-resolution-failed", "name or service not known"),
+    ("rate-limited", "too many requests"),
+    ("service-unavailable", "temporarily unavailable"),
+    ("parse-error", "expecting value"),
+    ("parse-error", "json decode"),
+    ("parse-error", "could not parse"),
+    ("shape-error", "unexpected response shape"),
+    ("shape-error", "missing required field"),
+    # Plugin-authored refusals. These are the messages the plugin composes
+    # itself, so the slug is a rename of wording the plugin already controls -
+    # it discloses nothing the operator did not configure.
+    ("license-tier-denied", "license"),
+    ("fetch-budget-exceeded", "exceeded its wall-clock budget"),
+    ("diff-required-no-baseline", "no compatible baseline"),
+    ("diff-required-full-only-contract", "is full-only"),
+    ("diff-required-unavailable", "safe diff execution for"),
+    ("diff-required-budget-exceeded", "diff budget was exceeded"),
+    ("full-execution-not-contractually-safe", "not contractually safe"),
+    ("full-execution-rejected-by-contract", "full execution is not allowed"),
+    ("diff-execution-rejected-by-contract", "diff execution is not allowed"),
+    ("unsafe-full-contract", "rejected an unsafe full contract"),
+    ("no-enabled-query-maps", "no enabled nqe maps were resolved"),
+    ("no-resolved-query-maps", "no enabled built-in or custom query maps"),
+    ("duplicate-query-spec-execution", "duplicate logical nqe execution"),
+    ("missing-network-id", "requires a network id"),
+    ("missing-snapshot-id", "requires a snapshot id"),
+    ("device-tag-scope-query-failed", "device tag filter query failed"),
+    ("shard-fetch-failed", "shard-scoped nqe fetch failed"),
+)
+
+# `403` and `503` are HTTP status codes, not customer data, and they are the
+# single most actionable token in a Forward client error - but they carry a
+# digit, so the wording masker drops them. Recover them as a slug instead.
+_HTTP_STATUS_IN_MESSAGE = re.compile(r"\bHTTP\s+(\d{3})\b")
+_MAX_FAILURE_REASON_SLUGS = 3
+# Wording is kept only until the first value-bearing token, and never for more
+# than this many words. Both bounds matter: a Forward error body is arbitrary
+# customer-shaped text, and a message that starts with plausible English can
+# continue into a tenant label.
+_MAX_SUMMARY_WORDS = 12
+
+
+def _http_status_slug(exc) -> str:
+    """`http-<code>` for a failure whose HTTP status is recoverable."""
+    # httpx keeps the status on the response of the raised cause, which is the
+    # structured form and cannot be confused with anything in the body.
+    response = getattr(getattr(exc, "__cause__", None), "response", None)
+    status = getattr(response, "status_code", None)
+    if isinstance(status, int) and 100 <= status <= 599:
+        return f"http-{status}"
+    match = _HTTP_STATUS_IN_MESSAGE.search(str(exc))
+    if match:
+        return f"http-{match.group(1)}"
+    return ""
+
+
+def failure_reason(exc) -> str:
+    """A value-free characterisation of why something failed, or ``""``.
+
+    Returns allowlisted slugs only. Nothing derived from the exception message
+    text reaches the caller through this function.
+    """
+    if exception_type(exc) == _OWNERSHIP_CONFLICT_EXCEPTION:
+        return ownership_conflict_reason(exc)
+    slugs = []
+    status_slug = _http_status_slug(exc)
+    if status_slug:
+        slugs.append(status_slug)
+    haystack = str(exc).casefold()
+    for slug, needle in _FAILURE_REASON_RULES:
+        if needle in haystack and slug not in slugs:
+            slugs.append(slug)
+        if len(slugs) >= _MAX_FAILURE_REASON_SLUGS:
+            break
+    return "+".join(slugs)
+
+
+def redacted_message_prefix(message: str) -> str:
+    """Leading wording of a message, stopping at the first value-bearing token.
+
+    `redacted_message_shape` keeps the *whole* wording of a message because the
+    messages it serves are Django validation strings, whose vocabulary the
+    plugin can reason about. An exception message can be an arbitrary Forward
+    API response body, so the same tolerance is not safe there: stopping at the
+    first masked token means a device name, address, prefix, interface name,
+    hostname or tenant label can never appear, because every one of them either
+    carries a digit, dot, colon, slash, hyphen or underscore, or sits after
+    something that does (a status code, a quote, a brace, a key).
+    """
+    kept = []
+    for token in str(message).split():
+        stripped = token.strip(".,;:()[]{}'\"`")
+        if not stripped.isalpha():
+            break
+        kept.append(stripped)
+        if len(kept) >= _MAX_SUMMARY_WORDS:
+            break
+    return " ".join(kept)
+
+
+def failure_classifier(exc) -> str:
+    """How a failure is named, everywhere: `ClassName` or `ClassName: reason`.
+
+    Every composer of an operator-facing or persisted failure string resolves
+    the name here. That is the whole point of the module: `exception_type`
+    alone answers *what class* raised and never *why*, and each place that
+    reached for it separately grew its own idea of how much of the reason to
+    keep. `record_issue` was the one that still did - it composed
+    `(IntegrityError; constraint ...)` from its own diagnosis while formatting
+    the classifier by hand, so a `ForwardQueryError` that knew perfectly well
+    it was a shape error persisted as `(ForwardQueryError)` into
+    `ForwardIngestionIssue.message`, the single row an operator actually reads.
+
+    Callers that want schema-level detail append it to this; they do not
+    re-derive the name.
+    """
     classifier = exception_type(exc)
-    if classifier == _OWNERSHIP_CONFLICT_EXCEPTION:
-        return f"{operation} failed ({classifier}: {ownership_conflict_reason(exc)})."
-    return f"{operation} failed ({classifier})."
+    reason = failure_reason(exc)
+    return f"{classifier}: {reason}" if reason else classifier
+
+
+def safe_exception_summary(exc) -> str:
+    """Classifier plus a value-free characterisation, never message content.
+
+    This replaced `f"{exc.__class__.__name__}."`, which destroyed the reason
+    before the logger or the database ever saw it - unrecoverable by any
+    downstream tooling, and the reason five identical customer ingestions could
+    not be diagnosed at all.
+    """
+    named = failure_classifier(exc)
+    if failure_reason(exc):
+        return f"{named}."
+    # Uncatalogued: fall back to bounded leading wording. This is the one thing
+    # `safe_exception_summary` does that `failure_classifier` does not, and it
+    # stays here rather than in the shared namer deliberately - the wording
+    # fallback is a best-effort read of arbitrary text, so it belongs to the
+    # inline summary and not to the name every other composer interpolates.
+    prefix = redacted_message_prefix(str(exc))
+    if prefix:
+        return f"{named}: {prefix}."
+    return f"{named}."
+
+
+def safe_operation_failure(operation: str, exc) -> str:
+    """Return an operator-safe failure message with a stable classifier.
+
+    The reason lives here, at the single function every failure path formats
+    through, rather than at any call site - and it is resolved by the shared
+    rule for every exception, not by a per-class branch.
+    """
+    return f"{operation} failed ({failure_classifier(exc)})."
+
+
+def model_failure_summary(model_results) -> list[dict]:
+    """Per-model failure evidence: which models failed, and why.
+
+    A successful dependency preview carries `model_results` with per-model
+    `failure_count`, `fetch_mode` and `query_name`. The run that actually failed
+    carried none of it into the support bundle, so a wholesale fetch failure
+    read as one sentence repeated once per model with no way to tell them apart.
+    Only the model string, exception class and allowlisted reason slug are kept;
+    each is checked against the safe-token pattern before it is emitted. Query
+    names are deliberately not carried here - a custom NQE map is named by the
+    customer, and this summary must stay safe without needing to reason about
+    that.
+    """
+
+    def _safe(value: str) -> str:
+        return value if _SAFE_DIAGNOSTIC_TOKEN.fullmatch(value) else "redacted"
+
+    summary = []
+    for result in model_results or []:
+        if not isinstance(result, dict):
+            continue
+        failure_count = int(result.get("failure_count") or 0)
+        if not failure_count:
+            continue
+        summary.append(
+            {
+                "model": _safe(
+                    str(result.get("model") or result.get("model_string") or "")
+                ),
+                "exception": _safe(str(result.get("failure_exception") or "")),
+                "reason": _safe(str(result.get("failure_reason") or "")),
+                "failure_count": failure_count,
+            }
+        )
+    return sorted(summary, key=lambda item: (item["model"], item["reason"]))
 
 
 def diff_fallback_summary(model_results) -> list[dict]:
@@ -90,18 +305,6 @@ def diff_fallback_summary(model_results) -> list[dict]:
     ]
 
 
-def safe_job_error_summary(error) -> str:
-    """Expose only an exception classifier from a persisted core Job error."""
-    error = str(error or "")
-    match = re.fullmatch(
-        r"[^()\r\n]* failed \(([A-Za-z_][A-Za-z0-9_.]*)\)\.",
-        error,
-    )
-    if not match:
-        return REDACTED_DIAGNOSTIC if error else ""
-    return f"Job failed ({match.group(1)})."
-
-
 def diagnostic_shape(value):
     """Describe diagnostic data without retaining customer-provided values."""
     if isinstance(value, dict):
@@ -114,6 +317,102 @@ def diagnostic_shape(value):
     return {"type": type(value).__name__}
 
 
+# The classifier shapes this module itself emits: `safe_operation_failure`
+# writes `(ClassName)` or `(ClassName: reason)`, and `safe_exception_summary`
+# writes `ClassName: reason.` inline. Both are matched here, and nothing else
+# is: the class name must be CamelCase ending in a recognised exception suffix,
+# and the reason must be a lowercase slug of the shape this module's own
+# catalogue produces. A device name, address, hostname or tenant label matches
+# neither, so recovering these two groups discloses nothing the row's own
+# classifier did not already.
+_LOGGED_CLASSIFIER = re.compile(
+    r"(?<![A-Za-z0-9_.])"
+    r"([A-Z][A-Za-z0-9_]*(?:Error|Exception|Timeout|Warning))"
+    r"(?:\s*:\s*([a-z][a-z0-9]*(?:[+-][a-z0-9]+)*))?"
+)
+_MAX_LOGGED_CLASSIFIERS = 3
+
+
+def recovered_classifiers(text) -> list[str]:
+    """The classifiers this module wrote into `text`, in order, deduplicated.
+
+    One rule for reading a classifier back out of a message, shared by the log
+    renderer and the Job-error readback. They had two, and the stricter of them
+    - a full-sentence match requiring the literal word "failed" - silently
+    discarded the classifier from every message that phrased itself any other
+    way.
+    """
+    parts = []
+    for classifier, reason in _LOGGED_CLASSIFIER.findall(str(text or "")):
+        rendered = f"{classifier}: {reason}" if reason else classifier
+        if rendered not in parts:
+            parts.append(rendered)
+        if len(parts) >= _MAX_LOGGED_CLASSIFIERS:
+            break
+    return parts
+
+
+def safe_job_error_summary(error) -> str:
+    """Expose only an exception classifier from a persisted core Job error.
+
+    The pattern must accept the reason slug `safe_operation_failure` now writes
+    for every classified failure. It did not, so a job error that named its
+    reason was recognised as *unparseable* and exported as
+    `<redacted diagnostic>` - strictly worse than the bare classifier it
+    replaced. That was already latent for `OwnershipConflictError`; the reason
+    catalogue would have made it the common case.
+
+    The same was true of every job error that does not use the word "failed".
+    A merge whose finalization "requires recovery (ForwardQueryError)", or that
+    "was preserved (ForwardQueryError)", carries its classifier in plain sight
+    and was still exported as `<redacted diagnostic>` - the readback threw away
+    what the writer had just been fixed to record.
+
+    Two tiers, in this order. The first is the exact inverse of what
+    `safe_operation_failure` writes, so any identifier inside those parentheses
+    is known to be a class name and is kept whatever it is spelled like -
+    `ContributorBaselineUnavailable` and `JobAlreadyActive` carry no `Error`
+    suffix and must still read back. The second is the shared loose recovery,
+    which has to survive arbitrary sentences and therefore demands the suffix:
+    without it `Mgmt_Vl211` is a valid-looking class name. Anything matching
+    neither is redacted.
+    """
+    error = str(error or "")
+    if not error:
+        return ""
+    match = re.fullmatch(
+        r"[^()\r\n]* failed \(([A-Za-z_][A-Za-z0-9_.]*)"
+        r"(?::\s*([a-z][a-z0-9]*(?:[+-][a-z0-9]+)*))?\)\.",
+        error,
+    )
+    if match:
+        classifier, reason = match.group(1), match.group(2)
+        return (
+            f"Job failed ({classifier}: {reason})."
+            if reason
+            else f"Job failed ({classifier})."
+        )
+    parts = recovered_classifiers(error)
+    if not parts:
+        return REDACTED_DIAGNOSTIC
+    return f"Job failed ({'; '.join(parts)})."
+
+
+def safe_failure_log_message(message) -> str:
+    """Keep a failure row's classifier instead of flattening it to one sentence.
+
+    Every critical/error/failure/warning row used to render as the same fixed
+    sentence, so a run in which thirty models failed for one reason and a run in
+    which they failed for thirty presented identically - in the UI, in the log
+    export and in the support bundle. The redaction still applies to the message
+    body; what changes is that the classifier the row was given survives it.
+    """
+    parts = recovered_classifiers(message)
+    if not parts:
+        return SAFE_FAILURE_LOG_MESSAGE
+    return f"{SAFE_FAILURE_LOG_PREFIX} ({'; '.join(parts)})."
+
+
 def _sanitize_log_rows(rows):
     sanitized = []
     for row in rows or []:
@@ -121,14 +420,14 @@ def _sanitize_log_rows(rows):
             rendered = list(row)
             level = str(rendered[1] if len(rendered) > 1 else "").lower()
             if level in _FAILURE_LEVELS and len(rendered) > 4:
-                rendered[4] = SAFE_FAILURE_LOG_MESSAGE
+                rendered[4] = safe_failure_log_message(rendered[4])
             sanitized.append(rendered)
             continue
         if isinstance(row, dict):
             rendered = sanitize_job_diagnostics(row)
             level = str(rendered.get("level") or "").lower()
             if level in _FAILURE_LEVELS and "message" in rendered:
-                rendered["message"] = SAFE_FAILURE_LOG_MESSAGE
+                rendered["message"] = safe_failure_log_message(rendered["message"])
             sanitized.append(rendered)
             continue
         sanitized.append(REDACTED_DIAGNOSTIC)
@@ -249,7 +548,13 @@ def describe_failure(message: str, diagnosis: dict) -> str:
     rules = diagnosis.get("validation_rules") or []
     unrecognized = diagnosis.get("unrecognized_validation_rules") or []
     invalid_fields = diagnosis.get("invalid_fields") or []
+    failed_models = diagnosis.get("failed_models") or []
     stem = message[:-1] if message.endswith(".") else message
+    if failed_models:
+        listed = ", ".join(failed_models[:8])
+        if len(failed_models) > 8:
+            listed = f"{listed}, +{len(failed_models) - 8} more"
+        return f"{stem} for {len(failed_models)} model(s): {listed}."
     if constraint:
         return f"{stem} on constraint {constraint}."
     if rules:
@@ -303,5 +608,31 @@ def structured_failure_diagnosis(exc) -> dict:
         diagnosis["validation_rules"] = rules
     if unrecognized:
         diagnosis["unrecognized_validation_rules"] = unrecognized
+
+    # An exception may carry its own structured, value-free diagnosis. That is
+    # the general form of what OwnershipConflictError and the ValidationError
+    # rule catalogue each got as a bespoke exemption: rather than teach this
+    # function about one more exception class, let a raiser that already knows
+    # the safe facts attach them. Free text is still never persisted - every
+    # value is checked against the safe-token pattern here, whatever the raiser
+    # believed about it.
+    supplied = getattr(exc, "safe_diagnosis", None)
+    if isinstance(supplied, dict):
+        for key, value in supplied.items():
+            safe_key = str(key)
+            if not _SAFE_DIAGNOSTIC_TOKEN.fullmatch(safe_key) or safe_key in diagnosis:
+                continue
+            if isinstance(value, (list, tuple)):
+                kept = [
+                    str(item)
+                    for item in value
+                    if _SAFE_DIAGNOSTIC_TOKEN.fullmatch(str(item))
+                ]
+                if kept:
+                    diagnosis[safe_key] = kept
+            elif isinstance(value, bool) or isinstance(value, int):
+                diagnosis[safe_key] = value
+            elif _SAFE_DIAGNOSTIC_TOKEN.fullmatch(str(value)):
+                diagnosis[safe_key] = str(value)
 
     return diagnosis

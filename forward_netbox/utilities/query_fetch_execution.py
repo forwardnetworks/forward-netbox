@@ -36,6 +36,9 @@ from .contributor_baseline import ContributorRelationSeed
 from .contributor_baseline import ContributorWorkRelation
 from .contributor_baseline import decode_scope_payload
 from .contributor_baseline import stage_contributor_baseline
+from .diagnostics import failure_classifier
+from .diagnostics import failure_reason
+from .diagnostics import safe_exception_summary
 from .diagnostics import safe_operation_failure
 from .forward_api import build_device_tag_scope_where
 from .forward_api import build_endpoint_device_eligibility_where
@@ -162,7 +165,14 @@ DEFAULT_SAMPLE_ROW_LIMIT = 5
 
 
 def _safe_exception_summary(exc: Exception) -> str:
-    return f"{exc.__class__.__name__}."
+    """Classifier plus a value-free reason, for every fetch-path failure.
+
+    This used to return `f"{exc.__class__.__name__}."`, which destroyed the
+    reason at capture - before the logger, before the job record, before the
+    database - so no downstream tooling could recover it at any cost. Delegates
+    to the shared formatter so every call site gains the reason at once.
+    """
+    return safe_exception_summary(exc)
 
 
 # Shapes Forward uses when it refuses to RUN a query because the request does
@@ -320,6 +330,12 @@ class ForwardModelResult:
     row_count: int
     delete_count: int = 0
     failure_count: int = 0
+    # Why THIS model failed. `failure_count` alone says a model failed; without
+    # these two, a run in which every model failed for one reason and a run in
+    # which each failed for its own present identically. Both are value-free: an
+    # exception class name and a slug from the diagnostics catalogue.
+    failure_exception: str = ""
+    failure_reason: str = ""
     runtime_ms: float | None = None
     snapshot_id: str = ""
     baseline_snapshot_id: str = ""
@@ -347,6 +363,8 @@ class ForwardModelResult:
             "row_count": self.row_count,
             "delete_count": self.delete_count,
             "failure_count": self.failure_count,
+            "failure_exception": self.failure_exception,
+            "failure_reason": self.failure_reason,
             "runtime_ms": self.runtime_ms,
             "snapshot_id": self.snapshot_id,
             "baseline_snapshot_id": self.baseline_snapshot_id,
@@ -2072,7 +2090,8 @@ class ForwardQueryFetcher:
         )
         self._failed_model_results[model_string] = result
         self.logger.log_warning(
-            f"Skipping {model_string} because Forward query validation failed: {_safe_exception_summary(exc)}",
+            f"Skipping {model_string} because Forward query validation failed: "
+            f"{_safe_exception_summary(exc)}",
             obj=self.sync,
         )
 
@@ -2095,6 +2114,8 @@ class ForwardQueryFetcher:
             row_count=0,
             delete_count=0,
             failure_count=1,
+            failure_exception=exc.__class__.__name__,
+            failure_reason=failure_reason(exc) or "unrecognized-fetch-failure",
             runtime_ms=runtime_ms,
             snapshot_id=context.snapshot_id,
             **self._apply_engine_result_fields(model_string),
@@ -2509,7 +2530,7 @@ class ForwardQueryFetcher:
                             self.logger.log_warning(
                                 "Tier 3 contributor reconstruction failed closed "
                                 f"for {model_string}; running full provenance "
-                                f"execution ({exc.__class__.__name__}).",
+                                f"execution ({failure_classifier(exc)}).",
                                 obj=self.sync,
                             )
         elif baseline is not None:
@@ -2772,7 +2793,7 @@ class ForwardQueryFetcher:
                     self.logger.log_warning(
                         "Bounded Forward NQE diff execution exceeded its budget for "
                         f"{model_string}; falling back to full query execution "
-                        f"({exc.__class__.__name__})."
+                        f"({failure_classifier(exc)})."
                         + (
                             " The per-contract diff circuit is now open for this run."
                             if circuit_open
