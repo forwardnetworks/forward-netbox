@@ -50,6 +50,71 @@ class DestinationRuleRejectionTests(SimpleTestCase):
     def test_arbitrary_exceptions_remain_retryable_failures(self):
         self.assertFalse(_is_destination_rule_rejection(RuntimeError("boom")))
 
+    def test_a_rejection_the_merge_caused_is_a_retryable_failure(self):
+        # A catalogued rule landing on a field this change writes is our defect,
+        # not a property of the destination. Retrying is the right response, and
+        # calling it unsatisfiable hides it behind a disposition meant for rows
+        # nothing can fix.
+        exc = ValidationError(
+            {
+                "untagged_vlan": [
+                    "The untagged VLAN (Vlan211 (211)) must belong to the same "
+                    "site as the interface's parent device, or it must be global."
+                ]
+            }
+        )
+        exc.forward_written_fields = {"untagged_vlan", "mtu"}
+        self.assertFalse(_is_destination_rule_rejection(exc))
+
+    def test_the_same_rule_on_an_unwritten_field_stays_unsatisfiable(self):
+        exc = ValidationError(
+            {
+                "untagged_vlan": [
+                    "The untagged VLAN (Vlan211 (211)) must belong to the same "
+                    "site as the interface's parent device, or it must be global."
+                ]
+            }
+        )
+        exc.forward_written_fields = {"mtu"}
+        self.assertTrue(_is_destination_rule_rejection(exc))
+
+    def test_an_uncatalogued_rule_stays_unsatisfiable_even_on_a_written_field(self):
+        # The merge default is to skip, so narrowing it the way the sync path is
+        # narrowed would flip every uncatalogued rejection to a failure and wedge
+        # the baselines this classifier exists to protect.
+        exc = ValidationError({"mtu": ["Ensure this value is less than 65536."]})
+        exc.forward_written_fields = {"mtu"}
+        self.assertTrue(_is_destination_rule_rejection(exc))
+
+    def test_a_caller_that_never_said_what_it_writes_stays_unsatisfiable(self):
+        # Today's behaviour for every path not yet taught to attach the set.
+        self.assertTrue(
+            _is_destination_rule_rejection(
+                ValidationError(
+                    {
+                        "__all__": [
+                            "10.0.0.0/24 is a network ID, which "
+                            "may not be assigned to an interface."
+                        ]
+                    }
+                )
+            )
+        )
+
+    def test_the_customer_network_id_rejection_still_skips(self):
+        # `__all__` cannot intersect a written field, so the rejection that this
+        # classifier was built for keeps its disposition either way.
+        exc = ValidationError(
+            {
+                "__all__": [
+                    "10.0.0.0/24 is a network ID, which may not be assigned "
+                    "to an interface."
+                ]
+            }
+        )
+        exc.forward_written_fields = {"address", "status"}
+        self.assertTrue(_is_destination_rule_rejection(exc))
+
 
 class NonFieldValidationRuleTests(SimpleTestCase):
     """Each catalogued rule resolves to its slug, and values never persist."""

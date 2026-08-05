@@ -40,6 +40,7 @@ from .bulk_merge import _ApplyOneFailure
 from .bulk_merge import bulk_merge_changes
 from .diagnostics import describe_failure
 from .diagnostics import exception_type
+from .diagnostics import is_caused_rule_rejection
 from .diagnostics import safe_operation_failure
 from .diagnostics import structured_failure_diagnosis
 from .merge_observability import checkpoint_merge_attempt
@@ -76,10 +77,26 @@ def _is_destination_rule_rejection(exc) -> bool:
     thousands of correct changes from ever being attested. Integrity errors and
     everything else stay failures: those are usually ordering or contention and
     a retry is exactly the right response.
+
+    The one exception is a rejection the merge itself caused: a rule the
+    catalogue can name, landing on a field this change writes. Retrying that is
+    exactly the right response, and calling it unsatisfiable hides a real defect
+    behind a disposition invented for rows nothing can fix.
+
+    Deliberately NOT symmetric with the sync path, which skips only what it can
+    name and fails everything else. The defaults are opposite, so narrowing here
+    the same way would flip every uncatalogued rejection to a failure and wedge
+    the baselines this classifier exists to protect. An uncatalogued rule, and a
+    caller that never said what it writes, both stay unsatisfiable.
     """
     from django.core.exceptions import ValidationError
 
-    return isinstance(exc, ValidationError)
+    if not isinstance(exc, ValidationError):
+        return False
+    written_fields = getattr(exc, "forward_written_fields", None)
+    if written_fields is None:
+        return True
+    return not is_caused_rule_rejection(exc, written_fields)
 
 
 def _replication_side_effect_exists(collapsed_change) -> bool:
