@@ -122,6 +122,45 @@ class IngestionDeleteRefusalTest(TestCase):
             "remove those records first", _ingestion_delete_refusal(self.ingestion)
         )
 
+    def test_a_superseded_baseline_is_not_called_the_current_one(self):
+        # Every ingestion that ever promoted leaves a baseline behind, and
+        # promotion only marks the previous one superseded. A customer with
+        # three undeletable ingestions was told three times that each was "the
+        # baseline for this sync", which is true of at most one of them.
+        from forward_netbox.models import ForwardContributorBaseline
+
+        baseline = self._baseline(ForwardContributorBaseline)
+        baseline.status = ForwardContributorBaseline.Status.SUPERSEDED
+        baseline.is_current = False
+        baseline.save(update_fields=["status", "is_current"])
+
+        refusal, expected = _ingestion_delete_refusal_detail(self.ingestion)
+
+        self.assertTrue(refusal)
+        self.assertNotIn("is the baseline for this sync", refusal)
+        self.assertIn("already been superseded", refusal)
+        # The old text told them to "remove those records first". There is no
+        # supported way to remove this one, so it must not say that.
+        self.assertNotIn("remove those records first", refusal)
+        self.assertIn("ForwardContributorBaseline", refusal)
+        # Still expected rather than a fault, so it stays a warning not an error.
+        self.assertTrue(expected)
+
+    def test_a_pending_baseline_is_not_reported_as_spent(self):
+        # `is_current` defaults to False and `status` to PENDING, so keying the
+        # wording off `is_current` alone would tell an operator mid-sync that an
+        # intact payload is a dead husk. Only promotion sets SUPERSEDED.
+        from forward_netbox.models import ForwardContributorBaseline
+
+        baseline = self._baseline(ForwardContributorBaseline)
+        self.assertEqual(baseline.status, ForwardContributorBaseline.Status.PENDING)
+        self.assertFalse(baseline.is_current)
+
+        refusal = _ingestion_delete_refusal(self.ingestion)
+
+        self.assertNotIn("already been superseded", refusal)
+        self.assertIn("is the baseline for this sync", refusal)
+
     def test_cascading_children_do_not_block_the_delete(self):
         # Issues cascade, so they must not be reported as protecting.
         from forward_netbox.models import ForwardIngestionIssue

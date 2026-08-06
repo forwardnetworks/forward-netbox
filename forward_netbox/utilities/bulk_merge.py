@@ -31,6 +31,7 @@ from collections import defaultdict
 
 from django.contrib.contenttypes.fields import GenericForeignKey
 from django.contrib.contenttypes.models import ContentType
+from django.core.exceptions import ValidationError
 from django.db import DEFAULT_DB_ALIAS
 from django.db import models
 from django.db import OperationalError
@@ -572,16 +573,26 @@ def _is_bulk_safe(model_class) -> bool:
     return not issubclass(model_class, MPTTModel)
 
 
-def _full_clean_fast(instance, change_logger):
+def _full_clean_fast(instance, change_logger, written_fields=None):
     """full_clean without the per-row validate_unique/validate_constraints DB
     queries (mirrors the framework's full_clean_with_file_check otherwise).
 
     Database constraints still enforce uniqueness for new rows, while resumed
     rows are locked and converged by primary key. Field-level validation is kept.
     This removes the merge's dominant per-row cost at scale.
+
+    `written_fields` is what this change writes. `full_clean` validates the whole
+    object, so a rejection can name a field the change never touched, and the
+    recorder cannot tell the two apart from the exception alone. A caller that
+    does not say leaves the row unsatisfiable, which is the merge's existing
+    disposition for every validation rejection.
     """
     try:
         instance.full_clean(validate_unique=False, validate_constraints=False)
+    except ValidationError as exc:
+        if written_fields is not None:
+            exc.forward_written_fields = set(written_fields)
+        raise
     except _FILE_NOT_FOUND_EXCEPTIONS as exc:  # pragma: no cover - file backends
         if hasattr(exc, "response"):
             status = exc.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
@@ -595,7 +606,8 @@ def _deserialize(model_class, collapsed, change_logger):
     data = collapsed.postchange_data or {}
     pk = collapsed.key[1]
     deserialized = deserialize_object(model_class, data, pk=pk)
-    _full_clean_fast(deserialized.object, change_logger)
+    # A create writes every field it carries, so any rejection here is its own.
+    _full_clean_fast(deserialized.object, change_logger, written_fields=set(data))
     return deserialized
 
 
@@ -759,7 +771,12 @@ def _converge_existing_create_locked(
     target.snapshot()
     for field, value in scalar_changes:
         setattr(target, field.attname, value)
-    _full_clean_fast(target, change_logger)
+    _full_clean_fast(
+        target,
+        change_logger,
+        written_fields={field.name for field, _ in scalar_changes}
+        | {getattr(manager, "prefetch_cache_name", "") for manager, _ in m2m_changes},
+    )
     if scalar_changes:
         target.save(update_fields=[field.name for field, _ in scalar_changes])
     for manager, values in m2m_changes:
@@ -2613,7 +2630,11 @@ def _bulk_merge_changes_main(
                 for field, value in changed:
                     setattr(target, field.attname, value)
                     update_fields.add(field.name)
-                _full_clean_fast(target, change_logger)
+                _full_clean_fast(
+                    target,
+                    change_logger,
+                    written_fields={field.name for field, _ in changed},
+                )
                 prepared.append((collapsed_change, target))
             except JobTimeoutException:
                 raise
