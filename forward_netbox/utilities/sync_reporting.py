@@ -369,8 +369,16 @@ def record_issue(
     # a field name rather than one, so it is still never printed.
     named_fields = [field for field in invalid_fields if field != "__all__"]
     field_detail = f"invalid fields {', '.join(named_fields)}" if named_fields else ""
+    # The model whose absence — or whose surviving children, on the delete path
+    # — caused the skip. A schema identifier, so unlike everything in `context`
+    # it can be recorded. Six identical `(ForwardDependencySkipError)` rows told
+    # a customer nothing about which parent was missing; a raiser that has not
+    # been taught to name one still records exactly what it did before.
+    dependency = str(getattr(exception, "dependency", "") or "")
     if is_dependency_skip_summary:
         detail = ""
+    elif dependency:
+        detail = f"{named}; {dependency}"
     elif constraint:
         detail = f"{named}; constraint {constraint}"
     elif rules:
@@ -384,10 +392,26 @@ def record_issue(
         detail = f"{named}; {field_detail}"
     else:
         detail = named
+    # "failed" was written for every row regardless of what the caller decided,
+    # so a row deliberately skipped read exactly like one that blocks a
+    # baseline. The merge recorder says "Recorded and skipped" for its own
+    # skips; the sync recorder could not say anything of the kind.
+    #
+    # NOT keyed on `log_level` alone. The row-oriented handler records a
+    # dependency skip at "info" while the bulk engines record theirs at the
+    # default, so the same condition would be worded two ways depending on which
+    # engine ran — a test asserting `outcome="skipped"` two lines below a
+    # message reading "failed" is what surfaced it. A dependency skip is a skip
+    # by definition of the exception, whatever level it was logged at.
+    outcome_word = (
+        "skipped"
+        if exception_name == "ForwardDependencySkipError" or log_level != "failure"
+        else "failed"
+    )
     message = (
         message
         if is_dependency_skip_summary
-        else f"{model_string} row processing failed ({detail})."
+        else f"{model_string} row processing {outcome_word} ({detail})."
     )
     context_data = (
         json_safe_value(context or {})

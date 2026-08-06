@@ -27,6 +27,11 @@ class ProtectingRelationsSeesHiddenRelationsTest(TestCase):
     # naming rows no supported action could remove. It is still hidden, so it
     # still belongs in HIDDEN_MODELS below — discovery must keep seeing it, it
     # just must not be reported as protecting.
+    #
+    # `ForwardContributorBaseline` went the same way for the same reason: every
+    # ingestion that ever promoted left a superseded husk behind that protected
+    # it forever. The LIVE generation is still kept, by a `pre_delete` receiver
+    # rather than by the constraint, because PROTECT cannot tell the two apart.
     OWNERSHIP_MODELS = {
         "forward_netbox.ForwardDeviceIdentity",
         "forward_netbox.ForwardDeviceTagClaim",
@@ -50,14 +55,27 @@ class ProtectingRelationsSeesHiddenRelationsTest(TestCase):
             f"{sorted(self.OWNERSHIP_MODELS - found)}",
         )
 
-    def test_the_visible_baseline_protection_is_still_discovered(self):
-        # Widening discovery must not lose the one relation that was already
-        # being found; the baseline refusal is the expected, benign case.
+    def test_the_baseline_is_not_reported_as_protecting(self):
+        # The baseline was the last VISIBLE protecting relation, and it now
+        # cascades so a superseded generation can be collected with its
+        # ingestion. Reporting it would refuse a delete the database allows.
+        #
+        # Which means every remaining protection is hidden behind
+        # related_name="+", so `test_hidden_protect_relations_are_discovered` is
+        # now the only thing standing between discovery and finding nothing at
+        # all. Losing the widening would no longer under-report — it would
+        # report an ingestion as freely deletable while the database refused it,
+        # which is the failure that made every ingestion undeletable in 2.7.0.
         found = {
             relation.related_model._meta.label
             for relation in protecting_relations(ForwardIngestion)
         }
-        self.assertIn("forward_netbox.ForwardContributorBaseline", found)
+        self.assertNotIn("forward_netbox.ForwardContributorBaseline", found)
+        self.assertTrue(
+            found,
+            "no protecting relation is discovered at all; the hidden-relation "
+            "traversal has been lost",
+        )
 
     def test_cascading_relations_are_not_reported_as_protecting(self):
         # Over-reporting would refuse deletes that the database would allow.

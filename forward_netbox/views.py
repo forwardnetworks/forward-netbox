@@ -2164,42 +2164,33 @@ def _ingestion_holds_current_ownership(ingestion) -> bool:
         return True
 
 
-def _ingestion_baseline_state(ingestion) -> str:
-    """``"current"``, ``"spent"``, or ``""`` when no baseline holds this row.
+def _ingestion_holds_live_baseline(ingestion) -> bool:
+    """Whether the sync's live contributor baseline belongs to this ingestion.
 
-    The refusal used to decide this by looking for "baseline" in the protecting
-    model's label, which cannot distinguish the sync's live baseline from one
-    that was superseded years of syncs ago. Every ingestion that ever promoted
-    leaves a baseline row behind, and promotion only marks the previous one
-    superseded — it clears the relations and empties the payload but keeps the
-    row, which goes on protecting its ingestion forever. So a customer with
-    three undeletable ingestions was told three times that each was "the
-    baseline for this sync", which is true of at most one of them.
+    Exactly the condition `refuse_ingestion_delete_with_live_baseline` enforces,
+    and it has to stay exactly that condition: the receiver is what actually
+    refuses, so a view that answered a different question would either refuse a
+    delete the database allows or offer one it will reject.
 
-    "Spent" is `status == SUPERSEDED` specifically, NOT `is_current is False`.
-    `is_current` defaults to False and `status` to PENDING, so a baseline that
-    has simply not been promoted yet is also not current — and calling that one
-    spent would tell an operator mid-sync that an intact payload is a dead
-    husk. Only promotion sets SUPERSEDED, and it is promotion that clears the
-    relations and empties the payload.
+    `is_current`, not `status`. Every ingestion that ever promoted leaves a
+    baseline behind and promotion only marks the previous one SUPERSEDED, so
+    reading anything wider than "is this the live one" is what made three of a
+    customer's ingestions each claim to be the baseline for the sync.
 
-    Fails closed to ``"current"``: the conservative wording promises nothing.
+    Fails closed: an unprovable answer refuses rather than offering a delete the
+    receiver would abort.
     """
     from .models import ForwardContributorBaseline
 
     if not ingestion.pk:
-        return ""
+        return False
     try:
-        baseline = ForwardContributorBaseline.objects.filter(
-            ingestion=ingestion
-        ).first()
+        return ForwardContributorBaseline.objects.filter(
+            ingestion=ingestion,
+            is_current=True,
+        ).exists()
     except Exception:  # noqa: BLE001 - a refusal must not become a 500
-        return "current"
-    if baseline is None:
-        return ""
-    if baseline.status == ForwardContributorBaseline.Status.SUPERSEDED:
-        return "spent"
-    return "current"
+        return True
 
 
 def _ingestion_delete_refusal_detail(ingestion) -> tuple[str, bool]:
@@ -2220,10 +2211,23 @@ def _ingestion_delete_refusal_detail(ingestion) -> tuple[str, bool]:
     action behind it.
     """
     references = describe_protecting_references(type(ingestion), ingestion.pk)
-    baseline_reference = any(
-        "baseline" in str(label).casefold() for label, _count in references
-    )
-    if not baseline_reference and _ingestion_holds_current_ownership(ingestion):
+    # A spent baseline cascades with its ingestion now, so it no longer appears
+    # here at all and no longer has to be described. A live one does not cascade
+    # and is not a PROTECT relation either, so it has to be asked about directly
+    # rather than read off the protecting references the way it used to be.
+    if _ingestion_holds_live_baseline(ingestion):
+        held_by = ", ".join(f"{label} ({count})" for label, count in references)
+        also_held = f" It is also held by {held_by}." if held_by else ""
+        return (
+            f"{ingestion} holds the current contributor baseline for this sync - "
+            "the durable record of what has already converged - so it is kept "
+            "until a later sync promotes a new one. This is expected, not a "
+            "failure, and it is why one ingestion in a sequence will not delete "
+            f"when the others do.{also_held} Run the sync again; once a newer "
+            "ingestion has promoted its own baseline, this one deletes normally "
+            "and takes the spent record with it."
+        ), True
+    if _ingestion_holds_current_ownership(ingestion):
         return (
             f"{ingestion} is the ingestion whose ownership reconciliation is "
             "currently complete for this sync, so it is the record that proves "
@@ -2238,31 +2242,6 @@ def _ingestion_delete_refusal_detail(ingestion) -> tuple[str, bool]:
     if not references:
         return "", False
     held_by = ", ".join(f"{label} ({count})" for label, count in references)
-    if baseline_reference:
-        if _ingestion_baseline_state(ingestion) == "spent":
-            # Do not repeat the durable-record wording here. This baseline is
-            # spent: promotion already cleared its relations and emptied its
-            # payload, so it protects nothing an operator would want kept, and
-            # telling them to "remove those records first" points at an action
-            # the product does not offer for this row.
-            return (
-                f"{ingestion} is held by a contributor baseline that has "
-                "already been superseded by a later sync. The record is spent - "
-                "its contents were cleared when the newer baseline was promoted "
-                "- but it still protects this ingestion, so the ingestion "
-                f"cannot be deleted. It is held by {held_by}. Nothing is wrong "
-                "with this sync and no action will release it today; collecting "
-                "spent baselines is a known gap."
-            ), True
-        return (
-            f"{ingestion} is the baseline for this sync - the durable record of "
-            "what has already converged - so NetBox protects it from deletion. "
-            "This is expected, not a failure, and it is why one ingestion in a "
-            "sequence will not delete when the others do. It is held by "
-            f"{held_by}. Deleting it would strand that evidence and force the "
-            "next sync to re-establish a baseline from scratch; if that is "
-            "genuinely what you want, remove those records first."
-        ), True
     return (
         f"{ingestion} cannot be deleted while it is still referenced by "
         f"{held_by}. Those records are convergence evidence for this ingestion; "

@@ -1168,7 +1168,13 @@ class ForwardContributorBaseline(ForwardPluginModelDocsMixin, models.Model):
     )
     ingestion = models.OneToOneField(
         ForwardIngestion,
-        on_delete=models.PROTECT,
+        # CASCADE, not PROTECT: promotion leaves the previous generation
+        # SUPERSEDED with its relations deleted and its payload emptied, and
+        # nothing ever removed that husk, so every ingestion that promoted
+        # became permanently undeletable. PROTECT cannot express "keep the live
+        # one, collect the spent one"; the live one is kept by a `pre_delete`
+        # receiver instead - see `refuse_ingestion_delete_with_live_baseline`.
+        on_delete=models.CASCADE,
         related_name="contributor_baseline",
     )
     parent_baseline = models.ForeignKey(

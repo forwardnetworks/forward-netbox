@@ -143,6 +143,59 @@ def cancel_enqueued_jobs_on_sync_delete(sender, instance, **kwargs):
         job.delete()
 
 
+@receiver(pre_delete, sender=ForwardIngestion)
+def refuse_ingestion_delete_with_live_baseline(sender, instance, **kwargs):
+    """Keep the live contributor baseline, and any ingestion still running.
+
+    Two guarantees that used to belong to the database, moved here when
+    `ForwardContributorBaseline.ingestion` became CASCADE so spent baselines
+    could be collected. PROTECT could not distinguish the live generation from
+    a superseded husk; this can, and unlike a check in the delete view it fires
+    for `queryset.delete()` too, so no path loses a baseline the sync still
+    depends on.
+
+    The running-job half closes the same hole `cancel_enqueued_jobs_on_sync_delete`
+    closes for a sync. `ForwardIngestion` carries `JobsMixin` as well, so its
+    `Job` rows cascade through the SQL collector and bypass `Job.delete()`'s
+    RQ-cancel override - deleting a mid-flight ingestion would drop the job row
+    while its worker kept running against it.
+    """
+    from .models import ForwardContributorBaseline
+
+    baseline = ForwardContributorBaseline.objects.filter(
+        ingestion=instance,
+        is_current=True,
+    ).first()
+    if baseline is not None:
+        raise ProtectedError(
+            "Cannot delete the ingestion holding this sync's current "
+            "contributor baseline; run the sync again so a newer ingestion "
+            "promotes its own, then delete this one.",
+            [baseline],
+        )
+
+    ingestion_type = ContentType.objects.get_for_model(
+        ForwardIngestion, for_concrete_model=False
+    )
+    referenced_job_ids = {
+        job_id
+        for job_id in (instance.job_id, instance.merge_job_id)
+        if job_id is not None
+    }
+    running = list(
+        Job.objects.filter(
+            Q(object_type=ingestion_type, object_id=instance.pk)
+            | Q(pk__in=referenced_job_ids),
+            status=JobStatusChoices.STATUS_RUNNING,
+        ).order_by("pk")
+    )
+    if running:
+        raise ProtectedError(
+            "Cannot delete a Forward ingestion while one of its jobs is " "running.",
+            running,
+        )
+
+
 def acquire_job_schedule_transaction_lock():
     """Serialize deletion through the surrounding transaction's commit."""
     if not connection.in_atomic_block:
