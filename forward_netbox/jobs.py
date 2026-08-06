@@ -800,6 +800,7 @@ def _prune_forward_orphans_work(job):
     from .utilities.scope_reconciliation import EmptyForwardScopeError
     from .utilities.scope_reconciliation import prune_orphan_devices
     from .utilities.scope_reconciliation import prune_orphan_sites
+    from .utilities.scope_reconciliation import ScopeShrinkGuardError
 
     sync = ForwardSync.objects.get(pk=job.object_id)
     try:
@@ -818,6 +819,23 @@ def _prune_forward_orphans_work(job):
             "protected_by_model": device_result.get("protected_by_model", {}),
         }
         job.save(update_fields=["data"])
+    except ScopeShrinkGuardError as exc:
+        # The refusal text carries only counts and a percentage, never a device
+        # name, so the operator gets the actual reason rather than a class name.
+        # Without it the button reports a bare exception for a refusal whose
+        # whole point is telling them how much would have been deleted.
+        job.data = {
+            "error": str(exc),
+            "error_type": exception_type(exc),
+            "out_of_scope_count": report.get("netbox_out_of_scope", 0),
+            "previously_managed_count": report.get("forward_previously_managed", 0),
+        }
+        job.save(update_fields=["data"])
+        logger.error(
+            "Forward orphan pruning refused a shrinking scope (%s).",
+            exception_type(exc),
+        )
+        raise
     except EmptyForwardScopeError as exc:
         job.data = {
             "error": safe_operation_failure("Forward orphan pruning", exc),

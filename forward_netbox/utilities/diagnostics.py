@@ -62,7 +62,10 @@ _OWNERSHIP_CONFLICT_REASONS = (
     ("device-already-mapped", "is already mapped to forward source key"),
     # Tag-ownership refusals, raised while materializing scope and status tags.
     ("tag-claim-type-conflict", "is already controlled as"),
-    ("tag-slug-reserved-without-provenance", "is reserved for forward status ownership"),
+    (
+        "tag-slug-reserved-without-provenance",
+        "is reserved for forward status ownership",
+    ),
     ("scope-tag-name-slug-disagree", "identify different netbox tags"),
     ("tag-mutation-identity-unresolved", "refusing name-only tag mutation"),
     ("virtual-parent-claims-disagree", "virtual-parent claims disagree"),

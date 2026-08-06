@@ -31,11 +31,7 @@ def candidate_managed_tag_slugs(value):
     an existing row is what turns a benign collision into a refusal.
     """
     name = str(value or "").strip()
-    return {
-        slug
-        for slug in (slugify(name), slugify(name.replace(".", "-")))
-        if slug
-    }
+    return {slug for slug in (slugify(name), slugify(name.replace(".", "-"))) if slug}
 
 
 def validate_scope_tag_names(values):

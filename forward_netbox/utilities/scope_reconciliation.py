@@ -256,6 +256,9 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         "forward_tagged_backfilled": len(backfilled_names),
         "netbox_present_backfilled": len(present_backfilled),
         "netbox_out_of_scope": len(out_of_scope),
+        # The denominator the prune guard measures a shrink against: how many
+        # devices this sync had claimed before this result came back.
+        "forward_previously_managed": len(previously_managed_names),
         "netbox_empty_orphan_site_count": len(empty_orphan_sites),
         "forward_missing_in_netbox": len(missing_in_netbox),
         "scope_tag_targets_missing_in_netbox": len(missing_scope_tag_targets),
@@ -347,6 +350,51 @@ class EmptyForwardScopeError(RuntimeError):
     """Raised when an empty Forward scope would make a mutation unsafe."""
 
 
+class ScopeShrinkGuardError(RuntimeError):
+    """Raised when the scope shrank far enough that a prune looks like a fault.
+
+    The zero-device guard only catches a query that returned nothing at all. A
+    query that returns most of the fleet - a Forward-side tag edit, a partial
+    result, an org query that starts failing - passes it cleanly, and every
+    device missing from that result is then deleted as an orphan.
+    """
+
+
+# A prune deleting more than this share of what the sync previously claimed is
+# treated as a scope fault rather than attrition. Real decommissioning arrives
+# in small batches; a query returning half the fleet does not.
+SCOPE_SHRINK_REFUSAL_RATIO = 0.25
+
+# ...but only once the absolute count is past what an operator can read. A
+# ratio over small numbers is noise - three orphans out of eight claimed is
+# 38% and means nothing - and a guard that fires on a lab or a small sync is a
+# guard that gets switched off. `SAMPLE_LIMIT` is the natural line: at or below
+# it the report shows every orphan by name, so the blast radius is reviewable
+# by eye and the ratio adds nothing.
+SCOPE_SHRINK_REFUSAL_FLOOR = SAMPLE_LIMIT
+
+
+def _require_survivable_scope_shrink(report, *, allow_scope_shrink):
+    previously_managed = int(report.get("forward_previously_managed") or 0)
+    orphan_count = len(report.get("_out_of_scope") or ())
+    if allow_scope_shrink or not previously_managed or not orphan_count:
+        return
+    if orphan_count <= SCOPE_SHRINK_REFUSAL_FLOOR:
+        return
+    ratio = orphan_count / previously_managed
+    if ratio <= SCOPE_SHRINK_REFUSAL_RATIO:
+        return
+    raise ScopeShrinkGuardError(
+        f"Refusing to prune: {orphan_count} of {previously_managed} devices "
+        f"this sync previously claimed ({ratio:.0%}) are absent from the "
+        "current Forward scope result. Above "
+        f"{SCOPE_SHRINK_REFUSAL_RATIO:.0%} this is treated as a scope or "
+        "query fault rather than devices leaving scope. Confirm the Forward "
+        "query and its include tags still return the whole fleet, then re-run "
+        "with the scope-shrink override if the removal is genuinely intended."
+    )
+
+
 def _require_nonempty_forward_scope(report, *, operation):
     if not report.get("_tagged_names"):
         raise EmptyForwardScopeError(
@@ -391,12 +439,14 @@ def _prunable_device_order(device_ids):
     return ordered, cyclic_ids
 
 
-def prune_orphan_devices(sync, *, report=None) -> dict:
+def prune_orphan_devices(sync, *, report=None, allow_scope_shrink=False) -> dict:
     """Delete NetBox devices not present in the sync's Forward scope.
 
-    Safety: refuses when the Forward query returned 0 devices. Tagged-but-
-    backfilled devices are preserved. Returns counts. Pass ``report`` (from
-    ``compute_scope_reconciliation``) to avoid re-running the Forward query.
+    Safety: refuses when the Forward query returned 0 devices, and refuses when
+    the result shrank far enough that a query fault is likelier than devices
+    genuinely leaving scope. Tagged-but-backfilled devices are preserved.
+    Returns counts. Pass ``report`` (from ``compute_scope_reconciliation``) to
+    avoid re-running the Forward query.
     """
     if report is None:
         report = compute_scope_reconciliation(sync)
@@ -406,6 +456,7 @@ def prune_orphan_devices(sync, *, report=None) -> dict:
             "The Forward scope query returned 0 devices; refusing to prune because "
             "every NetBox device would be treated as an orphan."
         )
+    _require_survivable_scope_shrink(report, allow_scope_shrink=allow_scope_shrink)
     if not out_of_scope:
         return {"pruned_device_count": 0, "out_of_scope_sample": []}
 

@@ -8,8 +8,8 @@ from django.test import TestCase
 from extras.models import Tag
 
 from forward_netbox.models import ForwardManagedDeviceTag
-from forward_netbox.utilities.ownership import OwnershipConflictError
 from forward_netbox.utilities.ownership import _locked_scope_tag
+from forward_netbox.utilities.ownership import OwnershipConflictError
 from forward_netbox.utilities.tag_contracts import candidate_managed_tag_slugs
 from forward_netbox.utilities.tag_contracts import normalized_managed_tag_slug
 

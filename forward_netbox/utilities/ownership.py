@@ -11,8 +11,8 @@ from django.db.models import Q
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 
-from .tag_contracts import RESERVED_STATUS_TAG_SLUGS
 from .tag_contracts import candidate_managed_tag_slugs
+from .tag_contracts import RESERVED_STATUS_TAG_SLUGS
 from .tag_contracts import validate_scope_tag_names
 
 
@@ -675,9 +675,10 @@ def _locked_scope_tag(name, slug):
     )
     # Only a row this plugin already manages can make the choice genuinely
     # ambiguous: switching away from it would strand its claims.
-    if colliding is not None and ForwardManagedDeviceTag.objects.filter(
-        tag=colliding
-    ).exists():
+    if (
+        colliding is not None
+        and ForwardManagedDeviceTag.objects.filter(tag=colliding).exists()
+    ):
         raise OwnershipConflictError(
             "Scope tag name and normalized slug identify different NetBox "
             f"tags (pk {name_match.pk} by name, pk {colliding.pk} by slug), "
