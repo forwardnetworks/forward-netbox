@@ -1194,7 +1194,7 @@ def artifact_test(context):
             "'dependencies = [' "
             f"'  \"forward-netbox=={version}\",' "
             "'  \"netbox-cisco-aci==0.4.0\",' "
-            "'  \"netbox-dlm==0.6.0\",' "
+            "'  \"netbox-dlm==0.7.0\",' "
             "'  \"netbox-peering-manager==0.3.0\",' "
             "'  \"netbox-routing==0.4.3\",' "
             "']' "

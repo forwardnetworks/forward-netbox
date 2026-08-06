@@ -36,6 +36,7 @@ class OptionalDistributionVersionSetTest(SimpleTestCase):
                 self.assertIn("0.4.1", supported["netbox-dlm"])
                 self.assertIn("0.5.0", supported["netbox-dlm"])
                 self.assertIn("0.6.0", supported["netbox-dlm"])
+                self.assertIn("0.7.0", supported["netbox-dlm"])
 
     def test_an_unvalidated_version_is_still_refused(self):
         # The gates fail closed; widening must not become "any version".
@@ -165,7 +166,7 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
         json.dumps(detail)
         self.assertEqual(
             detail["expected"]["optional_plugins"]["netbox-dlm"],
-            ["0.4.1", "0.5.0", "0.6.0"],
+            ["0.4.1", "0.5.0", "0.6.0", "0.7.0"],
         )
 
 
