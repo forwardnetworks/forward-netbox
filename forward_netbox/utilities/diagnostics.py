@@ -31,24 +31,41 @@ def exception_type(exc) -> str:
     return exc.__class__.__name__
 
 
-# An OwnershipConflictError is raised bare from eight call sites and its
+# An OwnershipConflictError is raised bare from nine call sites and its
 # message is stripped before anything persists it, so every job record and UI
 # error read "failed (OwnershipConflictError)" and nothing more - identical
-# whatever refused the reconciliation. The messages embed source device keys,
-# which are device names, so the message itself cannot be persisted: an
-# allowlist maps it to a slug this module defines, and an unmatched message
-# records that it was unrecognised rather than falling silent.
+# whatever refused the reconciliation. The messages embed source device keys
+# and tag names, both of which are customer identifiers, so the message itself
+# cannot be persisted: an allowlist maps it to a slug this module defines, and
+# an unmatched message records that it was unrecognised rather than falling
+# silent.
 #
 # This lives here, in the one function every failure path formats through,
 # rather than at a call site. The first attempt enriched a single job's error
 # path; the job a customer actually hit was a different one that formats the
 # same sentence, so the fix appeared to work and changed nothing they saw.
+#
+# The second attempt catalogued only the four device-identity refusals, which
+# are raised while merging an ingestion. Every refusal raised while
+# materializing tags went uncatalogued, so the whole scope-tag reconciliation
+# job could only ever report `unrecognized-ownership-conflict` - which is what
+# a customer hit, and the reason had to be recovered by reading source. The
+# catalogue covers both halves now, and `test_ownership_conflict_reason`
+# asserts every raise site in the ownership modules maps to a slug, so a new
+# raise site cannot quietly reintroduce the gap.
 _OWNERSHIP_CONFLICT_EXCEPTION = "OwnershipConflictError"
 _OWNERSHIP_CONFLICT_REASONS = (
+    # Device-identity refusals, raised while merging an ingestion.
     ("identity-ambiguous", "forward device identity is ambiguous"),
     ("identity-evidence-mismatch", "identity evidence does not match merged"),
     ("source-key-multiple-devices", "maps to multiple live netbox devices"),
     ("device-already-mapped", "is already mapped to forward source key"),
+    # Tag-ownership refusals, raised while materializing scope and status tags.
+    ("tag-claim-type-conflict", "is already controlled as"),
+    ("tag-slug-reserved-without-provenance", "is reserved for forward status ownership"),
+    ("scope-tag-name-slug-disagree", "identify different netbox tags"),
+    ("tag-mutation-identity-unresolved", "refusing name-only tag mutation"),
+    ("virtual-parent-claims-disagree", "virtual-parent claims disagree"),
 )
 
 
