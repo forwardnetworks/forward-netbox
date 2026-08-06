@@ -10,9 +10,9 @@ from django.db.models import F
 from django.db.models import Q
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
-from django.utils.text import slugify
 
 from .tag_contracts import RESERVED_STATUS_TAG_SLUGS
+from .tag_contracts import candidate_managed_tag_slugs
 from .tag_contracts import validate_scope_tag_names
 
 
@@ -411,10 +411,9 @@ def _relevant_sync_ids(domain, *, tag_id=None, excluded_sync_ids=()):
             source_parameters = sync.source.parameters or {}
             if source_parameters.get("apply_device_scope_tags"):
                 configured_names = _configured_include_tags(sync.source)
-                configured_slugs = {
-                    slugify(name) or slugify(name.replace(".", "-"))
-                    for name in configured_names
-                }
+                configured_slugs = set()
+                for name in configured_names:
+                    configured_slugs |= candidate_managed_tag_slugs(name)
                 if tag_id is None or (
                     scoped_tag is not None
                     and (
@@ -636,25 +635,56 @@ def _materialize_managed_tag(
 
 
 def _locked_scope_tag(name, slug):
+    """Resolve the NetBox tag an operator named, locking it for update.
+
+    The operator configures a scope tag by NAME; the slug is derived from it.
+    So when a name match and a slug match are different rows, the name is the
+    stronger evidence of what was meant, and the slug collision is only a
+    genuine ambiguity if the slug-matched row is one this plugin manages.
+
+    Refusing whenever both existed is what made a benign collision fatal: a
+    tag named `A.Person` created through the NetBox UI with slug `a-person`,
+    plus any unrelated tag holding the derived `aperson`, left the whole
+    ownership domain Incomplete - which blocks convergence and reports every
+    drift figure as "Not measured".
+    """
     from extras.models import Tag
 
+    from ..models import ForwardManagedDeviceTag
+
+    candidate_slugs = candidate_managed_tag_slugs(name) | {slug}
     matches = list(
         Tag.objects.select_for_update()
-        .filter(Q(name=name) | Q(slug=slug))
+        .filter(Q(name=name) | Q(slug__in=sorted(candidate_slugs)))
         .order_by("pk")
     )
     name_match = next((tag for tag in matches if tag.name == name), None)
-    slug_match = next((tag for tag in matches if tag.slug == slug), None)
-    if (
-        name_match is not None
-        and slug_match is not None
-        and name_match.pk != slug_match.pk
-    ):
+    if name_match is None:
+        return next((tag for tag in matches if tag.slug in candidate_slugs), None)
+    if name_match.slug in candidate_slugs:
+        # The named tag already carries one of this name's slugs, so there is
+        # nothing to be ambiguous about even if other rows also match.
+        return name_match
+    colliding = next(
+        (
+            tag
+            for tag in matches
+            if tag.slug in candidate_slugs and tag.pk != name_match.pk
+        ),
+        None,
+    )
+    # Only a row this plugin already manages can make the choice genuinely
+    # ambiguous: switching away from it would strand its claims.
+    if colliding is not None and ForwardManagedDeviceTag.objects.filter(
+        tag=colliding
+    ).exists():
         raise OwnershipConflictError(
-            f"Scope tag name `{name}` and normalized slug `{slug}` identify "
-            "different NetBox tags."
+            "Scope tag name and normalized slug identify different NetBox "
+            f"tags (pk {name_match.pk} by name, pk {colliding.pk} by slug), "
+            "and the slug match is already plugin-managed. Tag names are "
+            "customer data, so the ids are reported instead."
         )
-    return name_match or slug_match
+    return name_match
 
 
 def _resolve_or_create_scope_tag(name, slug):
