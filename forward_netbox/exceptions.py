@@ -70,6 +70,7 @@ class ForwardDataError(ForwardSyncError):
         defaults: dict | None = None,
         data: dict | None = None,
         issue_id: int | None = None,
+        dependency: str | None = None,
     ):
         super().__init__(message)
         self.model_string = model_string
@@ -77,6 +78,13 @@ class ForwardDataError(ForwardSyncError):
         self.defaults = defaults or {}
         self.data = data or {}
         self.issue_id = issue_id
+        # The model whose absence (or whose surviving children) caused this.
+        # A schema identifier the plugin defines, so unlike `context` — which
+        # carries the device or platform NAME and is reduced to key names before
+        # anything persists it — this one can be recorded. Without it a skipped
+        # row records only the exception class, and a customer reading six
+        # identical rows has no way to learn which parent was missing.
+        self.dependency = dependency or ""
 
 
 class ForwardSearchError(ForwardDataError):

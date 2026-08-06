@@ -9049,7 +9049,7 @@ class ForwardApplyEngineParityTest(TestCase):
         self.assertEqual(issue.exception, "ForwardDependencySkipError")
         self.assertEqual(
             issue.message,
-            "dcim.virtualchassis row processing failed (ForwardDependencySkipError).",
+            "dcim.virtualchassis row processing skipped (ForwardDependencySkipError).",
         )
         runner.logger.increment_statistics.assert_any_call(
             "dcim.virtualchassis",

@@ -4,6 +4,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError
 from django.db.models import Q
 from django.db.models.deletion import ProtectedError
+from rq.timeouts import JobTimeoutException
 
 from ..exceptions import ForwardDependencySkipError
 from ..exceptions import ForwardQueryError
@@ -452,6 +453,28 @@ def upsert_values_from_defaults(
     )
 
 
+def _protecting_model_labels(exc) -> str:
+    """The distinct models still referencing the row, as a comma-joined slug.
+
+    `ProtectedError.protected_objects` holds the actual surviving rows, whose
+    `str()` is a device or site name. Only their model labels are taken, and
+    only the first few, so a prune blocked by ten thousand devices does not
+    write ten thousand of anything.
+    """
+    labels = set()
+    try:
+        for obj in getattr(exc, "protected_objects", ()) or ():
+            labels.add(obj._meta.label_lower)
+            if len(labels) >= 4:
+                break
+    except JobTimeoutException:
+        # A worker boundary must never be swallowed by a diagnostic.
+        raise
+    except Exception:  # noqa: BLE001 - a diagnostic must not mask the skip
+        return ""
+    return ", ".join(sorted(labels))
+
+
 def delete_by_coalesce(runner, model, lookups):
     lookups = _dedupe_lookups([lookup for lookup in lookups or [] if lookup])
     if not lookups:
@@ -462,9 +485,15 @@ def delete_by_coalesce(runner, model, lookups):
             try:
                 obj.delete()
             except ProtectedError as exc:
+                # This skip is the inverse of every other one: nothing is
+                # missing, the object is still referenced and the database
+                # refuses to prune it. Naming the models still pointing at it is
+                # the whole answer, and they are schema identifiers — unlike
+                # `lookup`, which is the object's own name or slug.
                 raise ForwardDependencySkipError(
                     f"Skipping delete for `{model._meta.label_lower}` due to protected dependencies: {exc}",
                     model_string=model._meta.label_lower,
+                    dependency=_protecting_model_labels(exc),
                     context=lookup,
                 ) from exc
             forget_lookup_object(runner, obj)

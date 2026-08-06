@@ -5,15 +5,18 @@ delete action from the table rather than registering the view the action
 pointed at. The crash went away and so did the ability to delete an ingestion —
 reported by a customer against 2.6.5.
 
-Most relations to an ingestion cascade, but `ForwardContributorBaseline` is
-PROTECT: it is durable convergence evidence and deleting the ingestion that
-produced it would strand it. That case must be reported, not surfaced as an
-unhandled `ProtectedError`.
+Most relations to an ingestion cascade. The contributor baseline is the one
+that matters: the LIVE generation is durable convergence evidence and must
+outlive nothing, while every superseded generation is an emptied husk that used
+to protect its ingestion forever. That split is enforced by a `pre_delete`
+receiver rather than by PROTECT, because PROTECT cannot express it, and it must
+be reported rather than surfaced as an unhandled `ProtectedError`.
 """
 
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.db import transaction
 from django.test import TestCase
 from django.urls import reverse
 
@@ -90,8 +93,11 @@ class IngestionDeleteRefusalTest(TestCase):
         self.ingestion.delete()
         self.assertFalse(ForwardIngestion.objects.filter(pk=self.ingestion.pk).exists())
 
-    def test_a_contributor_baseline_blocks_the_delete_and_is_named(self):
-        # The real PROTECT relation against a real row, not a mock.
+    def test_the_live_baseline_blocks_the_delete_and_says_why(self):
+        # The relation is CASCADE now so a spent baseline can be collected; the
+        # live one is kept by the pre_delete receiver instead. Assert the shape
+        # deliberately, so flipping it back is a failing test rather than a
+        # silently lost guarantee.
         from django.db import models as django_models
 
         from forward_netbox.models import ForwardContributorBaseline
@@ -99,34 +105,36 @@ class IngestionDeleteRefusalTest(TestCase):
         field = ForwardContributorBaseline._meta.get_field("ingestion")
         self.assertIs(
             field.remote_field.on_delete,
-            django_models.PROTECT,
-            "ForwardContributorBaseline.ingestion is no longer PROTECT; this "
-            "test no longer covers the case it was written for",
+            django_models.CASCADE,
+            "ForwardContributorBaseline.ingestion is no longer CASCADE; the "
+            "spent-baseline collection this test covers depends on it",
         )
-        self._baseline(ForwardContributorBaseline)
+        baseline = self._baseline(ForwardContributorBaseline)
+        baseline.is_current = True
+        baseline.status = ForwardContributorBaseline.Status.CURRENT
+        baseline.save(update_fields=["is_current", "status"])
 
-        refusal = _ingestion_delete_refusal(self.ingestion)
+        refusal, expected = _ingestion_delete_refusal_detail(self.ingestion)
 
-        self.assertTrue(refusal, "a protected ingestion must be refused")
-        self.assertIn("ForwardContributorBaseline", refusal)
-        # The baseline case now says it is expected rather than reading as a
-        # fault; a customer reported the old red error as a defect twice.
-        self.assertIn("is the baseline for this sync", refusal)
+        self.assertTrue(refusal, "the live baseline must be refused")
+        self.assertIn("current contributor baseline", refusal)
+        # Expected rather than a fault; a customer reported the old red error
+        # as a defect twice.
         self.assertIn("expected, not a failure", refusal)
+        self.assertTrue(expected)
 
     def test_the_refusal_names_what_to_do(self):
         from forward_netbox.models import ForwardContributorBaseline
 
-        self._baseline(ForwardContributorBaseline)
-        self.assertIn(
-            "remove those records first", _ingestion_delete_refusal(self.ingestion)
-        )
+        baseline = self._baseline(ForwardContributorBaseline)
+        baseline.is_current = True
+        baseline.save(update_fields=["is_current"])
+        self.assertIn("Run the sync again", _ingestion_delete_refusal(self.ingestion))
 
-    def test_a_superseded_baseline_is_not_called_the_current_one(self):
-        # Every ingestion that ever promoted leaves a baseline behind, and
-        # promotion only marks the previous one superseded. A customer with
-        # three undeletable ingestions was told three times that each was "the
-        # baseline for this sync", which is true of at most one of them.
+    def test_a_spent_baseline_is_collected_with_its_ingestion(self):
+        # The customer case: every ingestion that ever promoted left a baseline
+        # behind, and nothing removed it, so the backlog grew by one per
+        # successful sync until three were undeletable at once.
         from forward_netbox.models import ForwardContributorBaseline
 
         baseline = self._baseline(ForwardContributorBaseline)
@@ -134,32 +142,39 @@ class IngestionDeleteRefusalTest(TestCase):
         baseline.is_current = False
         baseline.save(update_fields=["status", "is_current"])
 
-        refusal, expected = _ingestion_delete_refusal_detail(self.ingestion)
+        self.assertEqual(_ingestion_delete_refusal(self.ingestion), "")
 
-        self.assertTrue(refusal)
-        self.assertNotIn("is the baseline for this sync", refusal)
-        self.assertIn("already been superseded", refusal)
-        # The old text told them to "remove those records first". There is no
-        # supported way to remove this one, so it must not say that.
-        self.assertNotIn("remove those records first", refusal)
-        self.assertIn("ForwardContributorBaseline", refusal)
-        # Still expected rather than a fault, so it stays a warning not an error.
-        self.assertTrue(expected)
+        self.ingestion.delete()
 
-    def test_a_pending_baseline_is_not_reported_as_spent(self):
-        # `is_current` defaults to False and `status` to PENDING, so keying the
-        # wording off `is_current` alone would tell an operator mid-sync that an
-        # intact payload is a dead husk. Only promotion sets SUPERSEDED.
+        self.assertFalse(ForwardIngestion.objects.filter(pk=self.ingestion.pk).exists())
+        self.assertFalse(
+            ForwardContributorBaseline.objects.filter(pk=baseline.pk).exists(),
+            "the spent baseline must go with its ingestion, not outlive it",
+        )
+
+    def test_a_live_baseline_is_never_collected_even_by_a_queryset_delete(self):
+        # The guarantee moved from PROTECT to a pre_delete receiver, and the
+        # whole point of that receiver over a check in the view is that it fires
+        # for querysets too.
+        from django.db.models.deletion import ProtectedError
+
         from forward_netbox.models import ForwardContributorBaseline
 
         baseline = self._baseline(ForwardContributorBaseline)
-        self.assertEqual(baseline.status, ForwardContributorBaseline.Status.PENDING)
-        self.assertFalse(baseline.is_current)
+        baseline.is_current = True
+        baseline.status = ForwardContributorBaseline.Status.CURRENT
+        baseline.save(update_fields=["is_current", "status"])
 
-        refusal = _ingestion_delete_refusal(self.ingestion)
+        # A refused delete aborts the transaction it ran in, so the assertions
+        # after it need a surviving one.
+        with transaction.atomic():
+            with self.assertRaises(ProtectedError):
+                ForwardIngestion.objects.filter(pk=self.ingestion.pk).delete()
 
-        self.assertNotIn("already been superseded", refusal)
-        self.assertIn("is the baseline for this sync", refusal)
+        self.assertTrue(ForwardIngestion.objects.filter(pk=self.ingestion.pk).exists())
+        self.assertTrue(
+            ForwardContributorBaseline.objects.filter(pk=baseline.pk).exists()
+        )
 
     def test_cascading_children_do_not_block_the_delete(self):
         # Issues cascade, so they must not be reported as protecting.
@@ -480,11 +495,17 @@ class ReconciliationNoLongerPinsAnIngestionTest(TestCase):
             scope_config_fingerprint="cf",
             scope_membership_fingerprint="sf",
             scope_payload_checksum="pc",
+            is_current=True,
+            status=ForwardContributorBaseline.Status.CURRENT,
         )
 
         refusal, expected = _ingestion_delete_refusal_detail(self.newer)
 
-        self.assertIn("is the baseline for this sync", refusal)
+        self.assertIn("current contributor baseline", refusal)
         self.assertTrue(expected)
-        with self.assertRaises(ProtectedError):
-            self.newer.delete()
+        # The refusal is now raised by the pre_delete receiver rather than by a
+        # PROTECT constraint, and it aborts the surrounding transaction either
+        # way - so keep it in its own atomic block.
+        with transaction.atomic():
+            with self.assertRaises(ProtectedError):
+                self.newer.delete()

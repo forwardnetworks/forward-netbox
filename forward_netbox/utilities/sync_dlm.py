@@ -58,6 +58,7 @@ def _lookup_platform(runner, row, model_string, object_label):
             f"Skipping {object_label} because platform `{name or slug}` is not "
             "in NetBox yet.",
             model_string=model_string,
+            dependency="dcim.platform",
             context={"platform": name or slug},
             data=row,
         )
@@ -81,6 +82,7 @@ def _lookup_device_type(runner, row, model_string, object_label):
             "alias-aware device query, use the 'Forward DLM Hardware Notices "
             "with NetBox Aliases' map so notices look up the same name.",
             model_string=model_string,
+            dependency="dcim.devicetype",
             context={"device_type": model or slug},
             data=row,
         )
@@ -97,6 +99,7 @@ def _lookup_device(runner, row, model_string, object_label):
                 f"Skipping {object_label} because dependency `dcim.device` "
                 f"failed for {key}.",
                 model_string=model_string,
+                dependency="dcim.device",
                 context={"device": row["name"]},
                 data=row,
             ) from exc
@@ -104,6 +107,7 @@ def _lookup_device(runner, row, model_string, object_label):
             f"Skipping {object_label} because device `{row['name']}` is not "
             "in the current NetBox branch.",
             model_string=model_string,
+            dependency="dcim.device",
             context={"device": row["name"]},
             data=row,
         ) from exc
@@ -236,6 +240,7 @@ def _lookup_inventory_item(runner, row):
             "Skipping DLM inventory item software because its device is not "
             "in the current NetBox branch.",
             model_string="netbox_dlm.inventoryitemsoftware",
+            dependency="dcim.inventoryitem",
             context={"dependency": "dcim.inventoryitem"},
             data=row,
         ) from exc
@@ -248,6 +253,7 @@ def _lookup_inventory_item(runner, row):
             "item is not in the current NetBox branch. Enable Forward CIMC "
             "Endpoint Inventory alongside this map.",
             model_string="netbox_dlm.inventoryitemsoftware",
+            dependency="dcim.inventoryitem",
             context={"dependency": "dcim.inventoryitem"},
             data=row,
         )
@@ -262,6 +268,7 @@ def ensure_dlm_inventory_item_role_platform(runner, inventory_item, row):
             "Skipping DLM inventory item software because the target inventory "
             "item has no role.",
             model_string="netbox_dlm.inventoryitemsoftware",
+            dependency="dcim.inventoryitemrole",
             context={"dependency": "dcim.inventoryitemrole"},
             data=row,
         )

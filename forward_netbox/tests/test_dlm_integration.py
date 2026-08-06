@@ -1036,3 +1036,51 @@ class DependencySkipIssueRollupTest(TestCase):
         self.assertEqual(
             ForwardIngestionIssue.objects.filter(ingestion=ingestion).count(), 4
         )
+
+
+class DependencySkipNamesTheMissingParentTest(SimpleTestCase):
+    """A skipped row must say which parent was missing.
+
+    A customer's ingestion showed six rows reading exactly
+    `netbox_dlm.softwareversion row processing failed (ForwardDependencySkipError).`
+    The raiser's own message names the platform, but it embeds the platform NAME
+    so it cannot be persisted, and `context` is reduced to key names before
+    storage. The model label is a schema identifier, so it can be.
+    """
+
+    def test_the_missing_platform_is_named_on_the_exception(self):
+        from forward_netbox.exceptions import ForwardDependencySkipError
+        from forward_netbox.utilities.sync_dlm import _lookup_platform
+
+        runner = Mock()
+        runner._get_unique_or_raise.return_value = None
+        with self.assertRaises(ForwardDependencySkipError) as caught:
+            _lookup_platform(
+                runner,
+                {"platform": "some-platform", "platform_slug": "some-platform"},
+                "netbox_dlm.softwareversion",
+                "DLM software version",
+            )
+        self.assertEqual("dcim.platform", caught.exception.dependency)
+
+    def test_the_missing_device_type_is_named(self):
+        from forward_netbox.exceptions import ForwardDependencySkipError
+        from forward_netbox.utilities.sync_dlm import _lookup_device_type
+
+        runner = Mock()
+        runner._get_unique_or_raise.return_value = None
+        with self.assertRaises(ForwardDependencySkipError) as caught:
+            _lookup_device_type(
+                runner,
+                {"device_type": "some-model", "device_type_slug": "some-model"},
+                "netbox_dlm.hardwarenotice",
+                "DLM hardware notice",
+            )
+        self.assertEqual("dcim.devicetype", caught.exception.dependency)
+
+    def test_a_raiser_that_names_nothing_still_records_what_it_did_before(self):
+        # Most of the plugin's 30-odd raisers are untouched, and they must keep
+        # today's behaviour rather than record an empty slug.
+        from forward_netbox.exceptions import ForwardDependencySkipError
+
+        self.assertEqual("", ForwardDependencySkipError("nope").dependency)
