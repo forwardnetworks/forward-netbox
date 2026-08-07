@@ -303,6 +303,18 @@ class ArtifactUpgradeTaskTest(unittest.TestCase):
     release and reads them back under the built wheel.
     """
 
+    def setUp(self):
+        # The gate driver exports FORWARD_NETBOX_UPGRADE_FROM_VERSION for the
+        # whole `invoke ci` run so the upgrade gate can resolve offline when
+        # PyPI is unreachable. These tests must not inherit it: one of them is
+        # named for not touching the network, and both assert on the version
+        # the task RESOLVES, which an ambient override silently replaces.
+        patcher = patch.dict(
+            os.environ, {"FORWARD_NETBOX_UPGRADE_FROM_VERSION": ""}, clear=False
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     WHEEL = "dist/forward_netbox-2.6.7-py3-none-any.whl"
 
     def _context(self, netbox_version="v4.6.6", tags="v2.6.5\nv2.6.6\n"):
