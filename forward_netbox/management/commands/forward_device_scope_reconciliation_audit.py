@@ -38,6 +38,16 @@ class Command(BaseCommand):
             action="store_true",
             help="With --prune-orphans, actually delete instead of dry-run.",
         )
+        parser.add_argument(
+            "--allow-scope-shrink",
+            action="store_true",
+            help=(
+                "Proceed even when the out-of-scope set is a large share of "
+                "what this sync previously claimed. Without this, a prune that "
+                "would remove more than a quarter of the previously claimed "
+                "devices is refused as a likely query or tag fault."
+            ),
+        )
 
     def handle(self, *args, **options):
         if options["sync_id"] and options["sync_name"]:
@@ -61,13 +71,19 @@ class Command(BaseCommand):
             ""
             if not out_of_scope
             else (
-                f"{len(out_of_scope)} NetBox devices are not in the Forward "
-                "tag scope (neither collected nor backfilled under this tag). "
-                "These are leftovers from an earlier, broader sync. "
+                f"{len(out_of_scope)} NetBox devices this sync previously "
+                "claimed are absent from the current Forward tag scope result "
+                "(neither collected nor backfilled under these tags). That is "
+                "what a device leaving scope looks like - and also what a "
+                "Forward-side tag edit, a narrowed query, or a partial result "
+                "looks like, because membership is decided purely by absence "
+                "from the result. Confirm in Forward that these devices really "
+                "no longer carry the include tags BEFORE deleting anything; "
+                "they are ordinary NetBox devices otherwise. "
                 "`device_tag_prune_out_of_scope` does NOT remove them (it only "
                 "deletes rows the sync query returns, and these are absent from "
-                "the result). Review `out_of_scope_sample`, then re-run with "
-                "`--prune-orphans --apply` to delete them."
+                "the result). Once confirmed, re-run with `--prune-orphans "
+                "--apply` to delete them."
             )
         )
 
@@ -85,7 +101,11 @@ class Command(BaseCommand):
                 self.stdout.write(json.dumps(payload, indent=2, default=str))
                 raise SystemExit(2)
             if options["apply"] and out_of_scope:
-                result = prune_orphan_devices(sync, report=report)
+                result = prune_orphan_devices(
+                    sync,
+                    report=report,
+                    allow_scope_shrink=options["allow_scope_shrink"],
+                )
                 payload["prune_applied"] = True
                 payload["pruned_object_count"] = result["pruned_object_count"]
                 payload["pruned_device_count"] = result["pruned_device_count"]

@@ -37,6 +37,34 @@ class OwnershipConflictReasonTest(TestCase):
             "Device dev-1 is already mapped to Forward source key abc",
             "device-already-mapped",
         ),
+        # Tag-ownership refusals. Every one of these was uncatalogued, so the
+        # entire scope-tag reconciliation job could only report
+        # `unrecognized-ownership-conflict` - which is what a customer hit.
+        (
+            "Tag slug `owner-a` is already controlled as `backfilled` "
+            "and cannot also be `scope`.",
+            "tag-claim-type-conflict",
+        ),
+        (
+            "Tag slug `forward-backfilled` is reserved for Forward status "
+            "ownership but already exists without plugin provenance.",
+            "tag-slug-reserved-without-provenance",
+        ),
+        (
+            "Scope tag name `A.Person` and normalized slug `aperson` identify "
+            "different NetBox tags.",
+            "scope-tag-name-slug-disagree",
+        ),
+        (
+            "Refusing name-only tag mutation because device identity is "
+            "unresolved or ambiguous: abc",
+            "tag-mutation-identity-unresolved",
+        ),
+        (
+            "Virtual-parent claims disagree for one or more devices; durable "
+            "claims were retained and the existing parent links were preserved.",
+            "virtual-parent-claims-disagree",
+        ),
     )
 
     def test_every_known_condition_resolves_to_its_slug(self):
@@ -82,6 +110,51 @@ class OwnershipConflictReasonTest(TestCase):
         self.assertEqual(
             safe_operation_failure("Forward sync", ValueError("boom")),
             "Forward sync failed (ValueError).",
+        )
+
+    def test_every_raise_site_in_the_source_is_catalogued(self):
+        # Listing conditions by hand is what let the tag-side refusals go
+        # uncatalogued: the four that were listed all came from one function,
+        # and nobody noticed the other five existed. This reads the raise sites
+        # out of the modules themselves, so adding one without a slug fails
+        # here rather than in a customer's job record.
+        import ast
+        import pathlib
+
+        import forward_netbox.utilities.ownership as ownership_module
+        import forward_netbox.utilities.vsys_parent as vsys_module
+
+        uncatalogued = []
+        for module in (ownership_module, vsys_module):
+            path = pathlib.Path(module.__file__)
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                if not isinstance(node, ast.Raise) or node.exc is None:
+                    continue
+                call = node.exc
+                if not isinstance(call, ast.Call):
+                    continue
+                func = call.func
+                name = getattr(func, "id", None) or getattr(func, "attr", None)
+                if name != "OwnershipConflictError" or not call.args:
+                    continue
+                # Keep only the literal parts: an f-string placeholder holds a
+                # tag name or device key, which is exactly what must not be
+                # matched on.
+                literal = "".join(
+                    part.value
+                    for part in ast.walk(call.args[0])
+                    if isinstance(part, ast.Constant) and isinstance(part.value, str)
+                )
+                reason = ownership_conflict_reason(OwnershipConflictError(literal))
+                if reason == "unrecognized-ownership-conflict":
+                    uncatalogued.append(f"{path.name}:{node.lineno}")
+
+        self.assertEqual(
+            uncatalogued,
+            [],
+            "OwnershipConflictError raise sites with no catalogued slug: "
+            f"{uncatalogued}. Add one to _OWNERSHIP_CONFLICT_REASONS.",
         )
 
 
