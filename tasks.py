@@ -1088,11 +1088,15 @@ def _previous_released_version(context, version):
     # release cycle.
     payload = None
     last_error: Exception | None = None
-    for attempt in range(3):
-        if attempt:
-            time.sleep(5 * attempt)
+    # Backoff has to outlast the congested window, not just sample it. The first
+    # version of this retried at 5s and 10s - all three attempts landed inside
+    # the same minute right after the docker fan-out and all three timed out,
+    # while the identical request from the same host succeeded seconds later.
+    for backoff in (0, 10, 30):
+        if backoff:
+            time.sleep(backoff)
         try:
-            with urllib.request.urlopen(url, timeout=60) as response:
+            with urllib.request.urlopen(url, timeout=45) as response:
                 payload = json.load(response)
             break
         # OSError, not just TimeoutError: the read can also fail with
@@ -1104,8 +1108,8 @@ def _previous_released_version(context, version):
     if payload is None:
         raise Exit(
             f"Could not read released versions from PyPI ({last_error}) after "
-            "3 attempts. Pass --from-version explicitly to run this gate "
-            "offline.",
+            "3 attempts. Pass --from-version explicitly, or set "
+            "FORWARD_NETBOX_UPGRADE_FROM_VERSION, to run this gate offline.",
             code=2,
         ) from last_error
 
@@ -1279,6 +1283,18 @@ def artifact_upgrade_test(context, from_version=None, from_netbox_ver=None):
             "Release artifact validation requires NETBOX_VER=v4.6.6.",
             code=2,
         )
+    # `invoke ci` runs this through its pre-list, which cannot pass arguments, so
+    # the documented offline path needs an environment door as well as the flag.
+    # Egress to PyPI on the release host is intermittent - it went from three
+    # consecutive successes to three consecutive timeouts within minutes - and a
+    # release must not be blocked by a network the release did not cause.
+    # Supplying the version explicitly keeps the gate itself fully exercised:
+    # only the DISCOVERY of what to upgrade from is offline, and the upgrade,
+    # migration and row-survival checks all still run for real.
+    from_version = (
+        from_version
+        or os.environ.get("FORWARD_NETBOX_UPGRADE_FROM_VERSION", "").strip()
+    )
     from_version = str(
         from_version or _previous_released_version(context, version)
     ).strip()

@@ -126,6 +126,10 @@ def _safe_environment_assignment(assignment: str) -> bool:
     if name == "NETBOX_URL":
         match = re.fullmatch(r"http://127\.0\.0\.1:(?P<port>[1-9]\d{0,4})", value)
         return bool(match and int(match.group("port")) <= 65535)
+    if name == UPGRADE_FROM_VARIABLE:
+        # A release version, and nothing else. This names which published
+        # release the upgrade gate seeds from when it cannot ask the index.
+        return bool(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value))
     return (name, value) in {
         ("NETBOX_VER", "v4.6.6"),
         ("FORWARD_NETBOX_WORKER_AUTORELOAD", "0"),
@@ -164,6 +168,16 @@ def _rtk_tail(tokens: list[str]) -> list[str] | None:
 
 
 URL_VARIABLES = frozenset({"FORWARD_NETBOX_HOST_PORT", "NETBOX_URL"})
+# The upgrade gate normally asks PyPI which release an operator would be
+# upgrading from. When the release host cannot reach the index - egress to PyPI
+# has gone from three consecutive successes to three consecutive timeouts within
+# minutes on this one - that version is supplied instead. It does not change
+# what the gate DOES: the upgrade, the migration and the row-survival checks all
+# still run in full against the built wheel. Only the discovery is offline, so
+# it is treated like the host-port pair: optional, value-bounded, and visible in
+# the evidence rather than hidden from it.
+UPGRADE_FROM_VARIABLE = "FORWARD_NETBOX_UPGRADE_FROM_VERSION"
+OPTIONAL_ENVIRONMENT_VARIABLES = URL_VARIABLES | {UPGRADE_FROM_VARIABLE}
 
 
 def _environment_matches(
@@ -206,7 +220,9 @@ def _environment_matches(
         # exactness of this check should not depend on that staying true.
         return False
     return {
-        name: value for name, value in environment.items() if name not in URL_VARIABLES
+        name: value
+        for name, value in environment.items()
+        if name not in OPTIONAL_ENVIRONMENT_VARIABLES
     } == expected
 
 
