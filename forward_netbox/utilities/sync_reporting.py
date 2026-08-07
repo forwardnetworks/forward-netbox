@@ -285,6 +285,25 @@ def _emit_progress_heartbeat(
     return last_emit_at
 
 
+def dependency_phrase(exception) -> str:
+    """How a skip's dependency reads, in the direction it actually points.
+
+    Naming the model alone made two opposite conditions identical. A customer's
+    rows recorded `netbox_dlm.softwareversion row processing skipped (...;
+    netbox_dlm.inventoryitemsoftware)`, which reads as a missing parent but
+    means a surviving child refusing the prune - `inventoryitemsoftware`
+    depends on `softwareversion`, not the reverse. "Nothing to build on" and
+    "something still needs this" call for opposite responses, so they must not
+    share a sentence.
+    """
+    dependency = str(getattr(exception, "dependency", "") or "")
+    if not dependency:
+        return ""
+    if getattr(exception, "dependency_is_protecting", False):
+        return f"still referenced by {dependency}"
+    return f"waiting on {dependency}"
+
+
 def record_issue(
     runner,
     model_string,
@@ -375,10 +394,18 @@ def record_issue(
     # a customer nothing about which parent was missing; a raiser that has not
     # been taught to name one still records exactly what it did before.
     dependency = str(getattr(exception, "dependency", "") or "")
+    # Say which way the dependency points. Naming the model alone made two
+    # opposite conditions read identically: a customer's DLM rows recorded
+    # `netbox_dlm.softwareversion row processing skipped (...;
+    # netbox_dlm.inventoryitemsoftware)`, which reads as a missing parent but
+    # means a surviving child refusing the prune - `inventoryitemsoftware`
+    # depends on `softwareversion`, not the reverse. The reader has no way to
+    # tell "nothing to build on" from "something still needs this".
+    dependency_detail = dependency_phrase(exception)
     if is_dependency_skip_summary:
         detail = ""
     elif dependency:
-        detail = f"{named}; {dependency}"
+        detail = f"{named}; {dependency_detail}"
     elif constraint:
         detail = f"{named}; constraint {constraint}"
     elif rules:

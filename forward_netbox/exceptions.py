@@ -71,6 +71,7 @@ class ForwardDataError(ForwardSyncError):
         data: dict | None = None,
         issue_id: int | None = None,
         dependency: str | None = None,
+        dependency_is_protecting: bool = False,
     ):
         super().__init__(message)
         self.model_string = model_string
@@ -85,6 +86,15 @@ class ForwardDataError(ForwardSyncError):
         # row records only the exception class, and a customer reading six
         # identical rows has no way to learn which parent was missing.
         self.dependency = dependency or ""
+        # Which DIRECTION the dependency points. Almost every skip is waiting on
+        # something absent, but the delete path is the inverse: the row is still
+        # REFERENCED and the database refuses to prune it. Both used to persist
+        # the same "row processing skipped (...; app.model)" shape, so the two
+        # opposite conditions read identically - a customer's DLM skips named
+        # `netbox_dlm.inventoryitemsoftware` as the dependency of
+        # `netbox_dlm.softwareversion`, which is backwards for a missing parent
+        # and exactly right for a surviving child.
+        self.dependency_is_protecting = bool(dependency_is_protecting)
 
 
 class ForwardSearchError(ForwardDataError):
