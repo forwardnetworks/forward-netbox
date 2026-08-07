@@ -662,7 +662,19 @@ class OwnershipControlPlaneTest(TestCase):
 
         self.assertTrue(self.device.tags.filter(slug="forward-out-of-scope").exists())
 
-    def test_status_reconciliation_rejects_unowned_reserved_tag(self):
+    def test_status_reconciliation_adopts_an_unowned_reserved_tag_safely(self):
+        # This asserted a refusal. The refusal was redundant with the thing that
+        # actually protects the operator here: `_materialize_managed_tag_
+        # assignments` folds preserved assignments back into `desired_ids`, so
+        # they are never removed. Adoption keeps both tags on the device.
+        #
+        # Refusing was not free. `forward-backfilled` exists in any deployment
+        # that has ever had a collection failure, so an unowned reserved tag
+        # made status reconciliation raise on EVERY run - the ownership domain
+        # never completed, convergence stayed blocked, and every drift figure
+        # read "Not measured" with nothing the operator could do about it.
+        from forward_netbox.models import ForwardPreservedDeviceTagAssignment
+
         stale_status = Tag.objects.create(
             name="Forward Out Of Scope",
             slug="forward-out-of-scope",
@@ -675,21 +687,28 @@ class OwnershipControlPlaneTest(TestCase):
         )
         self.device.tags.add(stale_status, customer_tag)
 
-        with self.assertRaises(OwnershipConflictError):
-            reconcile_source_device_tag_claims(
-                self.sync,
-                set(),
-                slug=stale_status.slug,
-                name=stale_status.name,
-                color=stale_status.color,
-                description="",
-                claim_type="out_of_scope",
-                generation=self.ingestion.pk,
-                snapshot_id=self.ingestion.snapshot_id,
-            )
+        reconcile_source_device_tag_claims(
+            self.sync,
+            set(),
+            slug=stale_status.slug,
+            name=stale_status.name,
+            color=stale_status.color,
+            description="",
+            claim_type="out_of_scope",
+            generation=self.ingestion.pk,
+            snapshot_id=self.ingestion.snapshot_id,
+        )
 
+        # The operator keeps everything they had.
         self.assertTrue(self.device.tags.filter(pk=stale_status.pk).exists())
         self.assertTrue(self.device.tags.filter(pk=customer_tag.pk).exists())
+        # And the assignment is recorded as theirs, so releasing ownership
+        # restores it rather than stranding it.
+        self.assertTrue(
+            ForwardPreservedDeviceTagAssignment.objects.filter(
+                device=self.device, tag=stale_status
+            ).exists()
+        )
 
     def test_customer_removal_clears_preserved_assignment_without_resurrection(self):
         tag = Tag.objects.create(

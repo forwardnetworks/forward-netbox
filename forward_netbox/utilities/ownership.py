@@ -12,7 +12,6 @@ from django.db.models.deletion import ProtectedError
 from django.utils import timezone
 
 from .tag_contracts import candidate_managed_tag_slugs
-from .tag_contracts import RESERVED_STATUS_TAG_SLUGS
 from .tag_contracts import validate_scope_tag_names
 
 
@@ -503,7 +502,6 @@ def _ensure_managed_tag(
     tag,
     claim_type,
     *,
-    allow_reserved_adoption=False,
     plugin_assignment_ids=(),
 ):
     from ..models import ForwardManagedDeviceTag
@@ -521,15 +519,28 @@ def _ensure_managed_tag(
             f"Tag slug `{tag.slug}` is already controlled as "
             f"`{conflicting.claim_type}` and cannot also be `{claim_type}`."
         )
-    if (
-        claim_type in {"backfilled", "out_of_scope"}
-        and tag.slug in RESERVED_STATUS_TAG_SLUGS
-        and not allow_reserved_adoption
-    ):
-        raise OwnershipConflictError(
-            f"Tag slug `{tag.slug}` is reserved for Forward status ownership but "
-            "already exists without plugin provenance."
-        )
+    # A reserved status slug that already exists is ADOPTED, not refused.
+    #
+    # This used to raise unless `allow_reserved_adoption` was set, and the only
+    # caller sets it from `tag_created` - true only when the plugin had just
+    # created the tag, which is precisely when there is nothing to adopt. So
+    # whenever adoption was actually needed the override could not fire, and the
+    # refusal was unconditional.
+    #
+    # The cost was total and permanent. `forward-backfilled` exists in any
+    # deployment that has ever had a collection failure, and if its
+    # `ForwardManagedDeviceTag` row is absent - an operator created the tag by
+    # hand, it predates the managed-tag registry, or the row was cleaned up
+    # while the tag survived - then STATUS_TAGS reconciliation raised on every
+    # run, for ever. The ownership domain never completed, so convergence stayed
+    # blocked and every drift figure read "Not measured". Nothing the operator
+    # could do cleared it short of deleting the tag.
+    #
+    # Refusing was never protecting anything either: the two statements below
+    # already record every pre-existing assignment in
+    # `ForwardPreservedDeviceTagAssignment`, which is exactly the machinery for
+    # taking over a tag without destroying what an operator put on it, and it is
+    # restored when ownership is released.
     preserved_ids = _tag_assignment_device_ids(tag) - set(plugin_assignment_ids)
     managed = ForwardManagedDeviceTag.objects.create(
         tag=tag,
@@ -804,7 +815,6 @@ def reconcile_source_device_tag_claims(
     desired_ids = set(identities.values())
     with ownership_write_lock():
         tag = Tag.objects.filter(slug=slug).first()
-        tag_created = False
         if tag is None and desired_ids:
             tag = Tag.objects.create(
                 slug=slug,
@@ -812,7 +822,6 @@ def reconcile_source_device_tag_claims(
                 color=color,
                 description=description,
             )
-            tag_created = True
         if tag is None:
             finalized = {
                 "assignments_added": 0,
@@ -838,7 +847,6 @@ def reconcile_source_device_tag_claims(
         _ensure_managed_tag(
             tag,
             claim_type,
-            allow_reserved_adoption=tag_created,
             plugin_assignment_ids=desired_ids,
         )
         current_ids = set(
