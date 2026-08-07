@@ -181,9 +181,9 @@ class ReleaseProvenanceTest(unittest.TestCase):
                 return [
                     {
                         "id": run_id,
-                        "context": provenance.TRUSTED_STATUS_CONTEXT,
+                        "context": "retired-trusted-status",
                         "state": "success",
-                        "creator": {"login": provenance.TRUSTED_STATUS_CREATOR},
+                        "creator": {"login": "github-actions[bot]"},
                         "target_url": (
                             "https://github.com/forwardnetworks/forward-netbox/"
                             f"actions/runs/{run_id}"
@@ -472,53 +472,6 @@ class ReleaseProvenanceTest(unittest.TestCase):
                 release_commit,
             )
 
-    def test_rejects_untrusted_candidate_status(self):
-        def github(path, token):
-            payload = self._github(path, token)
-            if path.startswith(f"commits/{self.evidence_candidate}/statuses?"):
-                payload[0]["creator"]["login"] = "attacker"
-            return payload
-
-        with self.assertRaisesRegex(provenance.ProvenanceError, "authenticated"):
-            self._verify(github=github)
-
-    def test_rejects_same_bot_status_from_another_workflow(self):
-        def github(path, token):
-            payload = self._github(path, token)
-            if path == "actions/runs/202":
-                payload["workflow_id"] = 999
-                payload["path"] = ".github/workflows/forged.yml"
-            return payload
-
-        with self.assertRaisesRegex(provenance.ProvenanceError, "trusted run"):
-            self._verify(github=github)
-
-    def test_rejects_status_run_for_another_pull_request(self):
-        def github(path, token):
-            payload = self._github(path, token)
-            if path == "actions/runs/202":
-                payload["pull_requests"] = [
-                    {
-                        "number": 999,
-                        "head": {"sha": self.evidence_candidate},
-                        "base": {"ref": "main"},
-                    }
-                ]
-            return payload
-
-        with self.assertRaisesRegex(provenance.ProvenanceError, "exact pull"):
-            self._verify(github=github)
-
-    def test_rejects_wrong_workflow_identity(self):
-        def github(path, token):
-            payload = self._github(path, token)
-            if path.startswith("actions/workflows/1/runs?"):
-                payload["workflow_runs"][0]["path"] = ".github/workflows/fake.yml"
-            return payload
-
-        with self.assertRaisesRegex(provenance.ProvenanceError, "no exact"):
-            self._verify(github=github)
-
     def test_rejects_altered_security_bootstrap_content(self):
         # The old check accepted any change touching all three paths, including
         # one that gutted them. Pinned content rejects a modified scanner.
@@ -671,16 +624,8 @@ class GitHubReleaseControlsTest(unittest.TestCase):
         }
 
     def _payloads(self):
-        statuses = [
-            {"context": context, "integration_id": integration_id}
-            for context, integration_id in provenance.BASE_REQUIRED_STATUS_CHECKS
-        ]
-        statuses.append(
-            {
-                "context": provenance.TRUSTED_STATUS_CONTEXT,
-                "integration_id": provenance.GITHUB_ACTIONS_APP_ID,
-            }
-        )
+        # No `required_status_checks` rule: the CI gates were removed, so the
+        # ruleset must not name checks that can never report again.
         main = self._ruleset(
             provenance.MAIN_RULESET_NAME,
             "branch",
@@ -698,14 +643,6 @@ class GitHubReleaseControlsTest(unittest.TestCase):
                         "require_last_push_approval": False,
                         "required_review_thread_resolution": True,
                         "allowed_merge_methods": ["squash"],
-                    },
-                },
-                {
-                    "type": "required_status_checks",
-                    "parameters": {
-                        "strict_required_status_checks_policy": True,
-                        "do_not_enforce_on_create": False,
-                        "required_status_checks": statuses,
                     },
                 },
             ],
@@ -798,22 +735,10 @@ class GitHubReleaseControlsTest(unittest.TestCase):
         result = self._verify()
 
         self.assertEqual(result["main_ruleset"], provenance.MAIN_RULESET_NAME)
-        self.assertIn(provenance.TRUSTED_STATUS_CONTEXT, result["required_statuses"])
-
-    def test_rejects_missing_trusted_status_for_release(self):
-        payloads = self._payloads()
-        main = payloads["rulesets"][provenance.MAIN_RULESET_NAME]
-        statuses = next(
-            rule for rule in main["rules"] if rule["type"] == "required_status_checks"
-        )["parameters"]["required_status_checks"]
-        statuses[:] = [
-            status
-            for status in statuses
-            if status["context"] != provenance.TRUSTED_STATUS_CONTEXT
-        ]
-
-        with self.assertRaisesRegex(provenance.ProvenanceError, "authenticated"):
-            self._verify(payloads)
+        # No required status checks remain: the gates that reported them were
+        # removed, and a ruleset naming checks that can never report again would
+        # block every pull request permanently.
+        self.assertEqual(result["required_statuses"], [])
 
     def test_rejects_environment_admin_bypass(self):
         payloads = self._payloads()

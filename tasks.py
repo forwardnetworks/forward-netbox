@@ -1987,6 +1987,12 @@ def sync_release_gate(
         playwright_test,
         docs,
         package,
+        # The upgrade gate used to live only in `.github/workflows/ci.yml`. When
+        # the CI workflows were removed it would have been left running nowhere,
+        # and an upgrade defect can only be found after the tag exists - where a
+        # version number is already spent. It runs last because it needs the
+        # built artifact from `package`.
+        artifact_upgrade_test,
     ]
 )
 def ci(context):
