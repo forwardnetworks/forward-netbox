@@ -1538,8 +1538,20 @@ def ownership_finalization_summary(sync, *, generation=None):
         .exclude(ingestion_id=generation)
         .count()
     )
+    # `ingestion__isnull=False` first, deliberately. This counts a stamp that
+    # points at ANOTHER sync's ingestion; an absent stamp is not that. Django
+    # compiles the negated join as a LEFT OUTER JOIN guarded by
+    # `ingestion.sync_id IS NOT NULL`, so a null stamp satisfies the negation
+    # and would be counted as a cross-sync violation. Since a nulled stamp is
+    # never re-stamped for a device that left Forward's scope, that count would
+    # be permanently non-zero - failing `forward_ownership_audit
+    # --fail-on-inconsistent`, warning the ownership health check, and stopping
+    # stuck-recovery short-circuiting on a converged sync, forever.
     provenance_sync_mismatches = sum(
-        model.objects.filter(sync=sync).exclude(ingestion__sync_id=F("sync_id")).count()
+        model.objects.filter(sync=sync)
+        .filter(ingestion__isnull=False)
+        .exclude(ingestion__sync_id=F("sync_id"))
+        .count()
         for model in (
             ForwardDeviceIdentity,
             ForwardDeviceTagClaim,
@@ -1669,8 +1681,19 @@ def ownership_integrity_summary():
     from ..models import ForwardSync
     from ..models import ForwardVirtualParentClaim
 
+    # `ingestion__isnull=False` first, deliberately. This counts a stamp that
+    # points at ANOTHER sync's ingestion; an absent stamp is not that. Django
+    # compiles the negated join as a LEFT OUTER JOIN guarded by
+    # `ingestion.sync_id IS NOT NULL`, so a null stamp satisfies the negation
+    # and would be counted as a cross-sync violation. Since a nulled stamp is
+    # never re-stamped for a device that left Forward's scope, that count would
+    # be permanently non-zero - failing `forward_ownership_audit
+    # --fail-on-inconsistent`, warning the ownership health check, and stopping
+    # stuck-recovery short-circuiting on a converged sync, forever.
     provenance_sync_mismatches = sum(
-        model.objects.exclude(ingestion__sync_id=F("sync_id")).count()
+        model.objects.filter(ingestion__isnull=False)
+        .exclude(ingestion__sync_id=F("sync_id"))
+        .count()
         for model in (
             ForwardDeviceIdentity,
             ForwardDeviceTagClaim,

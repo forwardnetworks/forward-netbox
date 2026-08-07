@@ -1415,14 +1415,14 @@ def protecting_relations(model_class):
 
     `_meta.related_objects` omits relations declared with ``related_name="+"``,
     and Django calls those hidden. Reading protection from it therefore misses
-    exactly the relations this plugin uses for ownership evidence:
-    `ForwardIngestionProvenanceMixin` declares its ingestion FK as PROTECT with
+    exactly the relations this plugin uses for ownership evidence.
+    `ForwardIngestionProvenanceMixin` declares its ingestion FK with
     ``related_name="+"``, so `ForwardDeviceIdentity`, `ForwardDeviceTagClaim`
-    and `ForwardVirtualParentClaim` were all invisible to protection checks
-    while still refusing the delete in the database. (The fourth,
-    `ForwardOwnershipReconciliation`, later became CASCADE - it is a child
-    record of the ingestion, not evidence held against it - so discovery still
-    sees it and correctly declines to report it.)
+    and `ForwardVirtualParentClaim` were invisible to protection checks while -
+    at the time - still refusing the delete in the database. (The fourth,
+    `ForwardOwnershipReconciliation`, cascades: it is a child record of the
+    ingestion, not evidence held against it, so discovery sees it and correctly
+    declines to report it.)
 
     That gap had two customer-visible faces. An ingestion held only by device
     identities reported no refusal at all, so the delete view rendered its wall
@@ -1430,6 +1430,13 @@ def protecting_relations(model_class):
     ingestion, since each owns one identity per synced device. And a merge
     delete blocked by one of these was never predicted, so it was scheduled and
     failed at apply time, and a failed row blocks baseline promotion.
+
+    Those three FKs are SET_NULL now (migration 0051), because the stamp they
+    carry is provenance rather than a dependency, so they no longer appear here
+    at all. The hidden-relation handling stays regardless: it is a property of
+    how this function reads the schema, not of which fields happen to be
+    PROTECT today, and any future ``related_name="+"`` protection would hit the
+    same blind spot.
 
     Ask for hidden relations explicitly so protection is read from the database
     truth rather than from what happens to have a reverse accessor.

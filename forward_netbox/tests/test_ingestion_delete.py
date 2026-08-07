@@ -320,10 +320,13 @@ class ReconciliationNoLongerPinsAnIngestionTest(TestCase):
         )[0]
 
     def test_the_reconciliation_fk_cascades_and_its_siblings_still_protect(self):
-        # The whole fix rests on exactly one of the four provenance models
-        # cascading. Pin that split so a future edit to the shared mixin cannot
-        # quietly take the other three with it — those describe live NetBox
-        # rows and must keep protecting their provenance.
+        # The four provenance models resolve three different ways, and each is
+        # deliberate. Reconciliation CASCADEs: it is a child record of the
+        # ingestion. The other three SET_NULL: they describe live NetBox rows,
+        # so their evidence must survive the run being deleted, but the stamp
+        # naming that run is provenance rather than a dependency and must not
+        # pin it. Pin the split so an edit to the shared mixin cannot quietly
+        # collapse them onto one behaviour.
         from django.db import models as django_models
 
         from forward_netbox.models import ForwardDeviceIdentity
@@ -343,9 +346,14 @@ class ReconciliationNoLongerPinsAnIngestionTest(TestCase):
             ForwardVirtualParentClaim,
         ):
             with self.subTest(model=model._meta.label):
+                field = model._meta.get_field("ingestion")
                 self.assertIs(
-                    model._meta.get_field("ingestion").remote_field.on_delete,
-                    django_models.PROTECT,
+                    field.remote_field.on_delete,
+                    django_models.SET_NULL,
+                )
+                self.assertTrue(
+                    field.null,
+                    "SET_NULL requires the column to be nullable",
                 )
 
     def test_an_ingestion_held_only_by_reconciliation_rows_is_deletable(self):
@@ -431,15 +439,16 @@ class ReconciliationNoLongerPinsAnIngestionTest(TestCase):
             "the surviving rows belong to the newer ingestion and must remain",
         )
 
-    def test_virtual_parent_claims_still_pin_their_ingestion(self):
-        # Unchanged on purpose: a claim describes a live NetBox device, so its
-        # provenance must survive.
+    def test_a_virtual_parent_claim_survives_its_ingestion_without_pinning_it(self):
+        # A claim describes a live NetBox device, so the claim must survive the
+        # run being deleted. It used to achieve that by refusing the delete,
+        # which pinned the ingestion forever once the claim stopped being
+        # re-pointed. SET_NULL keeps the claim and drops only the stamp.
         from dcim.models import Device
         from dcim.models import DeviceRole
         from dcim.models import DeviceType
         from dcim.models import Manufacturer
         from dcim.models import Site
-        from django.db.models.deletion import ProtectedError
 
         from forward_netbox.models import ForwardVirtualParentClaim
 
@@ -467,10 +476,13 @@ class ReconciliationNoLongerPinsAnIngestionTest(TestCase):
 
         refusal, expected = _ingestion_delete_refusal_detail(self.newer)
 
-        self.assertIn("ForwardVirtualParentClaim", refusal)
-        self.assertFalse(expected)
-        with self.assertRaises(ProtectedError):
-            self.newer.delete()
+        self.assertNotIn("ForwardVirtualParentClaim", refusal)
+
+        self.newer.delete()
+
+        claim = ForwardVirtualParentClaim.objects.get(device=child)
+        self.assertIsNone(claim.ingestion_id)
+        self.assertEqual(claim.parent_device_id, parent.pk)
 
     def test_the_baseline_ingestion_is_still_refused_and_still_protected(self):
         # The baseline protection must not be weakened by any of this, and its
@@ -509,3 +521,130 @@ class ReconciliationNoLongerPinsAnIngestionTest(TestCase):
         with transaction.atomic():
             with self.assertRaises(ProtectedError):
                 self.newer.delete()
+
+
+class StaleProvenanceStampDoesNotPinTest(TestCase):
+    """The customer's 2700/2709: pinned by ownership evidence, not by a child.
+
+    A device that leaves Forward's scope stops being re-pointed. Its identity
+    and tag claims freeze on the last ingestion that saw them, and while that
+    stamp was PROTECT it pinned that ingestion permanently - one more
+    undeletable ingestion for every scope change.
+
+    The evidence is NOT stale. The device still exists in NetBox and is still
+    owned, which is why deleting the evidence was never the right answer: a
+    device leaves scope for entirely benign reasons, such as someone editing a
+    tag in Forward. Only the stamp is old.
+    """
+
+    def setUp(self):
+        from dcim.models import Device
+        from dcim.models import DeviceRole
+        from dcim.models import DeviceType
+        from dcim.models import Manufacturer
+        from dcim.models import Site
+
+        self.user = get_user_model().objects.create_user(username="stale-stamp")
+        source = ForwardSource.objects.create(
+            name="stale-stamp-source",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "network_id": "net-1",
+            },
+        )
+        self.sync = ForwardSync.objects.create(
+            name="stale-stamp-sync",
+            source=source,
+            user=self.user,
+            parameters={"snapshot_id": LATEST_PROCESSED_SNAPSHOT},
+        )
+        self.departed = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector=LATEST_PROCESSED_SNAPSHOT,
+            snapshot_id="snapshot-old",
+        )
+        site = Site.objects.create(name="stale-site", slug="stale-site")
+        manufacturer = Manufacturer.objects.create(name="stale-mfr", slug="stale-mfr")
+        device_type = DeviceType.objects.create(
+            manufacturer=manufacturer, model="stale-model", slug="stale-model"
+        )
+        role = DeviceRole.objects.create(name="stale-role", slug="stale-role")
+        self.device = Device.objects.create(
+            name="stale-device", site=site, device_type=device_type, role=role
+        )
+
+    def test_evidence_frozen_on_an_old_ingestion_no_longer_pins_it(self):
+        from forward_netbox.models import ForwardDeviceIdentity
+
+        identity = ForwardDeviceIdentity.objects.create(
+            sync=self.sync,
+            ingestion=self.departed,
+            source_device_key="stale-device",
+            device=self.device,
+            snapshot_id="snapshot-old",
+        )
+        self.assertEqual(_ingestion_delete_refusal(self.departed), "")
+
+        self.departed.delete()
+
+        self.assertFalse(ForwardIngestion.objects.filter(pk=self.departed.pk).exists())
+        identity.refresh_from_db()
+        # The ownership survives intact; only the pointer to the deleted run is
+        # gone. Releasing it would hand a live device to whatever claims it next.
+        self.assertIsNone(identity.ingestion_id)
+        self.assertEqual(identity.sync_id, self.sync.pk)
+        self.assertEqual(identity.device_id, self.device.pk)
+        self.assertEqual(identity.source_device_key, "stale-device")
+        self.assertEqual(identity.snapshot_id, "snapshot-old")
+
+    def test_a_frozen_tag_claim_does_not_pin_its_ingestion_either(self):
+        from extras.models import Tag
+
+        from forward_netbox.models import ForwardDeviceTagClaim
+
+        tag = Tag.objects.create(name="Departed.Owner", slug="departedowner")
+        claim = ForwardDeviceTagClaim.objects.create(
+            sync=self.sync,
+            ingestion=self.departed,
+            device=self.device,
+            tag=tag,
+            claim_type="scope",
+            snapshot_id="snapshot-old",
+        )
+        self.assertEqual(_ingestion_delete_refusal(self.departed), "")
+
+        self.departed.delete()
+
+        claim.refresh_from_db()
+        self.assertIsNone(claim.ingestion_id)
+        self.assertEqual(claim.device_id, self.device.pk)
+        self.assertEqual(claim.claim_type, "scope")
+
+    def test_a_null_stamp_is_not_counted_as_a_cross_sync_mismatch(self):
+        # `exclude(ingestion__sync_id=F("sync_id"))` compiles to a LEFT OUTER
+        # JOIN guarded by `ingestion.sync_id IS NOT NULL`, so a null stamp
+        # satisfies the negation and would be counted as a stamp pointing at
+        # ANOTHER sync's ingestion. It is not that; it is an absent stamp.
+        #
+        # This would never have self-corrected: an identity for a device that
+        # left Forward's scope is never re-stamped, so the count would stay
+        # non-zero forever - failing `forward_ownership_audit
+        # --fail-on-inconsistent`, warning the ownership health check, and
+        # stopping stuck-recovery short-circuiting on a converged sync.
+        from forward_netbox.models import ForwardDeviceIdentity
+        from forward_netbox.utilities.ownership import ownership_integrity_summary
+
+        ForwardDeviceIdentity.objects.create(
+            sync=self.sync,
+            ingestion=self.departed,
+            source_device_key="stale-device",
+            device=self.device,
+            snapshot_id="snapshot-old",
+        )
+        self.departed.delete()
+
+        self.assertEqual(ownership_integrity_summary()["provenance_sync_mismatches"], 0)

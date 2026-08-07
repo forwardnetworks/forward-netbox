@@ -263,7 +263,13 @@ class OwnershipControlPlaneTest(TestCase):
             ).exists()
         )
 
-    def test_scope_reconciliation_rejects_split_name_and_slug_identity(self):
+    def test_an_unmanaged_slug_collision_resolves_to_the_configured_name(self):
+        # This asserted a refusal until the scope-tag resolution was fixed. An
+        # operator configures a scope tag by NAME; the slug is derived from it.
+        # Refusing whenever some other row merely held the derived slug turned a
+        # benign collision into a hard failure that left the whole ownership
+        # domain Incomplete - blocking convergence and reporting every drift
+        # figure as "Not measured".
         name_tag = Tag.objects.create(
             name="Claim Tag",
             slug="operator-legacy-claim-tag",
@@ -273,11 +279,34 @@ class OwnershipControlPlaneTest(TestCase):
             slug="claim-tag",
         )
 
-        with self.assertRaisesMessage(
-            OwnershipConflictError,
-            "Scope tag name `Claim Tag` and normalized slug `claim-tag` identify "
-            "different NetBox tags.",
-        ):
+        reconcile_sync_scope_tag_claims(
+            self.sync,
+            {self.device.name: ["Claim Tag"]},
+            generation=self.ingestion.pk,
+            snapshot_id=self.ingestion.snapshot_id,
+        )
+
+        # The named tag wins, and the unrelated row holding the derived slug is
+        # left entirely alone.
+        self.assertTrue(ForwardDeviceTagClaim.objects.filter(tag=name_tag).exists())
+        self.assertFalse(ForwardDeviceTagClaim.objects.filter(tag=slug_tag).exists())
+        self.assertFalse(ForwardManagedDeviceTag.objects.filter(tag=slug_tag).exists())
+        self.assertTrue(Tag.objects.filter(pk=slug_tag.pk).exists())
+
+    def test_scope_reconciliation_rejects_a_managed_slug_collision(self):
+        # A row this plugin already manages is the one case that stays a
+        # refusal: switching away from it would strand its claims.
+        name_tag = Tag.objects.create(
+            name="Claim Tag",
+            slug="operator-legacy-claim-tag",
+        )
+        slug_tag = Tag.objects.create(
+            name="Different Tag",
+            slug="claim-tag",
+        )
+        ForwardManagedDeviceTag.objects.create(tag=slug_tag, claim_type="scope")
+
+        with self.assertRaises(OwnershipConflictError) as caught:
             reconcile_sync_scope_tag_claims(
                 self.sync,
                 {self.device.name: ["Claim Tag"]},
@@ -285,10 +314,13 @@ class OwnershipControlPlaneTest(TestCase):
                 snapshot_id=self.ingestion.snapshot_id,
             )
 
+        message = str(caught.exception)
+        # Tag names are customer data - for one customer they are people - so
+        # the refusal reports ids.
+        self.assertIn(str(name_tag.pk), message)
+        self.assertIn(str(slug_tag.pk), message)
+        self.assertNotIn("Claim Tag", message)
         self.assertFalse(ForwardDeviceTagClaim.objects.exists())
-        self.assertFalse(ForwardManagedDeviceTag.objects.exists())
-        self.assertTrue(Tag.objects.filter(pk=name_tag.pk).exists())
-        self.assertTrue(Tag.objects.filter(pk=slug_tag.pk).exists())
 
     def test_blank_newer_baseline_does_not_supersede_current_generation(self):
         self._complete_status_reconciliation(self.sync, self.ingestion)
@@ -385,18 +417,27 @@ class OwnershipControlPlaneTest(TestCase):
             ["backfilled"],
         )
 
-    def test_ingestion_with_provenance_cannot_be_deleted(self):
+    def test_provenance_survives_its_ingestion_without_pinning_it(self):
+        # This asserted a ProtectedError until the stamp became SET_NULL. The
+        # claim describes a live NetBox device, so it must survive the run being
+        # deleted - but it used to achieve that by refusing the delete, which
+        # pinned the ingestion forever once the claim stopped being re-pointed.
+        # A customer accumulated one undeletable ingestion per scope change.
         reconcile_sync_scope_tag_claims(
             self.sync,
             {self.device.name: ["Claim Tag"]},
             generation=self.ingestion.pk,
             snapshot_id=self.ingestion.snapshot_id,
         )
+        claim = ForwardDeviceTagClaim.objects.get(device=self.device)
 
-        with self.assertRaises(ProtectedError):
-            self.ingestion.delete()
+        self.ingestion.delete()
 
-        self.assertTrue(ForwardIngestion.objects.filter(pk=self.ingestion.pk).exists())
+        self.assertFalse(ForwardIngestion.objects.filter(pk=self.ingestion.pk).exists())
+        claim.refresh_from_db()
+        self.assertIsNone(claim.ingestion_id)
+        self.assertEqual(claim.device_id, self.device.pk)
+        self.assertEqual(claim.sync_id, self.sync.pk)
 
     def test_integrity_summary_detects_cross_sync_provenance(self):
         other_source = ForwardSource.objects.create(

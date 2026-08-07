@@ -41,18 +41,52 @@ class ProtectingRelationsSeesHiddenRelationsTest(TestCase):
         "forward_netbox.ForwardOwnershipReconciliation",
     }
 
-    def test_hidden_protect_relations_are_discovered(self):
-        # Each of these declares related_name="+", so none of them appear in
-        # _meta.related_objects. All of them still refuse the delete in the
-        # database, which is the only thing that actually matters.
+    def _hidden_relations(self):
+        return {
+            relation.related_model._meta.label: relation
+            for relation in ForwardIngestion._meta._get_fields(
+                forward=False, reverse=True, include_hidden=True
+            )
+            if getattr(relation, "related_model", None) is not None
+        }
+
+    def test_the_hidden_traversal_still_reaches_the_ownership_models(self):
+        # The three ownership models are SET_NULL now (migration 0051), so they
+        # are correctly absent from `protecting_relations`. That makes this the
+        # test standing between the hidden-relation traversal and silently
+        # returning nothing: if `include_hidden` is ever dropped, protection on
+        # a `related_name="+"` FK becomes invisible again, which is the failure
+        # that made every ingestion undeletable in 2.7.0.
+        reachable = self._hidden_relations()
+        missing = self.HIDDEN_MODELS - set(reachable)
+        self.assertFalse(
+            missing,
+            f"hidden relations no longer reachable by traversal: {sorted(missing)}",
+        )
+
+    def test_a_provenance_stamp_does_not_protect_its_ingestion(self):
+        # The stamp records which run last asserted the evidence. It was
+        # PROTECT, so a device that left Forward's scope froze its evidence on
+        # the last ingestion that saw it and pinned that ingestion forever - one
+        # undeletable ingestion per scope change, for a customer.
+        #
+        # The rows are not stale: the devices still exist and are still owned.
+        # Only the stamp is old, which is why pruning the evidence was never the
+        # right fix.
+        reachable = self._hidden_relations()
+        for label in self.OWNERSHIP_MODELS:
+            with self.subTest(model=label):
+                self.assertIs(
+                    reachable[label].field.remote_field.on_delete,
+                    models.SET_NULL,
+                )
         found = {
             relation.related_model._meta.label
             for relation in protecting_relations(ForwardIngestion)
         }
-        self.assertTrue(
-            self.OWNERSHIP_MODELS.issubset(found),
-            f"hidden PROTECT relations missing from discovery: "
-            f"{sorted(self.OWNERSHIP_MODELS - found)}",
+        self.assertFalse(
+            self.OWNERSHIP_MODELS & found,
+            "ownership evidence is reported as protecting its ingestion again",
         )
 
     def test_the_baseline_is_not_reported_as_protecting(self):
@@ -60,22 +94,16 @@ class ProtectingRelationsSeesHiddenRelationsTest(TestCase):
         # cascades so a superseded generation can be collected with its
         # ingestion. Reporting it would refuse a delete the database allows.
         #
-        # Which means every remaining protection is hidden behind
-        # related_name="+", so `test_hidden_protect_relations_are_discovered` is
-        # now the only thing standing between discovery and finding nothing at
-        # all. Losing the widening would no longer under-report — it would
-        # report an ingestion as freely deletable while the database refused it,
-        # which is the failure that made every ingestion undeletable in 2.7.0.
+        # With the ownership stamps now SET_NULL, an ingestion may legitimately
+        # have no protecting relation at all - what refuses a delete is the
+        # `pre_delete` receiver guarding the live baseline and a running job.
+        # `test_the_hidden_traversal_still_reaches_the_ownership_models` is what
+        # now stands between discovery and silently seeing nothing.
         found = {
             relation.related_model._meta.label
             for relation in protecting_relations(ForwardIngestion)
         }
         self.assertNotIn("forward_netbox.ForwardContributorBaseline", found)
-        self.assertTrue(
-            found,
-            "no protecting relation is discovered at all; the hidden-relation "
-            "traversal has been lost",
-        )
 
     def test_cascading_relations_are_not_reported_as_protecting(self):
         # Over-reporting would refuse deletes that the database would allow.
