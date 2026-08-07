@@ -494,6 +494,7 @@ def delete_by_coalesce(runner, model, lookups):
                     f"Skipping delete for `{model._meta.label_lower}` due to protected dependencies: {exc}",
                     model_string=model._meta.label_lower,
                     dependency=_protecting_model_labels(exc),
+                    dependency_is_protecting=True,
                     context=lookup,
                 ) from exc
             forget_lookup_object(runner, obj)
