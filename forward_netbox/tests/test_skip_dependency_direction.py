@@ -36,9 +36,7 @@ class SkipDependencyDirectionTest(TestCase):
                 dependency_is_protecting=True,
             )
         )
-        self.assertIn(
-            "still referenced by netbox_dlm.inventoryitemsoftware", detail
-        )
+        self.assertIn("still referenced by netbox_dlm.inventoryitemsoftware", detail)
         self.assertNotIn("waiting on", detail)
 
     def test_the_two_directions_never_produce_the_same_text(self):
@@ -47,9 +45,7 @@ class SkipDependencyDirectionTest(TestCase):
             "model_string": "netbox_dlm.softwareversion",
             "dependency": "netbox_dlm.devicesoftware",
         }
-        waiting = dependency_phrase(
-            ForwardDependencySkipError("m", **shared)
-        )
+        waiting = dependency_phrase(ForwardDependencySkipError("m", **shared))
         referenced = dependency_phrase(
             ForwardDependencySkipError("m", **shared, dependency_is_protecting=True)
         )
