@@ -279,7 +279,9 @@ class ForwardValidationRunner:
         *,
         validation_run=None,
     ):
-        if self._forced_validation_override_applies(context, policy):
+        if self._forced_validation_override_applies(
+            context, policy, validation_run=validation_run
+        ):
             return []
 
         reasons = []
@@ -490,19 +492,43 @@ class ForwardValidationRunner:
         configured = str(parameters.get("diff_fallback_mode") or "").strip()
         return configured == ForwardDiffFallbackModeChoices.REQUIRE_DIFF
 
-    def _forced_validation_override_applies(self, context, policy):
-        latest_validation_run = getattr(self.sync, "latest_validation_run", None)
-        if latest_validation_run is None or not getattr(
-            latest_validation_run, "override_applied", False
-        ):
+    def _forced_validation_override_applies(
+        self, context, policy, *, validation_run=None
+    ):
+        """Whether an operator's force-allow carries forward to this run.
+
+        Must resolve against the PREVIOUS run, excluding the one being recorded.
+        It read `sync.latest_validation_run`, and on the sync path
+        `record_plan_validation` creates the new run BEFORE blocking reasons are
+        evaluated - so the lookup returned the run being recorded, whose
+        `override_applied` is always False. The override could therefore never
+        fire on the only path that matters: an operator force-allowed a blocked
+        run and the same reason blocked the next one, with nothing to say why.
+
+        `_row_shrink_already_accepted` had to work around this with its own
+        previous-run lookup, and its docstring says so. This is the same
+        exclusion, applied where it belonged.
+
+        The old coverage called `_blocking_reasons` directly with no current
+        run, so it exercised the branch that still worked and passed straight
+        over the dead one.
+        """
+        previous = self._previous_override_run(validation_run)
+        if previous is None:
             return False
-        if policy is None or latest_validation_run.policy_id != getattr(
-            policy, "pk", None
-        ):
+        if policy is None or previous.policy_id != getattr(policy, "pk", None):
             return False
-        return latest_validation_run.snapshot_selector == context.get(
+        return previous.snapshot_selector == context.get(
             "snapshot_selector"
-        ) and latest_validation_run.snapshot_id == context.get("snapshot_id")
+        ) and previous.snapshot_id == context.get("snapshot_id")
+
+    def _previous_override_run(self, validation_run=None):
+        """The most recent force-allowed run that is not the one being recorded."""
+        runs = self.sync.validation_runs.filter(override_applied=True)
+        pk = getattr(validation_run, "pk", None)
+        if pk is not None:
+            runs = runs.exclude(pk=pk)
+        return runs.order_by("-pk").first()
 
     def _snapshot_is_processed(self, context):
         info = context.get("snapshot_info") or {}
