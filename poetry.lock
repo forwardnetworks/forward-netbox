@@ -27,7 +27,7 @@ description = "ASGI specs, helper code, and adapters"
 optional = true
 python-versions = ">=3.10"
 groups = ["main"]
-markers = "python_version >= \"3.12\" and (extra == \"routing\" or extra == \"integrations\" or extra == \"peering\")"
+markers = "python_version >= \"3.12\" and (extra == \"integrations\" or extra == \"peering\" or extra == \"routing\")"
 files = [
     {file = "asgiref-3.12.1-py3-none-any.whl", hash = "sha256:fe386d1c2bff7259ea95929266d12a8cf9a8b5a1c2598402967d8792e7a7c094"},
     {file = "asgiref-3.12.1.tar.gz", hash = "sha256:59dcb51c272ad209d59bed5708a64a333083e86017d7fcdd67498eeab7784340"},
@@ -281,7 +281,7 @@ description = "A high-level Python web framework that encourages rapid developme
 optional = true
 python-versions = ">=3.12"
 groups = ["main"]
-markers = "python_version >= \"3.12\" and (extra == \"routing\" or extra == \"integrations\" or extra == \"peering\")"
+markers = "python_version >= \"3.12\" and (extra == \"integrations\" or extra == \"peering\" or extra == \"routing\")"
 files = [
     {file = "django-6.0.7-py3-none-any.whl", hash = "sha256:a037427c2288443a8c02a1b02295a31c239663aa682bc50b1976afb7cf6a769e"},
     {file = "django-6.0.7.tar.gz", hash = "sha256:2998503fc083124fb58037084bfa00de323c7c743f05f1b4284e77bff0ab8890"},
@@ -303,7 +303,7 @@ description = "Seamless polymorphic inheritance for Django models."
 optional = true
 python-versions = "<4.0,>=3.10"
 groups = ["main"]
-markers = "python_version >= \"3.12\" and (extra == \"routing\" or extra == \"integrations\" or extra == \"peering\")"
+markers = "python_version >= \"3.12\" and (extra == \"integrations\" or extra == \"peering\" or extra == \"routing\")"
 files = [
     {file = "django_polymorphic-4.11.6-py3-none-any.whl", hash = "sha256:240e1edf7d1bb17a50794b1a7954843ee264e0289e654a0be029655d0b23d7f2"},
     {file = "django_polymorphic-4.11.6.tar.gz", hash = "sha256:993240e219d3f6e90548d4adedf1e702a56f79a5880ac4f44f0fbf53bda04897"},
@@ -811,7 +811,7 @@ description = "NetBox plugin for peering session management with PeeringDB and I
 optional = true
 python-versions = ">=3.12"
 groups = ["main"]
-markers = "python_version >= \"3.12\" and (extra == \"peering\" or extra == \"integrations\")"
+markers = "python_version >= \"3.12\" and (extra == \"integrations\" or extra == \"peering\")"
 files = [
     {file = "netbox_peering_manager-0.3.0-py3-none-any.whl", hash = "sha256:e3642d1736b65a42b727ad44e3ec0ba7274a42638ae7968f491a9cf6b1ac6e00"},
     {file = "netbox_peering_manager-0.3.0.tar.gz", hash = "sha256:320d806ad698ec3841626077df60ee0ada68e0053688cf4fda16baf7afb7869f"},
@@ -833,7 +833,7 @@ description = "A NetBox Routing Plugin"
 optional = true
 python-versions = ">=3.12"
 groups = ["main"]
-markers = "python_version >= \"3.12\" and (extra == \"routing\" or extra == \"integrations\" or extra == \"peering\")"
+markers = "python_version >= \"3.12\" and (extra == \"integrations\" or extra == \"peering\" or extra == \"routing\")"
 files = [
     {file = "netbox_routing-0.4.3-py3-none-any.whl", hash = "sha256:b51f4a712717e408e77ab0fcfc53b759efdc1177c1fdc3c7a8786ad38ca9afc4"},
     {file = "netbox_routing-0.4.3.tar.gz", hash = "sha256:8481139dda7088d8d721ff1f4c0779c8caca24c53722083ace01585f3a82d446"},
@@ -929,14 +929,14 @@ files = [
 
 [[package]]
 name = "pre-commit"
-version = "4.6.0"
+version = "4.6.1"
 description = "A framework for managing and maintaining multi-language pre-commit hooks."
 optional = false
 python-versions = ">=3.10"
 groups = ["dev"]
 files = [
-    {file = "pre_commit-4.6.0-py2.py3-none-any.whl", hash = "sha256:e2cf246f7299edcabcf15f9b0571fdce06058527f0a06535068a86d38089f29b"},
-    {file = "pre_commit-4.6.0.tar.gz", hash = "sha256:718d2208cef53fdc38206e40524a6d4d9576d103eb16f0fec11c875e7716e9d9"},
+    {file = "pre_commit-4.6.1-py2.py3-none-any.whl", hash = "sha256:0e3b2942510d1fb34eec167a3ec57331bf8442122f1153a9fb8b58f5c49b2717"},
+    {file = "pre_commit-4.6.1.tar.gz", hash = "sha256:03e809865c7d178b9979d06c761fcbfe6808fdaded8581a745bb110e52050421"},
 ]
 
 [package.dependencies]
@@ -1248,7 +1248,7 @@ description = "A non-validating SQL parser."
 optional = true
 python-versions = ">=3.8"
 groups = ["main"]
-markers = "python_version >= \"3.12\" and (extra == \"routing\" or extra == \"integrations\" or extra == \"peering\")"
+markers = "python_version >= \"3.12\" and (extra == \"integrations\" or extra == \"peering\" or extra == \"routing\")"
 files = [
     {file = "sqlparse-0.5.5-py3-none-any.whl", hash = "sha256:12a08b3bf3eec877c519589833aed092e2444e68240a3577e8e26148acc7b1ba"},
     {file = "sqlparse-0.5.5.tar.gz", hash = "sha256:e20d4a9b0b8585fdf63b10d30066c7c94c5d7a7ec47c889a2d83a3caa93ff28e"},
@@ -1265,7 +1265,7 @@ description = "Retry code until it succeeds"
 optional = true
 python-versions = ">=3.10"
 groups = ["main"]
-markers = "python_version >= \"3.12\" and (extra == \"peering\" or extra == \"integrations\")"
+markers = "python_version >= \"3.12\" and (extra == \"integrations\" or extra == \"peering\")"
 files = [
     {file = "tenacity-9.1.4-py3-none-any.whl", hash = "sha256:6095a360c919085f28c6527de529e76a06ad89b23659fa881ae0649b867a9d55"},
     {file = "tenacity-9.1.4.tar.gz", hash = "sha256:adb31d4c263f2bd041081ab33b498309a57c77f9acf2db65aadf0898179cf93a"},
@@ -1356,7 +1356,7 @@ files = [
     {file = "typing_extensions-4.16.0-py3-none-any.whl", hash = "sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"},
     {file = "typing_extensions-4.16.0.tar.gz", hash = "sha256:dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5"},
 ]
-markers = {main = "extra == \"routing\" or extra == \"integrations\" or extra == \"peering\" or python_version < \"3.13\"", dev = "python_version == \"3.10\""}
+markers = {main = "extra == \"integrations\" or extra == \"peering\" or extra == \"routing\" or python_version < \"3.13\"", dev = "python_version == \"3.10\""}
 
 [[package]]
 name = "tzdata"
@@ -1365,7 +1365,7 @@ description = "Provider of IANA time zone data"
 optional = true
 python-versions = ">=2"
 groups = ["main"]
-markers = "python_version >= \"3.12\" and (extra == \"routing\" or extra == \"integrations\" or extra == \"peering\") and sys_platform == \"win32\""
+markers = "python_version >= \"3.12\" and (extra == \"integrations\" or extra == \"peering\" or extra == \"routing\") and sys_platform == \"win32\""
 files = [
     {file = "tzdata-2026.3-py2.py3-none-any.whl", hash = "sha256:dc096730c87af6cab1b171c9d532be840741ff5d459015e7f6947bd7d7e54931"},
     {file = "tzdata-2026.3.tar.gz", hash = "sha256:4a1518b8993086a7982523e071643f3c0e5f213e75b21318e78bcabfff9d1415"},
