@@ -1405,17 +1405,37 @@ class ForwardPreservedDeviceTagAssignment(ForwardPluginModelDocsMixin, models.Mo
 
 
 class ForwardIngestionProvenanceMixin(models.Model):
-    """Protected ownership evidence tied to one exact merged ingestion.
+    """Ownership evidence stamped with the ingestion that last asserted it.
 
     `ForwardOwnershipReconciliation` overrides ``ingestion`` to cascade; it is a
     child record of the ingestion rather than evidence held against it. See that
     model for why.
+
+    ``ingestion`` is a PROVENANCE STAMP, not a dependency, and that distinction
+    is why it is nullable. The substance of the evidence - which sync owns which
+    device, under which source key, and the ``snapshot_id`` it was last seen in
+    - is carried on the row itself and stays true whatever happens to the run
+    that recorded it.
+
+    It was PROTECT, which made a stamp behave like a dependency: a device that
+    left Forward's scope stopped being re-pointed, froze on the last ingestion
+    that saw it, and pinned that ingestion permanently. A customer accumulated
+    one undeletable ingestion for every scope change. The rows doing the pinning
+    were not stale - the devices still existed and were still owned - so every
+    attempt to fix this by pruning the evidence risked releasing a live device,
+    which is why three successive models of the problem were wrong.
+
+    SET_NULL keeps the ownership and drops only the pointer to a run that no
+    longer exists. A null stamp reads as "asserted before the oldest retained
+    ingestion", which the generation comparisons already treat as stale.
     """
 
     ingestion = models.ForeignKey(
         ForwardIngestion,
         db_column="generation",
-        on_delete=models.PROTECT,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
         related_name="+",
     )
 
