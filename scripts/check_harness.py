@@ -53,9 +53,6 @@ REQUIRED_PATHS = [
     "scripts/tests/test_build_reproducible_distribution.py",
     "scripts/tests/test_verify_release_provenance.py",
     "scripts/tests/test_sensitive_content.py",
-    ".github/workflows/harness-gardening.yml",
-    ".github/workflows/codeql.yml",
-    ".github/workflows/trusted-sensitive-pr.yml",
     "requirements-release.in",
     "requirements-release.txt",
 ]
@@ -198,21 +195,6 @@ REQUIRED_TEXT = {
         "Rollback",
         "Decision Log",
     ],
-    ".github/workflows/ci.yml": [
-        # Version-agnostic: Dependabot bumps the action major, and pinning a
-        # version here would red every such PR + main after merge.
-        "actions/checkout@",
-        "actions/setup-python@",
-        "FORCE_JAVASCRIPT_ACTIONS_TO_NODE24",
-        "contents: read",
-        "Run harness tests",
-        "Run NetBox database migrations",
-        "Run synthetic scenario tests",
-        "fetch-depth: 0",
-        "--require-baseline-env",
-        "--require-env-patterns",
-        "FORWARD_SENSITIVE_HISTORY_BASELINE",
-    ],
     ".github/workflows/release.yml": [
         "fetch-depth: 0",
         "refs/tags/v2.7.2",
@@ -224,23 +206,6 @@ REQUIRED_TEXT = {
         "--require-hashes",
         "requirements-release.txt",
         "scripts/build_reproducible_distribution.py",
-    ],
-    ".github/workflows/harness-gardening.yml": [
-        "schedule:",
-        "scripts/check_harness.py",
-        "test_check_harness.py",
-    ],
-    ".github/workflows/trusted-sensitive-pr.yml": [
-        "pull_request_target:",
-        "persist-credentials: false",
-        "github.event.pull_request.base.sha",
-        "statuses: write",
-        "Trusted sensitive-content scan",
-        "target_url",
-        "actions/runs/",
-        "--git-tree",
-        "--ref-name",
-        "--require-env-patterns --require-baseline-env",
     ],
     ".github/CODEOWNERS": [
         "@captainpacket",
@@ -499,13 +464,16 @@ def _check_publish_gate_placement(failures: list[str]) -> None:
     never published — and each failure permanently consumed a version number,
     because `v*` tags cannot be deleted or moved.
 
-    The defects were trivial; the placement is what made them expensive. In PR
-    CI the same gate blocks a merge instead, which costs nothing.
+    The defects were trivial; the placement is what made them expensive.
+
+    The gate moved again when the CI workflows were removed: it now has to run
+    in the local `invoke ci` flow, because that is the only thing left that runs
+    before a tag exists. Removing `.github/workflows/ci.yml` without moving it
+    would have left the upgrade path validated nowhere, which is the same defect
+    in a new place.
     """
     release_path = ".github/workflows/release.yml"
-    ci_path = ".github/workflows/ci.yml"
     release = REPO_ROOT / release_path
-    ci = REPO_ROOT / ci_path
     if release.exists():
         text = release.read_text(encoding="utf-8")
         for task in PUBLISH_FORBIDDEN_INVOKE_TASKS:
@@ -513,15 +481,18 @@ def _check_publish_gate_placement(failures: list[str]) -> None:
                 failures.append(
                     f"{release_path} runs `{task}`, which can then only fail "
                     "after the release tag exists and cannot be moved. Run it in "
-                    f"{ci_path}, where a failure blocks the merge instead."
+                    "the local `ci` task, where it blocks the release instead."
                 )
-    if ci.exists():
-        text = ci.read_text(encoding="utf-8")
+    tasks_path = REPO_ROOT / "tasks.py"
+    if tasks_path.exists():
+        text = tasks_path.read_text(encoding="utf-8")
+        pre_list = text.rsplit("@task(", 1)[-1].split("def ci(", 1)[0]
         for task in PUBLISH_FORBIDDEN_INVOKE_TASKS:
-            if f"invoke {task}" not in text:
+            if task.replace("-", "_") not in pre_list:
                 failures.append(
-                    f"{ci_path} no longer runs `{task}`; the upgrade path would "
-                    "then be validated nowhere before publication."
+                    f"tasks.py `ci` no longer runs `{task}`; with the CI "
+                    "workflows removed the upgrade path would be validated "
+                    "nowhere before publication."
                 )
 
 
@@ -654,18 +625,6 @@ def _check_development_secret_boundary(failures: list[str]) -> None:
             if "/run/secrets/redis_password" not in redis_command:
                 failures.append("redis must read its password from redis_password")
 
-    workflow_path = REPO_ROOT / ".github/workflows/ci.yml"
-    if workflow_path.is_file():
-        workflow_text = workflow_path.read_text(encoding="utf-8")
-        generator = "python scripts/generate_development_secrets.py"
-        compose_build = "docker compose --project-name forward-netbox"
-        if generator not in workflow_text or workflow_text.index(
-            generator
-        ) > workflow_text.index(compose_build):
-            failures.append(
-                "CI must generate development secrets before Docker Compose"
-            )
-
     dockerignore_path = REPO_ROOT / ".dockerignore"
     if dockerignore_path.is_file() and "development/secrets" not in {
         line.strip()
@@ -749,47 +708,6 @@ def _check_development_logging_boundary(failures: list[str]) -> None:
         )
 
 
-def _check_trusted_private_fetch(failures: list[str]) -> None:
-    path = REPO_ROOT / ".github/workflows/trusted-sensitive-pr.yml"
-    if not path.is_file():
-        return
-    text = path.read_text(encoding="utf-8")
-    required = (
-        "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
-        'extraheader="http.https://github.com/.extraheader"',
-        '"${extraheader}=AUTHORIZATION: basic ${auth_header}"',
-        'test "$(git rev-parse FETCH_HEAD)" = "${PR_HEAD_SHA}"',
-    )
-    for fragment in required:
-        if fragment not in text:
-            failures.append(
-                ".github/workflows/trusted-sensitive-pr.yml must authenticate "
-                f"private candidate fetches and bind FETCH_HEAD: missing {fragment}"
-            )
-
-
-def _check_harness_gardening_dependency(failures: list[str]) -> None:
-    relative_path = ".github/workflows/harness-gardening.yml"
-    path = REPO_ROOT / relative_path
-    if not path.exists():
-        return
-    try:
-        rendered = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        steps = rendered["jobs"]["audit"]["steps"]
-        commands = [step.get("run") for step in steps if isinstance(step, dict)]
-        dependency_index = commands.index(EXPECTED_HARNESS_DEPENDENCY_COMMAND)
-        harness_index = commands.index(EXPECTED_HARNESS_CHECK_COMMAND)
-    except (KeyError, TypeError, ValueError, yaml.YAMLError) as exc:
-        failures.append(
-            f"{relative_path} must install PyYAML 6.0.3 before the harness check: {exc}"
-        )
-        return
-    if dependency_index >= harness_index:
-        failures.append(
-            f"{relative_path} must install PyYAML 6.0.3 before the harness check"
-        )
-
-
 def _workflow_steps(relative_path: str, job_name: str) -> list[dict]:
     path = REPO_ROOT / relative_path
     if not path.exists():
@@ -804,201 +722,6 @@ def _workflow(relative_path: str) -> dict:
     if not path.exists():
         return {}
     return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-
-
-def _check_sensitive_guard_wiring(failures: list[str]) -> None:
-    try:
-        ci_steps = _workflow_steps(".github/workflows/ci.yml", "validate")
-        release_workflow = _workflow(".github/workflows/release.yml")
-        release_steps = _workflow_steps(".github/workflows/release.yml", "validate")
-        trusted_workflow = _workflow(".github/workflows/trusted-sensitive-pr.yml")
-        trusted_steps = _workflow_steps(
-            ".github/workflows/trusted-sensitive-pr.yml",
-            "sensitive-content",
-        )
-    except yaml.YAMLError as exc:
-        failures.append(f"sensitive-content workflows must parse as YAML: {exc}")
-        return
-
-    for relative_path, steps in (
-        (".github/workflows/ci.yml", ci_steps),
-        (".github/workflows/release.yml", release_steps),
-        (".github/workflows/trusted-sensitive-pr.yml", trusted_steps),
-    ):
-        checkout_steps = [
-            step
-            for step in steps
-            if str(step.get("uses", "")).startswith("actions/checkout@")
-        ]
-        if (
-            not checkout_steps
-            or checkout_steps[0].get("with", {}).get("fetch-depth") != 0
-        ):
-            failures.append(f"{relative_path} sensitive scan requires fetch-depth: 0")
-
-    def normalized_commands(steps: list[dict]) -> str:
-        raw = "\n".join(str(step.get("run", "")) for step in steps)
-        return " ".join(raw.replace("\\\n", " ").split())
-
-    ci_commands = normalized_commands(ci_steps)
-    release_commands = normalized_commands(release_steps)
-    trusted_commands = normalized_commands(trusted_steps)
-    required_ci_fragments = (
-        "check_sensitive_content.py --protected-history",
-        "check_sensitive_content.py --git-files",
-        "--require-baseline-env",
-        "--require-env-patterns",
-    )
-    for fragment in required_ci_fragments:
-        if fragment not in ci_commands:
-            failures.append(f".github/workflows/ci.yml must execute {fragment}")
-    for fragment in (
-        "refs/tags/v2.7.2",
-        "verify_release_provenance.py",
-        "--tag",
-        "check_sensitive_content.py --git-files --protected-history",
-        "--require-env-patterns --require-baseline-env",
-    ):
-        if fragment not in release_commands:
-            failures.append(f".github/workflows/release.yml must execute {fragment}")
-    release_permissions = release_workflow.get("permissions", {})
-    for permission in ("actions", "contents", "pull-requests", "statuses"):
-        if not isinstance(release_permissions, dict) or (
-            release_permissions.get(permission) != "read"
-        ):
-            failures.append(
-                f".github/workflows/release.yml must grant {permission}: read"
-            )
-
-    for fragment in (
-        "pull/${PR_NUMBER}/head",
-        "check_sensitive_content.py --rev-list",
-        "--git-tree",
-        "--ref-name",
-        "--require-env-patterns --require-baseline-env",
-        "actions/runs/",
-    ):
-        if fragment not in trusted_commands:
-            failures.append(
-                f".github/workflows/trusted-sensitive-pr.yml must execute {fragment}"
-            )
-
-    trusted_events = trusted_workflow.get("on", {})
-    target = (
-        trusted_events.get("pull_request_target", {})
-        if isinstance(trusted_events, dict)
-        else {}
-    )
-    if set(target.get("types", [])) != {"opened", "reopened", "synchronize"}:
-        failures.append(
-            ".github/workflows/trusted-sensitive-pr.yml must use only the reviewed "
-            "pull_request_target event types"
-        )
-    permissions = trusted_workflow.get("permissions", {})
-    if not isinstance(permissions, dict) or permissions.get("statuses") != "write":
-        failures.append(
-            ".github/workflows/trusted-sensitive-pr.yml must have statuses: write "
-            "to bind the trusted result to the candidate SHA"
-        )
-
-    def command_step(steps: list[dict], fragment: str) -> tuple[int, dict] | None:
-        for index, step in enumerate(steps):
-            command = " ".join(str(step.get("run", "")).replace("\\\n", " ").split())
-            if fragment in command:
-                return index, step
-        return None
-
-    required_steps = (
-        (ci_steps, "--protected-history", "ci history"),
-        (ci_steps, "--require-env-patterns", "ci push enforcement"),
-        (release_steps, "--require-env-patterns", "release enforcement"),
-        (trusted_steps, "--git-tree", "trusted PR enforcement"),
-    )
-    for steps, fragment, label in required_steps:
-        found = command_step(steps, fragment)
-        if found is None:
-            continue
-        _index, step = found
-        condition = str(step.get("if", "")).strip()
-        if label == "ci push enforcement":
-            if condition != "github.event_name == 'push'":
-                failures.append("CI private-pattern enforcement must run on every push")
-        elif condition:
-            failures.append(f"{label} must not be conditional")
-
-    expected_env = {
-        "FORWARD_SENSITIVE_PATTERNS": "${{ secrets.FORWARD_SENSITIVE_PATTERNS }}",
-        "FORWARD_SENSITIVE_HISTORY_BASELINE": (
-            "${{ vars.FORWARD_SENSITIVE_HISTORY_BASELINE }}"
-        ),
-    }
-    for steps, fragment, label in (
-        (ci_steps, "--require-env-patterns", "CI"),
-        (release_steps, "--require-env-patterns", "release"),
-        (trusted_steps, "--git-tree", "trusted PR"),
-    ):
-        found = command_step(steps, fragment)
-        if found is None:
-            continue
-        _index, step = found
-        environment = step.get("env", {})
-        for name, expected_value in expected_env.items():
-            if str(environment.get(name, "")).strip() != expected_value:
-                failures.append(
-                    f"{label} sensitive scan must source {name} from trusted settings"
-                )
-
-    trusted_checkout = next(
-        (
-            step
-            for step in trusted_steps
-            if str(step.get("uses", "")).startswith("actions/checkout@")
-        ),
-        {},
-    )
-    checkout_with = trusted_checkout.get("with", {})
-    if (
-        checkout_with.get("persist-credentials") is not False
-        or str(checkout_with.get("ref", "")).strip()
-        != "${{ github.event.pull_request.base.sha }}"
-    ):
-        failures.append(
-            "trusted PR scan must check out only the credential-free base revision"
-        )
-
-    trusted_fetch = command_step(trusted_steps, "pull/${PR_NUMBER}/head")
-    trusted_scan = command_step(trusted_steps, "--git-tree")
-    if trusted_fetch and trusted_scan and trusted_fetch[0] >= trusted_scan[0]:
-        failures.append("trusted PR scan must fetch candidate objects before scanning")
-
-    trusted_status = command_step(trusted_steps, "Trusted sensitive-content scan")
-    if trusted_status is None:
-        failures.append("trusted PR scan must publish a candidate commit status")
-    else:
-        status_index, status_step = trusted_status
-        if trusted_scan and status_index <= trusted_scan[0]:
-            failures.append("trusted PR status must be published after candidate scan")
-        if str(status_step.get("if", "")).strip() != "always()":
-            failures.append("trusted PR status publication must run with if: always()")
-        status_environment = status_step.get("env", {})
-        if str(status_environment.get("GH_TOKEN", "")).strip() != (
-            "${{ secrets.GITHUB_TOKEN }}"
-        ):
-            failures.append("trusted PR status must use the repository GITHUB_TOKEN")
-        if str(status_environment.get("SCAN_OUTCOME", "")).strip() != (
-            "${{ steps.scan.outcome }}"
-        ):
-            failures.append("trusted PR status must derive from the scanner outcome")
-
-    tasks_path = REPO_ROOT / "tasks.py"
-    if tasks_path.exists():
-        tasks_text = tasks_path.read_text(encoding="utf-8")
-        for fragment in (
-            'scripts/check_sensitive_content.py")',
-            "scripts/check_sensitive_content.py --protected-history",
-        ):
-            if fragment not in tasks_text:
-                failures.append(f"tasks.py sensitive-check must execute {fragment}")
 
 
 def _check_release_toolchain_lock(failures: list[str]) -> None:
@@ -1032,13 +755,10 @@ def _check_release_toolchain_lock(failures: list[str]) -> None:
     release_text = (REPO_ROOT / ".github/workflows/release.yml").read_text(
         encoding="utf-8"
     )
-    ci_text = (REPO_ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8")
     if "pip install --upgrade" in release_text:
         failures.append("release workflow must not install mutable latest tooling")
     if release_text.count("--require-hashes") < 2:
         failures.append("release workflow must hash-lock validation and build tooling")
-    if "--require-hashes" not in ci_text:
-        failures.append("CI workflow must install the reviewed hash-locked toolchain")
 
 
 def _check_release_anchor_tracks_current_release(failures: list[str]) -> None:
@@ -1219,8 +939,6 @@ def _check_standard_release_tag_flow(failures: list[str]) -> None:
         "PRIOR_RELEASE_TAG = ",
         "BOOTSTRAP_REQUIRED_FILES",
         "BOOTSTRAP_FILE_DIGESTS",
-        "BASE_REQUIRED_STATUS_CHECKS",
-        "TRUSTED_STATUS_CONTEXT",
         'operation.add_argument("--controls-only", action="store_true")',
         '"merge-base", "--is-ancestor", release_commit, current_main',
     ):
@@ -1278,9 +996,6 @@ def main() -> int:
     _check_worker_autoreload_contract(failures)
     _check_development_secret_boundary(failures)
     _check_development_logging_boundary(failures)
-    _check_trusted_private_fetch(failures)
-    _check_harness_gardening_dependency(failures)
-    _check_sensitive_guard_wiring(failures)
     _check_release_toolchain_lock(failures)
     _check_release_anchor_tracks_current_release(failures)
     _check_post_release_bridge_is_documentation_only(failures)

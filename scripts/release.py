@@ -56,10 +56,11 @@ RELEASE_INTRO_RE = re.compile(
 
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 GITHUB_REPOSITORY = "forwardnetworks/forward-netbox"
-REQUIRED_RELEASE_WORKFLOWS = (
-    ".github/workflows/ci.yml",
-    ".github/workflows/codeql.yml",
-)
+# The CI gate workflows were removed; gates run locally through `invoke ci` and
+# are recorded in the release plan's authorization section. Nothing remains for
+# the publish flow to wait on, and an empty tuple makes every wait a no-op
+# rather than a poll that can never succeed.
+REQUIRED_RELEASE_WORKFLOWS: tuple[str, ...] = ()
 
 
 class ReleaseError(RuntimeError):
@@ -407,6 +408,9 @@ def wait_for_required_workflows(
 ) -> bool:
     """Require successful runs from exact workflow identities on one commit."""
     import time
+
+    if not REQUIRED_RELEASE_WORKFLOWS:
+        return True
 
     for _ in range(max_polls):
         incomplete: list[str] = []

@@ -106,14 +106,14 @@ invoke scale-soak --runs 3 --max-changes-per-staging-item 10000
 1. Run `invoke release --version X.Y.Z --summary "..." --write` and complete the
    local gate above.
 2. Run the same command with `--publish`; it creates or updates the release
-   branch, then waits for successful GitHub CI runs from the exact `ci.yml` and
-   `codeql.yml` workflow identities on the exact branch commit.
+   branch. There is no GitHub CI to wait for - the gate workflows were removed,
+   so `invoke ci` and `invoke artifact-test` on this exact tree ARE the gate,
+   and their results go in the plan's release-authorization section.
 3. Run it with `--finish`; the first finish promotes candidate metadata, pushes
-   it, waits for CI on that exact commit, and stops without updating `main` or
-   creating a tag.
+   it, and stops without updating `main` or creating a tag.
 4. Run `--finish` again. It opens the production PR and enables squash
-   auto-merge. GitHub will not merge it until the trusted base-branch scanner,
-   CI, and CodeQL requirements all pass.
+   auto-merge. Nothing external will block that merge now, so do not open it
+   until the local gate has passed against the exact tree being merged.
 5. After that PR is on `main`, run every final-tree gate on that exact main
    commit. Create `release/X.Y.Z-evidence` from it, record its full SHA as
    `Evidence base commit`, and make one commit that changes only the release
