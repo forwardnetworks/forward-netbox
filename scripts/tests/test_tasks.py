@@ -175,7 +175,7 @@ class ReleaseArtifactTaskTest(unittest.TestCase):
 
         self.assertIn("--require-hashes", workflow)
         self.assertIn("requirements-release.txt", workflow)
-        self.assertIn("refs/tags/v2.7.2", workflow)
+        self.assertIn("refs/tags/v2.7.4", workflow)
         self.assertIn("scripts/build_reproducible_distribution.py", workflow)
         self.assertIn("python -m invoke artifact-test", workflow)
         self.assertIn("sbom/", workflow)
@@ -954,13 +954,16 @@ class RuntimeOptimizationTaskTest(unittest.TestCase):
         self.assertIn("test_single_branch_repeat_run_applies_delete_phase", command)
         self.assertIn("test_branch_plan_splits_mixed_workloads", command)
 
-    def test_github_ci_uses_current_scenario_tests(self):
+    def test_local_ci_uses_current_scenario_tests(self):
+        # This asserted the same thing about `.github/workflows/ci.yml` until
+        # the CI gates were removed. The local `ci` task is the gate now, so the
+        # scenario labels have to reach it instead.
         repo_root = Path(__file__).resolve().parents[2]
-        workflow = (repo_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
+        tasks_source = (repo_root / "tasks.py").read_text(encoding="utf-8")
+        pre_list = tasks_source.rsplit("@task(", 1)[-1].split("def ci(", 1)[0]
 
-        for test_label in tasks.SCENARIO_TEST_LABELS.split():
-            self.assertIn(test_label, workflow)
-        self.assertNotIn("test_synthetic_scenarios", workflow)
+        self.assertIn("scenario_test_ci", pre_list)
+        self.assertNotIn("test_synthetic_scenarios", tasks.SCENARIO_TEST_LABELS)
 
     def test_optimize_runtime_scales_workers_and_tunes_postgres(self):
         context = self._context()

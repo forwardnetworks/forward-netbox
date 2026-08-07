@@ -1076,23 +1076,38 @@ def _previous_released_version(context, version):
     the index can answer that.
     """
     import json
+    import time
     import urllib.error
     import urllib.request
 
     url = "https://pypi.org/pypi/forward-netbox/json"
-    try:
-        with urllib.request.urlopen(url, timeout=60) as response:
-            payload = json.load(response)
-    # OSError, not just TimeoutError: the read can also fail with
-    # ConnectionResetError, which is not a URLError and was escaping raw -
-    # failing the release gate with a bare socket error instead of the message
-    # that says how to run it offline.
-    except (urllib.error.URLError, OSError, ValueError) as exc:
+    # Retry before failing. A single attempt failed this gate twice in a row on
+    # a read timeout while PyPI was reachable from the same host seconds later:
+    # the gate runs right after the whole docker fan-out, which is exactly when
+    # a 60s read is most likely to lose. One transient blip must not cost a
+    # release cycle.
+    payload = None
+    last_error: Exception | None = None
+    for attempt in range(3):
+        if attempt:
+            time.sleep(5 * attempt)
+        try:
+            with urllib.request.urlopen(url, timeout=60) as response:
+                payload = json.load(response)
+            break
+        # OSError, not just TimeoutError: the read can also fail with
+        # ConnectionResetError, which is not a URLError and was escaping raw -
+        # failing the release gate with a bare socket error instead of the
+        # message that says how to run it offline.
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            last_error = exc
+    if payload is None:
         raise Exit(
-            f"Could not read released versions from PyPI ({exc}). Pass "
-            "--from-version explicitly to run this gate offline.",
+            f"Could not read released versions from PyPI ({last_error}) after "
+            "3 attempts. Pass --from-version explicitly to run this gate "
+            "offline.",
             code=2,
-        ) from exc
+        ) from last_error
 
     # `version` is whatever the tree carries, and between releases that is a
     # `.dev0` marker - `main` is deliberately moved onto one so an install from
@@ -1987,6 +2002,12 @@ def sync_release_gate(
         playwright_test,
         docs,
         package,
+        # The upgrade gate used to live only in `.github/workflows/ci.yml`. When
+        # the CI workflows were removed it would have been left running nowhere,
+        # and an upgrade defect can only be found after the tag exists - where a
+        # version number is already spent. It runs last because it needs the
+        # built artifact from `package`.
+        artifact_upgrade_test,
     ]
 )
 def ci(context):

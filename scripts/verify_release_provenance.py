@@ -5,7 +5,6 @@ import argparse
 import hashlib
 import json
 import os
-import re
 import subprocess
 import urllib.parse
 import urllib.request
@@ -15,22 +14,19 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GITHUB_REPOSITORY = "forwardnetworks/forward-netbox"
 GITHUB_API_URL = "https://api.github.com"
-TRUSTED_STATUS_CONTEXT = "Trusted sensitive-content scan"
-TRUSTED_STATUS_CREATOR = "github-actions[bot]"
-TRUSTED_SCANNER_WORKFLOW = ".github/workflows/trusted-sensitive-pr.yml"
-PRIOR_RELEASE_TAG = "v2.7.2"
-PRIOR_POST_RELEASE_DOC_COMMIT = "d6c886cdd654559de673ed7f7682201b4ab05671"
+# The trusted-scanner workflow was removed with the rest of the CI gates. The
+# sensitive-content scan still runs - `release.yml` invokes
+# `check_sensitive_content.py` directly, and pre-commit runs it locally - but
+# there is no longer a GitHub check run or commit status to verify.
+PRIOR_RELEASE_TAG = "v2.7.4"
+PRIOR_POST_RELEASE_DOC_COMMIT = "3e8990ed8600ba0d0412183a19aeb0f653d5b3da"
 BOOTSTRAP_REQUIRED_FILES = (
-    TRUSTED_SCANNER_WORKFLOW,
     "scripts/check_sensitive_content.py",
     "scripts/sensitive_content.py",
 )
 # SHA-256 of each bootstrap file as reviewed. Update these in the same pull
 # request that changes the file; a release whose tree disagrees fails closed.
 BOOTSTRAP_FILE_DIGESTS = {
-    TRUSTED_SCANNER_WORKFLOW: (
-        "741e3d353f5fa9c862f3b07be383b41e06b72e32cf7d18bd3e33f2d04ac3e97c"
-    ),
     "scripts/check_sensitive_content.py": (
         "69ccf428f255bc158217e0cb3e167d44fe3dbb68f0dc3bb47bc26bf054e747a8"
     ),
@@ -38,22 +34,15 @@ BOOTSTRAP_FILE_DIGESTS = {
         "769660482d01fb5c25484c4baeb21ee263e0c233a2a77db87f6f058a8f5fc6a0"
     ),
 }
-REQUIRED_WORKFLOWS = (
-    ".github/workflows/ci.yml",
-    ".github/workflows/codeql.yml",
-)
+# Gates run locally now. `invoke ci` and `invoke artifact-test` are recorded in
+# the release plan's authorization section, bound to the tagged commit's parent,
+# so provenance no longer looks for a workflow run it cannot find.
+REQUIRED_WORKFLOWS = ()
 GITHUB_ACTIONS_APP_ID = 15368
-GITHUB_ADVANCED_SECURITY_APP_ID = 57789
 MAIN_RULESET_NAME = "main-release-integrity"
 RETIRED_VERSION_TAG_CREATION_RULESET = "version-tag-creation"
 VERSION_TAG_INTEGRITY_RULESET = "version-tag-integrity"
 PYPI_ENVIRONMENT = "pypi"
-BASE_REQUIRED_STATUS_CHECKS = {
-    ("Validate NetBox v4.6.6", GITHUB_ACTIONS_APP_ID),
-    ("CodeQL python", GITHUB_ACTIONS_APP_ID),
-    ("CodeQL javascript-typescript", GITHUB_ACTIONS_APP_ID),
-    ("CodeQL", GITHUB_ADVANCED_SECURITY_APP_ID),
-}
 
 
 class ProvenanceError(RuntimeError):
@@ -172,7 +161,7 @@ def _rules_by_type(ruleset: dict, expected: set[str]) -> dict[str, dict]:
     return {rule_type: rules[0] for rule_type, rules in grouped.items()}
 
 
-def _require_main_ruleset(token: str, *, require_trusted_status: bool) -> list[str]:
+def _require_main_ruleset(token: str) -> list[str]:
     ruleset = _named_ruleset(MAIN_RULESET_NAME, token)
     _require_ruleset_identity(
         ruleset,
@@ -182,6 +171,12 @@ def _require_main_ruleset(token: str, *, require_trusted_status: bool) -> list[s
     )
     if ruleset.get("bypass_actors") != []:
         raise ProvenanceError("protected main ruleset must not have bypass actors")
+    # `required_status_checks` is deliberately absent. This repository has a
+    # single maintainer and runs its gates locally (`invoke ci`,
+    # `invoke artifact-test`), whose results are recorded in the release plan's
+    # authorization section and bound to the tagged commit's parent. The branch
+    # controls that still matter - no deletion, no force-push, linear history,
+    # squash-only through a pull request - are all still asserted below.
     rules = _rules_by_type(
         ruleset,
         {
@@ -189,7 +184,6 @@ def _require_main_ruleset(token: str, *, require_trusted_status: bool) -> list[s
             "non_fast_forward",
             "required_linear_history",
             "pull_request",
-            "required_status_checks",
         },
     )
     pull_parameters = rules["pull_request"].get("parameters") or {}
@@ -206,24 +200,7 @@ def _require_main_ruleset(token: str, *, require_trusted_status: bool) -> list[s
         for key, value in required_pull_parameters.items()
     ):
         raise ProvenanceError("protected main pull-request controls are incomplete")
-    status_parameters = rules["required_status_checks"].get("parameters") or {}
-    if (
-        status_parameters.get("strict_required_status_checks_policy") is not True
-        or status_parameters.get("do_not_enforce_on_create") is not False
-    ):
-        raise ProvenanceError("protected main status-check policy is not strict")
-    actual_statuses = {
-        (str(status.get("context") or ""), status.get("integration_id"))
-        for status in status_parameters.get("required_status_checks") or []
-    }
-    expected_statuses = set(BASE_REQUIRED_STATUS_CHECKS)
-    if require_trusted_status:
-        expected_statuses.add((TRUSTED_STATUS_CONTEXT, GITHUB_ACTIONS_APP_ID))
-    if not expected_statuses.issubset(actual_statuses):
-        raise ProvenanceError(
-            "protected main is missing a required authenticated status"
-        )
-    return sorted(context for context, _integration_id in expected_statuses)
+    return []
 
 
 def _require_tag_ruleset(
@@ -304,7 +281,7 @@ def verify_github_release_controls(token: str) -> dict:
     if actions.get("sha_pinning_required") is not True:
         raise ProvenanceError("GitHub Actions SHA pinning is not required")
 
-    required_statuses = _require_main_ruleset(token, require_trusted_status=True)
+    _require_main_ruleset(token)
     _require_ruleset_absent(RETIRED_VERSION_TAG_CREATION_RULESET, token)
     _require_tag_ruleset(
         token,
@@ -319,7 +296,7 @@ def verify_github_release_controls(token: str) -> dict:
     )
     return {
         "main_ruleset": MAIN_RULESET_NAME,
-        "required_statuses": required_statuses,
+        "required_statuses": [],
         "pypi_environment": PYPI_ENVIRONMENT,
     }
 
@@ -335,101 +312,10 @@ def _require_release_commit_shape(commit: str, token: str) -> dict:
     return payload
 
 
-def _trusted_scanner_workflow_id(token: str) -> int:
-    encoded_path = urllib.parse.quote(TRUSTED_SCANNER_WORKFLOW, safe="")
-    workflow = _github_json(f"actions/workflows/{encoded_path}", token)
-    if not isinstance(workflow, dict):
-        raise ProvenanceError("GitHub returned invalid trusted scanner workflow data")
-    if (
-        workflow.get("path") != TRUSTED_SCANNER_WORKFLOW
-        or workflow.get("state") != "active"
-    ):
-        raise ProvenanceError("trusted scanner workflow is not active")
-    try:
-        return int(workflow["id"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise ProvenanceError("trusted scanner workflow has no stable ID") from exc
-
-
-def _trusted_status_run_id(target_url: object) -> int:
-    parsed = urllib.parse.urlparse(str(target_url or ""))
-    expected_path = rf"/{re.escape(GITHUB_REPOSITORY)}/actions/runs/([0-9]+)"
-    match = re.fullmatch(expected_path, parsed.path)
-    if (
-        parsed.scheme != "https"
-        or parsed.netloc != "github.com"
-        or parsed.params
-        or parsed.query
-        or parsed.fragment
-        or match is None
-    ):
-        raise ProvenanceError("trusted scanner status has an invalid run URL")
-    return int(match.group(1))
-
-
-def _require_trusted_candidate_status(
-    candidate: str,
-    pull_number: int,
-    token: str,
-) -> None:
-    statuses = _github_pages(f"commits/{candidate}/statuses", token)
-    matching = [
-        status
-        for status in statuses
-        if status.get("context") == TRUSTED_STATUS_CONTEXT
-        and str((status.get("creator") or {}).get("login") or "").lower()
-        == TRUSTED_STATUS_CREATOR
-    ]
-    if not matching:
-        raise ProvenanceError(
-            f"candidate {candidate} has no authenticated trusted scanner status"
-        )
-    latest = max(matching, key=lambda status: int(status.get("id") or 0))
-    if latest.get("state") != "success":
-        raise ProvenanceError(
-            f"candidate {candidate} trusted scanner state is {latest.get('state')!r}"
-        )
-    run_id = _trusted_status_run_id(latest.get("target_url"))
-    run = _github_json(f"actions/runs/{run_id}", token)
-    if not isinstance(run, dict):
-        raise ProvenanceError("GitHub returned invalid trusted scanner run data")
-    workflow_id = _trusted_scanner_workflow_id(token)
-    if (
-        run.get("id") != run_id
-        or run.get("workflow_id") != workflow_id
-        or run.get("path") != TRUSTED_SCANNER_WORKFLOW
-        or run.get("event") != "pull_request_target"
-        or run.get("status") != "completed"
-        or run.get("conclusion") != "success"
-    ):
-        raise ProvenanceError("trusted scanner status is not backed by the trusted run")
-    pull_matches = [
-        pull
-        for pull in run.get("pull_requests") or []
-        if pull.get("number") == pull_number
-        and (pull.get("head") or {}).get("sha") == candidate
-        and (pull.get("base") or {}).get("ref") == "main"
-    ]
-    if not pull_matches and not run.get("pull_requests"):
-        pull = _github_json(f"pulls/{pull_number}", token)
-        if (
-            isinstance(pull, dict)
-            and pull.get("number") == pull_number
-            and (pull.get("head") or {}).get("sha") == candidate
-            and (pull.get("base") or {}).get("ref") == "main"
-        ):
-            pull_matches = [pull]
-    if len(pull_matches) != 1:
-        raise ProvenanceError(
-            "trusted scanner run does not cover the exact pull request candidate"
-        )
-
-
 def _require_merged_main_pr(
     commit: str,
     token: str,
     *,
-    require_trusted_status: bool = True,
     allow_direct_control_commit: bool = False,
 ) -> bool:
     pulls = _github_pages(f"commits/{commit}/pulls", token)
@@ -472,8 +358,6 @@ def _require_merged_main_pr(
     candidate = str((pull.get("head") or {}).get("sha") or "")
     if not candidate:
         raise ProvenanceError(f"pull request for {commit} has no candidate SHA")
-    if require_trusted_status:
-        _require_trusted_candidate_status(candidate, int(pull["number"]), token)
     return False
 
 
@@ -696,7 +580,6 @@ def verify_release_commit_provenance(
         direct_control_commit = _require_merged_main_pr(
             commit,
             token,
-            require_trusted_status=index != 0,
             allow_direct_control_commit=index < 3,
         )
         if direct_control_commit:
