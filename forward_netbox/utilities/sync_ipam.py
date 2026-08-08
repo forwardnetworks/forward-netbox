@@ -349,6 +349,7 @@ def apply_ipam_fhrpgroup(runner, row):
             raise ForwardDependencySkipError(
                 f"Skipping FHRP group because dependency `dcim.device` failed for {key}.",
                 model_string="ipam.fhrpgroup",
+                dependency="dcim.device",
                 context={
                     "device": row["device"],
                     "interface": row.get("interface"),
@@ -368,6 +369,7 @@ def apply_ipam_fhrpgroup(runner, row):
             raise ForwardDependencySkipError(
                 f"Skipping FHRP group because dependency `dcim.interface` failed for {key}.",
                 model_string="ipam.fhrpgroup",
+                dependency="dcim.interface",
                 context={"device": device.name, "interface": row["interface"]},
                 data=row,
             )
@@ -469,6 +471,7 @@ def apply_ipam_ipaddress(runner, row):
             raise ForwardDependencySkipError(
                 f"Skipping IP assignment because dependency `dcim.device` failed for {key}.",
                 model_string="ipam.ipaddress",
+                dependency="dcim.device",
                 context={
                     "device": row["device"],
                     "interface": row.get("interface"),
@@ -488,6 +491,7 @@ def apply_ipam_ipaddress(runner, row):
             raise ForwardDependencySkipError(
                 f"Skipping IP assignment because dependency `dcim.interface` failed for {key}.",
                 model_string="ipam.ipaddress",
+                dependency="dcim.interface",
                 context={"device": device.name, "interface": row["interface"]},
                 data=row,
             )

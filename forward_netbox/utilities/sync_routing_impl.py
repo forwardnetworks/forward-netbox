@@ -198,6 +198,7 @@ def lookup_device_for_routing(runner, row, model_string, object_label):
             raise ForwardDependencySkipError(
                 f"Skipping {object_label} because dependency `dcim.device` failed for {key}.",
                 model_string=model_string,
+                dependency="dcim.device",
                 context={"device": row["device"]},
                 data=row,
             ) from exc
