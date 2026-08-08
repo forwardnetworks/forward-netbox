@@ -69,8 +69,7 @@ class SkipRaisersNameTheirDependencyTest(SimpleTestCase):
                 guard = test.args[0].value
                 for child in ast.walk(node):
                     if not (
-                        isinstance(child, ast.Raise)
-                        and isinstance(child.exc, ast.Call)
+                        isinstance(child, ast.Raise) and isinstance(child.exc, ast.Call)
                     ):
                         continue
                     name = getattr(child.exc.func, "id", None) or getattr(
@@ -92,7 +91,9 @@ class SkipRaisersNameTheirDependencyTest(SimpleTestCase):
                             f"{path.relative_to(PLUGIN_ROOT)}:{child.lineno} "
                             f"guard={guard!r} dependency={declared!r}"
                         )
-        self.assertEqual(mismatches, [], f"dependency disagrees with guard: {mismatches}")
+        self.assertEqual(
+            mismatches, [], f"dependency disagrees with guard: {mismatches}"
+        )
 
     def test_there_are_still_raisers_to_check(self):
         # Guards the two tests above against silently passing on an empty set,
