@@ -110,6 +110,7 @@ def apply_dcim_cable(runner, row):
             raise ForwardDependencySkipError(
                 f"Skipping cable because dependency `dcim.device` failed for {key}.",
                 model_string="dcim.cable",
+                dependency="dcim.device",
                 context={
                     "device": row["device"],
                     "interface": row.get("interface"),
@@ -133,6 +134,7 @@ def apply_dcim_cable(runner, row):
             raise ForwardDependencySkipError(
                 f"Skipping cable because dependency `dcim.device` failed for {key}.",
                 model_string="dcim.cable",
+                dependency="dcim.device",
                 context={
                     "device": row["remote_device"],
                     "interface": row.get("remote_interface"),
@@ -155,6 +157,7 @@ def apply_dcim_cable(runner, row):
             raise ForwardDependencySkipError(
                 f"Skipping cable because dependency `dcim.interface` failed for {key}.",
                 model_string="dcim.cable",
+                dependency="dcim.interface",
                 context={"device": device.name, "interface": row["interface"]},
                 data=row,
             )
@@ -174,6 +177,7 @@ def apply_dcim_cable(runner, row):
             raise ForwardDependencySkipError(
                 f"Skipping cable because dependency `dcim.interface` failed for {key}.",
                 model_string="dcim.cable",
+                dependency="dcim.interface",
                 context={
                     "device": remote_device.name,
                     "interface": row["remote_interface"],

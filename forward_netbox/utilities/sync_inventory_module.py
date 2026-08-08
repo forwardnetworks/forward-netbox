@@ -95,6 +95,7 @@ def apply_dcim_inventoryitem(runner, row):
             raise ForwardDependencySkipError(
                 f"Skipping inventory item because dependency `dcim.device` failed for {key}.",
                 model_string="dcim.inventoryitem",
+                dependency="dcim.device",
                 context={"device": row["device"], "name": row.get("name")},
                 data=row,
             ) from exc
@@ -152,6 +153,7 @@ def apply_dcim_module(runner, row):
             raise ForwardDependencySkipError(
                 f"Skipping module because dependency `dcim.device` failed for {key}.",
                 model_string="dcim.module",
+                dependency="dcim.device",
                 context={
                     "device": row["device"],
                     "module_bay": row.get("module_bay"),

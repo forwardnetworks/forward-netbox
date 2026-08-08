@@ -82,6 +82,7 @@ def apply_extras_taggeditem(runner, row):
             raise ForwardDependencySkipError(
                 f"Skipping feature tag `{row.get('tag')}` because dependency `dcim.device` failed for {key}.",
                 model_string="extras.taggeditem",
+                dependency="dcim.device",
                 context={"device": row["device"], "tag": row.get("tag")},
                 data=row,
             ) from exc
@@ -121,6 +122,7 @@ def apply_dcim_macaddress(runner, row):
             raise ForwardDependencySkipError(
                 f"Skipping MAC assignment because dependency `dcim.device` failed for {key}.",
                 model_string="dcim.macaddress",
+                dependency="dcim.device",
                 context={
                     "device": row["device"],
                     "interface": row.get("interface"),
@@ -140,6 +142,7 @@ def apply_dcim_macaddress(runner, row):
             raise ForwardDependencySkipError(
                 f"Skipping MAC assignment because dependency `dcim.interface` failed for {key}.",
                 model_string="dcim.macaddress",
+                dependency="dcim.interface",
                 context={"device": device.name, "interface": row["interface"]},
                 data=row,
             )
@@ -218,6 +221,7 @@ def apply_dcim_interface(runner, row):
             raise ForwardDependencySkipError(
                 f"Skipping interface `{row.get('name')}` because dependency `dcim.device` failed for {key}.",
                 model_string="dcim.interface",
+                dependency="dcim.device",
                 context={"device": row["device"], "name": row.get("name")},
                 data=row,
             ) from exc

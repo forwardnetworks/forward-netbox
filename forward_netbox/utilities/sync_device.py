@@ -111,6 +111,7 @@ def apply_dcim_virtualchassis(runner, row):
                 raise ForwardDependencySkipError(
                     f"Skipping virtual chassis assignment because dependency `dcim.device` failed for {key}.",
                     model_string="dcim.virtualchassis",
+                    dependency="dcim.device",
                     context={"device": row["device"]},
                     data=row,
                 ) from exc
