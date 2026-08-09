@@ -35,10 +35,17 @@ class SyncLogging:
         if not self.job_id:
             return
         now = monotonic()
-        if (
-            force
-            or not self._statistics_persist_dirty
-            or now - self._last_statistics_persist_write
+        # `force`, or something changed AND the interval has elapsed.
+        #
+        # This read `force or not dirty or elapsed`, which says "persist when
+        # nothing has changed" - the opposite of the intent. It is inert today
+        # only because the single non-forced caller sets the dirty flag on the
+        # line immediately above the call, so the disjunct never decides
+        # anything. A future caller that left the flag False would start writing
+        # on every call while skipping the throttle entirely.
+        if force or (
+            self._statistics_persist_dirty
+            and now - self._last_statistics_persist_write
             >= self.STATISTICS_PERSIST_INTERVAL_SECONDS
         ):
             try:
