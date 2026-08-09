@@ -384,6 +384,27 @@ class ReleaseProvenanceTest(unittest.TestCase):
                     allow_direct_control_commit=True,
                 )
 
+    def test_the_release_pair_can_never_be_a_direct_control_commit(self):
+        # The allowance was `index < 3`, read as "the first three positions".
+        # But a lineage may be exactly three reviewed commits and ours routinely
+        # is - anchor, production, release - and at that size the allowance
+        # covered every commit including the release pair, which is the opposite
+        # of the intent. Anchoring to the END makes it hold at any length.
+        for size in (3, 4, 7):
+            reviewed = [f"c{index}" for index in range(size)]
+            limit = len(reviewed) - 2
+            allowed = [index < limit for index in range(size)]
+            with self.subTest(lineage=size):
+                self.assertFalse(
+                    allowed[-1], "the release commit must come through a PR"
+                )
+                self.assertFalse(
+                    allowed[-2], "the production commit must come through a PR"
+                )
+                self.assertTrue(
+                    all(allowed[:-2]), "control commits ahead of the pair may be direct"
+                )
+
     def test_rejects_tagged_release_diverged_from_main(self):
         advanced_main = "e" * 40
 

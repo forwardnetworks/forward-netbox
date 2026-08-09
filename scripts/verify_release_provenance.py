@@ -575,12 +575,21 @@ def verify_release_commit_provenance(
         )
     _require_security_bootstrap(release_commit)
 
+    # The production and release commits must ALWAYS come through a merged pull
+    # request; only the control commits ahead of them may be direct.
+    #
+    # This was `index < 3`, which reads as "the first three positions", but a
+    # lineage is allowed to be exactly three reviewed commits and ours routinely
+    # is - anchor, production, release. At that size the allowance covered every
+    # commit including the release pair, which is the opposite of the intent.
+    # Anchoring to the END makes the rule say what it means at any length.
+    control_commit_limit = len(reviewed_commits) - 2
     for index, commit in enumerate(reviewed_commits):
         _require_release_commit_shape(commit, token)
         direct_control_commit = _require_merged_main_pr(
             commit,
             token,
-            allow_direct_control_commit=index < 3,
+            allow_direct_control_commit=index < control_commit_limit,
         )
         if direct_control_commit:
             continue
