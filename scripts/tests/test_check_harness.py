@@ -750,13 +750,17 @@ class ReleaseAnchorTracksCurrentReleaseTest(unittest.TestCase):
         "| `v2.6.9` | `4.6.x` | Superseded by `{current}`; shipped. |\n"
     )
 
-    def _run(self, *, tag, current, table=None):
+    def _run(self, *, tag, current, table=None, unpublished=None):
         failures = []
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / "scripts").mkdir()
+            provenance = self.PROVENANCE.format(tag=tag)
+            if unpublished is not None:
+                listed = ", ".join(f'"{entry}"' for entry in unpublished)
+                provenance = f"UNPUBLISHED_RELEASE_TAGS = ({listed})\n" + provenance
             (root / "scripts/verify_release_provenance.py").write_text(
-                self.PROVENANCE.format(tag=tag), encoding="utf-8"
+                provenance, encoding="utf-8"
             )
             (root / "README.md").write_text(
                 table if table is not None else self.TABLE.format(current=current),
@@ -785,6 +789,24 @@ class ReleaseAnchorTracksCurrentReleaseTest(unittest.TestCase):
         failures = self._run(tag="v2.7.0", current="v2.6.12")
         self.assertEqual(len(failures), 1)
         self.assertIn("does not match the current release", failures[0])
+
+    def test_an_anchor_on_a_tag_that_never_published_is_accepted(self):
+        # A tag refused at the publish gate is still a valid anchor - it exists
+        # and is annotated - but it must never be promoted in the table, so the
+        # two legitimately disagree. v2.7.8 is the case that forced this.
+        self.assertEqual(
+            self._run(tag="v2.7.8", current="v2.7.6", unpublished=("v2.7.8",)),
+            [],
+        )
+
+    def test_an_unlisted_anchor_is_reported_even_when_others_are_listed(self):
+        # The excuse is per-tag. Recording one unpublished tag must not blanket-
+        # accept every anchor that disagrees with the table, or the forgotten
+        # promotion this check exists for comes back.
+        failures = self._run(tag="v2.7.9", current="v2.7.6", unpublished=("v2.7.8",))
+        self.assertEqual(len(failures), 1)
+        self.assertIn("does not match the current release", failures[0])
+        self.assertIn("UNPUBLISHED_RELEASE_TAGS", failures[0])
 
     def test_a_table_without_exactly_one_current_release_is_reported(self):
         # The promotion step edits this column, so a botched edit is the likely

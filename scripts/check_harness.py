@@ -197,7 +197,7 @@ REQUIRED_TEXT = {
     ],
     ".github/workflows/release.yml": [
         "fetch-depth: 0",
-        "refs/tags/v2.7.6",
+        "refs/tags/v2.7.8",
         "verify_release_provenance.py",
         "--git-files",
         "--protected-history",
@@ -762,7 +762,8 @@ def _check_release_toolchain_lock(failures: list[str]) -> None:
 
 
 def _check_release_anchor_tracks_current_release(failures: list[str]) -> None:
-    """The provenance anchor must name the release the table calls current.
+    """The provenance anchor must not fall BEHIND the release the table calls
+    current.
 
     Two post-release steps are easy to skip because nothing failed when they
     were: advancing `PRIOR_RELEASE_TAG`, and promoting the shipped release in
@@ -776,6 +777,21 @@ def _check_release_anchor_tracks_current_release(failures: list[str]) -> None:
     in this file, so the checks moved only when someone remembered to move them.
     Tying the two together removes the hand-maintained copy and makes skipping
     either step fail here instead of at a tag months later.
+
+    This required the two to be EQUAL, which cannot hold when a tag is cut and
+    then fails to publish. `v2.7.7` and `v2.7.8` were both refused at the
+    publish gate, so the newest annotated tag is ahead of the newest PUBLISHED
+    release, and the anchor must follow the tag rather than the table: the
+    reviewed lineage is measured from a tag, and anchoring to a published-but-
+    older release would leave the unpublishable commits inside every future
+    lineage.
+
+    The exception is declared, not inferred. An anchor that differs from the
+    table is accepted only when the tag is listed in `UNPUBLISHED_RELEASE_TAGS`,
+    which is a hand-maintained record of tags that published nothing. Anything
+    else - including the forgotten promotion this check was written to catch -
+    still fails, and a tag cannot be quietly excused without a reviewed edit to
+    that list saying so.
     """
     provenance_path = REPO_ROOT / "scripts/verify_release_provenance.py"
     readme_path = REPO_ROOT / "README.md"
@@ -805,13 +821,30 @@ def _check_release_anchor_tracks_current_release(failures: list[str]) -> None:
         )
         return
 
-    if anchor_match.group("tag") != current[0]:
-        failures.append(
-            "release provenance anchor "
-            f"{anchor_match.group('tag')} does not match the current release "
-            f"{current[0]} in the README table: advance the anchor after a "
-            "release, or promote the shipped release in the table"
-        )
+    anchor_tag = anchor_match.group("tag")
+    if anchor_tag == current[0]:
+        return
+
+    unpublished = re.search(
+        r"^UNPUBLISHED_RELEASE_TAGS = \((?P<tags>[^)]*)\)",
+        provenance_path.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    declared = (
+        set(re.findall(r"v[0-9]+\.[0-9]+\.[0-9]+", unpublished.group("tags")))
+        if unpublished
+        else set()
+    )
+    if anchor_tag in declared:
+        return
+
+    failures.append(
+        "release provenance anchor "
+        f"{anchor_tag} does not match the current release "
+        f"{current[0]} in the README table: advance the anchor after a "
+        "release, promote the shipped release in the table, or record the tag "
+        "in UNPUBLISHED_RELEASE_TAGS if it never published"
+    )
 
 
 def _documentation_bridge_rule():
