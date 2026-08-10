@@ -807,10 +807,36 @@ def reconcile_source_device_tag_claims(
         generation=generation,
         snapshot_id=snapshot_id,
     )
-    if missing or ambiguous:
+    # A name Forward reports that NetBox does not have is SKIPPED, not fatal.
+    #
+    # This refused the whole mutation when any name failed to resolve, and a
+    # customer sat behind it: eleven devices carried the include tags in Forward
+    # but did not exist in their NetBox, out of roughly 3400, and both the
+    # scope-tag and status-tag domains refused on every run. Ownership never
+    # completed, so convergence stayed blocked and every drift figure read "Not
+    # measured", with no remedy short of creating the absent devices or editing
+    # Forward's tags.
+    #
+    # The two failures are not equally dangerous, which is why only one is fatal:
+    #
+    # `missing` - no device of that name exists. There is nothing to tag and
+    # nothing to release, so skipping the key changes no NetBox row. Safe.
+    #
+    # `ambiguous` - several devices share the name. `desired_ids` drives BOTH
+    # the add and the remove below, so dropping the key silently could release a
+    # claim from a device that currently holds one, and resolving it could tag
+    # the wrong device. Neither is acceptable, so this stays a refusal.
+    #
+    # `reconcile_virtual_parent_claims` already resolves identities this way -
+    # it skips unresolved names per key and counts them - and that is the one
+    # ownership domain that kept completing for the customer while these two
+    # failed.
+    if ambiguous:
         raise OwnershipConflictError(
-            "Refusing name-only tag mutation because device identity is unresolved "
-            "or ambiguous: " + ", ".join((ambiguous + missing)[:10])
+            "Refusing name-only tag mutation because device identity is "
+            f"ambiguous for {len(ambiguous)} name(s); {len(missing)} further "
+            "name(s) are absent from NetBox. Names are customer data, so the "
+            "counts are reported instead."
         )
     desired_ids = set(identities.values())
     with ownership_write_lock():
@@ -842,6 +868,10 @@ def reconcile_source_device_tag_claims(
                 "assignments_removed": finalized["assignments_removed"],
                 "total": len(desired_ids),
                 "current": finalized["current"],
+                # Both exits report the same keys. This one is reached when
+                # nothing resolved at all, which is exactly when the caller most
+                # needs to know how many names were skipped.
+                "skipped_absent_devices": len(missing),
             }
 
         _ensure_managed_tag(
@@ -901,6 +931,11 @@ def reconcile_source_device_tag_claims(
             "claims_released": released,
             **materialized,
             "total": len(desired_ids),
+            # Skipping absent devices must not be invisible. A count is
+            # schema-safe where the names are not, and a number that keeps
+            # climbing is the signal that Forward is tagging devices this NetBox
+            # has never had.
+            "skipped_absent_devices": len(missing),
         }
 
 
