@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -35,6 +36,10 @@ RUNTIME_VERSION_TEST = (
 )
 PACKAGE_JSON = REPO_ROOT / "package.json"
 NODE_MODULES = REPO_ROOT / "node_modules"
+
+
+PATTERN_FEED_VARIABLE = "FORWARD_SENSITIVE_PATTERNS"
+PATTERN_PARITY_ACKNOWLEDGEMENT = "FORWARD_NETBOX_PATTERN_PARITY_UNVERIFIED"
 
 
 class PreflightError(Exception):
@@ -247,6 +252,67 @@ def check_release_plan_evidence_base(version: str) -> str:
     return f"{recorded[:12]} matches {reference}"
 
 
+def check_sensitive_pattern_parity(environment: dict[str, str] | None = None) -> str:
+    """Run the RELEASE-TIME sensitive scan before the tag exists.
+
+    The guard matches against whatever pattern feed it is handed. Locally that
+    is `.sensitive-patterns.local.txt`; the publish workflow additionally
+    supplies `FORWARD_SENSITIVE_PATTERNS`, a repository SECRET that is a strict
+    superset of it. Nothing local could see the difference, so a customer name
+    used as a test fixture passed every local gate and was caught only by the
+    publish workflow - after the tag was pushed and therefore immutable. That
+    spent `v2.7.7`.
+
+    The scan itself is unchanged; only its timing is. Running it here makes the
+    same refusal cost nothing instead of a version number.
+
+    The feed is a secret, so a checkout that does not have it cannot verify
+    parity. That case is not silently tolerated: it fails unless the operator
+    acknowledges it explicitly, and the acknowledgement is meant to be recorded
+    in the release authorization the way the offline upgrade discovery already
+    is - visible in the evidence rather than hidden in someone's shell.
+    """
+    environment = dict(os.environ if environment is None else environment)
+    if not environment.get(PATTERN_FEED_VARIABLE, "").strip():
+        if environment.get(PATTERN_PARITY_ACKNOWLEDGEMENT, "").strip():
+            return (
+                f"UNVERIFIED - {PATTERN_FEED_VARIABLE} is not available in this "
+                f"checkout and {PATTERN_PARITY_ACKNOWLEDGEMENT} was set; the "
+                "release gate will apply the superset feed and can still refuse "
+                "the tag. Record this in the release authorization."
+            )
+        raise PreflightError(
+            f"{PATTERN_FEED_VARIABLE} is not set, so the release-time sensitive "
+            "scan cannot run and this checkout cannot tell whether the tree "
+            "carries customer data the release gate will refuse. That refusal "
+            "happens after the tag is pushed, and a tag is immutable. Export the "
+            f"feed to verify parity, or set {PATTERN_PARITY_ACKNOWLEDGEMENT}=1 to "
+            "proceed with the gap recorded."
+        )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "scripts/check_sensitive_content.py",
+            "--git-files",
+            "--protected-history",
+            "--require-env-patterns",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        env=environment,
+    )
+    if completed.returncode != 0:
+        detail = (completed.stdout + completed.stderr).strip().splitlines()
+        raise PreflightError(
+            "the release-time sensitive scan refused this tree: "
+            + (detail[-1] if detail else "no output")
+        )
+    return f"verified against {PATTERN_FEED_VARIABLE}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="emit the results as JSON")
@@ -257,6 +323,7 @@ def main() -> int:
         dependencies = check_ui_harness_dependencies()
         advisories = check_dependency_advisories()
         evidence_base = check_release_plan_evidence_base(version)
+        pattern_parity = check_sensitive_pattern_parity()
     except PreflightError as exc:
         print(f"release preflight failed: {exc}", file=sys.stderr)
         return 1
@@ -266,6 +333,7 @@ def main() -> int:
         "ui_harness_dependencies": dependencies,
         "dependency_advisories": advisories,
         "evidence_base_commit": evidence_base,
+        "sensitive_pattern_parity": pattern_parity,
     }
     if arguments.json:
         print(json.dumps(result, sort_keys=True))
@@ -276,6 +344,7 @@ def main() -> int:
         )
         print(f"release preflight passed: {advisories}")
         print(f"release preflight passed: evidence base commit {evidence_base}")
+        print(f"release preflight passed: sensitive pattern parity {pattern_parity}")
     return 0
 
 

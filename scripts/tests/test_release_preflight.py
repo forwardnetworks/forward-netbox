@@ -244,3 +244,56 @@ class EvidenceBaseCommitTest(unittest.TestCase):
                     "records no evidence base commit",
                     preflight.check_release_plan_evidence_base("9.9.9"),
                 )
+
+
+class SensitivePatternParityTest(unittest.TestCase):
+    """The gap that spent v2.7.7.
+
+    The release feed is a repository secret and a strict superset of the local
+    pattern file, so a local run cannot see what the publish gate will refuse.
+    Moving that scan ahead of the tag is only useful if its absence is loud.
+    """
+
+    def test_a_checkout_without_the_feed_is_refused(self):
+        with self.assertRaises(preflight.PreflightError) as caught:
+            preflight.check_sensitive_pattern_parity(environment={})
+
+        message = str(caught.exception)
+        self.assertIn(preflight.PATTERN_FEED_VARIABLE, message)
+        # The reason the timing matters has to survive in the message.
+        self.assertIn("immutable", message)
+
+    def test_an_acknowledged_gap_is_allowed_and_says_so(self):
+        result = preflight.check_sensitive_pattern_parity(
+            environment={preflight.PATTERN_PARITY_ACKNOWLEDGEMENT: "1"}
+        )
+
+        self.assertIn("UNVERIFIED", result)
+        # It must direct the operator to record it, not merely pass quietly.
+        self.assertIn("release authorization", result)
+
+    def test_a_present_feed_runs_the_real_scan_and_refuses_a_match(self):
+        environment = {preflight.PATTERN_FEED_VARIABLE: "definitely-a-customer-name"}
+        with mock.patch.object(preflight.subprocess, "run") as run:
+            run.return_value = mock.Mock(
+                returncode=1,
+                stdout="path:x.py:1: env literal pattern line 1\n",
+                stderr="",
+            )
+            with self.assertRaises(preflight.PreflightError) as caught:
+                preflight.check_sensitive_pattern_parity(environment=environment)
+
+        self.assertIn("refused this tree", str(caught.exception))
+        self.assertIn("env literal pattern", str(caught.exception))
+
+    def test_a_present_feed_that_scans_clean_reports_verified(self):
+        environment = {preflight.PATTERN_FEED_VARIABLE: "definitely-a-customer-name"}
+        with mock.patch.object(preflight.subprocess, "run") as run:
+            run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+            result = preflight.check_sensitive_pattern_parity(environment=environment)
+
+        self.assertIn("verified", result)
+        # The scan must be the release-time one, superset feed included.
+        arguments = run.call_args.args[0]
+        self.assertIn("--require-env-patterns", arguments)
+        self.assertIn("--protected-history", arguments)
