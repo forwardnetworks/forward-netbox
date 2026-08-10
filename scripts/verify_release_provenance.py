@@ -18,8 +18,8 @@ GITHUB_API_URL = "https://api.github.com"
 # sensitive-content scan still runs - `release.yml` invokes
 # `check_sensitive_content.py` directly, and pre-commit runs it locally - but
 # there is no longer a GitHub check run or commit status to verify.
-PRIOR_RELEASE_TAG = "v2.7.5"
-PRIOR_POST_RELEASE_DOC_COMMIT = "120b41c20e94602113ccfc443b19ff2de95ee44b"
+PRIOR_RELEASE_TAG = "v2.7.6"
+PRIOR_POST_RELEASE_DOC_COMMIT = "4deb989f2dffb514027f0b0426ed918cccc24fb7"
 BOOTSTRAP_REQUIRED_FILES = (
     "scripts/check_sensitive_content.py",
     "scripts/sensitive_content.py",
