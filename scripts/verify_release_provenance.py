@@ -18,8 +18,19 @@ GITHUB_API_URL = "https://api.github.com"
 # sensitive-content scan still runs - `release.yml` invokes
 # `check_sensitive_content.py` directly, and pre-commit runs it locally - but
 # there is no longer a GitHub check run or commit status to verify.
-PRIOR_RELEASE_TAG = "v2.7.6"
-PRIOR_POST_RELEASE_DOC_COMMIT = "4deb989f2dffb514027f0b0426ed918cccc24fb7"
+# Tags that were cut and then refused at the publish gate. They exist and are
+# annotated, so they are valid provenance anchors, but they published nothing
+# and must never be promoted in the compatibility table. The harness consults
+# this list so that an anchor ahead of the current release is accepted ONLY for
+# a tag recorded here - a forgotten promotion is still a failure everywhere else.
+#
+# v2.7.7: the sensitive-content guard matched a customer name in a test fixture.
+# v2.7.8: the history rewrite that removed that name stripped PR association
+#         from two commits, so their provenance could not be verified.
+UNPUBLISHED_RELEASE_TAGS = ("v2.7.3", "v2.7.7", "v2.7.8")
+
+PRIOR_RELEASE_TAG = "v2.7.8"
+PRIOR_POST_RELEASE_DOC_COMMIT = "0f4a4a7b9fb7bc95e729e69ca9c63513e071d61d"
 BOOTSTRAP_REQUIRED_FILES = (
     "scripts/check_sensitive_content.py",
     "scripts/sensitive_content.py",
