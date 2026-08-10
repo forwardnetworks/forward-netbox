@@ -177,7 +177,15 @@ URL_VARIABLES = frozenset({"FORWARD_NETBOX_HOST_PORT", "NETBOX_URL"})
 # it is treated like the host-port pair: optional, value-bounded, and visible in
 # the evidence rather than hidden from it.
 UPGRADE_FROM_VARIABLE = "FORWARD_NETBOX_UPGRADE_FROM_VERSION"
-OPTIONAL_ENVIRONMENT_VARIABLES = URL_VARIABLES | {UPGRADE_FROM_VARIABLE}
+# Set when the release-time pattern feed - a repository secret - is not present
+# in the checkout, so the preflight could not run the superset scan before the
+# tag. Recorded in the evidence rather than hidden, exactly like the offline
+# upgrade discovery above.
+PATTERN_PARITY_VARIABLE = "FORWARD_NETBOX_PATTERN_PARITY_UNVERIFIED"
+OPTIONAL_ENVIRONMENT_VARIABLES = URL_VARIABLES | {
+    UPGRADE_FROM_VARIABLE,
+    PATTERN_PARITY_VARIABLE,
+}
 
 
 def _environment_matches(
