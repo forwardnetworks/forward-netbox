@@ -36,6 +36,7 @@ from .contributor_baseline import ContributorRelationSeed
 from .contributor_baseline import ContributorWorkRelation
 from .contributor_baseline import decode_scope_payload
 from .contributor_baseline import stage_contributor_baseline
+from .diagnostics import exception_type
 from .diagnostics import failure_classifier
 from .diagnostics import failure_reason
 from .diagnostics import safe_exception_summary
@@ -47,6 +48,10 @@ from .forward_api import DEFAULT_QUERY_FETCH_CONCURRENCY
 from .forward_api import LATEST_COLLECTED_SNAPSHOT
 from .forward_api import LATEST_PROCESSED_SNAPSHOT
 from .forward_api import MAX_QUERY_FETCH_CONCURRENCY
+from .full_removal_reconciliation import coalesce_identity
+from .full_removal_reconciliation import compute_full_removals
+from .full_removal_reconciliation import previous_full_rows
+from .full_removal_reconciliation import RemovalReconciliationRefused
 from .model_contracts import architecture_default_coalesce_fields_for_model
 from .query_diagnostics import (
     append_ipaddress_diagnostics as sync_append_ipaddress_diagnostics,
@@ -2927,6 +2932,13 @@ class ForwardQueryFetcher:
             model_string, rows, context
         )
         delete_rows = removed_rows if context.device_tag_prune_out_of_scope else []
+        delete_rows = delete_rows + self._full_run_removals(
+            model_string=model_string,
+            current_rows=filtered_rows,
+            coalesce_fields=coalesce_fields,
+            already_removed=delete_rows,
+            shard_scope=original_shard_scope,
+        )
         return _return(
             filtered_rows,
             delete_rows,
@@ -3322,6 +3334,75 @@ class ForwardQueryFetcher:
                 obj=self.sync,
             )
         return filtered, removed
+
+    def _full_run_removals(
+        self,
+        *,
+        model_string,
+        current_rows,
+        coalesce_fields,
+        already_removed,
+        shard_scope,
+    ):
+        """Baseline rows this full result no longer contains.
+
+        A full execution used to compute no removals at all, so any row written
+        by a map that was later re-pointed at a different query stayed forever.
+        The promoted contributor baseline is the record of what was written, and
+        comparing against it needs no extra Forward call.
+
+        Refusals here are per-model and never fail the run: not removing is
+        always a safe outcome, and taking the whole sync down over an advisory
+        comparison would trade a cosmetic problem for an outage.
+        """
+        if shard_scope:
+            # A shard holds part of the model by construction, so everything
+            # outside it is "absent" and would be removed. Only a whole-model
+            # fetch can speak for the whole model.
+            return []
+        try:
+            previous_rows = previous_full_rows(self.sync, model_string)
+            removals = compute_full_removals(
+                model_string,
+                current_rows=current_rows,
+                previous_rows=previous_rows,
+                coalesce_fields=coalesce_fields,
+            )
+        except RemovalReconciliationRefused as exc:
+            self.logger.log_warning(str(exc), obj=self.sync)
+            return []
+        except JobTimeoutException:
+            raise
+        except Exception as exc:
+            self.logger.log_warning(
+                f"Removal reconciliation for {model_string} could not run "
+                f"({exception_type(exc)}); nothing was removed for this model.",
+                obj=self.sync,
+            )
+            return []
+        if not removals:
+            return []
+        # The device-tag scope pass may already have named some of these.
+        seen = set()
+        for row in already_removed:
+            key = coalesce_identity(model_string, row, coalesce_fields)
+            if key is not None:
+                seen.add(key)
+        deduped = []
+        for row in removals:
+            key = coalesce_identity(model_string, row, coalesce_fields)
+            if key is None or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(row)
+        if deduped:
+            self.logger.log_info(
+                f"Removal reconciliation staged {len(deduped)} delete(s) for "
+                f"{model_string}: rows the promoted baseline recorded that this "
+                "full result no longer returns.",
+                obj=self.sync,
+            )
+        return deduped
 
     def _filter_rows_to_shard(
         self,

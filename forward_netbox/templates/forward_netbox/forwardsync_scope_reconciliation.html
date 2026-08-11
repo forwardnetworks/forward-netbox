@@ -130,6 +130,24 @@
       <h5 class="card-header">{% trans "Out-of-Scope Sample" %}</h5>
       <div class="card-body">
         {% if payload.out_of_scope_sample %}
+          {% if payload.out_of_scope_absence.available %}
+            {# Which kind of absence, because all three look identical here and
+               only one of them means the device really left. #}
+            <p class="mb-2">
+              {% if payload.out_of_scope_absence.absent_from_snapshot %}
+                <span class="badge text-bg-secondary">{% blocktrans count counter=payload.out_of_scope_absence.absent_from_snapshot %}{{ counter }} gone from Forward{% plural %}{{ counter }} gone from Forward{% endblocktrans %}</span>
+              {% endif %}
+              {% if payload.out_of_scope_absence.present_untagged %}
+                <span class="badge text-bg-warning">{% blocktrans count counter=payload.out_of_scope_absence.present_untagged %}{{ counter }} in Forward but untagged{% plural %}{{ counter }} in Forward but untagged{% endblocktrans %}</span>
+              {% endif %}
+              {% if payload.out_of_scope_absence.vendor_excluded %}
+                <span class="badge text-bg-info">{% blocktrans count counter=payload.out_of_scope_absence.vendor_excluded %}{{ counter }} custom-command source{% plural %}{{ counter }} custom-command source{% endblocktrans %}</span>
+              {% endif %}
+            </p>
+            {% if payload.out_of_scope_absence.present_untagged %}
+              <p class="text-muted small mb-2">{% trans "Devices Forward still has but no longer reports under these tags. A Forward-side tag edit and a narrowed query look identical here — confirm in Forward before pruning." %}</p>
+            {% endif %}
+          {% endif %}
           <ul class="mb-0">
             {% for name in payload.out_of_scope_sample %}<li><code>{{ name }}</code></li>{% endfor %}
           </ul>

@@ -67,6 +67,9 @@ _OWNERSHIP_CONFLICT_REASONS = (
         "is reserved for forward status ownership",
     ),
     ("scope-tag-name-slug-disagree", "identify different netbox tags"),
+    # No longer raised: an ambiguous name is now held rather than refused. The
+    # entry stays because job records persisted under it are still on customer
+    # systems and must keep resolving to the same slug.
     ("tag-mutation-identity-unresolved", "refusing name-only tag mutation"),
     ("virtual-parent-claims-disagree", "virtual-parent claims disagree"),
 )

@@ -561,3 +561,132 @@ class RoutingDanglingAuditCommandTest(TransactionTestCase):
         call_command("forward_routing_dangling_audit", stdout=out)
         payload = json.loads(out.getvalue())
         self.assertGreaterEqual(payload["dangling"]["bgprouter"], 1)
+
+
+class OutOfScopeAbsenceClassificationTest(TestCase):
+    """Out-of-scope membership is decided by absence, and three very different
+    situations produce it. The panel used to say only "absent from the result",
+    which is what made a customer's accurate report look like a bug and what
+    makes Prune orphans dangerous when a query has merely narrowed."""
+
+    def setUp(self):
+        self.source = ForwardSource.objects.create(
+            name="absence-source",
+            type="saas",
+            url="https://fwd.app",
+            status="ready",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "network_id": "net-1",
+                "device_tag_include_tags": ["Prod_Core"],
+                "device_tag_include_match": "any",
+            },
+        )
+        self.sync = ForwardSync.objects.create(
+            name="absence-sync",
+            source=self.source,
+            parameters={"snapshot_id": "latestProcessed"},
+        )
+        mfr = Manufacturer.objects.create(name="MfrA", slug="mfr-a")
+        self.dt = DeviceType.objects.create(manufacturer=mfr, model="dt-a", slug="dt-a")
+        self.role = DeviceRole.objects.create(name="RoleA", slug="role-a")
+        self.site = Site.objects.create(name="SiteA", slug="site-a")
+
+    def _make_devices(self, *names):
+        for name in names:
+            Device.objects.create(
+                name=name, device_type=self.dt, role=self.role, site=self.site
+            )
+
+    def _claim_scope(self, *names):
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync, snapshot_id="prior-snapshot", baseline_ready=True
+        )
+        reconcile_sync_scope_tag_claims(
+            self.sync,
+            {name: ["Prod_Core"] for name in names},
+            generation=ingestion.pk,
+            snapshot_id=ingestion.snapshot_id,
+        )
+
+    def _report(self, scope_rows, census_rows):
+        from forward_netbox.utilities.scope_reconciliation import (
+            compute_scope_reconciliation,
+        )
+
+        client = Mock()
+        client.run_nqe_query = Mock(side_effect=[scope_rows, census_rows])
+        with patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"):
+            with patch.object(ForwardSource, "get_client", return_value=client):
+                return compute_scope_reconciliation(self.sync), client
+
+    def test_each_kind_of_absence_is_counted_separately(self):
+        self._make_devices("in-scope", "gone", "untagged", "custom")
+        self._claim_scope("in-scope", "gone", "untagged", "custom")
+        scope_rows = [{"name": "in-scope", "completed": True}]
+        census_rows = [
+            {"name": "in-scope", "vendor": "Vendor.CISCO"},
+            # `gone` is deliberately absent from the census.
+            {"name": "untagged", "vendor": "Vendor.ARISTA"},
+            {"name": "custom", "vendor": "Vendor.FORWARD_CUSTOM"},
+        ]
+
+        report, _client = self._report(scope_rows, census_rows)
+
+        absence = report["out_of_scope_absence"]
+        self.assertTrue(absence["available"])
+        self.assertEqual(absence["absent_from_snapshot"], 1)
+        self.assertEqual(absence["present_untagged"], 1)
+        self.assertEqual(absence["vendor_excluded"], 1)
+        self.assertEqual(absence["absent_from_snapshot_sample"], ["gone"])
+        self.assertEqual(absence["present_untagged_sample"], ["untagged"])
+
+    def test_no_orphans_costs_no_extra_query(self):
+        # A converged sync must not pay an NQE execution for a classification
+        # of nothing - Forward engineering has objected to call volume before.
+        self._make_devices("in-scope")
+        self._claim_scope("in-scope")
+
+        report, client = self._report([{"name": "in-scope", "completed": True}], [])
+
+        self.assertEqual(report["netbox_out_of_scope"], 0)
+        self.assertEqual(client.run_nqe_query.call_count, 1)
+        self.assertTrue(report["out_of_scope_absence"]["available"])
+
+    def test_the_classification_query_sees_what_the_scope_query_filtered_out(self):
+        self._make_devices("in-scope", "custom")
+        self._claim_scope("in-scope", "custom")
+
+        _report, client = self._report(
+            [{"name": "in-scope", "completed": True}],
+            [{"name": "custom", "vendor": "Vendor.FORWARD_CUSTOM"}],
+        )
+
+        census_query = client.run_nqe_query.call_args_list[1].kwargs["query"]
+        self.assertNotIn("FORWARD_CUSTOM", census_query)
+        self.assertNotIn("tagNames", census_query)
+
+    def test_a_failed_classification_never_fails_the_report(self):
+        # This report is what an operator reads before deciding to delete
+        # devices. An advisory extra must not be able to take it away.
+        self._make_devices("in-scope", "gone")
+        self._claim_scope("in-scope", "gone")
+        client = Mock()
+        client.run_nqe_query = Mock(
+            side_effect=[
+                [{"name": "in-scope", "completed": True}],
+                RuntimeError("boom"),
+            ]
+        )
+        from forward_netbox.utilities.scope_reconciliation import (
+            compute_scope_reconciliation,
+        )
+
+        with patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"):
+            with patch.object(ForwardSource, "get_client", return_value=client):
+                report = compute_scope_reconciliation(self.sync)
+
+        self.assertEqual(report["netbox_out_of_scope"], 1)
+        self.assertFalse(report["out_of_scope_absence"]["available"])

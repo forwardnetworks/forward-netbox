@@ -174,7 +174,13 @@ def finalize_device_identities_locked(ingestion):
 
 
 def resolve_device_identities(sync, source_device_keys, *, generation, snapshot_id):
-    """Resolve exact device PKs and persist globally unique pre-identity rows."""
+    """Resolve exact device PKs and persist globally unique pre-identity rows.
+
+    Returns ``(identities, missing, ambiguous, ambiguous_device_ids)``. The
+    fourth value maps each ambiguous name to the device PKs that tie for it,
+    which callers need in order to hold those devices rather than act on a
+    guess - see `reconcile_source_device_tag_claims`.
+    """
     from dcim.models import Device
 
     from ..models import ForwardDeviceIdentity
@@ -194,11 +200,41 @@ def resolve_device_identities(sync, source_device_keys, *, generation, snapshot_
         "pk", "name"
     ):
         candidates[str(name)].append(device_id)
-    ambiguous = sorted(key for key, values in candidates.items() if len(values) > 1)
-    missing = sorted(key for key in unresolved if not candidates.get(key))
-    adoptable = {
-        key: values[0] for key, values in candidates.items() if len(values) == 1
+    # A candidate this sync already maps to a DIFFERENT source key is that other
+    # Forward device, whatever it is named. Excluding it is not a tie-break: the
+    # `(sync, device)` uniqueness constraint means binding this name to it could
+    # never have succeeded anyway - the attempt raised. Two devices sharing a
+    # name where one is already spoken for is the common shape, because NetBox
+    # scopes device-name uniqueness to the site, so a device that moves site or
+    # is re-created alongside its predecessor leaves exactly this pair.
+    tied_ids = {device_id for values in candidates.values() for device_id in values}
+    claimed_elsewhere = set(
+        ForwardDeviceIdentity.objects.filter(sync=sync, device_id__in=tied_ids)
+        .exclude(source_device_key__in=keys)
+        .values_list("device_id", flat=True)
+    )
+    free = {
+        key: [device_id for device_id in values if device_id not in claimed_elsewhere]
+        for key, values in candidates.items()
     }
+    # `missing` means NetBox has no device of this name AT ALL. A name that has
+    # rows but no bindable one is NOT missing, and the distinction decides
+    # whether claims survive: missing names are simply skipped, while a name
+    # with rows is held, so its devices keep the tags they have.
+    #
+    # The case that forces the distinction is a device whose Forward name
+    # changed. Its old identity row still points at the NetBox device (departed
+    # source keys are never pruned), so under the new key every candidate is
+    # excluded here. Calling that "missing" would drop the name from
+    # `desired_ids`, and the release below would then strip the device's Forward
+    # tags silently, every run. Holding leaves them exactly as they are.
+    # "Ambiguous" now covers both ways a name can have rows yet no single
+    # bindable one: several free candidates, or none because they are all bound
+    # elsewhere. Callers treat them identically - hold, do not guess.
+    ambiguous = sorted(key for key, values in free.items() if len(values) != 1)
+    ambiguous_device_ids = {key: set(candidates[key]) for key in ambiguous}
+    missing = sorted(key for key in unresolved if key not in candidates)
+    adoptable = {key: values[0] for key, values in free.items() if len(values) == 1}
     if adoptable:
         with ownership_write_lock():
             for source_key, device_id in adoptable.items():
@@ -212,7 +248,65 @@ def resolve_device_identities(sync, source_device_keys, *, generation, snapshot_
                     },
                 )
         identities.update(adoptable)
-    return identities, missing, ambiguous
+    return identities, missing, ambiguous, ambiguous_device_ids
+
+
+def device_name_ambiguity_report(sync):
+    """Name the NetBox devices behind a held ambiguous name (read-only).
+
+    `reconcile_source_device_tag_claims` reports only a COUNT, because it writes
+    into a persisted job record and device names are customer data. This runs on
+    an operator's own console against their own NetBox, which is the one place
+    the names may be shown - a count with no way to locate what it refers to is
+    not actionable.
+    """
+    from collections import Counter
+
+    from dcim.models import Device
+
+    from ..models import ForwardDeviceIdentity
+
+    duplicated = [
+        name
+        for name, count in Counter(
+            name
+            for name in Device.objects.values_list("name", flat=True)
+            if (name or "").strip()
+        ).items()
+        if count > 1
+    ]
+    rows = Device.objects.filter(name__in=duplicated).select_related("site")
+    bound = dict(
+        ForwardDeviceIdentity.objects.filter(
+            sync=sync,
+            device_id__in=[device.pk for device in rows],
+        ).values_list("device_id", "source_device_key")
+    )
+    by_name = {}
+    for device in rows:
+        by_name.setdefault(str(device.name), []).append(
+            {
+                "device_id": device.pk,
+                "site": getattr(device.site, "name", ""),
+                "status": device.status,
+                # A device already bound to a different Forward source key is
+                # excluded from resolution, so a pair where exactly one is bound
+                # is not ambiguous at all - it resolves to the free row.
+                "bound_to_source_key": bound.get(device.pk, ""),
+            }
+        )
+    ambiguous = {
+        name: entries
+        for name, entries in by_name.items()
+        if len([e for e in entries if not e["bound_to_source_key"]]) > 1
+    }
+    return {
+        "sync": sync.name,
+        "duplicated_names": len(by_name),
+        "ambiguous_names": sorted(ambiguous),
+        "resolved_by_existing_binding": sorted(set(by_name) - set(ambiguous)),
+        "devices": ambiguous,
+    }
 
 
 def _generation_values(sync, generation=None, snapshot_id=None):
@@ -801,7 +895,7 @@ def reconcile_source_device_tag_claims(
     from ..models import ForwardDeviceTagClaim
 
     generation, snapshot_id = _generation_values(sync, generation, snapshot_id)
-    identities, missing, ambiguous = resolve_device_identities(
+    identities, missing, ambiguous, ambiguous_device_ids = resolve_device_identities(
         sync,
         device_names,
         generation=generation,
@@ -822,22 +916,32 @@ def reconcile_source_device_tag_claims(
     # `missing` - no device of that name exists. There is nothing to tag and
     # nothing to release, so skipping the key changes no NetBox row. Safe.
     #
-    # `ambiguous` - several devices share the name. `desired_ids` drives BOTH
-    # the add and the remove below, so dropping the key silently could release a
-    # claim from a device that currently holds one, and resolving it could tag
-    # the wrong device. Neither is acceptable, so this stays a refusal.
+    # `ambiguous` - several devices share the name. Neither guessing nor
+    # dropping the key is acceptable: `desired_ids` drives BOTH the add and the
+    # remove below, so resolving it could tag the wrong device, and dropping it
+    # could release a claim from a device that currently holds one.
+    #
+    # This used to be a refusal, and the same customer then sat behind THAT for
+    # a release: one ambiguous name out of roughly 3400 failed both the
+    # scope-tag and status-tag domains on every run, so ownership never
+    # completed, convergence stayed blocked, and every drift figure still read
+    # "Not measured". Refusing the whole domain to protect one name is the same
+    # all-or-nothing mistake the absent-device case above was fixed for.
+    #
+    # So an ambiguous name is HELD instead: never added, never released, and -
+    # this is the part that matters - its existing claims are refreshed to the
+    # current generation below. A held claim left at an older generation counts
+    # toward `stale_claims`, which feeds `integrity_issue_count`, which gates
+    # `complete`; holding without refreshing would swap one permanent block for
+    # another. The device keeps exactly the tag state it already had, and the
+    # count is reported so a growing tie is visible.
     #
     # `reconcile_virtual_parent_claims` already resolves identities this way -
     # it skips unresolved names per key and counts them - and that is the one
-    # ownership domain that kept completing for the customer while these two
-    # failed.
-    if ambiguous:
-        raise OwnershipConflictError(
-            "Refusing name-only tag mutation because device identity is "
-            f"ambiguous for {len(ambiguous)} name(s); {len(missing)} further "
-            "name(s) are absent from NetBox. Names are customer data, so the "
-            "counts are reported instead."
-        )
+    # ownership domain that kept completing for the customer while these failed.
+    held_ids = set()
+    for name in ambiguous:
+        held_ids |= ambiguous_device_ids.get(name, set())
     desired_ids = set(identities.values())
     with ownership_write_lock():
         tag = Tag.objects.filter(slug=slug).first()
@@ -872,13 +976,12 @@ def reconcile_source_device_tag_claims(
                 # nothing resolved at all, which is exactly when the caller most
                 # needs to know how many names were skipped.
                 "skipped_absent_devices": len(missing),
+                "ambiguous_device_names": len(ambiguous),
+                # No tag means no claims, so nothing can be held.
+                "held_ambiguous_devices": 0,
+                "_ambiguous_names": set(ambiguous),
             }
 
-        _ensure_managed_tag(
-            tag,
-            claim_type,
-            plugin_assignment_ids=desired_ids,
-        )
         current_ids = set(
             ForwardDeviceTagClaim.objects.filter(
                 sync=sync,
@@ -886,17 +989,28 @@ def reconcile_source_device_tag_claims(
                 claim_type=claim_type,
             ).values_list("device_id", flat=True)
         )
+        # Held devices keep whatever claim they already have. They are retained
+        # and refreshed, never created: a device that ties for an ambiguous name
+        # and holds no claim stays unclaimed, because tagging it would be the
+        # guess this hold exists to avoid.
+        held = current_ids & held_ids
+        retained_ids = desired_ids | held
+        _ensure_managed_tag(
+            tag,
+            claim_type,
+            plugin_assignment_ids=retained_ids,
+        )
         released, _ = ForwardDeviceTagClaim.objects.filter(
             sync=sync,
             tag=tag,
             claim_type=claim_type,
-            device_id__in=current_ids - desired_ids,
+            device_id__in=current_ids - retained_ids,
         ).delete()
         ForwardDeviceTagClaim.objects.filter(
             sync=sync,
             tag=tag,
             claim_type=claim_type,
-            device_id__in=current_ids & desired_ids,
+            device_id__in=current_ids & retained_ids,
         ).update(ingestion_id=generation, snapshot_id=snapshot_id)
         new_ids = desired_ids - current_ids
         ForwardDeviceTagClaim.objects.bulk_create(
@@ -936,6 +1050,17 @@ def reconcile_source_device_tag_claims(
             # climbing is the signal that Forward is tagging devices this NetBox
             # has never had.
             "skipped_absent_devices": len(missing),
+            # Likewise for held names: this is the count an operator needs to
+            # decide whether to de-duplicate the NetBox devices behind them, and
+            # it is the number that used to be destroyed by the refusal.
+            "ambiguous_device_names": len(ambiguous),
+            "held_ambiguous_devices": len(held),
+            # Underscore-prefixed because it carries device names, which are
+            # customer data. Callers that fan out over several tags union these
+            # to count DISTINCT ambiguous names - summing per-tag counts would
+            # multiply one duplicated device by however many tags it carries.
+            # It must never reach a persisted diagnostic; only its length may.
+            "_ambiguous_names": set(ambiguous),
         }
 
 
@@ -1088,6 +1213,8 @@ def reconcile_sync_scope_tag_claims(
             tag_by_id[tag.pk] = tag
 
         added = 0
+        held_devices = 0
+        ambiguous_names = set()
         for tag_id, tag in tag_by_id.items():
             result = reconcile_source_device_tag_claims(
                 sync,
@@ -1104,6 +1231,8 @@ def reconcile_sync_scope_tag_claims(
             )
             added += result["claims_added"]
             released += result["claims_released"]
+            held_devices += result["held_ambiguous_devices"]
+            ambiguous_names |= result["_ambiguous_names"]
 
         materialized = finalize_device_tag_domain(
             sync,
@@ -1116,6 +1245,9 @@ def reconcile_sync_scope_tag_claims(
             "claims_added": added,
             "claims_released": released,
             **materialized,
+            # Counts only. The names themselves stay in this function.
+            "ambiguous_device_names": len(ambiguous_names),
+            "held_ambiguous_devices": held_devices,
         }
 
 

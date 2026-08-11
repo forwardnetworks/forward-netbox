@@ -114,7 +114,7 @@ def _apply_virtual_device_pairs(
     from .ownership import resolve_device_identities
 
     names = {name for name, _ in pairs} | {parent for _, parent in pairs}
-    pk_by_name, missing, ambiguous = resolve_device_identities(
+    pk_by_name, missing, ambiguous, _ambiguous_device_ids = resolve_device_identities(
         sync,
         names,
         generation=generation,
