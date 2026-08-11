@@ -130,6 +130,13 @@ def _safe_environment_assignment(assignment: str) -> bool:
         # A release version, and nothing else. This names which published
         # release the upgrade gate seeds from when it cannot ask the index.
         return bool(re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", value))
+    if name == PATTERN_PARITY_VARIABLE:
+        # An acknowledgement, not a configuration. It records that the
+        # release-time pattern feed was absent from the checkout, so the
+        # preflight could not run the superset scan; it changes nothing about
+        # what the gate executed. Only the bare affirmative is accepted, so it
+        # cannot be used to smuggle a value into the recorded command.
+        return value == "1"
     return (name, value) in {
         ("NETBOX_VER", "v4.6.6"),
         ("FORWARD_NETBOX_WORKER_AUTORELOAD", "0"),

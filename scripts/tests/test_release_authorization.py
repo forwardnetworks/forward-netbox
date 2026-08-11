@@ -274,6 +274,32 @@ class ReleaseAuthorizationTest(unittest.TestCase):
                 self._plan(evidence_overrides={"final-tree-full-gate": evidence})
             )
 
+    def test_accepts_the_pattern_parity_acknowledgement(self):
+        # FORWARD_SENSITIVE_PATTERNS is a repository secret, so a checkout
+        # without it cannot run the release-time scan at preflight. The
+        # acknowledgement records that gap in the evidence instead of hiding it,
+        # and must not invalidate the recorded command.
+        evidence = self.VALID_EVIDENCE["final-tree-full-gate"].replace(
+            "rtk env ",
+            "rtk env FORWARD_NETBOX_PATTERN_PARITY_UNVERIFIED=1 ",
+        )
+        result = release_authorization.check_release_authorization(
+            self._plan(evidence_overrides={"final-tree-full-gate": evidence})
+        )
+
+        self.assertIn("final-tree-full-gate", result["authorized_evidence_ids"])
+
+    def test_rejects_a_pattern_parity_value_other_than_the_bare_affirmative(self):
+        # It is an acknowledgement, not a configuration channel.
+        evidence = self.VALID_EVIDENCE["final-tree-full-gate"].replace(
+            "rtk env ",
+            "rtk env FORWARD_NETBOX_PATTERN_PARITY_UNVERIFIED=whatever ",
+        )
+        with self.assertRaisesRegex(ValueError, "placeholder_evidence"):
+            release_authorization.check_release_authorization(
+                self._plan(evidence_overrides={"final-tree-full-gate": evidence})
+            )
+
     def test_rejects_a_half_declared_host_port_pair(self):
         evidence = self.VALID_EVIDENCE["final-tree-full-gate"].replace(
             "invoke ci`", "FORWARD_NETBOX_HOST_PORT=18080 invoke ci`"
