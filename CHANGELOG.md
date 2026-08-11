@@ -2,7 +2,7 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
-## v2.7.8
+## v2.7.9
 
 Release candidate; Fix: **a device Forward reports that NetBox does not have no longer refuses the whole ownership domain**. Tag reconciliation resolves each reported device name to a NetBox row, and it refused the entire mutation if any name failed to resolve - so a handful of devices carrying the include tags in Forward but absent from NetBox blocked the scope-tag and status-tag domains on every run. Ownership never completed, convergence stayed blocked, and every drift figure read "Not measured", with no remedy short of creating those devices or editing the tags in Forward. A name with no device in NetBox is skipped and counted now: there is nothing to tag and nothing to release, so no NetBox row changes. A name shared by SEVERAL devices still refuses, because the desired set drives both the tag additions and the removals - dropping such a name could release a claim from a device that holds one, and resolving it could tag the wrong device - and that refusal now reports how many names were ambiguous and how many were absent rather than naming the devices.
 
