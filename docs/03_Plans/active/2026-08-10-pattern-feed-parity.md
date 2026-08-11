@@ -82,3 +82,17 @@ identifier again costs a version number instead of a preflight second.
   gap is narrowed but not closed: the publish gate remains the first place the
   superset feed is applied. Closing it fully means giving the release host the
   feed.
+
+## Follow-up: the acknowledgement had to be allowed as a recorded value
+
+Adding `FORWARD_NETBOX_PATTERN_PARITY_UNVERIFIED` to the authorization
+checker's optional-environment set was necessary but not sufficient. Exact
+environment matching runs in two stages: `_rtk_parts` first rejects any
+assignment that `_safe_environment_assignment` does not recognise, and only
+then is the optional set used to filter what must equal the canonical release
+environment. An unrecognised name fails at the first stage, so the whole
+recorded command was discarded and both evidence entries read as placeholders.
+
+The variable is now recognised, and only as the bare affirmative `1`. It is an
+acknowledgement rather than a configuration, so accepting an arbitrary value
+would let it carry state into the recorded command without saying so.
