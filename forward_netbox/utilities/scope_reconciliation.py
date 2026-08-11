@@ -11,6 +11,7 @@ from dcim.models import Device
 from django.db import transaction
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
+from rq.timeouts import JobTimeoutException
 
 from .bulk_delete import lock_related_writes_for_delete
 from .forward_api import build_device_tag_scope_where
@@ -203,6 +204,13 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         device_id for device_id, name in previously_managed if name in out_of_scope
     ]
 
+    absence = _classify_out_of_scope_absence(
+        out_of_scope,
+        client=client,
+        network_id=network_id,
+        snapshot_id=snapshot_id,
+    )
+
     # Why are the in-scope devices backfilled? Group by the Forward collection
     # error so operators can act (rotate creds for AUTHENTICATION_FAILED, check
     # reachability for CONNECTION_TIMEOUT, finish onboarding for INCOMPLETE_SETUP)
@@ -263,6 +271,9 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         "forward_missing_in_netbox": len(missing_in_netbox),
         "scope_tag_targets_missing_in_netbox": len(missing_scope_tag_targets),
         "backfilled_reason_breakdown": reason_breakdown,
+        # Absence is what defines an orphan, so which KIND of absence is the
+        # first question to ask before deleting anything.
+        "out_of_scope_absence": absence,
         "out_of_scope_sample": sorted(out_of_scope)[:SAMPLE_LIMIT],
         "empty_orphan_site_sample": empty_orphan_sites[:SAMPLE_LIMIT],
         "present_backfilled_sample": sorted(present_backfilled)[:SAMPLE_LIMIT],
@@ -279,6 +290,103 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         "_out_of_scope_pks": out_of_scope_pks,
         "_present_backfilled": present_backfilled,
         "_matched_include_tags_by_name": present_scope_tags_by_name,
+    }
+
+
+def _classify_out_of_scope_absence(
+    out_of_scope,
+    *,
+    client,
+    network_id,
+    snapshot_id,
+):
+    """Say WHICH kind of absence put each orphan out of scope.
+
+    Membership is decided purely by absence from the tag-scope result, and three
+    very different situations produce that absence:
+
+      `absent_from_snapshot`  - Forward does not have the device at all. It was
+                                removed from the network, or collection stopped
+                                returning it.
+      `present_untagged`      - Forward has it and may well have collected it,
+                                but it no longer matches the include/exclude tag
+                                predicate. A Forward-side tag edit looks like
+                                this.
+      `vendor_excluded`       - Forward has it but classifies it as a custom
+                                command source, which every bundled query
+                                filters out.
+
+    Without this the panel can only say "absent from the result", and telling
+    the three apart needs a live NQE probe the operator cannot run. That matters
+    most when it is most dangerous: a query that silently narrowed presents as a
+    large `present_untagged` set, and Prune orphans would delete live devices.
+
+    Costs one NQE execution, and only when orphans exist - a converged sync adds
+    no calls at all. The query carries no tag predicate and no vendor guard on
+    purpose: it must see the devices the scope query filtered OUT.
+    """
+    if not out_of_scope:
+        return {
+            "available": True,
+            "absent_from_snapshot": 0,
+            "present_untagged": 0,
+            "vendor_excluded": 0,
+            "absent_from_snapshot_sample": [],
+            "present_untagged_sample": [],
+            "vendor_excluded_sample": [],
+        }
+
+    query = "\n".join(
+        [
+            "foreach device in network.devices",
+            "select {",
+            "  name: device.name,",
+            "  vendor: toString(device.platform.vendor)",
+            "}",
+        ]
+    )
+    try:
+        rows = client.run_nqe_query(
+            query=query,
+            network_id=network_id,
+            snapshot_id=snapshot_id,
+            fetch_all=True,
+        )
+    except JobTimeoutException:
+        # The worker is being torn down; swallowing this would let the job look
+        # like it finished. Never a classification failure.
+        raise
+    except Exception:
+        # Advisory only. This must never fail the report that operators use to
+        # decide whether a prune is safe - a missing classification is far
+        # better than no scope report at all.
+        return {"available": False}
+
+    vendor_by_name = {}
+    for row in rows:
+        name = str(row.get("name") or "").strip()
+        if name:
+            vendor_by_name[name] = str(row.get("vendor") or "")
+
+    absent = []
+    untagged = []
+    vendor_excluded = []
+    for name in sorted(out_of_scope):
+        vendor = vendor_by_name.get(name)
+        if vendor is None:
+            absent.append(name)
+        elif vendor.endswith("FORWARD_CUSTOM"):
+            vendor_excluded.append(name)
+        else:
+            untagged.append(name)
+    return {
+        "available": True,
+        "absent_from_snapshot": len(absent),
+        "present_untagged": len(untagged),
+        "vendor_excluded": len(vendor_excluded),
+        "absent_from_snapshot_sample": absent[:SAMPLE_LIMIT],
+        "present_untagged_sample": untagged[:SAMPLE_LIMIT],
+        "vendor_excluded_sample": vendor_excluded[:SAMPLE_LIMIT],
     }
 
 
@@ -649,10 +757,13 @@ def _apply_maintained_device_tag(
         mark_domain=mark_domain,
         materialize=materialize,
     )
+    # `_ambiguous_names` carries device names. It is dropped here rather than
+    # relied on to go unread: this dict is spread into a job payload, and a
+    # customer's device names must not reach a persisted diagnostic.
     return {
         "added": result["assignments_added"],
         "removed": result["assignments_removed"],
-        **result,
+        **{key: value for key, value in result.items() if not key.startswith("_")},
     }
 
 
@@ -780,5 +891,24 @@ def tag_backfilled_devices(
         "scope_tags_added": managed_scope_cleanup["assignments_added"],
         "ownership_current": bool(
             status_materialized["current"] and managed_scope_cleanup["current"]
+        ),
+        # Names that resolve to more than one NetBox device are held: their
+        # existing tag state is neither extended nor withdrawn. This used to
+        # refuse the whole job, so the count is what tells an operator that
+        # de-duplicating those devices is worth doing - and that ownership
+        # completed anyway.
+        "ambiguous_device_names": max(
+            backfilled["ambiguous_device_names"],
+            out_of_scope["ambiguous_device_names"],
+            managed_scope_cleanup.get("ambiguous_device_names", 0),
+        ),
+        "held_ambiguous_devices": (
+            backfilled["held_ambiguous_devices"]
+            + out_of_scope["held_ambiguous_devices"]
+            + managed_scope_cleanup.get("held_ambiguous_devices", 0)
+        ),
+        "skipped_absent_devices": max(
+            backfilled["skipped_absent_devices"],
+            out_of_scope["skipped_absent_devices"],
         ),
     }

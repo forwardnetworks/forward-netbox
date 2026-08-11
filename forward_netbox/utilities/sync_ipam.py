@@ -622,9 +622,25 @@ def release_owned_primary_ip_claims(runner, ip_address, *, destination_device_id
     """Stage safe releases of primary pointers blocking an IP reassignment.
 
     The pointer belongs to a Device, not the IPAddress, so it has to be its own
-    branch-native update. An exact-sync identity proves the holder is managed;
-    a tag-scoped run additionally requires current scope membership. Missing
-    runner scope is deliberately fail-closed.
+    branch-native update. An exact-sync identity proves the holder is managed.
+    Missing runner scope is deliberately fail-closed.
+
+    Current scope membership used to be required as well, on top of the identity
+    proof, for any tag-scoped run. That guard protected nothing and cost a
+    customer a permanently unsynced address, because refusing the release does
+    not refuse the reassignment: the branch moves the address regardless, and
+    the merge then replays that UPDATE against a main where the holder still
+    names it primary. `IPAddress.clean()` refuses exactly there, so the outcome
+    was not "the out-of-scope device is left alone" but
+    `primary-ip-reassignment-blocked` on every run, with no operator remedy -
+    re-running cannot change a NetBox validation rejection.
+
+    A device that leaves the Forward tag scope is precisely when this happens:
+    it keeps its NetBox row and its primary pointer while its address moves to a
+    device that is still in scope. The identity proof is what makes the release
+    safe, and it is unaffected by scope membership - the sync demonstrably
+    created and owns that row either way. Leaving the pointer behind is not the
+    conservative choice; it is invalid state that NetBox will not accept.
 
     Returns ``[(device, update_fields), ...]`` with snapshotted, mutated branch
     objects. The adapter persists them; the bulk path writes them in its batch.
@@ -637,6 +653,11 @@ def release_owned_primary_ip_claims(runner, ip_address, *, destination_device_id
 
     if active_branch.get() is None or getattr(ip_address, "pk", None) is None:
         return []
+    # These two remain a check that the sync context was populated at all - a
+    # runner with no resolved scope is one whose provenance cannot be trusted,
+    # so it stays fail-closed. They are no longer a membership filter: which
+    # devices are currently in scope does not bear on whether this sync owns the
+    # row it is about to correct.
     scope_names = getattr(runner, "_primary_ip_reassignment_scope_names", None)
     if scope_names is None:
         return []
@@ -649,8 +670,6 @@ def release_owned_primary_ip_claims(runner, ip_address, *, destination_device_id
     holders = Device.objects.filter(
         Q(primary_ip4_id=ip_address.pk) | Q(primary_ip6_id=ip_address.pk)
     ).exclude(pk=destination_device_id)
-    if scope_restricted:
-        holders = holders.filter(name__in=scope_names)
     holder_ids = list(holders.values_list("pk", flat=True))
     if not holder_ids:
         return []
@@ -668,6 +687,22 @@ def release_owned_primary_ip_claims(runner, ip_address, *, destination_device_id
         .values_list("device_id", flat=True)
     )
     if not owned_ids:
+        # The remaining way this reassignment can still be refused, and it is
+        # refused correctly - the plugin will not clear a primary pointer on a
+        # device it cannot prove it created. Say so HERE, while the sync is
+        # still staging, because the consequence lands at merge time as
+        # `primary-ip-reassignment-blocked` on an ipam.ipaddress row that names
+        # neither device. Counts only; device names are customer data.
+        logger = getattr(runner, "logger", None)
+        if logger is not None:
+            logger.log_warning(
+                f"{len(holder_ids)} device(s) hold this address as a primary IP "
+                "but carry no identity from this sync, so the pointer cannot be "
+                "released and the reassignment will be rejected at merge with "
+                "`primary-ip-reassignment-blocked`. Clear the primary IP on "
+                "those devices, or let this sync adopt them, to let the address "
+                "move."
+            )
         return []
 
     releases = []

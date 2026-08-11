@@ -67,6 +67,20 @@ class Command(BaseCommand):
         payload = {
             key: value for key, value in report.items() if not key.startswith("_")
         }
+        absence = report.get("out_of_scope_absence") or {}
+        breakdown = (
+            ""
+            if not absence.get("available")
+            else (
+                f"Of those, {absence['absent_from_snapshot']} are gone from the "
+                f"Forward snapshot entirely, {absence['present_untagged']} are "
+                "still in Forward but no longer match the tag predicate, and "
+                f"{absence['vendor_excluded']} are classified as custom-command "
+                "sources. Only the first group unambiguously left; a large "
+                "second group is what a narrowed query or a Forward-side tag "
+                "edit looks like. "
+            )
+        )
         payload["remediation"] = (
             ""
             if not out_of_scope
@@ -77,9 +91,9 @@ class Command(BaseCommand):
                 "what a device leaving scope looks like - and also what a "
                 "Forward-side tag edit, a narrowed query, or a partial result "
                 "looks like, because membership is decided purely by absence "
-                "from the result. Confirm in Forward that these devices really "
-                "no longer carry the include tags BEFORE deleting anything; "
-                "they are ordinary NetBox devices otherwise. "
+                "from the result. " + breakdown + "Confirm in Forward that "
+                "these devices really no longer carry the include tags BEFORE "
+                "deleting anything; they are ordinary NetBox devices otherwise. "
                 "`device_tag_prune_out_of_scope` does NOT remove them (it only "
                 "deletes rows the sync query returns, and these are absent from "
                 "the result). Once confirmed, re-run with `--prune-orphans "

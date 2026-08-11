@@ -233,15 +233,65 @@ class PrimaryIpFromMgmtTagIntegrationTest(TransactionTestCase):
         self.assertIsNone(self.device.primary_ip4_id)
         self.assertEqual(self.ip.assigned_object_id, target_interface.pk)
 
-    def test_out_of_scope_primary_owner_is_not_released(self):
+    def test_an_owned_holder_that_left_scope_is_still_released(self):
+        """A customer's `primary-ip-reassignment-blocked`, end to end.
+
+        This used to assert the opposite - that a holder outside the current tag
+        scope keeps its pointer - and that guard protected nothing. Refusing the
+        release does not refuse the reassignment: the branch moves the address
+        anyway, so the merge replays an IP UPDATE against a main where the
+        holder still names it primary and `IPAddress.clean()` refuses. The
+        address stayed put on every run with no operator remedy, because
+        re-running cannot change a NetBox validation rejection.
+
+        A device that leaves the Forward tag scope is exactly when this arises:
+        it keeps its NetBox row and its primary pointer while the address moves
+        to a device still in scope. The identity proof is what makes the release
+        safe, and scope membership does not bear on it.
+        """
         branch, target, target_interface = self._reassignment_branch(
             name="Primary IP Out Of Scope"
         )
-        _ingestion, _target, _target_interface = self._stage_reassignment(
+        ingestion, _t, target_interface = self._stage_reassignment(
             branch,
             target,
             target_interface,
             scope_names={"target-device"},
+        )
+
+        with activate_branch(branch):
+            self.assertIsNone(
+                Device.objects.get(pk=self.device.pk).primary_ip4_id,
+                "the release was not staged, so the merge will reject the move",
+            )
+
+        merge_branch(ingestion, user=self.user)
+
+        self.device.refresh_from_db()
+        self.ip.refresh_from_db()
+        self.assertIsNone(self.device.primary_ip4_id)
+        self.assertEqual(
+            self.ip.assigned_object_id,
+            target_interface.pk,
+            "the address did not move, which is the customer's symptom",
+        )
+
+    def test_a_holder_this_sync_does_not_own_is_never_released(self):
+        """The guard that actually carries the safety property.
+
+        Ownership is proven by an exact-sync identity row, not by scope, and it
+        is the only thing standing between this and clearing a pointer on a
+        device the plugin never created.
+        """
+        branch, target, target_interface = self._reassignment_branch(
+            name="Primary IP Unowned"
+        )
+        self._stage_reassignment(
+            branch,
+            target,
+            target_interface,
+            scope_names={self.device.name, "target-device"},
+            owned_previous=False,
         )
 
         with activate_branch(branch):
