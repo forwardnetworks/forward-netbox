@@ -315,3 +315,44 @@ class AbsentDeviceDoesNotBlockTagDomainTest(TestCase):
         self.assertEqual(result["skipped_absent_devices"], 0)
         self.assertEqual(result["total"], 2)
         self.assertTrue(ForwardDeviceTagClaim.objects.filter(device=other).exists())
+
+
+class DepartedSourceKeyHoldsForeverTest(AbsentDeviceDoesNotBlockTagDomainTest):
+    """A Forward-side rename freezes the device's tags permanently.
+
+    `resolve_device_identities` excludes any candidate already bound to a
+    DIFFERENT source key, because the `(sync, device)` uniqueness constraint
+    makes it ineligible. That is right when the other key is a live Forward
+    device and wrong when it is the SAME device's previous name: departed source
+    keys are never pruned, so the old binding outlives the name.
+
+    The device is then held on every run - never tagged, never released - and no
+    operator action clears it, because nothing retires the stale identity.
+    """
+
+    def test_a_renamed_device_is_held_on_every_run(self):
+        renamed = self._device("new-forward-name")
+        ForwardDeviceIdentity.objects.create(
+            sync=self.sync,
+            source_device_key="old-forward-name",
+            device=renamed,
+            ingestion_id=self.ingestion.pk,
+            snapshot_id=self.ingestion.snapshot_id,
+        )
+
+        first = self._reconcile({"present-device", "new-forward-name"})
+        second = self._reconcile({"present-device", "new-forward-name"})
+
+        # Held both times, and the hold never converges to a claim.
+        self.assertEqual(first["ambiguous_device_names"], 1)
+        self.assertEqual(second["ambiguous_device_names"], 1)
+        self.assertFalse(
+            ForwardDeviceTagClaim.objects.filter(device=renamed).exists(),
+            "the renamed device is never tagged, on any run",
+        )
+        self.assertTrue(
+            ForwardDeviceIdentity.objects.filter(
+                sync=self.sync, source_device_key="old-forward-name"
+            ).exists(),
+            "the stale binding survives, which is what keeps the hold alive",
+        )
