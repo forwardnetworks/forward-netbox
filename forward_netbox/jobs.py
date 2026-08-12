@@ -1015,6 +1015,59 @@ def _link_forward_vsys_parents_work(job, *args, **kwargs):
         raise
 
 
+def _prune_stale_hardware_notices_work(job):
+    """Delete DLM hardware notices Forward no longer emits.
+
+    A notice whose device type is absent from the live hardware-notice result is
+    stale; nothing else will ever refresh or remove it, because removals reach
+    NetBox only from a Forward diff of the query now in use.
+
+    Runs as a background job because it issues a live Forward fetch. Deliberately
+    NOT keyed on "the device type holds no devices": notices are written
+    network-wide while devices are imported tag-scoped, so hardware outside the
+    include tags legitimately has none.
+    """
+    from .utilities.dlm_notice_audit import delete_stale_hardware_notices
+    from .utilities.dlm_notice_audit import emitted_device_type_slugs
+    from .utilities.dlm_notice_audit import fetch_emitted_hardware_notice_rows
+    from .utilities.dlm_notice_audit import stale_hardware_notices
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    sync.logger = SyncLogging(job=job.pk)
+    rows, fetch_error = fetch_emitted_hardware_notice_rows(sync)
+    if rows is None:
+        job.data = {
+            "available": False,
+            "reason": fetch_error,
+            "deleted_notice_count": 0,
+        }
+        job.save(update_fields=["data"])
+        return
+    report = stale_hardware_notices(emitted_device_type_slugs(rows), sample_limit=None)
+    if not report["available"]:
+        job.data = {
+            "available": False,
+            "reason": report["reason"],
+            "deleted_notice_count": 0,
+        }
+        job.save(update_fields=["data"])
+        return
+    result = delete_stale_hardware_notices(report["stale_notice_ids"])
+    job.data = {
+        "available": True,
+        "forward_emitted_device_types": report["forward_emitted_device_types"],
+        "stale_notice_count": report["stale_notice_count"],
+        "deleted_notice_count": result["deleted_notice_count"],
+        # Device-type models are vendor hardware names, not customer data, and
+        # they are what an operator needs to see to trust the deletion.
+        "deleted_device_types": sorted(
+            f"{row['manufacturer']} {row['model']}".strip()
+            for row in report["stale_notices"]
+        ),
+    }
+    job.save(update_fields=["data"])
+
+
 def _tag_delete_eligible_ipam_work(job):
     """Run tag-only delete-eligibility reconciliation for a sync job."""
     from .utilities.logging import SyncLogging
@@ -1774,6 +1827,16 @@ class PruneOrphansJob(ForwardJobRunner):
 
     def run(self, *args, **kwargs):
         _prune_forward_orphans_work(self.job)
+
+
+class PruneStaleHardwareNoticesJob(ForwardJobRunner):
+    """Operator-triggered cleanup of hardware notices Forward no longer emits."""
+
+    class Meta:
+        name = "prune stale hardware notices"
+
+    def run(self, *args, **kwargs):
+        _prune_stale_hardware_notices_work(self.job)
 
 
 class TagDeleteEligibleIpamJob(ForwardJobRunner):

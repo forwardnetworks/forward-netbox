@@ -38,6 +38,24 @@ MAX_REMOVAL_PERCENT = 30
 MIN_REMOVAL_ROWS = 20
 
 
+# Models whose query is NETWORK-COMPLETE: not tag-scoped, not sharded, one row
+# per identity for the whole Forward network. For these the current full result
+# is the authoritative set, so NetBox rows absent from it are stale no matter
+# when they were written - which is the only way to reach rows orphaned before
+# the contributor baseline that holds them was superseded.
+#
+# `netbox_dlm.hardwarenotice` qualifies precisely because it is NOT tag-scoped.
+# That same property is what made the old "device type holds no devices" rule
+# wrong: notices are written network-wide while devices are imported
+# tag-scoped, so hardware outside the include tags permanently has no devices
+# and is not stale at all.
+#
+# Adding a model here is a claim that the plugin is the sole author of every row
+# in that table. Do not add a tag-scoped model: its result covers part of the
+# estate, and everything outside would be deleted.
+NETWORK_COMPLETE_MODELS = ("netbox_dlm.hardwarenotice",)
+
+
 class RemovalReconciliationRefused(Exception):
     """The removal set was too large a share of the baseline to trust."""
 
@@ -90,6 +108,46 @@ def coalesce_identity(model_string, row, coalesce_fields):
         if complete and values:
             return "|".join(values)
     return None
+
+
+def network_complete_removals(model_string, *, current_rows):
+    """Rows in NetBox that a network-complete result no longer covers.
+
+    Separate from the baseline comparison on purpose. The baseline can only
+    speak for rows it recorded, so it never sees an orphan created before the
+    current baseline was written - a map re-pointed months ago leaves rows that
+    no later baseline mentions. A network-complete result speaks for the whole
+    table, so it does.
+
+    Returns `(delete_rows, refusal_reason)`. Any inability to establish
+    completeness yields no removals and a reason, never a partial deletion.
+    """
+    if model_string not in NETWORK_COMPLETE_MODELS:
+        return [], ""
+    if not current_rows:
+        return [], "the result was empty, which cannot be told from a failed fetch"
+    if model_string == "netbox_dlm.hardwarenotice":
+        from .dlm_notice_audit import emitted_device_type_slugs
+        from .dlm_notice_audit import stale_hardware_notices
+
+        # sample_limit=None: this path DELETES, and a sample would act on the
+        # first page while reporting the full count.
+        report = stale_hardware_notices(
+            emitted_device_type_slugs(current_rows),
+            sample_limit=None,
+        )
+        if not report["available"]:
+            return [], report["reason"]
+        # Shaped for `delete_netbox_dlm_hardwarenotice`, which resolves the
+        # device type by slug.
+        return (
+            [
+                {"device_type": row["model"], "device_type_slug": row["slug"]}
+                for row in report["stale_notices"]
+            ],
+            "",
+        )
+    return [], ""
 
 
 def _key_set(model_string, rows, coalesce_fields):

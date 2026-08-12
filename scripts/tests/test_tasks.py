@@ -1389,10 +1389,29 @@ class UpgradeFromConstraintsTests(unittest.TestCase):
         self.assertIn("netboxlabs-netbox-branching", self.current)
         self.assertNotIn("netboxlabs-netbox-branching", self.upgrade_from)
 
+    def test_the_optional_plugin_pin_may_lag_on_the_upgrade_source(self):
+        # A release that widens an optional plugin's supported range cannot pin
+        # the new version on the FROM side: the previous release's own metadata
+        # caps it, so the install would be unsatisfiable rather than stale. The
+        # pin must still be present - dropping it entirely would let the
+        # resolver pick anything - and must not run ahead of the current one.
+        self.assertIn("netbox-dlm", self.upgrade_from)
+        self.assertLessEqual(
+            tuple(int(part) for part in self.upgrade_from["netbox-dlm"].split(".")),
+            tuple(int(part) for part in self.current["netbox-dlm"].split(".")),
+        )
+
     def test_every_other_pin_is_identical(self):
         expected = {
             name: pin
             for name, pin in self.current.items()
-            if name != "netboxlabs-netbox-branching"
+            if name not in ("netboxlabs-netbox-branching", "netbox-dlm")
         }
-        self.assertEqual(expected, self.upgrade_from)
+        self.assertEqual(
+            expected,
+            {
+                name: pin
+                for name, pin in self.upgrade_from.items()
+                if name != "netbox-dlm"
+            },
+        )

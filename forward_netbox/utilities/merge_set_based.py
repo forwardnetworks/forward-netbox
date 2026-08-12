@@ -31,7 +31,7 @@ SET_BASED_MERGE_SUPPORTED_NETBOX_SERIES = "4.6"
 SET_BASED_MERGE_SUPPORTED_BRANCHING_SERIES = "1.1"
 SET_BASED_MERGE_SUPPORTED_OPTIONAL_DISTRIBUTIONS = {
     "netbox-cisco-aci": frozenset({"0.4.0"}),
-    "netbox-dlm": frozenset({"0.4.1", "0.5.0", "0.6.0", "0.7.0"}),
+    "netbox-dlm": frozenset({"0.4.1", "0.5.0", "0.6.0", "0.7.0", "0.8.0"}),
     "netbox-peering-manager": frozenset({"0.3.0"}),
     "netbox-routing": frozenset({"0.4.3"}),
 }
