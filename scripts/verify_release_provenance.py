@@ -27,7 +27,7 @@ GITHUB_API_URL = "https://api.github.com"
 # v2.7.7: the sensitive-content guard matched a customer name in a test fixture.
 # v2.7.8: the history rewrite that removed that name stripped PR association
 #         from two commits, so their provenance could not be verified.
-UNPUBLISHED_RELEASE_TAGS = ("v2.7.3", "v2.7.7", "v2.7.8")
+UNPUBLISHED_RELEASE_TAGS = ("v2.7.3", "v2.7.7", "v2.7.8", "v2.7.10")
 
 PRIOR_RELEASE_TAG = "v2.7.9"
 PRIOR_POST_RELEASE_DOC_COMMIT = "9c3a37bea20452ae8db26a4c932ee5c6f1aa2d23"
