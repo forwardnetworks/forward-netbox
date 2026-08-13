@@ -229,6 +229,37 @@ def _check_agents_entrypoint(failures: list[str]) -> None:
         )
 
 
+def _check_template_comments_are_parseable(failures: list[str]) -> None:
+    """Refuse a `{# #}` comment that spans lines - Django renders it verbatim.
+
+    Django's `{# #}` comment syntax is SINGLE-LINE ONLY. A comment broken across
+    two lines is not parsed as a comment at all, so the template engine emits it
+    as literal text into the page. Two of these reached a customer's Scope
+    Reconciliation panel, where an explanatory note about absence classification
+    rendered as visible body copy next to the badge it was explaining.
+
+    Nothing else catches it: the template renders, the view returns 200, and the
+    full suite passes with the comment on screen. Use
+    `{% comment %}...{% endcomment %}` for anything multi-line.
+    """
+    template_root = REPO_ROOT / "forward_netbox" / "templates"
+    if not template_root.is_dir():
+        return
+    for path in sorted(template_root.rglob("*.html")):
+        for number, line in enumerate(
+            path.read_text(encoding="utf-8").splitlines(), start=1
+        ):
+            if "{#" not in line:
+                continue
+            if "#}" in line.rsplit("{#", 1)[1]:
+                continue
+            failures.append(
+                f"{path.relative_to(REPO_ROOT)}:{number}: a `{{# #}}` comment "
+                "must close on the same line or Django renders it as visible "
+                "text; use `{% comment %}` for multi-line notes"
+            )
+
+
 def _check_knowledge_freshness(
     failures: list[str],
     *,
@@ -1034,6 +1065,7 @@ def main() -> int:
     _check_post_release_bridge_is_documentation_only(failures)
     _check_standard_release_tag_flow(failures)
     _check_publish_gate_placement(failures)
+    _check_template_comments_are_parseable(failures)
     if args.base:
         _check_per_commit_plan_lifecycle(failures, args.base)
 
