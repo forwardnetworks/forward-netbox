@@ -173,13 +173,32 @@ def finalize_device_identities_locked(ingestion):
     return len(desired)
 
 
-def resolve_device_identities(sync, source_device_keys, *, generation, snapshot_id):
+def resolve_device_identities(
+    sync,
+    source_device_keys,
+    *,
+    generation,
+    snapshot_id,
+    live_source_keys=None,
+):
     """Resolve exact device PKs and persist globally unique pre-identity rows.
 
     Returns ``(identities, missing, ambiguous, ambiguous_device_ids)``. The
     fourth value maps each ambiguous name to the device PKs that tie for it,
     which callers need in order to hold those devices rather than act on a
     guess - see `reconcile_source_device_tag_claims`.
+
+    ``live_source_keys``, when provided, is the FULL set of device names the
+    current Forward result reports - not merely the names in this mutation.
+    It exists to break a permanent hold: a device whose Forward name changed
+    keeps its old identity row (departed source keys are never pruned), so
+    under the new name every candidate reads as bound to a different key and
+    the device is held on every run, forever, with no operator remedy. With
+    the live set in hand, a binding whose key Forward no longer reports at all
+    is evidence of a RENAME rather than of another live device, and the stale
+    binding is retired so the new name can bind. ``None`` means the caller
+    cannot vouch for the full set, and every binding stays blocking - holding
+    is the safe reading when the evidence is incomplete.
     """
     from dcim.models import Device
 
@@ -207,12 +226,26 @@ def resolve_device_identities(sync, source_device_keys, *, generation, snapshot_
     # name where one is already spoken for is the common shape, because NetBox
     # scopes device-name uniqueness to the site, so a device that moves site or
     # is re-created alongside its predecessor leaves exactly this pair.
+    #
+    # A binding blocks only while its key is plausibly LIVE. Judged against the
+    # mutation's own keys alone - which is all this did before - a rename is
+    # indistinguishable from another live device, which is how a renamed device
+    # came to be held permanently.
     tied_ids = {device_id for values in candidates.values() for device_id in values}
-    claimed_elsewhere = set(
-        ForwardDeviceIdentity.objects.filter(sync=sync, device_id__in=tied_ids)
-        .exclude(source_device_key__in=keys)
-        .values_list("device_id", flat=True)
-    )
+    claimed_elsewhere = set()
+    stale_binding_by_device = {}
+    for device_id, bound_key in ForwardDeviceIdentity.objects.filter(
+        sync=sync, device_id__in=tied_ids
+    ).values_list("device_id", "source_device_key"):
+        if bound_key in keys:
+            continue
+        if live_source_keys is not None and bound_key not in live_source_keys:
+            # Forward no longer reports this key anywhere in the current
+            # result: the binding outlived its name. Eligible for retirement
+            # if its device becomes the single adoptable candidate below.
+            stale_binding_by_device[device_id] = bound_key
+            continue
+        claimed_elsewhere.add(device_id)
     free = {
         key: [device_id for device_id in values if device_id not in claimed_elsewhere]
         for key, values in candidates.items()
@@ -238,6 +271,20 @@ def resolve_device_identities(sync, source_device_keys, *, generation, snapshot_
     if adoptable:
         with ownership_write_lock():
             for source_key, device_id in adoptable.items():
+                # A rename retires its predecessor row here, and ONLY here: the
+                # `(sync, device)` uniqueness constraint would otherwise refuse
+                # the new binding outright. This is the single narrow place a
+                # departed source key is pruned - when its device is about to be
+                # re-bound under the name Forward now reports, on the evidence
+                # of the full live result. Departed keys whose devices are not
+                # being re-bound stay exactly as they were.
+                stale_key = stale_binding_by_device.get(device_id)
+                if stale_key is not None:
+                    ForwardDeviceIdentity.objects.filter(
+                        sync=sync,
+                        source_device_key=stale_key,
+                        device_id=device_id,
+                    ).delete()
                 ForwardDeviceIdentity.objects.update_or_create(
                     sync=sync,
                     source_device_key=source_key,
@@ -888,8 +935,14 @@ def reconcile_source_device_tag_claims(
     snapshot_id=None,
     mark_domain=True,
     materialize=True,
+    live_source_keys=None,
 ):
-    """Replace this sync's claims for one managed tag from exact snapshot data."""
+    """Replace this sync's claims for one managed tag from exact snapshot data.
+
+    ``live_source_keys`` is the full set of device names the current Forward
+    result reports, when the caller has it; see `resolve_device_identities` for
+    what it unlocks and why ``None`` stays safe.
+    """
     from extras.models import Tag
 
     from ..models import ForwardDeviceTagClaim
@@ -900,6 +953,7 @@ def reconcile_source_device_tag_claims(
         device_names,
         generation=generation,
         snapshot_id=snapshot_id,
+        live_source_keys=live_source_keys,
     )
     # A name Forward reports that NetBox does not have is SKIPPED, not fatal.
     #
@@ -1160,7 +1214,12 @@ def finalize_device_tag_domain(
 
 
 def reconcile_sync_scope_tag_claims(
-    sync, matched_tags_by_device, *, generation, snapshot_id
+    sync,
+    matched_tags_by_device,
+    *,
+    generation,
+    snapshot_id,
+    live_source_keys=None,
 ):
     """Replace every configured managed-scope tag claim for one sync generation."""
     from ..models import ForwardDeviceTagClaim
@@ -1228,6 +1287,7 @@ def reconcile_sync_scope_tag_claims(
                 snapshot_id=snapshot_id,
                 mark_domain=False,
                 materialize=False,
+                live_source_keys=live_source_keys,
             )
             added += result["claims_added"]
             released += result["claims_released"]

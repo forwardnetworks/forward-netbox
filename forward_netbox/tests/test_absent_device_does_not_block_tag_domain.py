@@ -317,20 +317,22 @@ class AbsentDeviceDoesNotBlockTagDomainTest(TestCase):
         self.assertTrue(ForwardDeviceTagClaim.objects.filter(device=other).exists())
 
 
-class DepartedSourceKeyHoldsForeverTest(AbsentDeviceDoesNotBlockTagDomainTest):
-    """A Forward-side rename freezes the device's tags permanently.
+class DepartedSourceKeyRenameTest(AbsentDeviceDoesNotBlockTagDomainTest):
+    """A Forward-side rename no longer freezes the device's tags permanently.
 
-    `resolve_device_identities` excludes any candidate already bound to a
-    DIFFERENT source key, because the `(sync, device)` uniqueness constraint
-    makes it ineligible. That is right when the other key is a live Forward
-    device and wrong when it is the SAME device's previous name: departed source
-    keys are never pruned, so the old binding outlives the name.
+    A binding blocks resolution only while its key is plausibly live. Judged
+    against the mutation's own keys alone - which is all this did before - a
+    rename was indistinguishable from another live device, so a renamed device
+    was held on every run, forever, with no operator remedy.
 
-    The device is then held on every run - never tagged, never released - and no
-    operator action clears it, because nothing retires the stale identity.
+    With the full live result in hand, a binding whose key Forward no longer
+    reports anywhere is evidence of a rename, and it is retired at the single
+    narrow moment its device is re-bound under the new name. Without the live
+    set (``live_source_keys=None``), every binding stays blocking - holding
+    remains the safe reading when the evidence is incomplete.
     """
 
-    def test_a_renamed_device_is_held_on_every_run(self):
+    def _rename_fixture(self):
         renamed = self._device("new-forward-name")
         ForwardDeviceIdentity.objects.create(
             sync=self.sync,
@@ -339,20 +341,98 @@ class DepartedSourceKeyHoldsForeverTest(AbsentDeviceDoesNotBlockTagDomainTest):
             ingestion_id=self.ingestion.pk,
             snapshot_id=self.ingestion.snapshot_id,
         )
+        return renamed
 
-        first = self._reconcile({"present-device", "new-forward-name"})
-        second = self._reconcile({"present-device", "new-forward-name"})
-
-        # Held both times, and the hold never converges to a claim.
-        self.assertEqual(first["ambiguous_device_names"], 1)
-        self.assertEqual(second["ambiguous_device_names"], 1)
-        self.assertFalse(
-            ForwardDeviceTagClaim.objects.filter(device=renamed).exists(),
-            "the renamed device is never tagged, on any run",
+    def _reconcile_live(self, names, live):
+        return reconcile_source_device_tag_claims(
+            self.sync,
+            names,
+            slug=SLUG,
+            name="S.Example",
+            color="9e9e9e",
+            description="",
+            claim_type="scope",
+            generation=self.ingestion.pk,
+            snapshot_id=self.ingestion.snapshot_id,
+            live_source_keys=live,
         )
+
+    def test_a_renamed_device_binds_under_its_new_name(self):
+        renamed = self._rename_fixture()
+        live = {"present-device", "new-forward-name"}
+
+        result = self._reconcile_live(live, live)
+
+        self.assertEqual(result["ambiguous_device_names"], 0)
+        self.assertTrue(
+            ForwardDeviceTagClaim.objects.filter(device=renamed).exists(),
+            "the renamed device was not tagged under its new name",
+        )
+        self.assertFalse(
+            ForwardDeviceIdentity.objects.filter(
+                sync=self.sync, source_device_key="old-forward-name"
+            ).exists(),
+            "the stale binding was not retired",
+        )
+        self.assertTrue(
+            ForwardDeviceIdentity.objects.filter(
+                sync=self.sync,
+                source_device_key="new-forward-name",
+                device=renamed,
+            ).exists(),
+            "no binding exists under the name Forward now reports",
+        )
+
+    def test_without_the_live_set_the_hold_remains(self):
+        # None means the caller cannot vouch for the full result, and holding
+        # is the safe reading. This is the pre-fix behaviour, kept on purpose.
+        renamed = self._rename_fixture()
+
+        result = self._reconcile({"present-device", "new-forward-name"})
+
+        self.assertEqual(result["ambiguous_device_names"], 1)
+        self.assertFalse(ForwardDeviceTagClaim.objects.filter(device=renamed).exists())
         self.assertTrue(
             ForwardDeviceIdentity.objects.filter(
                 sync=self.sync, source_device_key="old-forward-name"
             ).exists(),
-            "the stale binding survives, which is what keeps the hold alive",
+            "a binding must never be retired without the live evidence",
         )
+
+    def test_a_binding_whose_key_is_still_live_keeps_blocking(self):
+        # The old key is still in the live set: this is NOT a rename, it is two
+        # Forward devices, and resolving the new name onto the bound device
+        # would steal it. The hold is correct here and must survive the fix.
+        renamed = self._rename_fixture()
+        live = {"present-device", "new-forward-name", "old-forward-name"}
+
+        result = self._reconcile_live({"present-device", "new-forward-name"}, live)
+
+        self.assertEqual(result["ambiguous_device_names"], 1)
+        self.assertFalse(ForwardDeviceTagClaim.objects.filter(device=renamed).exists())
+        self.assertTrue(
+            ForwardDeviceIdentity.objects.filter(
+                sync=self.sync, source_device_key="old-forward-name"
+            ).exists()
+        )
+
+    def test_retirement_never_happens_on_a_tie(self):
+        # Two free candidates for the new name: adoption cannot pick one, so
+        # no binding may be retired on the strength of a guess either.
+        renamed = self._rename_fixture()
+        second_site = Site.objects.create(
+            name="rename-twin-site", slug="rename-twin-site"
+        )
+        self._device("new-forward-name", site=second_site)
+        live = {"present-device", "new-forward-name"}
+
+        result = self._reconcile_live(live, live)
+
+        self.assertEqual(result["ambiguous_device_names"], 1)
+        self.assertTrue(
+            ForwardDeviceIdentity.objects.filter(
+                sync=self.sync, source_device_key="old-forward-name"
+            ).exists(),
+            "a tie must hold everything, including the stale binding",
+        )
+        self.assertFalse(ForwardDeviceTagClaim.objects.filter(device=renamed).exists())

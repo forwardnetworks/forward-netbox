@@ -802,6 +802,7 @@ def _apply_maintained_device_tag(
     snapshot_id,
     mark_domain=True,
     materialize=True,
+    live_source_keys=None,
 ):
     """Reconcile one sync generation's claims for a maintained status tag."""
     from .ownership import reconcile_source_device_tag_claims
@@ -818,6 +819,7 @@ def _apply_maintained_device_tag(
         snapshot_id=snapshot_id,
         mark_domain=mark_domain,
         materialize=materialize,
+        live_source_keys=live_source_keys,
     )
     # `_ambiguous_names` carries device names. It is dropped here rather than
     # relied on to go unread: this dict is spread into a job payload, and a
@@ -858,6 +860,10 @@ def tag_backfilled_devices(
         snapshot_id,
         ingestion_id=ingestion_id,
     ) as generation:
+        # The full tag-scope result. It is what makes stale-binding retirement
+        # safe: a key absent from THIS set is absent from everything Forward
+        # currently reports under these tags, not merely from one tag's slice.
+        live_source_keys = report["_tagged_names"]
         backfilled = _apply_maintained_device_tag(
             sync,
             report["_present_backfilled"],
@@ -870,6 +876,7 @@ def tag_backfilled_devices(
             snapshot_id=generation["snapshot_id"],
             mark_domain=False,
             materialize=False,
+            live_source_keys=live_source_keys,
         )
         out_of_scope = _apply_maintained_device_tag(
             sync,
@@ -883,6 +890,7 @@ def tag_backfilled_devices(
             snapshot_id=generation["snapshot_id"],
             mark_domain=False,
             materialize=False,
+            live_source_keys=live_source_keys,
         )
         source_parameters = getattr(sync.source, "parameters", None) or {}
         managed_scope_cleanup = {
@@ -917,6 +925,7 @@ def tag_backfilled_devices(
                 ),
                 generation=generation["generation"],
                 snapshot_id=generation["snapshot_id"],
+                live_source_keys=live_source_keys,
             )
         from .ownership import finalize_device_tag_domain
 
