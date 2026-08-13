@@ -56,6 +56,55 @@ MIN_REMOVAL_ROWS = 20
 NETWORK_COMPLETE_MODELS = ("netbox_dlm.hardwarenotice",)
 
 
+# Models a baseline comparison may remove. An ALLOWLIST, deliberately.
+#
+# This started as "every model", which is how it shipped in 2.7.11, and that was
+# wrong in a way no threshold catches: it made a full sync delete DEVICES that
+# were absent from the current result. Device removal is gated behind Scope
+# Reconciliation -> Prune orphans, with a shrink guard and an explicit "confirm
+# in Forward before deleting anything" warning, precisely because absence from a
+# query result is not evidence a device is gone. Reconciling devices here
+# bypassed that gate entirely and did it unattended, on every full run.
+#
+# A deployment on 2.7.12 showed it in one run: one `dcim.device` ProtectedError
+# and five `netbox_dlm.softwareversion` protected-delete skips, with their
+# untagged device count dropping by 18.
+#
+# So the rule is now: only models the plugin solely authors, whose rows are
+# derived from a device that still exists, and whose deletion an operator would
+# never be asked to review one at a time.
+#
+# NOT here, on purpose:
+#   dcim.device, dcim.site      - operator-gated through the prune flow
+#   dcim.devicetype/platform/   - shared catalogues; an empty one is not garbage
+#     manufacturer/devicerole     and may be a Device Type Library import
+#   ipam.prefix/vlan/vrf        - global IPAM, never pruned by device scope
+#   netbox_dlm.softwareversion  - a catalogue with children; the protected-delete
+#                                 skips above are exactly this
+BASELINE_REMOVAL_MODELS = frozenset(
+    {
+        "dcim.interface",
+        "dcim.macaddress",
+        "dcim.inventoryitem",
+        "dcim.module",
+        "dcim.cable",
+        "ipam.ipaddress",
+        "ipam.fhrpgroup",
+        "netbox_dlm.hardwarenotice",
+        "netbox_dlm.devicesoftware",
+        "netbox_dlm.inventoryitemsoftware",
+        "netbox_dlm.cve",
+        "netbox_dlm.vulnerability",
+        "netbox_routing.bgppeer",
+        "netbox_routing.bgpaddressfamily",
+        "netbox_routing.bgppeeraddressfamily",
+        "netbox_routing.ospfinstance",
+        "netbox_routing.ospfarea",
+        "netbox_routing.ospfinterface",
+    }
+)
+
+
 class RemovalReconciliationRefused(Exception):
     """The removal set was too large a share of the baseline to trust."""
 
@@ -174,6 +223,10 @@ def compute_full_removals(
     Raises `RemovalReconciliationRefused` when the removal set is large enough
     to look like a narrowed query rather than real churn.
     """
+    if model_string not in BASELINE_REMOVAL_MODELS:
+        # Not an oversight and not a threshold: this model's rows are either
+        # operator-gated, shared, or not solely ours to delete.
+        return []
     if previous_rows is None:
         return []
     if not current_rows:

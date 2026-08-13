@@ -98,6 +98,20 @@
             <th scope="row">{% trans "In scope, missing from NetBox" %}</th>
             <td>{{ payload.forward_missing_in_netbox }}</td>
           </tr>
+          {% if payload.unmanaged.untagged_total %}
+          <tr title="{% trans 'Devices carrying neither include tag. Split by whether this sync created them: one is ours and worth investigating, the other is not ours to reason about. Orphans can read zero while this is large, because a device this sync never claimed is not an orphan of it.' %}">
+            <th scope="row">{% trans "Carry no include tag" %}</th>
+            <td>
+              {{ payload.unmanaged.untagged_total }}
+              {% if payload.unmanaged.owned_untagged %}
+                <a href="{% url 'dcim:device_list' %}?tag_id__n=&amp;q=" class="badge text-bg-warning text-decoration-none">{% blocktrans with count=payload.unmanaged.owned_untagged %}{{ count }} created by this sync{% endblocktrans %}</a>
+              {% endif %}
+              {% if payload.unmanaged.unclaimed %}
+                <span class="badge text-bg-secondary">{% blocktrans with count=payload.unmanaged.unclaimed %}{{ count }} not claimed by this sync{% endblocktrans %}</span>
+              {% endif %}
+            </td>
+          </tr>
+          {% endif %}
         </table>
       </div>
       <div class="card-footer text-end">

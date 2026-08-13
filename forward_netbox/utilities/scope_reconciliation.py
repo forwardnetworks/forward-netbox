@@ -204,6 +204,8 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         device_id for device_id, name in previously_managed if name in out_of_scope
     ]
 
+    unmanaged = _unmanaged_device_summary(sync, tagged_names)
+
     absence = _classify_out_of_scope_absence(
         out_of_scope,
         client=client,
@@ -274,6 +276,10 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         # Absence is what defines an orphan, so which KIND of absence is the
         # first question to ask before deleting anything.
         "out_of_scope_absence": absence,
+        # "Carries neither include tag" covers two opposite situations. Orphans
+        # can read zero while hundreds of devices are untagged, because a device
+        # this sync never claimed is not an orphan of it.
+        "unmanaged": unmanaged,
         "out_of_scope_sample": sorted(out_of_scope)[:SAMPLE_LIMIT],
         "empty_orphan_site_sample": empty_orphan_sites[:SAMPLE_LIMIT],
         "present_backfilled_sample": sorted(present_backfilled)[:SAMPLE_LIMIT],
@@ -290,6 +296,62 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         "_out_of_scope_pks": out_of_scope_pks,
         "_present_backfilled": present_backfilled,
         "_matched_include_tags_by_name": present_scope_tags_by_name,
+    }
+
+
+def _unmanaged_device_summary(sync, tagged_names):
+    """Split NetBox devices the current result does not cover by ownership.
+
+    "This device carries neither include tag" is one observation covering two
+    opposite situations, and an operator cannot act until they are separated:
+
+      `owned_untagged`   - this sync holds a ForwardDeviceIdentity for the
+                           device, so it created it, but the device is absent
+                           from the current tag-scope result. Either it left
+                           scope, or the tag was never applied. Ours either way,
+                           and worth investigating.
+      `unclaimed`        - no identity from this sync. Not ours to reason about:
+                           another source created it, an operator did, or it is
+                           a leftover from a configuration that no longer
+                           applies - imported SNMP endpoints predate the change
+                           that stopped generic endpoints being imported by
+                           default, and nothing has ever revisited them.
+
+    Deliberately read-only, local, and free: no Forward call, no deletion, and
+    no inference about which of the two an operator should care about. The
+    counts and the filters are the product; the judgement stays with them.
+    """
+    from ..models import ForwardDeviceIdentity
+
+    untagged = [
+        (device_id, name)
+        for device_id, name in Device.objects.values_list("pk", "name")
+        if (name or "").strip() and name not in tagged_names
+    ]
+    if not untagged:
+        return {
+            "untagged_total": 0,
+            "owned_untagged": 0,
+            "unclaimed": 0,
+            "owned_untagged_sample": [],
+            "unclaimed_sample": [],
+        }
+    owned_ids = set(
+        ForwardDeviceIdentity.objects.filter(
+            sync=sync,
+            device_id__in=[device_id for device_id, _ in untagged],
+        ).values_list("device_id", flat=True)
+    )
+    owned = sorted(name for device_id, name in untagged if device_id in owned_ids)
+    unclaimed = sorted(
+        name for device_id, name in untagged if device_id not in owned_ids
+    )
+    return {
+        "untagged_total": len(untagged),
+        "owned_untagged": len(owned),
+        "unclaimed": len(unclaimed),
+        "owned_untagged_sample": owned[:SAMPLE_LIMIT],
+        "unclaimed_sample": unclaimed[:SAMPLE_LIMIT],
     }
 
 
