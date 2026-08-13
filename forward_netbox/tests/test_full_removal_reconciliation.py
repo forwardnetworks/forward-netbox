@@ -107,3 +107,87 @@ class FullRemovalReconciliationTest(SimpleTestCase):
 
         with self.assertRaises(RemovalReconciliationRefused):
             self._removals(current, previous, max_removal_percent=10)
+
+
+class BaselineRemovalAllowlistTest(SimpleTestCase):
+    """Devices are never removed by a baseline comparison.
+
+    2.7.11 applied this to every model, which made a full sync delete devices
+    absent from the current result. Device removal is gated behind Scope
+    Reconciliation -> Prune orphans, with a shrink guard and a "confirm in
+    Forward before deleting anything" warning, precisely because absence from a
+    query result is not evidence a device is gone. Reconciling devices here
+    bypassed that gate and did it unattended, on every full run.
+
+    A deployment on 2.7.12 showed it in one run: a `dcim.device` ProtectedError
+    and five `netbox_dlm.softwareversion` protected-delete skips.
+    """
+
+    def _removals(self, model_string, current, previous, coalesce):
+        return compute_full_removals(
+            model_string,
+            current_rows=current,
+            previous_rows=previous,
+            coalesce_fields=coalesce,
+        )
+
+    def test_a_device_absent_from_the_result_is_never_removed(self):
+        coalesce = (("name",),)
+        previous = [{"name": "kept"}, {"name": "gone"}]
+
+        removals = self._removals("dcim.device", [{"name": "kept"}], previous, coalesce)
+
+        self.assertEqual(removals, [])
+
+    def test_a_site_is_never_removed(self):
+        coalesce = (("slug",),)
+        previous = [{"slug": "kept"}, {"slug": "gone"}]
+
+        removals = self._removals("dcim.site", [{"slug": "kept"}], previous, coalesce)
+
+        self.assertEqual(removals, [])
+
+    def test_a_shared_catalogue_with_children_is_never_removed(self):
+        # The five protected-delete skips: a software version still referenced
+        # by inventory-item software cannot be deleted, and should not be tried.
+        coalesce = (("platform_slug", "version"),)
+        previous = [
+            {"platform_slug": "ios", "version": "15.2"},
+            {"platform_slug": "ios", "version": "12.4"},
+        ]
+
+        removals = self._removals(
+            "netbox_dlm.softwareversion",
+            [{"platform_slug": "ios", "version": "15.2"}],
+            previous,
+            coalesce,
+        )
+
+        self.assertEqual(removals, [])
+
+    def test_global_ipam_is_never_removed(self):
+        coalesce = (("prefix",),)
+        previous = [{"prefix": "10.0.0.0/8"}, {"prefix": "10.1.0.0/16"}]
+
+        removals = self._removals(
+            "ipam.prefix", [{"prefix": "10.0.0.0/8"}], previous, coalesce
+        )
+
+        self.assertEqual(removals, [])
+
+    def test_a_derived_row_is_still_removed(self):
+        # The behaviour the reconciliation exists for must survive the fix.
+        coalesce = (("device", "name"),)
+        previous = [
+            {"device": "sw1", "name": "Gi0/1"},
+            {"device": "sw1", "name": "Gi0/2"},
+        ]
+
+        removals = self._removals(
+            "dcim.interface",
+            [{"device": "sw1", "name": "Gi0/1"}],
+            previous,
+            coalesce,
+        )
+
+        self.assertEqual([row["name"] for row in removals], ["Gi0/2"])

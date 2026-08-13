@@ -690,3 +690,103 @@ class OutOfScopeAbsenceClassificationTest(TestCase):
 
         self.assertEqual(report["netbox_out_of_scope"], 1)
         self.assertFalse(report["out_of_scope_absence"]["available"])
+
+
+class UntaggedDeviceOwnershipSplitTest(TestCase):
+    """ "Carries neither include tag" covers two opposite situations.
+
+    A deployment reported 407 such devices while orphans read 0 - which is not a
+    contradiction: an orphan is a device this sync PREVIOUSLY CLAIMED and no
+    longer sees, so a device it never claimed is not an orphan of it. Until the
+    two are separated an operator cannot act, because one is ours to fix and the
+    other is not ours to reason about.
+    """
+
+    def setUp(self):
+        self.source = ForwardSource.objects.create(
+            name="untagged-source",
+            type="saas",
+            url="https://fwd.app",
+            status="ready",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "network_id": "net-1",
+                "device_tag_include_tags": ["Prod_Core"],
+                "device_tag_include_match": "any",
+            },
+        )
+        self.sync = ForwardSync.objects.create(
+            name="untagged-sync",
+            source=self.source,
+            parameters={"snapshot_id": "latestProcessed"},
+        )
+        mfr = Manufacturer.objects.create(name="MfrU", slug="mfr-u")
+        self.dt = DeviceType.objects.create(manufacturer=mfr, model="dt-u", slug="dt-u")
+        self.role = DeviceRole.objects.create(name="RoleU", slug="role-u")
+        self.site = Site.objects.create(name="SiteU", slug="site-u")
+
+    def _device(self, name):
+        return Device.objects.create(
+            name=name, device_type=self.dt, role=self.role, site=self.site
+        )
+
+    def _report(self, rows):
+        from forward_netbox.utilities.scope_reconciliation import (
+            compute_scope_reconciliation,
+        )
+
+        client = Mock()
+        client.run_nqe_query = Mock(return_value=rows)
+        with patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"):
+            with patch.object(ForwardSource, "get_client", return_value=client):
+                return compute_scope_reconciliation(self.sync)
+
+    def test_a_device_this_sync_created_is_reported_as_owned(self):
+        from forward_netbox.models import ForwardDeviceIdentity, ForwardIngestion
+
+        owned = self._device("ours-but-untagged")
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync, snapshot_id="snap-1"
+        )
+        ForwardDeviceIdentity.objects.create(
+            sync=self.sync,
+            source_device_key="ours-but-untagged",
+            device=owned,
+            ingestion_id=ingestion.pk,
+            snapshot_id="snap-1",
+        )
+
+        report = self._report([{"name": "in-scope", "completed": True}])
+
+        self.assertEqual(report["unmanaged"]["owned_untagged"], 1)
+        self.assertEqual(report["unmanaged"]["unclaimed"], 0)
+        self.assertEqual(
+            report["unmanaged"]["owned_untagged_sample"], ["ours-but-untagged"]
+        )
+
+    def test_a_device_this_sync_never_claimed_is_reported_separately(self):
+        self._device("someone-elses")
+
+        report = self._report([{"name": "in-scope", "completed": True}])
+
+        self.assertEqual(report["unmanaged"]["owned_untagged"], 0)
+        self.assertEqual(report["unmanaged"]["unclaimed"], 1)
+
+    def test_the_split_is_reported_even_though_orphans_are_zero(self):
+        # The customer's exact shape, and the reason this exists.
+        self._device("untagged-a")
+        self._device("untagged-b")
+
+        report = self._report([{"name": "in-scope", "completed": True}])
+
+        self.assertEqual(report["netbox_out_of_scope"], 0)
+        self.assertEqual(report["unmanaged"]["untagged_total"], 2)
+
+    def test_a_tagged_device_is_not_counted(self):
+        self._device("in-scope")
+
+        report = self._report([{"name": "in-scope", "completed": True}])
+
+        self.assertEqual(report["unmanaged"]["untagged_total"], 0)
