@@ -38,6 +38,12 @@ class ScopeModuleUiTest(TestCase):
                 "network_id": "net-1",
                 "device_tag_include_tags": ["Prod_Core"],
                 "device_tag_include_match": "any",
+                # The absence quarantine is exercised by its own tests and by
+                # the two cases at the end of this file. Everything else here
+                # is about the view and the prune wiring, and would otherwise
+                # assert against a prune held back before it deleted anything.
+                "device_tag_prune_absence_runs": 0,
+                "device_tag_prune_absence_hours": 0,
             },
         )
         self.sync = ForwardSync.objects.create(
@@ -815,3 +821,101 @@ class ScopeModuleUiTest(TestCase):
         self.assertNotIn("sentinel-private-detail", rendered_messages)
         self.assertNotIn("sentinel-private-detail", " ".join(logs.output))
         self.assertIn("Review server logs", rendered_messages)
+
+    # --- absence quarantine on the panel --------------------------------------
+
+    def _quarantine_on(self):
+        """Restore production defaults for the two cases that are about them."""
+        self.source.parameters = {
+            **self.source.parameters,
+            "device_tag_prune_absence_runs": 3,
+            "device_tag_prune_absence_hours": 72,
+        }
+        self.source.save()
+        self.sync.refresh_from_db()
+
+    def test_the_panel_names_what_the_quarantine_is_holding(self):
+        """An operator who cannot see the hold reads it as the prune being broken."""
+        self._quarantine_on()
+        self._device("dev-a")
+        self._device("dev-stale")
+        self._claim_scope("dev-stale")
+        fwd_client = Mock()
+        fwd_client.run_nqe_query = Mock(
+            return_value=[{"name": "dev-a", "completed": True}]
+        )
+        client = self._superuser_client()
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            self._run_scope_reconciliation_job(fwd_client)
+            resp = client.get(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                    kwargs={"pk": self.sync.pk},
+                )
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "in quarantine")
+        # The override has to be reachable, or the hold is a dead end.
+        self.assertContains(resp, 'name="include_quarantined"')
+        self.assertEqual(
+            resp.context["payload"]["out_of_scope_quarantine"]["held"],
+            1,
+        )
+
+    def test_a_quarantined_orphan_survives_the_prune(self):
+        """Absent once, for no time at all - the prune must leave it alone."""
+        self._quarantine_on()
+        self._device("dev-a")
+        self._device("dev-stale")
+        self._claim_scope("dev-stale")
+        fwd_client = Mock()
+        fwd_client.run_nqe_query = Mock(
+            return_value=[{"name": "dev-a", "completed": True}]
+        )
+        client = self._superuser_client()
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            self._run_scope_reconciliation_job(fwd_client)
+            client.post(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_prune_orphans",
+                    kwargs={"pk": self.sync.pk},
+                )
+            )
+            job = Job.objects.filter(name__icontains="prune orphans").latest("pk")
+            PruneOrphansJob.handle(job)
+
+        self.assertTrue(Device.objects.filter(name="dev-stale").exists())
+        self.assertEqual(job.data["quarantine_held_device_count"], 1)
+
+    def test_the_override_checkbox_reaches_the_job(self):
+        """The box has to actually carry, or the hold is a dead end.
+
+        Asserted at the enqueue boundary rather than by running the job: NetBox
+        keeps job kwargs in RQ, not on the Job row, so a test that calls
+        `handle(job)` cannot recover what the view supplied. The deletion half
+        is covered directly in `test_absence_quarantine`.
+        """
+        client = self._superuser_client()
+        prune_url = reverse(
+            "plugins:forward_netbox:forwardsync_prune_orphans",
+            kwargs={"pk": self.sync.pk},
+        )
+        with patch(
+            "forward_netbox.utilities.sync_facade.enqueue_button_job",
+            return_value=Mock(pk=1),
+        ) as enqueue:
+            client.post(prune_url, {"include_quarantined": "1"})
+            ticked = enqueue.call_args.kwargs["job_kwargs"]["include_quarantined"]
+
+            client.post(prune_url)
+            unticked = enqueue.call_args.kwargs["job_kwargs"]["include_quarantined"]
+
+        self.assertIs(ticked, True)
+        self.assertIs(unticked, False)

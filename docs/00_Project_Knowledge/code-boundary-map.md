@@ -134,8 +134,12 @@ This map assigns production behavior to the modules that implement it in 2.6.
 - Domain producers: `scope_reconciliation.py`, `vsys_parent.py`, and post-sync
   jobs in `forward_netbox/jobs.py`
 - Persisted state: `ForwardManagedDeviceTag`, `ForwardDeviceTagClaim`,
-  `ForwardManagedVirtualContext`, `ForwardVirtualParentClaim`, and
-  `ForwardOwnershipReconciliation` in `models.py`
+  `ForwardManagedVirtualContext`, `ForwardVirtualParentClaim`,
+  `ForwardOwnershipReconciliation`, and `ForwardDeviceAbsence` in `models.py`
+- `ForwardDeviceAbsence` is the one row in this boundary that uses `CASCADE`
+  rather than `PROTECT`. It records how long a device has been missing from the
+  Forward result so the orphan prune can distinguish a maintenance window from a
+  decommissioning; bookkeeping about a device must not be able to pin it.
 - Responsibilities: persist pending work before queueing, guard exact ingestion
   generations, serialize cross-source writes, replace per-sync claims,
   materialize the union of current claims, preserve conflicts as evidence, and

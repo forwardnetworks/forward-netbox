@@ -52,6 +52,8 @@ from .utilities.runtime_guidance import DEFAULT_PUSHDOWN_FALLBACK_WARN_RATE
 from .utilities.runtime_guidance import (
     DEFAULT_PUSHDOWN_RUNTIME_FALLBACK_WARN_SHARE,
 )
+from .utilities.scope_reconciliation import DEFAULT_PRUNE_ABSENCE_HOURS
+from .utilities.scope_reconciliation import DEFAULT_PRUNE_ABSENCE_RUNS
 from .utilities.sync_facade import DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS
 from .utilities.sync_facade import DEFAULT_ENABLE_COPY_SQL_FOR_NEW_SYNCS
 from .utilities.sync_facade import effective_scope_endpoints_by_include_tags
@@ -132,6 +134,17 @@ class FlexibleMultipleChoiceField(forms.MultipleChoiceField):
         if isinstance(value, str):
             value = [value]
         return super().to_python(value)
+
+
+def _quarantine_threshold(value, default):
+    """Persist an explicit 0 but fall back to the default on blank/absent.
+
+    ``or default`` would quietly turn a deliberate "no delay" into 72 hours, so
+    the emptiness test has to be separate from the falsiness of zero.
+    """
+    if value is None or value == "":
+        return default
+    return value
 
 
 class ForwardSourceForm(NetBoxModelForm):
@@ -415,6 +428,29 @@ class ForwardSourceForm(NetBoxModelForm):
                 "candidates during full query execution."
             ),
         )
+        self.fields["device_tag_prune_absence_runs"] = forms.IntegerField(
+            required=False,
+            min_value=0,
+            label="Prune Quarantine (Runs)",
+            help_text=(
+                "How many consecutive syncs must report a device missing before "
+                "the orphan prune may delete it. A device disabled in Forward "
+                "looks exactly like one that was decommissioned, so this delay "
+                "is what keeps a maintenance window from becoming a deletion. "
+                "Default 3; 0 disables the run threshold."
+            ),
+        )
+        self.fields["device_tag_prune_absence_hours"] = forms.IntegerField(
+            required=False,
+            min_value=0,
+            label="Prune Quarantine (Hours)",
+            help_text=(
+                "How long a device must have been missing before the orphan "
+                "prune may delete it. Applied together with the run threshold, "
+                "so a frequent schedule cannot run the count up in an hour. "
+                "Default 72; 0 disables the time threshold."
+            ),
+        )
         self.fields["apply_device_scope_tags"] = forms.BooleanField(
             required=False,
             label="Apply Device Scope Tags",
@@ -605,6 +641,18 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["device_tag_prune_out_of_scope"].initial = bool(
             parameters.get("device_tag_prune_out_of_scope")
         )
+        # Show the effective threshold, not a blank box. An operator reading a
+        # blank field cannot tell "no quarantine" from "the default one".
+        self.fields["device_tag_prune_absence_runs"].initial = (
+            parameters.get("device_tag_prune_absence_runs")
+            if parameters.get("device_tag_prune_absence_runs") is not None
+            else DEFAULT_PRUNE_ABSENCE_RUNS
+        )
+        self.fields["device_tag_prune_absence_hours"].initial = (
+            parameters.get("device_tag_prune_absence_hours")
+            if parameters.get("device_tag_prune_absence_hours") is not None
+            else DEFAULT_PRUNE_ABSENCE_HOURS
+        )
         self.fields["apply_device_scope_tags"].initial = bool(
             parameters.get("apply_device_scope_tags")
         )
@@ -636,6 +684,8 @@ class ForwardSourceForm(NetBoxModelForm):
                     "device_tag_exclude_tags",
                     "device_tag_filter_mode",
                     "device_tag_prune_out_of_scope",
+                    "device_tag_prune_absence_runs",
+                    "device_tag_prune_absence_hours",
                     "apply_device_scope_tags",
                     "sync_device_tags",
                     "sync_endpoints",
@@ -668,6 +718,8 @@ class ForwardSourceForm(NetBoxModelForm):
                     "device_tag_exclude_tags",
                     "device_tag_filter_mode",
                     "device_tag_prune_out_of_scope",
+                    "device_tag_prune_absence_runs",
+                    "device_tag_prune_absence_hours",
                     "apply_device_scope_tags",
                     "sync_device_tags",
                     "sync_endpoints",
@@ -813,6 +865,14 @@ class ForwardSourceForm(NetBoxModelForm):
             ),
             "device_tag_prune_out_of_scope": bool(
                 cleaned.get("device_tag_prune_out_of_scope")
+            ),
+            "device_tag_prune_absence_runs": _quarantine_threshold(
+                cleaned.get("device_tag_prune_absence_runs"),
+                DEFAULT_PRUNE_ABSENCE_RUNS,
+            ),
+            "device_tag_prune_absence_hours": _quarantine_threshold(
+                cleaned.get("device_tag_prune_absence_hours"),
+                DEFAULT_PRUNE_ABSENCE_HOURS,
             ),
             "apply_device_scope_tags": bool(cleaned.get("apply_device_scope_tags")),
             "sync_device_tags": sync_device_tags,
@@ -1007,6 +1067,14 @@ class ForwardSourceForm(NetBoxModelForm):
             ),
             "device_tag_prune_out_of_scope": bool(
                 self.cleaned_data.get("device_tag_prune_out_of_scope")
+            ),
+            "device_tag_prune_absence_runs": _quarantine_threshold(
+                self.cleaned_data.get("device_tag_prune_absence_runs"),
+                DEFAULT_PRUNE_ABSENCE_RUNS,
+            ),
+            "device_tag_prune_absence_hours": _quarantine_threshold(
+                self.cleaned_data.get("device_tag_prune_absence_hours"),
+                DEFAULT_PRUNE_ABSENCE_HOURS,
             ),
             "apply_device_scope_tags": bool(
                 self.cleaned_data.get("apply_device_scope_tags")

@@ -36,6 +36,13 @@ class ForwardDeviceScopeReconciliationAuditCommandTest(TestCase):
                 "network_id": "net-1",
                 "device_tag_include_tags": ["Prod_Core"],
                 "device_tag_include_match": "any",
+                # These cases are about WHICH devices the prune deletes and what
+                # blocks it, not about how long an absence must persist first.
+                # With the quarantine on, every one of them would be held for
+                # want of an absence row and would check its expectations
+                # against a prune that never ran.
+                "device_tag_prune_absence_runs": 0,
+                "device_tag_prune_absence_hours": 0,
             },
         )
         self.sync = ForwardSync.objects.create(

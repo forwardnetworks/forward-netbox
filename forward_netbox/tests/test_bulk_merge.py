@@ -129,6 +129,13 @@ class BulkMergeIntegrationTest(CleanTransactionTestCase):
                 "verify": True,
                 "timeout": 1200,
                 "network_id": f"bulk-merge-{suffix}",
+                # The reviewed-prune cases here are about delete ordering and
+                # relation-barrier locking. With the absence quarantine on, the
+                # prune would be held before it reached the delete loop, and the
+                # threads waiting on its barrier would simply time out - failing
+                # for a reason that has nothing to do with what they test.
+                "device_tag_prune_absence_runs": 0,
+                "device_tag_prune_absence_hours": 0,
             },
         )
         sync = ForwardSync.objects.create(

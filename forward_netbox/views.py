@@ -1447,8 +1447,16 @@ class ForwardSyncPruneOrphansView(BaseObjectView):
         from .utilities.sync_facade import JobAlreadyActive, enqueue_button_job
 
         sync = get_object_or_404(self.queryset, pk=pk)
+        # Only ever true when an operator ticked the box beside a named list of
+        # held devices. Absent from the standing-schedule path by construction.
+        include_quarantined = bool(request.POST.get("include_quarantined"))
         try:
-            job = enqueue_button_job(sync, "prune_orphans", request.user)
+            job = enqueue_button_job(
+                sync,
+                "prune_orphans",
+                request.user,
+                job_kwargs={"include_quarantined": include_quarantined},
+            )
         except JobAlreadyActive:
             messages.warning(
                 request, _("An equivalent orphan-prune job is already running.")

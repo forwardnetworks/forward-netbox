@@ -143,6 +143,19 @@
               action="{% url 'plugins:forward_netbox:forwardsync_prune_orphans' pk=object.pk %}"
               onsubmit="return confirm('{% blocktrans with dev_count=payload.netbox_out_of_scope site_count=payload.netbox_empty_orphan_site_count %}Delete {{ dev_count }} out-of-scope device(s) and {{ site_count }} empty site(s)? This also removes their interfaces and IP addresses.{% endblocktrans %}');">
           {% csrf_token %}
+          {% comment %} The override is offered only when something is actually being
+             held, and only here. A scheduled prune has no way to set it - that is
+             the whole point, because the unattended path is the one that deleted
+             devices which were merely disabled for maintenance. {% endcomment %}
+          {% if payload.out_of_scope_quarantine.held %}
+            <div class="form-check d-inline-block me-2 align-middle">
+              <input class="form-check-input" type="checkbox" name="include_quarantined" id="include_quarantined" value="1">
+              <label class="form-check-label small" for="include_quarantined"
+                     title="{% trans 'A device disabled in Forward is indistinguishable from one that was removed, so an absence has to persist before the prune will act on it.' %}">
+                {% blocktrans count counter=payload.out_of_scope_quarantine.held %}Also delete {{ counter }} device still in quarantine{% plural %}Also delete {{ counter }} devices still in quarantine{% endblocktrans %}
+              </label>
+            </div>
+          {% endif %}
           <button type="submit" class="btn btn-danger"{% if not payload.netbox_out_of_scope and not payload.netbox_empty_orphan_site_count %} disabled{% endif %}>
             <i class="mdi mdi-trash-can-outline" aria-hidden="true"></i>&nbsp;{% trans "Prune orphans" %}
           </button>
@@ -172,6 +185,18 @@
             {% if payload.out_of_scope_absence.present_untagged %}
               <p class="text-muted small mb-2">{% trans "Devices Forward still has but no longer reports under these tags. A Forward-side tag edit and a narrowed query look identical here — confirm in Forward before pruning." %}</p>
             {% endif %}
+          {% endif %}
+          {% comment %} How long the absence has lasted, which is a different question
+             from what kind of absence it is, and the one that decides whether the
+             prune may act yet. {% endcomment %}
+          {% if payload.out_of_scope_quarantine.held %}
+            <p class="mb-2">
+              <span class="badge text-bg-primary">{% blocktrans count counter=payload.out_of_scope_quarantine.held %}{{ counter }} in quarantine{% plural %}{{ counter }} in quarantine{% endblocktrans %}</span>
+              {% if payload.out_of_scope_quarantine.prune_eligible %}
+                <span class="badge text-bg-danger">{% blocktrans count counter=payload.out_of_scope_quarantine.prune_eligible %}{{ counter }} prune-eligible{% plural %}{{ counter }} prune-eligible{% endblocktrans %}</span>
+              {% endif %}
+            </p>
+            <p class="text-muted small mb-2">{% blocktrans with runs=payload.out_of_scope_quarantine.required_runs hours=payload.out_of_scope_quarantine.required_hours %}A device disabled in Forward disappears exactly as a removed one does, so an absence must persist for {{ runs }} consecutive syncs and {{ hours }} hours before the prune will delete it. Devices that reappear leave quarantine automatically.{% endblocktrans %}</p>
           {% endif %}
           <ul class="mb-0">
             {% for name in payload.out_of_scope_sample %}<li><code>{{ name }}</code></li>{% endfor %}
