@@ -14,6 +14,14 @@
 #
 # Branching is deliberately absent: the previous release's own metadata pins it,
 # and letting that resolve is the point.
+#
+# `netbox-dlm` is pinned here but NOT to the same version as `constraints.txt`,
+# for the same underlying reason. When a release widens the supported range of
+# an optional plugin, the previous release still caps it: 2.7.11 declares
+# `netbox-dlm >=0.4.1,<0.8.0`, so constraining its install to 0.8.0 is
+# unsatisfiable rather than merely old. This side therefore holds the newest
+# version the FROM release supports, and the upgrade exercises the plugin
+# version moving with the upgrade - which is what a customer actually does.
 cryptography==50.0.0
 httpx==0.28.1
 netbox-cisco-aci==0.4.0

@@ -67,7 +67,7 @@ class OptionalPluginIntegrationRegistryTest(TestCase):
                 "netbox-routing": "0.4.3",
                 "netbox-peering-manager": "0.3.0",
                 "netbox-cisco-aci": "0.3.9",
-                "netbox-dlm": "0.7.0",
+                "netbox-dlm": "0.8.0",
             }
             return versions[package_name]
 
@@ -110,15 +110,15 @@ class OptionalPluginIntegrationRegistryTest(TestCase):
             "netbox-cisco-aci",
         )
         self.assertEqual(summary["aci.netbox_cisco_aci"]["required_version"], "0.4.0")
-        self.assertEqual(summary["lifecycle.netbox_dlm"]["required_version"], "0.7.0")
+        self.assertEqual(summary["lifecycle.netbox_dlm"]["required_version"], "0.8.0")
         self.assertEqual(
             summary["lifecycle.netbox_dlm"]["supported_versions"],
-            ["0.4.1", "0.5.0", "0.6.0", "0.7.0"],
+            ["0.4.1", "0.5.0", "0.6.0", "0.7.0", "0.8.0"],
         )
 
     def test_dlm_supported_versions_are_available_and_not_dropped(self):
         model_strings = list(DLM_INTEGRATION.supported_models)
-        for version in ("0.4.1", "0.5.0", "0.6.0", "0.7.0"):
+        for version in ("0.4.1", "0.5.0", "0.6.0", "0.7.0", "0.8.0"):
             with self.subTest(version=version), patch(
                 "forward_netbox.utilities.plugin_integrations.registry.apps.is_installed",
                 return_value=True,
@@ -160,7 +160,8 @@ class OptionalPluginIntegrationRegistryTest(TestCase):
             self.assertEqual(capability["availability_status"], "unsupported_version")
             self.assertEqual(
                 capability["availability_reason"],
-                "Installed plugin version must equal one of: 0.4.1, 0.5.0, 0.6.0, 0.7.0.",
+                "Installed plugin version must equal one of: 0.4.1, 0.5.0, 0.6.0, 0.7.0, "
+                "0.8.0.",
             )
             fetcher = ForwardQueryFetcher(sync=Mock(), client=Mock(), logger_=Mock())
             self.assertEqual(

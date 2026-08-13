@@ -3,6 +3,7 @@ import logging
 from core.choices import ObjectChangeActionChoices
 from core.exceptions import SyncError
 from core.models import ObjectChange
+from django.apps import apps
 from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.db import models
@@ -1270,6 +1271,11 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
                     "plugins:forward_netbox:forwardsync_tag_delete_eligible_ipam",
                     kwargs={"pk": sync.pk},
                 ),
+                # Gates the hardware-notice cleanup button. The count it would
+                # clear needs a live Forward query, which has no business
+                # running on a page render, so the button is offered whenever
+                # the plugin is installed and the job reports what it found.
+                "dlm_available": apps.is_installed("netbox_dlm"),
             },
         )
 
@@ -1358,6 +1364,55 @@ class ForwardSyncTagDeleteEligibleIpamView(BaseObjectView):
                 "Queued job #%(pk)d to tag delete-eligible IPAM. When it finishes, "
                 "filter prefixes/VLANs/VRFs by the forward-delete-eligible tag to "
                 "review and delete them."
+            )
+            % {"pk": job.pk},
+        )
+        return redirect(
+            reverse(
+                "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                kwargs={"pk": sync.pk},
+            )
+        )
+
+
+@register_model_view(
+    ForwardSync, "prune_stale_hardware_notices", path="prune-stale-hardware-notices"
+)
+class ForwardSyncPruneStaleHardwareNoticesView(BaseObjectView):
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "netbox_dlm.delete_hardwarenotice"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return redirect(
+            reverse(
+                "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                kwargs={"pk": sync.pk},
+            )
+        )
+
+    def post(self, request, pk):
+        # Issues a live Forward fetch to establish what the hardware-notice
+        # query still emits, so it runs as a background job rather than in the
+        # request. Deletes notices only; device types are never touched.
+        from .utilities.sync_facade import enqueue_button_job, JobAlreadyActive
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        try:
+            job = enqueue_button_job(sync, "prune_stale_hardware_notices", request.user)
+        except JobAlreadyActive:
+            messages.warning(
+                request,
+                _("An equivalent hardware-notice cleanup job is already running."),
+            )
+            return redirect(sync.get_absolute_url())
+        messages.success(
+            request,
+            _(
+                "Queued job #%(pk)d to remove hardware notices Forward no longer "
+                "reports. The job records which device types were cleared."
             )
             % {"pk": job.pk},
         )

@@ -33,6 +33,37 @@ MIN_ROW_SHRINK_ROWS = 20
 # acceptance below matches on it, so it must not be reworded casually.
 ROW_SHRINK_REASON_PREFIX = "Row-count drop:"
 
+# How far the share of successfully COLLECTED devices may fall below the last
+# baseline snapshot before the run is refused.
+#
+# This is not the row-count guard wearing a different hat, and it exists because
+# that guard cannot see this failure. `_comparable_row_counts` compares only
+# models executed in full - correctly, since a diff run's `row_count` is a count
+# of changes, not of rows - so a diff run is structurally exempt from every
+# collapse check. A customer lost 41795 objects to exactly that gap: a Forward
+# collection was CANCELLED, the snapshot still processed green with a normal
+# device count, `latestProcessed` selected it, every query filtered on
+# `snapshotInfo.result == completed` and returned nothing, and validation
+# reported PASSED.
+#
+# Collection health is a property of the SNAPSHOT, not of any model's result, so
+# it is knowable before a single row is staged and it holds for full and diff
+# runs alike. Forward reports it and the plugin already stores it.
+#
+# The threshold is deliberately loose. Real estates lose devices to
+# decommissioning and to routine collection failures every week; the failure
+# this stands in front of is a step change - 154 collected where 5000 collected
+# the day before. A guard that fires on ordinary weeks gets turned off.
+DEFAULT_MAX_COLLECTION_DROP_PERCENT = 50
+
+# Below this many devices in the baseline snapshot the percentage is noise: a
+# lab or a newly onboarded network moves between single-digit counts for
+# entirely ordinary reasons.
+MIN_COLLECTION_BASELINE_DEVICES = 25
+
+# Stable marker, read by operators and matched by the acceptance path.
+COLLECTION_COLLAPSE_REASON_PREFIX = "Collection collapse:"
+
 
 def _comparable_row_counts(model_results):
     """Total full-execution rows per model, for models that can be compared.
@@ -143,6 +174,74 @@ def row_shrink_findings(
             }
         )
     return findings
+
+
+def _collected_device_count(metrics):
+    """Successfully collected devices in a snapshot, or None when unknown.
+
+    Absent metrics must never be read as zero. An older ingestion predating this
+    field, or a Forward response that omitted it, would otherwise present as a
+    total collapse and refuse every run.
+    """
+    if not isinstance(metrics, dict):
+        return None
+    value = metrics.get("numSuccessfulDevices")
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def collection_collapse_finding(
+    *,
+    current_metrics,
+    baseline_metrics,
+    max_drop_percent=DEFAULT_MAX_COLLECTION_DROP_PERCENT,
+    min_baseline_devices=MIN_COLLECTION_BASELINE_DEVICES,
+):
+    """Report a snapshot whose collected-device count fell off a cliff.
+
+    Pure, so the thresholds can be exercised directly. Returns None when there
+    is nothing to say, including every case where the comparison cannot be made:
+    no metrics on either side, or a baseline too small for a percentage to mean
+    anything. Silence here always means "proceed".
+    """
+    current = _collected_device_count(current_metrics)
+    baseline = _collected_device_count(baseline_metrics)
+    if current is None or baseline is None:
+        return None
+    if baseline < min_baseline_devices:
+        return None
+    if current >= baseline:
+        return None
+    dropped = baseline - current
+    dropped_percent = dropped / baseline * 100
+    if dropped_percent <= max_drop_percent:
+        return None
+    return {
+        "baseline_collected": baseline,
+        "current_collected": current,
+        "dropped_devices": dropped,
+        "dropped_percent": round(dropped_percent, 1),
+    }
+
+
+def collection_collapse_reason(finding, *, max_drop_percent):
+    """The operator-facing sentence for a collection collapse."""
+    return (
+        f"{COLLECTION_COLLAPSE_REASON_PREFIX} this snapshot collected "
+        f"{finding['current_collected']} device(s) against "
+        f"{finding['baseline_collected']} in the last baseline snapshot, a drop "
+        f"of {finding['dropped_percent']}%, past the {max_drop_percent}% limit. "
+        "Every bundled query filters on a completed collection, so a snapshot "
+        "that collected almost nothing makes the whole estate look departed and "
+        "would be staged as deletions. A cancelled or failed Forward collection "
+        "still produces a snapshot that processes green with a normal device "
+        "count, so the snapshot's own state cannot be relied on. Confirm "
+        "collection health in Forward before allowing this run."
+    )
 
 
 def row_shrink_reason(finding, *, max_shrink_percent):
@@ -298,6 +397,11 @@ class ForwardValidationRunner:
                 validation_run=validation_run,
             )
         )
+        # Also above the policy early return, and for a stronger reason than the
+        # row-count floor: this is the only collapse check a DIFF run can trip.
+        # The row-count floor compares full executions only, so without this a
+        # sync running diffs has no collapse protection at all.
+        reasons.extend(self._collection_collapse_reasons(context))
 
         if policy is None or not policy.enabled:
             return reasons
@@ -406,6 +510,29 @@ class ForwardValidationRunner:
         return [
             row_shrink_reason(finding, max_shrink_percent=max_shrink_percent)
             for finding in findings
+        ]
+
+    def _collection_collapse_reasons(self, context):
+        """Refuse a snapshot whose collection all but failed.
+
+        Compared against the last baseline ingestion's snapshot metrics rather
+        than the previous run's, so a sequence of bad snapshots cannot walk the
+        threshold down one run at a time.
+        """
+        baseline = self.sync.latest_baseline_ingestion()
+        if baseline is None:
+            return []
+        finding = collection_collapse_finding(
+            current_metrics=context.get("snapshot_metrics"),
+            baseline_metrics=getattr(baseline, "snapshot_metrics", None),
+        )
+        if finding is None:
+            return []
+        return [
+            collection_collapse_reason(
+                finding,
+                max_drop_percent=DEFAULT_MAX_COLLECTION_DROP_PERCENT,
+            )
         ]
 
     def _row_shrink_already_accepted(self, baseline, validation_run):

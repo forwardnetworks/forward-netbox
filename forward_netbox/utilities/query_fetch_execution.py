@@ -50,6 +50,7 @@ from .forward_api import LATEST_PROCESSED_SNAPSHOT
 from .forward_api import MAX_QUERY_FETCH_CONCURRENCY
 from .full_removal_reconciliation import coalesce_identity
 from .full_removal_reconciliation import compute_full_removals
+from .full_removal_reconciliation import network_complete_removals
 from .full_removal_reconciliation import previous_full_rows
 from .full_removal_reconciliation import RemovalReconciliationRefused
 from .model_contracts import architecture_default_coalesce_fields_for_model
@@ -3368,6 +3369,21 @@ class ForwardQueryFetcher:
                 previous_rows=previous_rows,
                 coalesce_fields=coalesce_fields,
             )
+            # A network-complete result speaks for the whole table, so it also
+            # reaches rows orphaned before the current baseline was written -
+            # which the comparison above cannot see, because no baseline it can
+            # read ever mentioned them.
+            complete_removals, refusal = network_complete_removals(
+                model_string,
+                current_rows=current_rows,
+            )
+            if refusal:
+                self.logger.log_warning(
+                    f"Removal reconciliation for {model_string} did not run "
+                    f"against the full result: {refusal}.",
+                    obj=self.sync,
+                )
+            removals = removals + complete_removals
         except RemovalReconciliationRefused as exc:
             self.logger.log_warning(str(exc), obj=self.sync)
             return []

@@ -550,6 +550,11 @@ BUTTON_JOB_SPECS = {
         "tag delete-eligible IPAM",
         "ipam.change_prefix",
     ),
+    "prune_stale_hardware_notices": (
+        "forward_netbox.jobs.PruneStaleHardwareNoticesJob",
+        "prune stale hardware notices",
+        "netbox_dlm.delete_hardwarenotice",
+    ),
 }
 
 _ACTIVE_JOB_STATUSES = (

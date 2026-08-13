@@ -114,6 +114,17 @@
             <i class="mdi mdi-tag-remove-outline" aria-hidden="true"></i>&nbsp;{% trans "Tag delete-eligible IPAM" %}
           </button>
         </form>
+        {% if dlm_available %}
+        <form method="post" class="d-inline"
+              action="{% url 'plugins:forward_netbox:forwardsync_prune_stale_hardware_notices' pk=object.pk %}"
+              title="{% trans 'Asks Forward which hardware notices it still reports, and removes the ones it does not. A notice is derived data; if it still applied, Forward would still be emitting it. Device types are never deleted.' %}"
+              onsubmit="return confirm('{% trans 'Remove DLM hardware notices Forward no longer reports? The job lists what it clears, and device types are kept.' %}');">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-outline-danger">
+            <i class="mdi mdi-delete-sweep-outline" aria-hidden="true"></i>&nbsp;{% trans "Clear stale hardware notices" %}
+          </button>
+        </form>
+        {% endif %}
         <form method="post" class="d-inline"
               action="{% url 'plugins:forward_netbox:forwardsync_prune_orphans' pk=object.pk %}"
               onsubmit="return confirm('{% blocktrans with dev_count=payload.netbox_out_of_scope site_count=payload.netbox_empty_orphan_site_count %}Delete {{ dev_count }} out-of-scope device(s) and {{ site_count }} empty site(s)? This also removes their interfaces and IP addresses.{% endblocktrans %}');">
