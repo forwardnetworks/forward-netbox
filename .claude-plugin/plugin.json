@@ -1,0 +1,8 @@
+{
+  "name": "forward-netbox",
+  "description": "Agent skill for the Forward Integration for NetBox plugin: sync pipeline, device tag scope, the orphan prune and its guards, ownership, and NQE mechanics.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "homepage": "https://github.com/forwardnetworks/forward-netbox",
+  "skills": ["./skills/forward-netbox"]
+}

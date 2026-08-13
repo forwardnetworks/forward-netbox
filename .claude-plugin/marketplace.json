@@ -1,0 +1,16 @@
+{
+  "name": "forward-netbox",
+  "owner": {
+    "name": "Forward Networks",
+    "url": "https://github.com/forwardnetworks/forward-netbox"
+  },
+  "plugins": [
+    {
+      "name": "forward-netbox",
+      "source": "./",
+      "description": "Agent skill for the Forward Integration for NetBox plugin: sync pipeline, device tag scope, the orphan prune and its guards, ownership, and NQE mechanics.",
+      "version": "0.1.0",
+      "license": "MIT"
+    }
+  ]
+}
