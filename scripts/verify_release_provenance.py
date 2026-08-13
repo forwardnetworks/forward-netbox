@@ -29,8 +29,8 @@ GITHUB_API_URL = "https://api.github.com"
 #         from two commits, so their provenance could not be verified.
 UNPUBLISHED_RELEASE_TAGS = ("v2.7.3", "v2.7.7", "v2.7.8", "v2.7.10")
 
-PRIOR_RELEASE_TAG = "v2.7.11"
-PRIOR_POST_RELEASE_DOC_COMMIT = "087a15cde96e5484ebb527746dbaf5083a3a78f5"
+PRIOR_RELEASE_TAG = "v2.7.12"
+PRIOR_POST_RELEASE_DOC_COMMIT = "b9f5b76bdfa41e8994908e0e2eb6762b71f78600"
 BOOTSTRAP_REQUIRED_FILES = (
     "scripts/check_sensitive_content.py",
     "scripts/sensitive_content.py",
