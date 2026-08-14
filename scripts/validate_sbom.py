@@ -12,7 +12,7 @@ REQUIRED_COMPONENTS = {
     "httpx": "0.28.1",
     "netbox": "4.6.6",
     "netbox-cisco-aci": "0.4.0",
-    "netbox-dlm": "0.8.0",
+    "netbox-dlm": "0.9.1",
     "netbox-peering-manager": "0.3.0",
     "netbox-routing": "0.4.3",
     "netboxlabs-netbox-branching": "1.1.2",
