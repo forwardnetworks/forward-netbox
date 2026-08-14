@@ -13,6 +13,18 @@
 # non-empty. This plugin never sets it, so its rows carry '' and the constraint
 # cannot apply to them; the coalesce key it does use, (platform, version), is
 # unchanged.
+#
+# 0.9.1 qualifies on the same inspection against 0.8.0: its `models.py` delta is
+# entirely direct model imports becoming lazy string references
+# (`to=Platform` -> `to='dcim.Platform'`), which Django resolves identically and
+# which generates no migration. No field, model or constraint changed, so the
+# whole surface this plugin binds to - `SoftwareVersion.platform`, `.version`,
+# `.alias`, and the (platform, version) coalesce key - is untouched.
+#
+# 0.9.0 is deliberately absent, and the test below pins its absence. It shipped
+# roughly half an hour before 0.9.1 with a NoReverseMatch on every one of its
+# view URLs; 0.9.1 is that fix. Skipping a version that cannot render is not the
+# same as failing to validate it.
 from unittest.mock import patch
 
 from django.test import SimpleTestCase
@@ -37,6 +49,7 @@ class OptionalDistributionVersionSetTest(SimpleTestCase):
                 self.assertIn("0.5.0", supported["netbox-dlm"])
                 self.assertIn("0.6.0", supported["netbox-dlm"])
                 self.assertIn("0.8.0", supported["netbox-dlm"])
+                self.assertIn("0.9.1", supported["netbox-dlm"])
 
     def test_an_unvalidated_version_is_still_refused(self):
         # The gates fail closed; widening must not become "any version".
@@ -46,6 +59,9 @@ class OptionalDistributionVersionSetTest(SimpleTestCase):
         ):
             self.assertNotIn("0.6.1", supported["netbox-dlm"])
             self.assertNotIn("0.3.3", supported["netbox-dlm"])
+            # Released, and still refused: 0.9.0 cannot render any of its own
+            # views. Widening to 0.9.1 must not sweep it in by proximity.
+            self.assertNotIn("0.9.0", supported["netbox-dlm"])
 
     def test_the_other_distributions_stay_single_valued(self):
         # Only netbox-dlm has a second validated version so far.
@@ -166,7 +182,7 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
         json.dumps(detail)
         self.assertEqual(
             detail["expected"]["optional_plugins"]["netbox-dlm"],
-            ["0.4.1", "0.5.0", "0.6.0", "0.7.0", "0.8.0"],
+            ["0.4.1", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.9.1"],
         )
 
 

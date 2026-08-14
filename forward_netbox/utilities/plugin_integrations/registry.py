@@ -219,13 +219,16 @@ DLM_INTEGRATION = OptionalPluginIntegration(
     ),
     package_name="netbox-dlm",
     adapter_module="forward_netbox.utilities.sync_dlm",
-    required_package_version="0.8.0",
+    required_package_version="0.9.1",
     supported_package_versions=(
         "0.4.1",
         "0.5.0",
         "0.6.0",
         "0.7.0",
         "0.8.0",
+        # 0.9.0 is skipped on purpose: it shipped with a NoReverseMatch on every
+        # one of its view URLs and 0.9.1, half an hour later, is that fix.
+        "0.9.1",
     ),
     enabled_by_default=False,
     status="supported",
