@@ -23,6 +23,7 @@ from forward_netbox.utilities.scope_reconciliation import DEFAULT_PRUNE_ABSENCE_
 from forward_netbox.utilities.scope_reconciliation import partition_quarantined_orphans
 from forward_netbox.utilities.scope_reconciliation import prune_orphan_devices
 from forward_netbox.utilities.scope_reconciliation import record_device_absence
+from forward_netbox.utilities.scope_reconciliation import ScopeShrinkGuardError
 
 
 class AbsenceQuarantineTestBase(TestCase):
@@ -345,6 +346,94 @@ class PruneResultShapeIsUniformTest(AbsenceQuarantineTestBase):
         )
 
         self.assertEqual(self.EXPECTED_KEYS - set(result), set())
+
+
+class QuarantineDoesNotReplaceTheShrinkGuardTest(AbsenceQuarantineTestBase):
+    """The two guards compose, and nothing else pins that they do.
+
+    Each file that tests one guard switches the other off, for good reasons
+    both times - one guard masking another proves nothing, and every case in
+    `test_scope_shrink_guard` would otherwise be held for want of an absence
+    row and assert zero pruned devices without reaching the guard at all. But
+    between them that leaves the composition untested, and the design's claim
+    that the quarantine is "an additional gate, not a replacement" resting on
+    reading order alone. A collapsed scope must still RAISE, not return a quiet
+    held-count that an operator would read as the quarantine doing its job.
+    """
+
+    # `_require_survivable_scope_shrink` only consults the ratio once the orphan
+    # count is past SCOPE_SHRINK_REFUSAL_FLOOR (25), so 30 orphans of 40 claimed
+    # is the smallest honest shape: 75%, far past the 25% refusal ratio.
+    ORPHAN_COUNT = 30
+    PREVIOUSLY_MANAGED = 40
+
+    def _collapsed_scope(self):
+        template = self.devices[0]
+        devices = [
+            Device.objects.create(
+                name=f"collapsed-device-{index}",
+                site=template.site,
+                device_type=template.device_type,
+                role=template.role,
+            )
+            for index in range(self.ORPHAN_COUNT)
+        ]
+        report = self._report(devices)
+        report["forward_previously_managed"] = self.PREVIOUSLY_MANAGED
+        return devices, report
+
+    def _assert_all_survived(self, devices):
+        self.assertEqual(
+            Device.objects.filter(pk__in=[device.pk for device in devices]).count(),
+            self.ORPHAN_COUNT,
+        )
+
+    def test_a_collapsed_scope_raises_even_though_the_quarantine_would_hold_it(self):
+        # No absence rows at all, so the quarantine on its own would hold every
+        # one of these and return zero pruned without complaint. Only the shrink
+        # guard running FIRST turns a collapsed scope into a refusal an operator
+        # actually sees. Move the partition above the guard and this is the test
+        # that notices.
+        devices, report = self._collapsed_scope()
+
+        with self.assertRaises(ScopeShrinkGuardError):
+            prune_orphan_devices(self.sync, report=report)
+
+        self._assert_all_survived(devices)
+
+    def test_a_served_quarantine_does_not_buy_past_the_shrink_guard(self):
+        # The mirror image: every device has served the quarantine in full.
+        # Waiting out the delay is not evidence that the scope result is sound,
+        # so the guard must still refuse.
+        devices, report = self._collapsed_scope()
+        for device in devices:
+            self._set_absent(
+                device,
+                runs=DEFAULT_PRUNE_ABSENCE_RUNS,
+                hours_ago=DEFAULT_PRUNE_ABSENCE_HOURS + 1,
+            )
+
+        with self.assertRaises(ScopeShrinkGuardError):
+            prune_orphan_devices(self.sync, report=report)
+
+        self._assert_all_survived(devices)
+
+    def test_the_shrink_override_does_not_also_release_the_quarantine(self):
+        # Two overrides, two decisions. An operator confirming that a large
+        # removal is genuine has not also confirmed that each absence has
+        # persisted - so overriding the guard must leave the quarantine standing
+        # rather than silently granting both.
+        devices, report = self._collapsed_scope()
+
+        result = prune_orphan_devices(
+            self.sync,
+            report=report,
+            allow_scope_shrink=True,
+        )
+
+        self.assertEqual(result["pruned_device_count"], 0)
+        self.assertEqual(result["quarantine_held_device_count"], self.ORPHAN_COUNT)
+        self._assert_all_survived(devices)
 
 
 class AbsenceRowDoesNotPinItsDeviceTest(AbsenceQuarantineTestBase):

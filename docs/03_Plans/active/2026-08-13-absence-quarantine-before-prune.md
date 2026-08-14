@@ -118,6 +118,20 @@ switched off in their fixture. Left on, every one of them would have been held
 for want of an absence row and would have asserted zero pruned devices without
 reaching the shrink guard at all - passing, and proving nothing.
 
+That switching-off cuts both ways, though, and it is why the guards are also
+pinned *together*. Each file disables the other's guard, so between them the
+composition was covered nowhere and "an additional gate, not a replacement" was
+resting on reading order alone. `QuarantineDoesNotReplaceTheShrinkGuardTest`
+holds it: a collapsed scope raises rather than returning a quiet held-count,
+raises even when every device has served the quarantine in full, and the
+scope-shrink override does not double as a quarantine override.
+
+The streak is pinned through the real job rather than only through
+`record_device_absence`: one test that a completed run starts then advances it,
+one that a run dying before the recording does not advance it, and one that a
+run dying *after* the recording takes the row down with it. The last is what
+makes "inside the same transaction as the tagging" a fact rather than a comment.
+
 ## Rollback
 
 Revert. Absent devices are prune-eligible immediately again, as in 2.7.13.

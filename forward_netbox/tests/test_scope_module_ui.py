@@ -919,3 +919,107 @@ class ScopeModuleUiTest(TestCase):
 
         self.assertIs(ticked, True)
         self.assertIs(unticked, False)
+
+    # --- the streak only advances on a run that finished ----------------------
+
+    def _absent_fixture(self):
+        """One in-scope device and one orphan, with a client that reports only
+        the first. `dev-stale` is the absence every case below measures."""
+        self._quarantine_on()
+        self._device("dev-a")
+        self._device("dev-stale")
+        self._claim_scope("dev-stale")
+        fwd_client = Mock()
+        fwd_client.run_nqe_query = Mock(
+            return_value=[{"name": "dev-a", "completed": True}]
+        )
+        return fwd_client
+
+    def test_a_completed_run_records_the_absence_streak(self):
+        """The streak has to actually accumulate through the real job.
+
+        Every other streak test calls `record_device_absence` directly, so
+        nothing yet proves the post-sync job reaches it - and a quarantine whose
+        streak never advances holds every orphan forever.
+        """
+        from forward_netbox.models import ForwardDeviceAbsence
+        from forward_netbox.utilities.scope_reconciliation import (
+            tag_backfilled_devices,
+        )
+
+        fwd_client = self._absent_fixture()
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            first = tag_backfilled_devices(self.sync)
+            second = tag_backfilled_devices(self.sync)
+
+        self.assertEqual(first["absence_streaks_started"], 1)
+        self.assertEqual(second["absence_streaks_advanced"], 1)
+        row = ForwardDeviceAbsence.objects.get(sync=self.sync)
+        self.assertEqual(row.device.name, "dev-stale")
+        self.assertEqual(row.consecutive_absent_runs, 2)
+
+    def test_a_run_that_dies_before_recording_does_not_advance_the_streak(self):
+        """An absence we could not confirm is not evidence of absence.
+
+        The streak is what licenses a permanent delete, so a run that dies
+        partway must leave the count exactly where it was rather than banking a
+        confirmation it never earned.
+        """
+        from forward_netbox.models import ForwardDeviceAbsence
+        from forward_netbox.utilities.scope_reconciliation import (
+            tag_backfilled_devices,
+        )
+
+        fwd_client = self._absent_fixture()
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            tag_backfilled_devices(self.sync)
+            with patch(
+                "forward_netbox.utilities.ownership.finalize_device_tag_domain",
+                side_effect=RuntimeError("collection died mid-run"),
+            ):
+                with self.assertRaises(RuntimeError):
+                    tag_backfilled_devices(self.sync)
+
+        row = ForwardDeviceAbsence.objects.get(sync=self.sync)
+        self.assertEqual(row.consecutive_absent_runs, 1)
+
+    def test_a_streak_rolls_back_with_the_run_that_recorded_it(self):
+        """The row is written inside the tagging transaction, not beside it.
+
+        Dying before the recording is the easy half - it simply never runs. This
+        is the other half: the streak is written and THEN the run fails, and the
+        row has to go with it rather than survive to claim an absence the tags
+        were rolled back on.
+        """
+        from forward_netbox.models import ForwardDeviceAbsence
+        from forward_netbox.utilities import scope_reconciliation
+        from forward_netbox.utilities.scope_reconciliation import (
+            tag_backfilled_devices,
+        )
+
+        fwd_client = self._absent_fixture()
+        record_for_real = scope_reconciliation.record_device_absence
+
+        def _record_then_die(*args, **kwargs):
+            record_for_real(*args, **kwargs)
+            raise RuntimeError("died after recording, before commit")
+
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+            patch.object(
+                scope_reconciliation,
+                "record_device_absence",
+                side_effect=_record_then_die,
+            ),
+        ):
+            with self.assertRaises(RuntimeError):
+                tag_backfilled_devices(self.sync)
+
+        self.assertFalse(ForwardDeviceAbsence.objects.filter(sync=self.sync).exists())
