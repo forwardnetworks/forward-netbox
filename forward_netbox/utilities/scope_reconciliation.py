@@ -5,6 +5,7 @@
 import heapq
 import re
 from datetime import datetime
+from datetime import timedelta
 from datetime import timezone as dt_timezone
 
 from dcim.models import Device
@@ -88,6 +89,184 @@ OUT_OF_SCOPE_TAG_DESCRIPTION = (
     "Removable via Scope Reconciliation -> Prune orphans. Maintained by the "
     "Forward sync scope reconciliation."
 )
+
+
+# How long an absence must persist before the prune is allowed to believe it.
+#
+# A device disabled in Forward is absent from `network.devices` and from the REST
+# inventory alike, so the plugin cannot tell "disabled for a maintenance window"
+# from "decommissioned". The deletion is permanent; the disabling usually is not.
+# Both thresholds must be met, because either alone is defeated by a plausible
+# sync schedule: three runs is three hours on an hourly sync, and 72 hours is one
+# confirmation on a weekly one. Requiring both means at least three confirmations
+# AND at least three days, whatever the schedule.
+DEFAULT_PRUNE_ABSENCE_RUNS = 3
+DEFAULT_PRUNE_ABSENCE_HOURS = 72
+
+
+def absence_quarantine_thresholds(sync) -> tuple:
+    """Resolve (runs, hours) for this sync, falling back to the defaults.
+
+    Source parameters, not plugin settings, so an operator changes them in the
+    same form as the prune toggle itself rather than on a shell.
+    """
+    parameters = getattr(getattr(sync, "source", None), "parameters", None) or {}
+
+    def _positive_int(key, default):
+        raw = parameters.get(key)
+        if raw is None or raw == "":
+            return default
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            return default
+        # A negative or non-numeric override must not silently disable the
+        # quarantine; zero is a deliberate "no delay" and is honoured.
+        return value if value >= 0 else default
+
+    return (
+        _positive_int("device_tag_prune_absence_runs", DEFAULT_PRUNE_ABSENCE_RUNS),
+        _positive_int("device_tag_prune_absence_hours", DEFAULT_PRUNE_ABSENCE_HOURS),
+    )
+
+
+def record_device_absence(sync, out_of_scope_pks, *, snapshot_id="") -> dict:
+    """Advance the absence streak for out-of-scope devices, clear it for the rest.
+
+    Called once per promoted sync from ``tag_backfilled_devices`` - the
+    post-sync "reconcile device scope tags" job - which already holds the
+    out-of-scope set, so this costs no Forward call.
+
+    That job maintains the backfilled and out-of-scope tags for every sync,
+    whether or not scope tags are applied, so every sync accumulates streaks.
+    When it fails, streaks stand still and the prune deletes less, which is the
+    direction a failure should push.
+
+    A device that is no longer out of scope has its row DELETED rather than
+    decremented. The streak only means anything as an unbroken run: two absences
+    either side of a presence are two separate absences, and the second one has
+    to earn the operator's trust from the start.
+
+    A run that fails before this point never advances anything, which is the
+    right direction - an absence we could not confirm is not evidence.
+    """
+    from ..models import ForwardDeviceAbsence
+
+    now = timezone.now()
+    absent_ids = set(out_of_scope_pks or ())
+    returned = ForwardDeviceAbsence.objects.filter(sync=sync).exclude(
+        device_id__in=absent_ids
+    )
+    cleared = returned.count()
+    returned.delete()
+    if not absent_ids:
+        return {"absent": 0, "started": 0, "advanced": 0, "cleared": cleared}
+
+    existing = {
+        row.device_id: row
+        for row in ForwardDeviceAbsence.objects.filter(
+            sync=sync,
+            device_id__in=absent_ids,
+        )
+    }
+    started = 0
+    for device_id in sorted(absent_ids):
+        row = existing.get(device_id)
+        if row is None:
+            ForwardDeviceAbsence.objects.create(
+                sync=sync,
+                device_id=device_id,
+                consecutive_absent_runs=1,
+                first_absent_at=now,
+                last_absent_at=now,
+                last_absent_snapshot_id=snapshot_id or "",
+            )
+            started += 1
+            continue
+        row.consecutive_absent_runs += 1
+        row.last_absent_at = now
+        row.last_absent_snapshot_id = snapshot_id or ""
+        row.save(
+            update_fields=[
+                "consecutive_absent_runs",
+                "last_absent_at",
+                "last_absent_snapshot_id",
+            ]
+        )
+    return {
+        "absent": len(absent_ids),
+        "started": started,
+        "advanced": len(absent_ids) - started,
+        "cleared": cleared,
+    }
+
+
+def partition_quarantined_orphans(sync, orphan_pks) -> dict:
+    """Split orphans into those past the quarantine and those still inside it.
+
+    Fails closed: an orphan with no absence row at all is held, not released. A
+    device we have never recorded as absent has, by this table's reckoning, been
+    absent for zero confirmed runs.
+    """
+    from ..models import ForwardDeviceAbsence
+
+    candidate_ids = list(orphan_pks or ())
+    required_runs, required_hours = absence_quarantine_thresholds(sync)
+    if not candidate_ids:
+        return {
+            "eligible_pks": [],
+            "held_pks": [],
+            "required_runs": required_runs,
+            "required_hours": required_hours,
+        }
+    if not required_runs and not required_hours:
+        # Both thresholds zeroed is an operator saying "no quarantine", and it
+        # has to mean that. Falling through would hold everything forever
+        # instead, because the fail-closed branch below holds any orphan with no
+        # absence row - which, with no quarantine ever recorded, is all of them.
+        return {
+            "eligible_pks": list(candidate_ids),
+            "held_pks": [],
+            "required_runs": required_runs,
+            "required_hours": required_hours,
+        }
+    cutoff = timezone.now() - timedelta(hours=required_hours)
+    rows = {
+        device_id: (runs, first_absent_at)
+        for device_id, runs, first_absent_at in ForwardDeviceAbsence.objects.filter(
+            sync=sync,
+            device_id__in=candidate_ids,
+        ).values_list("device_id", "consecutive_absent_runs", "first_absent_at")
+    }
+    eligible = []
+    held = []
+    for device_id in candidate_ids:
+        row = rows.get(device_id)
+        if row is None:
+            held.append(device_id)
+            continue
+        runs, first_absent_at = row
+        if runs >= required_runs and first_absent_at <= cutoff:
+            eligible.append(device_id)
+        else:
+            held.append(device_id)
+    return {
+        "eligible_pks": eligible,
+        "held_pks": held,
+        "required_runs": required_runs,
+        "required_hours": required_hours,
+    }
+
+
+def _quarantine_summary(sync, out_of_scope_pks) -> dict:
+    """Report-shaped view of the quarantine, for the panel and the audit command."""
+    partition = partition_quarantined_orphans(sync, out_of_scope_pks)
+    return {
+        "required_runs": partition["required_runs"],
+        "required_hours": partition["required_hours"],
+        "prune_eligible": len(partition["eligible_pks"]),
+        "held": len(partition["held_pks"]),
+    }
 
 
 def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
@@ -179,13 +358,35 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         if (name or "").strip()
     }
 
+    from ..models import ForwardDeviceAbsence
     from ..models import ForwardDeviceTagClaim
 
-    previously_managed = list(
+    claimed = list(
         ForwardDeviceTagClaim.objects.filter(sync=sync, claim_type="scope")
         .select_related("device")
         .values_list("device_id", "device__name")
     )
+    # A device absent from Forward loses its scope claim on the FIRST run that
+    # observes the absence: the claim reconciliation releases every claim whose
+    # device is not in the current result. So by the second run the claim table
+    # no longer remembers that this sync ever managed the device, it drops out of
+    # `out_of_scope` entirely, and both the quarantine streak and the prune lose
+    # sight of it - the streak cannot pass 1 and the orphan can never be deleted.
+    #
+    # The absence row is the memory that survives the release, so it is the other
+    # half of "this sync previously managed this device". It is created only from
+    # a device that held a claim, and it is cleared the moment the device returns
+    # to the Forward result, so this widens what counts as previously managed
+    # without inventing a claim the sync never made.
+    quarantined = list(
+        ForwardDeviceAbsence.objects.filter(sync=sync)
+        .select_related("device")
+        .values_list("device_id", "device__name")
+    )
+    managed_by_id = dict(claimed)
+    for device_id, name in quarantined:
+        managed_by_id.setdefault(device_id, name)
+    previously_managed = sorted(managed_by_id.items())
     previously_managed_names = {name for _, name in previously_managed}
     # A sync may classify only devices it previously claimed. Treating every
     # NetBox device absent from this sync as out of scope creates contradictory
@@ -276,6 +477,10 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         # Absence is what defines an orphan, so which KIND of absence is the
         # first question to ask before deleting anything.
         "out_of_scope_absence": absence,
+        # And the second question is how long the absence has lasted. A device
+        # disabled in Forward looks exactly like one that left, so orphans wait
+        # out a quarantine before the prune will touch them.
+        "out_of_scope_quarantine": _quarantine_summary(sync, out_of_scope_pks),
         # "Carries neither include tag" covers two opposite situations. Orphans
         # can read zero while hundreds of devices are untagged, because a device
         # this sync never claimed is not an orphan of it.
@@ -609,14 +814,58 @@ def _prunable_device_order(device_ids):
     return ordered, cyclic_ids
 
 
-def prune_orphan_devices(sync, *, report=None, allow_scope_shrink=False) -> dict:
+def _prune_result(
+    *,
+    required_runs,
+    required_hours,
+    pruned_device_count=0,
+    pruned_object_count=0,
+    out_of_scope_sample=(),
+    ownership_blocked_device_count=0,
+    protected_device_count=0,
+    held_device_count=0,
+    overridden_device_count=0,
+) -> dict:
+    """One shape for every exit from the prune, however early it returns.
+
+    The early returns used to omit keys the later one carried, so a caller that
+    read `result["ownership_blocked_device_count"]` worked or raised KeyError
+    depending on how far the prune got - a difference nothing in the signature
+    hints at.
+    """
+    return {
+        "pruned_device_count": pruned_device_count,
+        "pruned_object_count": pruned_object_count,
+        "out_of_scope_sample": list(out_of_scope_sample),
+        "ownership_blocked_device_count": ownership_blocked_device_count,
+        "protected_device_count": protected_device_count,
+        "quarantine_required_runs": required_runs,
+        "quarantine_required_hours": required_hours,
+        "quarantine_held_device_count": held_device_count,
+        "quarantine_overridden_device_count": overridden_device_count,
+    }
+
+
+def prune_orphan_devices(
+    sync,
+    *,
+    report=None,
+    allow_scope_shrink=False,
+    include_quarantined=False,
+) -> dict:
     """Delete NetBox devices not present in the sync's Forward scope.
 
-    Safety: refuses when the Forward query returned 0 devices, and refuses when
-    the result shrank far enough that a query fault is likelier than devices
-    genuinely leaving scope. Tagged-but-backfilled devices are preserved.
-    Returns counts. Pass ``report`` (from ``compute_scope_reconciliation``) to
-    avoid re-running the Forward query.
+    Safety, in order: refuses when the Forward query returned 0 devices; refuses
+    when the result shrank far enough that a query fault is likelier than devices
+    genuinely leaving scope; and holds back any orphan whose absence has not yet
+    persisted through the quarantine. Tagged-but-backfilled devices are
+    preserved. Returns counts. Pass ``report`` (from
+    ``compute_scope_reconciliation``) to avoid re-running the Forward query.
+
+    ``include_quarantined`` is for the manual button only. A person looking at a
+    named list of orphans and choosing to delete them is a different act from a
+    scheduled job doing it unattended, and it is the unattended path that caused
+    the harm. The automated caller does not pass it.
     """
     if report is None:
         report = compute_scope_reconciliation(sync)
@@ -628,7 +877,11 @@ def prune_orphan_devices(sync, *, report=None, allow_scope_shrink=False) -> dict
         )
     _require_survivable_scope_shrink(report, allow_scope_shrink=allow_scope_shrink)
     if not out_of_scope:
-        return {"pruned_device_count": 0, "out_of_scope_sample": []}
+        required_runs, required_hours = absence_quarantine_thresholds(sync)
+        return _prune_result(
+            required_runs=required_runs,
+            required_hours=required_hours,
+        )
 
     orphans = sorted(out_of_scope)
     # Delete by the explicit device PKs resolved at scope-compute time
@@ -639,6 +892,21 @@ def prune_orphan_devices(sync, *, report=None, allow_scope_shrink=False) -> dict
         raise ValueError(
             "Orphan prune requires exact device identity evidence from the current "
             "scope reconciliation report."
+        )
+    partition = partition_quarantined_orphans(sync, orphan_pks)
+    held_device_count = len(partition["held_pks"])
+    if not include_quarantined:
+        orphan_pks = partition["eligible_pks"]
+    quarantine_counts = {
+        "required_runs": partition["required_runs"],
+        "required_hours": partition["required_hours"],
+        "held_device_count": 0 if include_quarantined else held_device_count,
+        "overridden_device_count": held_device_count if include_quarantined else 0,
+    }
+    if not orphan_pks:
+        return _prune_result(
+            out_of_scope_sample=orphans[:SAMPLE_LIMIT],
+            **quarantine_counts,
         )
     from .ownership import ownership_write_lock
     from .ownership import _release_prunable_device_ownership_locked
@@ -691,15 +959,16 @@ def prune_orphan_devices(sync, *, report=None, allow_scope_shrink=False) -> dict
             ownership_blocked_ids.update(retry_device_ids)
             break
         pending_device_ids = retry_device_ids
-    result = {
-        "pruned_device_count": len(pruned_device_ids),
-        "pruned_object_count": deleted_total,
-        "out_of_scope_sample": orphans[:SAMPLE_LIMIT],
-        "ownership_blocked_device_count": len(ownership_blocked_ids),
-        "protected_device_count": len(orphan_pks)
+    result = _prune_result(
+        pruned_device_count=len(pruned_device_ids),
+        pruned_object_count=deleted_total,
+        out_of_scope_sample=orphans[:SAMPLE_LIMIT],
+        ownership_blocked_device_count=len(ownership_blocked_ids),
+        protected_device_count=len(orphan_pks)
         - len(pruned_device_ids)
         - len(ownership_blocked_ids),
-    }
+        **quarantine_counts,
+    )
     if protected_tally:
         result["protected_by_model"] = protected_tally
     return result
@@ -935,6 +1204,14 @@ def tag_backfilled_devices(
             generation["generation"],
             generation["snapshot_id"],
         )
+        # Inside the same transaction as the tagging it derives from, so a run
+        # that fails partway does not leave a streak claiming an absence the
+        # tags never recorded.
+        absence_streak = record_device_absence(
+            sync,
+            report.get("_out_of_scope_pks") or (),
+            snapshot_id=generation["snapshot_id"],
+        )
     return {
         "tag_slug": BACKFILLED_TAG_SLUG,
         "tagged": status_materialized["by_claim_type"]
@@ -982,4 +1259,7 @@ def tag_backfilled_devices(
             backfilled["skipped_absent_devices"],
             out_of_scope["skipped_absent_devices"],
         ),
+        "absence_streaks_started": absence_streak["started"],
+        "absence_streaks_advanced": absence_streak["advanced"],
+        "absence_streaks_cleared": absence_streak["cleared"],
     }

@@ -1,3 +1,4 @@
+from datetime import timedelta
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -13,6 +14,7 @@ from django.contrib.messages import get_messages
 from django.test import Client
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.jobs import DeviceScopeTagReconciliationJob
@@ -38,6 +40,12 @@ class ScopeModuleUiTest(TestCase):
                 "network_id": "net-1",
                 "device_tag_include_tags": ["Prod_Core"],
                 "device_tag_include_match": "any",
+                # The absence quarantine is exercised by its own tests and by
+                # the two cases at the end of this file. Everything else here
+                # is about the view and the prune wiring, and would otherwise
+                # assert against a prune held back before it deleted anything.
+                "device_tag_prune_absence_runs": 0,
+                "device_tag_prune_absence_hours": 0,
             },
         )
         self.sync = ForwardSync.objects.create(
@@ -815,3 +823,307 @@ class ScopeModuleUiTest(TestCase):
         self.assertNotIn("sentinel-private-detail", rendered_messages)
         self.assertNotIn("sentinel-private-detail", " ".join(logs.output))
         self.assertIn("Review server logs", rendered_messages)
+
+    # --- absence quarantine on the panel --------------------------------------
+
+    def _quarantine_on(self):
+        """Restore production defaults for the two cases that are about them."""
+        self.source.parameters = {
+            **self.source.parameters,
+            "device_tag_prune_absence_runs": 3,
+            "device_tag_prune_absence_hours": 72,
+        }
+        self.source.save()
+        self.sync.refresh_from_db()
+
+    def test_the_panel_names_what_the_quarantine_is_holding(self):
+        """An operator who cannot see the hold reads it as the prune being broken."""
+        self._quarantine_on()
+        self._device("dev-a")
+        self._device("dev-stale")
+        self._claim_scope("dev-stale")
+        fwd_client = Mock()
+        fwd_client.run_nqe_query = Mock(
+            return_value=[{"name": "dev-a", "completed": True}]
+        )
+        client = self._superuser_client()
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            self._run_scope_reconciliation_job(fwd_client)
+            resp = client.get(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                    kwargs={"pk": self.sync.pk},
+                )
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "in quarantine")
+        # The override has to be reachable, or the hold is a dead end.
+        self.assertContains(resp, 'name="include_quarantined"')
+        self.assertEqual(
+            resp.context["payload"]["out_of_scope_quarantine"]["held"],
+            1,
+        )
+
+    def test_a_quarantined_orphan_survives_the_prune(self):
+        """Absent once, for no time at all - the prune must leave it alone."""
+        self._quarantine_on()
+        self._device("dev-a")
+        self._device("dev-stale")
+        self._claim_scope("dev-stale")
+        fwd_client = Mock()
+        fwd_client.run_nqe_query = Mock(
+            return_value=[{"name": "dev-a", "completed": True}]
+        )
+        client = self._superuser_client()
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            self._run_scope_reconciliation_job(fwd_client)
+            client.post(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_prune_orphans",
+                    kwargs={"pk": self.sync.pk},
+                )
+            )
+            job = Job.objects.filter(name__icontains="prune orphans").latest("pk")
+            PruneOrphansJob.handle(job)
+
+        self.assertTrue(Device.objects.filter(name="dev-stale").exists())
+        self.assertEqual(job.data["quarantine_held_device_count"], 1)
+
+    def test_the_override_checkbox_reaches_the_job(self):
+        """The box has to actually carry, or the hold is a dead end.
+
+        Asserted at the enqueue boundary rather than by running the job: NetBox
+        keeps job kwargs in RQ, not on the Job row, so a test that calls
+        `handle(job)` cannot recover what the view supplied. The deletion half
+        is covered directly in `test_absence_quarantine`.
+        """
+        client = self._superuser_client()
+        prune_url = reverse(
+            "plugins:forward_netbox:forwardsync_prune_orphans",
+            kwargs={"pk": self.sync.pk},
+        )
+        with patch(
+            "forward_netbox.utilities.sync_facade.enqueue_button_job",
+            return_value=Mock(pk=1),
+        ) as enqueue:
+            client.post(prune_url, {"include_quarantined": "1"})
+            ticked = enqueue.call_args.kwargs["job_kwargs"]["include_quarantined"]
+
+            client.post(prune_url)
+            unticked = enqueue.call_args.kwargs["job_kwargs"]["include_quarantined"]
+
+        self.assertIs(ticked, True)
+        self.assertIs(unticked, False)
+
+    # --- the streak only advances on a run that finished ----------------------
+
+    def _absent_fixture(self):
+        """One in-scope device and one orphan, with a client that reports only
+        the first. `dev-stale` is the absence every case below measures."""
+        self._quarantine_on()
+        self._device("dev-a")
+        self._device("dev-stale")
+        self._claim_scope("dev-stale")
+        fwd_client = Mock()
+        fwd_client.run_nqe_query = Mock(
+            return_value=[{"name": "dev-a", "completed": True}]
+        )
+        return fwd_client
+
+    def test_an_orphan_survives_the_claim_release_and_reaches_eligibility(self):
+        """The whole quarantine, end to end, through nothing but real runs.
+
+        This is the case that no direct `record_device_absence` test can reach.
+        The scope claim is released on the FIRST run that sees the device
+        missing, and `out_of_scope` is derived from live claims - so without the
+        absence row counting as "previously managed" the device silently stops
+        being an orphan on run 2. The streak sticks at 1, the panel's held count
+        drops to 0, and the prune becomes a permanent no-op for exactly the
+        devices it exists to delete. It fails safe and delivers nothing.
+        """
+        from forward_netbox.models import ForwardDeviceAbsence
+        from forward_netbox.models import ForwardDeviceTagClaim
+        from forward_netbox.utilities.scope_reconciliation import (
+            compute_scope_reconciliation,
+        )
+        from forward_netbox.utilities.scope_reconciliation import (
+            prune_orphan_devices,
+        )
+        from forward_netbox.utilities.scope_reconciliation import (
+            tag_backfilled_devices,
+        )
+
+        fwd_client = self._absent_fixture()
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            for _ in range(3):
+                tag_backfilled_devices(self.sync)
+
+            # The claim really is gone - this test would pass for the wrong
+            # reason if the release stopped happening.
+            self.assertFalse(
+                ForwardDeviceTagClaim.objects.filter(
+                    sync=self.sync,
+                    claim_type="scope",
+                    device__name="dev-stale",
+                ).exists()
+            )
+            row = ForwardDeviceAbsence.objects.get(sync=self.sync)
+            self.assertEqual(row.device.name, "dev-stale")
+            self.assertEqual(row.consecutive_absent_runs, 3)
+
+            # Still an orphan on run 3, which is what the claim release used to
+            # destroy.
+            report = compute_scope_reconciliation(self.sync)
+            self.assertEqual(report["_out_of_scope"], {"dev-stale"})
+
+            # Runs are served; the clock is not, so it is still held.
+            held = prune_orphan_devices(self.sync, report=report)
+            self.assertEqual(held["pruned_device_count"], 0)
+            self.assertEqual(held["quarantine_held_device_count"], 1)
+
+            ForwardDeviceAbsence.objects.filter(pk=row.pk).update(
+                first_absent_at=timezone.now() - timedelta(hours=73)
+            )
+            released = prune_orphan_devices(
+                self.sync,
+                report=compute_scope_reconciliation(self.sync),
+            )
+
+        self.assertEqual(released["pruned_device_count"], 1)
+        self.assertFalse(Device.objects.filter(name="dev-stale").exists())
+
+    def test_a_returning_device_clears_the_streak_through_the_real_job(self):
+        """Coming back has to mean coming back in Forward.
+
+        The mirror of the case above: now that an absence row keeps a device
+        counted as previously managed, the row has to be released by the device
+        reappearing in the Forward result - otherwise widening what counts as
+        managed would make an absence permanent instead of merely durable.
+        """
+        from forward_netbox.models import ForwardDeviceAbsence
+        from forward_netbox.utilities.scope_reconciliation import (
+            tag_backfilled_devices,
+        )
+
+        fwd_client = self._absent_fixture()
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            tag_backfilled_devices(self.sync)
+            tag_backfilled_devices(self.sync)
+            self.assertEqual(
+                ForwardDeviceAbsence.objects.get(
+                    sync=self.sync
+                ).consecutive_absent_runs,
+                2,
+            )
+
+            fwd_client.run_nqe_query.return_value = [
+                {"name": "dev-a", "completed": True},
+                {"name": "dev-stale", "completed": True},
+            ]
+            returned = tag_backfilled_devices(self.sync)
+
+        self.assertEqual(returned["absence_streaks_cleared"], 1)
+        self.assertFalse(ForwardDeviceAbsence.objects.filter(sync=self.sync).exists())
+        self.assertTrue(Device.objects.filter(name="dev-stale").exists())
+
+    def test_a_completed_run_records_the_absence_streak(self):
+        """The streak has to actually accumulate through the real job.
+
+        Every other streak test calls `record_device_absence` directly, so
+        nothing yet proves the post-sync job reaches it - and a quarantine whose
+        streak never advances holds every orphan forever.
+        """
+        from forward_netbox.models import ForwardDeviceAbsence
+        from forward_netbox.utilities.scope_reconciliation import (
+            tag_backfilled_devices,
+        )
+
+        fwd_client = self._absent_fixture()
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            first = tag_backfilled_devices(self.sync)
+            second = tag_backfilled_devices(self.sync)
+
+        self.assertEqual(first["absence_streaks_started"], 1)
+        self.assertEqual(second["absence_streaks_advanced"], 1)
+        row = ForwardDeviceAbsence.objects.get(sync=self.sync)
+        self.assertEqual(row.device.name, "dev-stale")
+        self.assertEqual(row.consecutive_absent_runs, 2)
+
+    def test_a_run_that_dies_before_recording_does_not_advance_the_streak(self):
+        """An absence we could not confirm is not evidence of absence.
+
+        The streak is what licenses a permanent delete, so a run that dies
+        partway must leave the count exactly where it was rather than banking a
+        confirmation it never earned.
+        """
+        from forward_netbox.models import ForwardDeviceAbsence
+        from forward_netbox.utilities.scope_reconciliation import (
+            tag_backfilled_devices,
+        )
+
+        fwd_client = self._absent_fixture()
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            tag_backfilled_devices(self.sync)
+            with patch(
+                "forward_netbox.utilities.ownership.finalize_device_tag_domain",
+                side_effect=RuntimeError("collection died mid-run"),
+            ):
+                with self.assertRaises(RuntimeError):
+                    tag_backfilled_devices(self.sync)
+
+        row = ForwardDeviceAbsence.objects.get(sync=self.sync)
+        self.assertEqual(row.consecutive_absent_runs, 1)
+
+    def test_a_streak_rolls_back_with_the_run_that_recorded_it(self):
+        """The row is written inside the tagging transaction, not beside it.
+
+        Dying before the recording is the easy half - it simply never runs. This
+        is the other half: the streak is written and THEN the run fails, and the
+        row has to go with it rather than survive to claim an absence the tags
+        were rolled back on.
+        """
+        from forward_netbox.models import ForwardDeviceAbsence
+        from forward_netbox.utilities import scope_reconciliation
+        from forward_netbox.utilities.scope_reconciliation import (
+            tag_backfilled_devices,
+        )
+
+        fwd_client = self._absent_fixture()
+        record_for_real = scope_reconciliation.record_device_absence
+
+        def _record_then_die(*args, **kwargs):
+            record_for_real(*args, **kwargs)
+            raise RuntimeError("died after recording, before commit")
+
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+            patch.object(
+                scope_reconciliation,
+                "record_device_absence",
+                side_effect=_record_then_die,
+            ),
+        ):
+            with self.assertRaises(RuntimeError):
+                tag_backfilled_devices(self.sync)
+
+        self.assertFalse(ForwardDeviceAbsence.objects.filter(sync=self.sync).exists())

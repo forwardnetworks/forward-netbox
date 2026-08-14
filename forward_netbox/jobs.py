@@ -794,8 +794,15 @@ def _validate_forwardsync_work(job):
         raise
 
 
-def _prune_forward_orphans_work(job):
-    """Run reviewed orphan pruning for a JobRunner-managed sync job."""
+def _prune_forward_orphans_work(job, *, include_quarantined=False):
+    """Run reviewed orphan pruning for a JobRunner-managed sync job.
+
+    ``include_quarantined`` arrives only from the operator button, and only when
+    that operator ticked the box next to a named list of held devices. A
+    standing-schedule occurrence calls this with no kwargs, so the unattended
+    path - the one that deleted 76 devices at a customer - can never override the
+    quarantine.
+    """
     from .utilities.scope_reconciliation import compute_scope_reconciliation
     from .utilities.scope_reconciliation import EmptyForwardScopeError
     from .utilities.scope_reconciliation import prune_orphan_devices
@@ -805,7 +812,11 @@ def _prune_forward_orphans_work(job):
     sync = ForwardSync.objects.get(pk=job.object_id)
     try:
         report = compute_scope_reconciliation(sync)
-        device_result = prune_orphan_devices(sync, report=report)
+        device_result = prune_orphan_devices(
+            sync,
+            report=report,
+            include_quarantined=include_quarantined,
+        )
         site_result = prune_orphan_sites(sync, report=report)
         job.data = {
             "pruned_device_count": device_result.get("pruned_device_count", 0),
@@ -817,6 +828,14 @@ def _prune_forward_orphans_work(job):
             ),
             "protected_device_count": device_result.get("protected_device_count", 0),
             "protected_by_model": device_result.get("protected_by_model", {}),
+            "quarantine_held_device_count": device_result.get(
+                "quarantine_held_device_count", 0
+            ),
+            "quarantine_overridden_device_count": device_result.get(
+                "quarantine_overridden_device_count", 0
+            ),
+            "quarantine_required_runs": device_result.get("quarantine_required_runs"),
+            "quarantine_required_hours": device_result.get("quarantine_required_hours"),
         }
         job.save(update_fields=["data"])
     except ScopeShrinkGuardError as exc:
@@ -1826,7 +1845,13 @@ class PruneOrphansJob(ForwardJobRunner):
         name = "prune orphans"
 
     def run(self, *args, **kwargs):
-        _prune_forward_orphans_work(self.job)
+        # Forward the flag only when the caller actually supplied one, so the
+        # default lives in the work function's signature rather than being
+        # restated here where the two could drift apart.
+        extra = {}
+        if "include_quarantined" in kwargs:
+            extra["include_quarantined"] = bool(kwargs["include_quarantined"])
+        _prune_forward_orphans_work(self.job, **extra)
 
 
 class PruneStaleHardwareNoticesJob(ForwardJobRunner):

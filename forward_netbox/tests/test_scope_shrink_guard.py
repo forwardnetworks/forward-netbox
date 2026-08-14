@@ -44,6 +44,12 @@ class ScopeShrinkGuardTest(TestCase):
                 "password": "p",
                 "verify": True,
                 "network_id": "net-1",
+                # This file is about the shrink guard, so the absence quarantine
+                # is switched off here. Left on, every case would be held for
+                # want of an absence row and would assert 0 pruned devices for
+                # the wrong reason - passing without exercising the guard at all.
+                "device_tag_prune_absence_runs": 0,
+                "device_tag_prune_absence_hours": 0,
             },
         )
         self.sync = ForwardSync.objects.create(name="shrink-sync", source=source)

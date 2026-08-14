@@ -58,6 +58,8 @@ def clean_forward_source(source):
             "device_tag_include_match",
             "device_tag_filter_mode",
             "device_tag_prune_out_of_scope",
+            "device_tag_prune_absence_runs",
+            "device_tag_prune_absence_hours",
             "apply_device_scope_tags",
             "sync_device_tags",
             "sync_endpoints",

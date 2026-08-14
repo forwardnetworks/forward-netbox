@@ -39,6 +39,16 @@ class Command(BaseCommand):
             help="With --prune-orphans, actually delete instead of dry-run.",
         )
         parser.add_argument(
+            "--include-quarantined",
+            action="store_true",
+            help=(
+                "Delete out-of-scope devices whose absence has not yet persisted "
+                "long enough to be believed. A device disabled in Forward is "
+                "indistinguishable from one that was removed, so by default an "
+                "absence must repeat across several syncs before it is acted on."
+            ),
+        )
+        parser.add_argument(
             "--allow-scope-shrink",
             action="store_true",
             help=(
@@ -119,8 +129,15 @@ class Command(BaseCommand):
                     sync,
                     report=report,
                     allow_scope_shrink=options["allow_scope_shrink"],
+                    include_quarantined=options["include_quarantined"],
                 )
                 payload["prune_applied"] = True
+                payload["quarantine_held_device_count"] = result.get(
+                    "quarantine_held_device_count", 0
+                )
+                payload["quarantine_overridden_device_count"] = result.get(
+                    "quarantine_overridden_device_count", 0
+                )
                 payload["pruned_object_count"] = result["pruned_object_count"]
                 payload["pruned_device_count"] = result["pruned_device_count"]
                 if result.get("pruned_dependent_rows"):

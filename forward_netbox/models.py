@@ -248,6 +248,10 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
             "device_tag_include_match",
             "device_tag_filter_mode",
             "device_tag_prune_out_of_scope",
+            # Both thresholds, so a support bundle explains why a prune deleted
+            # nothing without anyone having to ask what they were set to.
+            "device_tag_prune_absence_runs",
+            "device_tag_prune_absence_hours",
             "apply_device_scope_tags",
             "sync_device_tags",
             "sync_endpoints",
@@ -1556,6 +1560,59 @@ class ForwardDeviceTagClaim(
 
     def __str__(self):
         return f"{self.sync}: {self.device} -> {self.tag} ({self.claim_type})"
+
+
+class ForwardDeviceAbsence(ForwardPluginModelDocsMixin, models.Model):
+    """How long a device has been missing from the sync's Forward scope.
+
+    A device disabled in Forward disappears from ``network.devices`` completely,
+    and from the REST inventory too, so from every interface the plugin has,
+    disabled is indistinguishable from deleted. Deleting on the first absence
+    therefore destroys devices that are merely in a maintenance window. This row
+    is the evidence that an absence has persisted long enough to be believed.
+
+    The streak is unbroken by definition: a device that reappears has its row
+    deleted, not decremented, because two absences either side of a presence say
+    nothing together.
+
+    ``device`` is ``CASCADE`` rather than the ``PROTECT`` used elsewhere in the
+    ownership tables. This is bookkeeping ABOUT a device and must never be able
+    to hold one hostage - a hidden ``PROTECT`` relation is what made ingestions
+    undeletable once already.
+    """
+
+    sync = models.ForeignKey(
+        ForwardSync,
+        on_delete=models.CASCADE,
+        related_name="device_absences",
+    )
+    device = models.ForeignKey(
+        "dcim.Device",
+        on_delete=models.CASCADE,
+        related_name="+",
+    )
+    consecutive_absent_runs = models.PositiveIntegerField(default=0)
+    first_absent_at = models.DateTimeField()
+    last_absent_at = models.DateTimeField()
+    last_absent_snapshot_id = models.CharField(max_length=100, blank=True, default="")
+
+    class Meta:
+        ordering = ("sync__name", "device__name")
+        verbose_name = _("Forward Device Absence")
+        verbose_name_plural = _("Forward Device Absences")
+        db_table = "forward_netbox_device_absence"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["sync", "device"],
+                name="forward_device_absence_identity",
+            )
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.sync}: {self.device} absent for "
+            f"{self.consecutive_absent_runs} run(s)"
+        )
 
 
 class ForwardManagedVirtualContext(ForwardPluginModelDocsMixin, models.Model):
