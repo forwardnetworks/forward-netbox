@@ -233,7 +233,7 @@ files = [
     {file = "charset_normalizer-3.4.9-py3-none-any.whl", hash = "sha256:68e5f26a1ad57ded6d1cfb85331d1c1a195314756471d97758c48498bb4dcdf5"},
     {file = "charset_normalizer-3.4.9.tar.gz", hash = "sha256:673611bbd43f0810bec0b0f028ddeaaa501190339cac411f347ac76917c3ae7b"},
 ]
-markers = {main = "extra == \"dlm\" or extra == \"integrations\""}
+markers = {main = "python_version >= \"3.12\" and (extra == \"dlm\" or extra == \"integrations\")"}
 
 [[package]]
 name = "click"
@@ -790,15 +790,15 @@ test = ["coverage[toml] (>=7.4)", "pytest (>=8.0)", "pytest-cov (>=4.1)", "pytes
 
 [[package]]
 name = "netbox-dlm"
-version = "0.7.0"
+version = "0.9.1"
 description = "Device/software/hardware lifecycle management plugin for NetBox"
 optional = true
-python-versions = ">=3.10"
+python-versions = ">=3.12"
 groups = ["main"]
-markers = "extra == \"dlm\" or extra == \"integrations\""
+markers = "python_version >= \"3.12\" and (extra == \"dlm\" or extra == \"integrations\")"
 files = [
-    {file = "netbox_dlm-0.7.0-py3-none-any.whl", hash = "sha256:09d05148b248b6d2e3be2a7648094789dfbf31bb4898e5c29f6350b85d6127bb"},
-    {file = "netbox_dlm-0.7.0.tar.gz", hash = "sha256:90bb8bca598dae197464f30df0a7276beb7393ddd8fd0f47eee39f2b9576caec"},
+    {file = "netbox_dlm-0.9.1-py3-none-any.whl", hash = "sha256:5104730d03eb2c5836789f037cb0aa7d24f9f8a6cb5fc5e60e18ce84657f7356"},
+    {file = "netbox_dlm-0.9.1.tar.gz", hash = "sha256:67a3782a7e9a15187b1b1963126f76a87458efc578ec99f21aec55718a9d10e1"},
 ]
 
 [package.dependencies]
@@ -1217,7 +1217,7 @@ files = [
     {file = "requests-2.34.2-py3-none-any.whl", hash = "sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0"},
     {file = "requests-2.34.2.tar.gz", hash = "sha256:f288924cae4e29463698d6d60bc6a4da69c89185ad1e0bcc4104f584e960b9ed"},
 ]
-markers = {main = "extra == \"dlm\" or extra == \"integrations\""}
+markers = {main = "python_version >= \"3.12\" and (extra == \"dlm\" or extra == \"integrations\")"}
 
 [package.dependencies]
 certifi = ">=2023.5.7"
@@ -1382,7 +1382,7 @@ files = [
     {file = "urllib3-2.7.0-py3-none-any.whl", hash = "sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897"},
     {file = "urllib3-2.7.0.tar.gz", hash = "sha256:231e0ec3b63ceb14667c67be60f2f2c40a518cb38b03af60abc813da26505f4c"},
 ]
-markers = {main = "extra == \"dlm\" or extra == \"integrations\""}
+markers = {main = "python_version >= \"3.12\" and (extra == \"dlm\" or extra == \"integrations\")"}
 
 [package.extras]
 brotli = ["brotli (>=1.2.0) ; platform_python_implementation == \"CPython\"", "brotlicffi (>=1.2.0.0) ; platform_python_implementation != \"CPython\""]
@@ -1498,4 +1498,4 @@ routing = ["netbox-routing"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.15"
-content-hash = "f08ce1ed3485a4a506a9a5ce07a2b8338c4bc48ecf3338682d7d1ef3e02bb6d4"
+content-hash = "3202d2ba65c170852392bb0ff1d35a2ac7d694acb5a13cfa36df3433918bdc1a"
