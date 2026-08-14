@@ -1,3 +1,4 @@
+from datetime import timedelta
 from unittest.mock import Mock
 from unittest.mock import patch
 
@@ -13,6 +14,7 @@ from django.contrib.messages import get_messages
 from django.test import Client
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 
 from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.jobs import DeviceScopeTagReconciliationJob
@@ -934,6 +936,108 @@ class ScopeModuleUiTest(TestCase):
             return_value=[{"name": "dev-a", "completed": True}]
         )
         return fwd_client
+
+    def test_an_orphan_survives_the_claim_release_and_reaches_eligibility(self):
+        """The whole quarantine, end to end, through nothing but real runs.
+
+        This is the case that no direct `record_device_absence` test can reach.
+        The scope claim is released on the FIRST run that sees the device
+        missing, and `out_of_scope` is derived from live claims - so without the
+        absence row counting as "previously managed" the device silently stops
+        being an orphan on run 2. The streak sticks at 1, the panel's held count
+        drops to 0, and the prune becomes a permanent no-op for exactly the
+        devices it exists to delete. It fails safe and delivers nothing.
+        """
+        from forward_netbox.models import ForwardDeviceAbsence
+        from forward_netbox.models import ForwardDeviceTagClaim
+        from forward_netbox.utilities.scope_reconciliation import (
+            compute_scope_reconciliation,
+        )
+        from forward_netbox.utilities.scope_reconciliation import (
+            prune_orphan_devices,
+        )
+        from forward_netbox.utilities.scope_reconciliation import (
+            tag_backfilled_devices,
+        )
+
+        fwd_client = self._absent_fixture()
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            for _ in range(3):
+                tag_backfilled_devices(self.sync)
+
+            # The claim really is gone - this test would pass for the wrong
+            # reason if the release stopped happening.
+            self.assertFalse(
+                ForwardDeviceTagClaim.objects.filter(
+                    sync=self.sync,
+                    claim_type="scope",
+                    device__name="dev-stale",
+                ).exists()
+            )
+            row = ForwardDeviceAbsence.objects.get(sync=self.sync)
+            self.assertEqual(row.device.name, "dev-stale")
+            self.assertEqual(row.consecutive_absent_runs, 3)
+
+            # Still an orphan on run 3, which is what the claim release used to
+            # destroy.
+            report = compute_scope_reconciliation(self.sync)
+            self.assertEqual(report["_out_of_scope"], {"dev-stale"})
+
+            # Runs are served; the clock is not, so it is still held.
+            held = prune_orphan_devices(self.sync, report=report)
+            self.assertEqual(held["pruned_device_count"], 0)
+            self.assertEqual(held["quarantine_held_device_count"], 1)
+
+            ForwardDeviceAbsence.objects.filter(pk=row.pk).update(
+                first_absent_at=timezone.now() - timedelta(hours=73)
+            )
+            released = prune_orphan_devices(
+                self.sync,
+                report=compute_scope_reconciliation(self.sync),
+            )
+
+        self.assertEqual(released["pruned_device_count"], 1)
+        self.assertFalse(Device.objects.filter(name="dev-stale").exists())
+
+    def test_a_returning_device_clears_the_streak_through_the_real_job(self):
+        """Coming back has to mean coming back in Forward.
+
+        The mirror of the case above: now that an absence row keeps a device
+        counted as previously managed, the row has to be released by the device
+        reappearing in the Forward result - otherwise widening what counts as
+        managed would make an absence permanent instead of merely durable.
+        """
+        from forward_netbox.models import ForwardDeviceAbsence
+        from forward_netbox.utilities.scope_reconciliation import (
+            tag_backfilled_devices,
+        )
+
+        fwd_client = self._absent_fixture()
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            tag_backfilled_devices(self.sync)
+            tag_backfilled_devices(self.sync)
+            self.assertEqual(
+                ForwardDeviceAbsence.objects.get(
+                    sync=self.sync
+                ).consecutive_absent_runs,
+                2,
+            )
+
+            fwd_client.run_nqe_query.return_value = [
+                {"name": "dev-a", "completed": True},
+                {"name": "dev-stale", "completed": True},
+            ]
+            returned = tag_backfilled_devices(self.sync)
+
+        self.assertEqual(returned["absence_streaks_cleared"], 1)
+        self.assertFalse(ForwardDeviceAbsence.objects.filter(sync=self.sync).exists())
+        self.assertTrue(Device.objects.filter(name="dev-stale").exists())
 
     def test_a_completed_run_records_the_absence_streak(self):
         """The streak has to actually accumulate through the real job.

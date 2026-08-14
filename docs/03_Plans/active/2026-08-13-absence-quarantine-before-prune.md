@@ -89,6 +89,32 @@ looking at a named list of orphans and choosing to delete them is a different
 act from a scheduled job doing it unattended. The automated path has no
 override. This is the same split the shrink guard already uses.
 
+### The absence row is also what keeps the device an orphan
+
+This is not a detail of the streak; the quarantine does not work without it.
+
+`out_of_scope` is derived from devices holding a live scope claim, and the
+claim reconciliation releases every claim whose device is missing from the
+current Forward result - on the FIRST run that observes the absence. So by run
+2 the claim table no longer remembers that this sync ever managed the device.
+It drops out of `out_of_scope` entirely, `record_device_absence` reads that as
+"came back" and deletes the row, and the streak resets to nothing. Measured on
+a real three-run sequence: started=1, then cleared=1, then nothing, for ever.
+
+The consequence is not a slow quarantine, it is a dead one. The streak can
+never pass 1, so with the default threshold of 3 no device is ever prune
+eligible, the panel's held count drops to 0 after the first run, and the prune
+becomes a permanent no-op for exactly the devices it exists to delete. It fails
+safe and delivers nothing, which is the worst way to be wrong about this.
+
+So `compute_scope_reconciliation` treats a device with an open absence row as
+previously managed, alongside the live claims. The row is created only from a
+device that held a claim and is cleared the moment the device returns to the
+Forward result, so this widens what counts as managed without inventing a claim
+the sync never made. It also removes a pre-existing order dependency: before
+this, whether an orphan was still prunable depended on whether the prune job
+happened to run before the tag-reconciliation job.
+
 ### A note on the first run
 
 On an estate with no streak rows yet, nothing is prune-eligible. That is
@@ -146,6 +172,12 @@ Revert. Absent devices are prune-eligible immediately again, as in 2.7.13.
 - **CASCADE on `device`.** Bookkeeping must not pin the object it describes.
 - **Manual override, no automated override.** The unattended path is the one
   that caused the harm.
+- **An absence row counts as previously managed.** The alternative was to stop
+  releasing the scope claim while a device is quarantined, which keeps the
+  memory in one place - but claim release is shared by both tag domains and
+  gates ownership completion through `stale_claims`, so retaining claims there
+  would have reached well beyond the prune. The absence row already has exactly
+  the lifetime required.
 
 ## Open
 

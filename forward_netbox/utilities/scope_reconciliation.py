@@ -358,13 +358,35 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         if (name or "").strip()
     }
 
+    from ..models import ForwardDeviceAbsence
     from ..models import ForwardDeviceTagClaim
 
-    previously_managed = list(
+    claimed = list(
         ForwardDeviceTagClaim.objects.filter(sync=sync, claim_type="scope")
         .select_related("device")
         .values_list("device_id", "device__name")
     )
+    # A device absent from Forward loses its scope claim on the FIRST run that
+    # observes the absence: the claim reconciliation releases every claim whose
+    # device is not in the current result. So by the second run the claim table
+    # no longer remembers that this sync ever managed the device, it drops out of
+    # `out_of_scope` entirely, and both the quarantine streak and the prune lose
+    # sight of it - the streak cannot pass 1 and the orphan can never be deleted.
+    #
+    # The absence row is the memory that survives the release, so it is the other
+    # half of "this sync previously managed this device". It is created only from
+    # a device that held a claim, and it is cleared the moment the device returns
+    # to the Forward result, so this widens what counts as previously managed
+    # without inventing a claim the sync never made.
+    quarantined = list(
+        ForwardDeviceAbsence.objects.filter(sync=sync)
+        .select_related("device")
+        .values_list("device_id", "device__name")
+    )
+    managed_by_id = dict(claimed)
+    for device_id, name in quarantined:
+        managed_by_id.setdefault(device_id, name)
+    previously_managed = sorted(managed_by_id.items())
     previously_managed_names = {name for _, name in previously_managed}
     # A sync may classify only devices it previously claimed. Treating every
     # NetBox device absent from this sync as out of scope creates contradictory
