@@ -19,10 +19,10 @@
 {% endif %}
 
 {% if perms.forward_netbox.merge_forwardingestion and object.can_accept_merge_failures %}
-  {# A failed row returns the branch to READY without attesting, so the baseline
+  {% comment %} A failed row returns the branch to READY without attesting, so the baseline
      never promotes and every retry hits the same rows. When the failure is
      deterministic that is a dead end, and this is the way out. Separate button,
-     separate confirmation: it must never be reachable by clicking Merge twice. #}
+     separate confirmation: it must never be reachable by clicking Merge twice. {% endcomment %}
   <form method="post"
         action="{% url 'plugins:forward_netbox:forwardingestion_accept_failures' pk=object.pk %}"
         class="d-inline"

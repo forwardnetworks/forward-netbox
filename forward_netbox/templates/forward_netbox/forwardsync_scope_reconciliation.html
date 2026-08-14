@@ -156,8 +156,8 @@
       <div class="card-body">
         {% if payload.out_of_scope_sample %}
           {% if payload.out_of_scope_absence.available %}
-            {# Which kind of absence, because all three look identical here and
-               only one of them means the device really left. #}
+            {% comment %} Which kind of absence, because all three look identical here and
+               only one of them means the device really left. {% endcomment %}
             <p class="mb-2">
               {% if payload.out_of_scope_absence.absent_from_snapshot %}
                 <span class="badge text-bg-secondary">{% blocktrans count counter=payload.out_of_scope_absence.absent_from_snapshot %}{{ counter }} gone from Forward{% plural %}{{ counter }} gone from Forward{% endblocktrans %}</span>

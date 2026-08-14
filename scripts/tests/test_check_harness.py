@@ -914,3 +914,65 @@ class PostReleaseBridgeIsDocumentationOnlyTest(unittest.TestCase):
 
         self.assertEqual(len(failures), 1)
         self.assertIn("PRIOR_POST_RELEASE_DOC_COMMIT", failures[0])
+
+
+class TemplateCommentsAreParseableTest(unittest.TestCase):
+    """A `{# #}` comment that wraps is not a comment - Django prints it.
+
+    Two of these reached a customer's UI, one of them in a panel shipped the day
+    before. Nothing in the suite could see it: the template rendered, the view
+    returned 200, and 2085 tests passed with the text on screen.
+    """
+
+    def _failures(self, template_body):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template_dir = root / "forward_netbox" / "templates" / "forward_netbox"
+            template_dir.mkdir(parents=True)
+            (template_dir / "page.html").write_text(template_body, encoding="utf-8")
+            original = check_harness.REPO_ROOT
+            check_harness.REPO_ROOT = root
+            try:
+                failures = []
+                check_harness._check_template_comments_are_parseable(failures)
+                return failures
+            finally:
+                check_harness.REPO_ROOT = original
+
+    def test_a_wrapped_comment_is_reported(self):
+        failures = self._failures(
+            "<div>\n  {# this explanation is long enough that it\n"
+            "     wrapped onto a second line #}\n  <p>body</p>\n</div>\n"
+        )
+
+        self.assertEqual(len(failures), 1)
+        self.assertIn("page.html:2", failures[0])
+        self.assertIn("comment", failures[0])
+
+    def test_a_single_line_comment_is_accepted(self):
+        failures = self._failures("<div>\n  {# short and closed #}\n</div>\n")
+
+        self.assertEqual(failures, [])
+
+    def test_a_comment_block_is_accepted(self):
+        failures = self._failures(
+            "<div>\n  {% comment %}\n  wrapped prose is fine here\n"
+            "  {% endcomment %}\n</div>\n"
+        )
+
+        self.assertEqual(failures, [])
+
+    def test_a_second_comment_on_the_line_is_still_checked(self):
+        """The closed one must not vouch for the open one beside it."""
+        failures = self._failures(
+            "<div>\n  {# closed #} {# but this one runs on\n"
+            "     to the next line #}\n</div>\n"
+        )
+
+        self.assertEqual(len(failures), 1)
+        self.assertIn("page.html:2", failures[0])
+
+    def test_a_template_with_no_comments_is_accepted(self):
+        failures = self._failures("<div><p>body</p></div>\n")
+
+        self.assertEqual(failures, [])
