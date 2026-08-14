@@ -141,8 +141,9 @@ Two consequences worth knowing:
 
 - Execution is **asynchronous**: submit, poll, then page the result. A single unpaginated
   fetch silently truncates.
-- **Query volume matters.** Forward engineering has objected to unnecessary NQE runs;
-  audit call volume when changing anything on the sync path.
+- **Every NQE run costs.** Treat call volume as a budget: reuse a report the sync has
+  already computed rather than re-querying, and audit `forward_api_usage` when changing
+  anything on the sync path.
 - The query language is restrictive — no list comprehensions, and `contains` is not
   infix. Write queries device-parallel.
 - Queries can be pinned by ID or resolved by name; a pinned ID going stale is a real
