@@ -132,16 +132,16 @@ class UncoveredModelsReportNoComparisonTest(TestCase):
     """
 
     def test_the_unaudited_bespoke_paths_return_none_under_preview(self):
-        """Each of these writes to a model other than its own.
+        """The two paths still without a comparison.
 
-        `interface` deletes cables, `device` creates Tag and TaggedItem rows,
-        and `ipaddress` and `virtualchassis` both bulk_update Device. Returning
-        before their final write would not make them read-only, so until each is
-        handled they must decline to answer rather than answer wrongly.
+        `device` creates Tag and TaggedItem rows. `virtualchassis` creates
+        VirtualChassis rows and then reads their pks back to assign devices, so
+        skipping the first phase leaves the second unclassifiable. Returning
+        before their final write would not make either read-only, so until each
+        is handled they must decline to answer rather than answer wrongly.
         """
         for model_string in (
             "dcim.device",
-            "dcim.interface",
             "dcim.virtualchassis",
         ):
             with self.subTest(model=model_string):
@@ -229,6 +229,102 @@ class IpAddressComparisonTest(TestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(result["creates"], 0)
+
+
+class InterfaceComparisonTest(TestCase):
+    """interface deletes a cable partway through applying, and re-enters itself.
+
+    NetBox refuses `type=lag` on a cabled interface, so the apply removes the
+    cable and re-applies the row. A preview must not do that - it is the most
+    destructive thing any of these paths does - and must still count the row,
+    because an existing cabled interface becoming a LAG is plainly a change.
+    """
+
+    def setUp(self):
+        from dcim.models import Device
+        from dcim.models import DeviceRole
+        from dcim.models import DeviceType
+
+        site = Site.objects.create(name="I Site", slug="i-site")
+        mfr = Manufacturer.objects.create(name="I Mfr", slug="i-mfr")
+        dtype = DeviceType.objects.create(manufacturer=mfr, model="I DT", slug="i-dt")
+        role = DeviceRole.objects.create(name="I Role", slug="i-role")
+        self.device = Device.objects.create(
+            name="iface-dev", site=site, device_type=dtype, role=role
+        )
+
+    def test_a_cabled_lag_conversion_does_not_delete_the_cable(self):
+        from dcim.models import Cable
+        from dcim.models import Interface
+
+        left = Interface.objects.create(
+            device=self.device, name="Ethernet1", type="1000base-t"
+        )
+        right = Interface.objects.create(
+            device=self.device, name="Ethernet2", type="1000base-t"
+        )
+        cable = Cable.objects.create(
+            a_terminations=[left], b_terminations=[right], status="connected"
+        )
+        cables_before = Cable.objects.count()
+
+        result = compare_model_rows(
+            None,
+            "dcim.interface",
+            [{"device": "iface-dev", "name": "Ethernet1", "type": "lag"}],
+        )
+
+        self.assertEqual(Cable.objects.count(), cables_before)
+        self.assertTrue(Cable.objects.filter(pk=cable.pk).exists())
+        left.refresh_from_db()
+        self.assertIsNotNone(left.cable_id)
+        # Still counted, just not performed.
+        self.assertIsNotNone(result)
+        self.assertEqual(result["updates"], 1)
+
+    def test_an_interface_preview_creates_nothing(self):
+        from dcim.models import Interface
+
+        before = Interface.objects.count()
+
+        result = compare_model_rows(
+            None,
+            "dcim.interface",
+            [
+                {
+                    "device": "iface-dev",
+                    "name": "Ethernet9",
+                    "type": "1000base-t",
+                    "enabled": True,
+                }
+            ],
+        )
+
+        self.assertEqual(Interface.objects.count(), before)
+        self.assertEqual(result["creates"], 1)
+
+    def test_an_unchanged_interface_is_not_drift(self):
+        from dcim.models import Interface
+
+        Interface.objects.create(
+            device=self.device, name="Ethernet3", type="1000base-t"
+        )
+
+        result = compare_model_rows(
+            None,
+            "dcim.interface",
+            [
+                {
+                    "device": "iface-dev",
+                    "name": "Ethernet3",
+                    "type": "1000base-t",
+                    "enabled": True,
+                }
+            ],
+        )
+
+        self.assertEqual(result["creates"], 0)
+        self.assertEqual(result["updates"], 0)
 
 
 class PartialCoverageIsReportedTest(TestCase):

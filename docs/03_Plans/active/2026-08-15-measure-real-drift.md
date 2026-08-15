@@ -171,7 +171,7 @@ writes to models the function does not own, and one of them is a delete:
 | --- | --- | --- |
 | `macaddress` | none | **measured** |
 | `ipaddress` | `Device.objects.bulk_update`, **plus a VRF upsert via `runner._ensure_vrf`** | **measured** |
-| `interface` | **`cable.delete()`**, plus two recursive self-calls | deferred |
+| `interface` | **`cable.delete()`**, plus two recursive self-calls | **measured** |
 | `device` | creates `Tag` and `TaggedItem` rows | deferred |
 | `virtualchassis` | creates `VirtualChassis`, THEN assigns devices to them | deferred |
 
@@ -234,20 +234,47 @@ with them.
 double-counted, because a single unusable row both files an issue and
 increments `failed`.
 
+### interface, and why it was not the hard case after all
+
+It was written off as not guard-shaped, on the reasoning that later
+classification depends on the cable delete having happened. Reading it properly
+says otherwise.
+
+The conversion exists because NetBox refuses `type=lag` on a cabled interface,
+so the apply snapshots while cabled, deletes the cable, and re-enters this
+function to apply the row as an ordinary interface. The recursion performs the
+change in two legal steps. **A preview does not need the steps, only the
+verdict** - an existing cabled interface becoming a LAG is unambiguously a
+change to a row NetBox already has. So the conversions are skipped whole and
+those rows count as updates. Counted without being performed.
+
+They cannot double-count: both branches filling `cabled_lag_rows` `continue`
+before reaching `create_objects` or `update_objects`.
+
+One structural gotcha, and it is a new variant of the recurring one. Interface
+is the first path that defers its per-row statistics to the end of the function
+rather than incrementing inline. A plain early return before the write block
+would have emitted none of them, so the shim would have seen no rows and
+reported **zero drift** for the highest-volume model in the estate. The preview
+return emits the outcomes before returning.
+
+That is the third time this feature has produced a confident zero from an
+unmeasured path - after the bool exits and the `all()` gate. It is worth
+treating as the default failure mode of this work rather than a coincidence.
+
 ### Still to do
 
-`device`, `interface` and `virtualchassis`.
+`device` and `virtualchassis`.
 
-`device` is the tractable one: `Tag` and `TaggedItem` creation is a phase, and
-if it sits after device classification the same early return works. Check
-whether classification reads back the tags it creates before assuming so.
+`device` looks tractable: `Tag` and `TaggedItem` creation is a phase, and if it
+sits after device classification the same early return works. Check whether
+classification reads back the tags it creates before assuming so.
 
-`interface` and `virtualchassis` are not guard-shaped. In both, a write happens
-partway and later classification depends on its result - a deleted cable, a
-created `VirtualChassis`. Options are to model the intended post-write state
-without performing it, or to accept these two as permanently upper-bound and
-say so on the panel. The second is honest and cheap; the first is what an
-operator would want for `interface`, which is high volume.
+`virtualchassis` is the genuinely awkward one. Its second phase reads `vc.pk`
+from rows the first phase creates, so there is no verdict to shortcut to the
+way there was for `interface`. Either model the intended post-write state, or
+accept it as permanently upper-bound and say so - it is a low-volume model, so
+the second is defensible.
 
 ## Rollback
 

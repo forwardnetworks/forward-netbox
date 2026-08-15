@@ -460,7 +460,6 @@ def bulk_orm_apply_simple_models(
     # what they do, so nobody wires one up on the assumption that returning
     # before the final bulk_create is sufficient - it is not:
     #
-    #   interface       `cable.delete()`, plus two recursive self-calls
     #   device          creates Tag and TaggedItem rows
     #   virtualchassis  creates VirtualChassis rows, THEN assigns devices to
     #                   them - so the second phase needs the first to have
@@ -469,6 +468,10 @@ def bulk_orm_apply_simple_models(
     # `ipaddress` is handled: its direct writes are all in one block at the end,
     # and the VRF upsert it performs mid-classification goes through
     # `runner._ensure_vrf`, which the preview runner overrides with a lookup.
+    #
+    # `interface` is handled: its cabled-LAG conversions delete a cable and
+    # re-enter the function, so a preview skips them and counts those rows as
+    # the updates they plainly are.
     #
     # Note the audit that produced this list greps for direct ORM writes and so
     # does NOT see writes behind a runner call. That is safe only because the
@@ -485,7 +488,7 @@ def bulk_orm_apply_simple_models(
     if model_string == "dcim.virtualchassis":
         return None if preview else bulk_orm_apply_virtualchassis(runner, rows)
     if model_string == "dcim.interface":
-        return None if preview else bulk_orm_apply_interface(runner, rows)
+        return bulk_orm_apply_interface(runner, rows, preview=preview)
     if model_string == "dcim.device":
         return None if preview else bulk_orm_apply_device(runner, rows)
 
@@ -1323,6 +1326,7 @@ def bulk_orm_apply_interface(
     rows: list[dict[str, Any]],
     *,
     prechange_snapshots: dict[int, Any] | None = None,
+    preview: bool = False,
 ):
     """Batched apply for dcim.interface.
 
@@ -1768,6 +1772,28 @@ def bulk_orm_apply_interface(
                 update_objects[member.pk] = member
             outcome[0] = "applied"
             resolved_lag_links.append((member, parent))
+
+    if preview:
+        # Two things make this path different from the others.
+        #
+        # It defers its per-row statistics to the end of the function instead of
+        # incrementing inline, so a preview has to emit them here or the shim
+        # sees nothing and reports zero drift.
+        #
+        # And the cabled-LAG conversions below are skipped outright. Each one
+        # deletes a cable and re-enters this function, which is the one thing a
+        # read-only measurement must not do. Those rows are still counted: an
+        # existing cabled interface becoming a LAG is unambiguously a change to
+        # a row NetBox already has, so it counts as an update. They are counted
+        # without being performed, which is the whole distinction. They cannot
+        # double-count, because both branches that fill `cabled_lag_rows`
+        # `continue` before reaching `create_objects` or `update_objects`.
+        for (outcome,) in row_outcomes:
+            runner.logger.increment_statistics("dcim.interface", outcome=outcome)
+        return {
+            "creates": len(create_objects),
+            "updates": len(update_objects) + len(cabled_lag_rows),
+        }
 
     from django.db import IntegrityError
 
