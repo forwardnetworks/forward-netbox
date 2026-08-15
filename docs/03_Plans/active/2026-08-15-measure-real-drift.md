@@ -124,6 +124,98 @@ drift over the measured models plus an explicit count of the unmeasured ones.
   for this feature, and it is the assertion that would have caught the
   side-effecting design.
 
+## Slice one, as built
+
+`compare_model_rows` in `utilities/drift_comparison.py` calls
+`bulk_orm_apply_simple_models(..., preview=True)`. Covers `dcim.site`,
+`dcim.manufacturer`, `dcim.devicetype`, `ipam.vlan`, `ipam.vrf` and
+`ipam.prefix`.
+
+Making it read-only took **six** suppressions, not the one hidden write this
+plan predicted. The two extra classes were both found by running it, not by
+reading it:
+
+1. `:563` creates missing manufacturers - predicted.
+2. `:602` creates missing VRFs - predicted.
+3. Three non-dict exits (`return False` for an unknown model, `return True`
+   when every row was rejected, and the `bulk_orm_apply_tree_models`
+   delegation) would each have surfaced as **zero drift** rather than "not
+   compared". A bool is falsy and a caller reading counts off it reports a
+   confident zero.
+4. `full_clean` on creates rejects a row whose required dependency was
+   deliberately not created - a device type whose manufacturer is absent fails
+   on a null FK while still being, plainly, a row NetBox does not have. A
+   preview counts what would change; validation belongs to the apply.
+
+`compare_model_rows` additionally refuses anything that is not a count mapping,
+so a path this work has not audited can never surface as zero drift.
+
+### Reporting
+
+`comparison_available` is now `any`, not `all`, and the report carries
+`measured_model_count`, `unmeasured_model_count` and `unmeasured_models`.
+
+`in_sync` deliberately stays `None` until every model is compared. Zero drift
+across a measured subset is reported as `total_drift`, which states its
+coverage; answering "Yes" off a partial measurement would tell an operator they
+are in sync when nothing checked the rest, which is the same confident-zero
+failure as (3) above wearing a different hat.
+
+## Slice two: the bespoke paths, audited
+
+The audit was run before any of them was wired up, and it justified itself.
+Slice one's hidden writes were dependency creates. These are worse - they are
+writes to models the function does not own, and one of them is a delete:
+
+| path | writes beyond its own rows |
+| --- | --- |
+| `macaddress` | none - **cleared** |
+| `interface` | **`cable.delete()`**, plus two recursive self-calls |
+| `device` | creates `Tag` and `TaggedItem` rows |
+| `ipaddress` | `Device.objects.bulk_update` (primary-IP assignment) |
+| `virtualchassis` | `Device.objects.bulk_update` |
+
+A preview on `interface` would have deleted cables. On `device` it would have
+created tags and tag assignments. "Return before the final `bulk_create`" is
+not sufficient for any of the four, and the dispatch now carries this table as
+a comment so nobody assumes otherwise.
+
+Only `macaddress` is wired up. The other four return `None` and keep their
+upper bound.
+
+### The shim is the cost of coverage
+
+Routing a preview through the apply path means satisfying whatever slice of the
+runner that path touches. `macaddress` alone needed `_content_type_for`,
+`_get_unique_or_raise`, `_lookup_interface`, `_dependency_failed`,
+`_mark_dependency_failed`, `_record_aggregated_skip_warning` and five caches -
+each checked for writes, each delegated to the same primitive the real runner
+uses so the preview resolves objects exactly as the apply would.
+
+That is the honest per-path cost, and it grows. `_record_issue` is now
+signature-agnostic rather than being widened every time a caller passes a new
+keyword.
+
+### Counting is uniform now
+
+Counts come from the per-row outcomes the classification already reports, not
+from arithmetic per function. Every path increments `applied` for a row it
+would write and `unchanged` for one it would not, so there is one definition
+instead of one per path - and the paths differ enough (skips, per-row
+rejections, in-memory duplicates) that row-total arithmetic quietly disagreed
+with them.
+
+`rejected` reads from the outcomes alone. Summing it with the issue count
+double-counted, because a single unusable row both files an issue and
+increments `failed`.
+
+### Still to do
+
+`interface`, `device`, `ipaddress` and `virtualchassis` - the reporting
+deployment's highest-volume models. Each needs its cross-model writes
+suppressed individually, and `interface`'s cable delete needs care rather than
+a guard: the classification may depend on it having happened.
+
 ## Rollback
 
 Revert. The report returns to "Not measured", which is where it has always been.

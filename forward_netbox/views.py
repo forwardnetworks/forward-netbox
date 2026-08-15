@@ -473,7 +473,7 @@ def _dependency_plan_item_summary(item):
     }
 
 
-def _dependency_model_result_summary(result):
+def _dependency_model_result_summary(result, comparison=None):
     # ``fetcher.model_results`` are ForwardModelResult dataclasses, not dicts —
     # calling result.get(...) on them raised AttributeError and errored the whole
     # dependency preview (hidden as null-data until 2.2.4 surfaced job errors).
@@ -502,10 +502,24 @@ def _dependency_model_result_summary(result):
         "failure_count": int(data.get("failure_count") or 0),
         "failure_exception": str(data.get("failure_exception") or ""),
         "failure_reason": str(data.get("failure_reason") or ""),
-        # Per-model change estimate: upsert rows + deletes (as_dict has no
-        # estimated_changes field). The plan-level total is plan_preview.
-        "estimated_changes": row_count + delete_count,
-        "change_estimate_kind": "workload_upper_bound",
+        # Per-model change estimate. With a comparison this is how many objects
+        # actually differ - creates plus updates, deletes counted separately by
+        # the drift report - so the figure means what the page has always said
+        # it meant. Without one it stays the upper bound: every fetched row,
+        # because nothing compared them.
+        "estimated_changes": (
+            comparison["creates"] + comparison["updates"]
+            if comparison
+            else row_count + delete_count
+        ),
+        "change_estimate_kind": (
+            "exact_comparison" if comparison else "workload_upper_bound"
+        ),
+        # Rows the comparison could not classify because they carry no usable
+        # identity. Reported rather than folded into drift, which would read as
+        # a difference between the two systems when it is a defect in the row.
+        "comparison_rejected_rows": (comparison or {}).get("rejected", 0),
+        "unchanged_rows": (comparison or {}).get("unchanged", 0),
         "runtime_ms": float(data.get("runtime_ms") or 0.0),
         # Preserve aggregate state evidence without copying diagnostic samples or
         # source identifiers into the preview job payload.
@@ -544,6 +558,26 @@ def _dependency_dry_run_payload(sync, *, client=None):
     )
     plan_items = [_dependency_plan_item_summary(item) for item in plan]
     context_dict = context.as_dict()
+
+    # Compare the fetched rows against NetBox so the drift report can state how
+    # many objects actually differ. This is the NetBox-side read the preview
+    # never did; it costs no Forward calls, because the Forward half is already
+    # in `workloads`. Models with no comparison yet return None and keep their
+    # upper-bound estimate rather than reporting a confident zero.
+    from collections import defaultdict
+
+    from .utilities.drift_comparison import compare_model_rows
+
+    rows_by_model = defaultdict(list)
+    for workload in workloads:
+        rows_by_model[workload.model_string].extend(workload.upsert_rows or [])
+    comparison_by_model = {
+        model_string: compare_model_rows(sync, model_string, rows)
+        for model_string, rows in rows_by_model.items()
+    }
+    measured_models = sum(
+        1 for value in comparison_by_model.values() if value is not None
+    )
     return {
         "generated_at": timezone.now().isoformat(),
         "sync": {
@@ -560,9 +594,25 @@ def _dependency_dry_run_payload(sync, *, client=None):
         "plan_items_count": len(plan_items),
         "plan_items_truncated": len(plan_items) > _PREVIEW_PLAN_ITEM_LIMIT,
         "plan_items": plan_items[:_PREVIEW_PLAN_ITEM_LIMIT],
-        "change_estimate_kind": "workload_upper_bound",
+        # Payload-level kind describes the weakest model in the set, so a
+        # partially compared preview never advertises itself as exact.
+        "change_estimate_kind": (
+            "exact_comparison"
+            if comparison_by_model and measured_models == len(comparison_by_model)
+            else "workload_upper_bound"
+        ),
+        "comparison_coverage": {
+            "measured_models": measured_models,
+            "total_models": len(comparison_by_model),
+        },
         "model_results": [
-            _dependency_model_result_summary(result) for result in fetcher.model_results
+            _dependency_model_result_summary(
+                result,
+                comparison=comparison_by_model.get(
+                    (result.as_dict().get("model") or "")
+                ),
+            )
+            for result in fetcher.model_results
         ],
         "forward_api_usage": record_forward_api_usage(sync, client),
     }

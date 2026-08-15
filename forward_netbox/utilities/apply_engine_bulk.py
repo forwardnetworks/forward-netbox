@@ -422,20 +422,61 @@ def bulk_orm_delete_prefixes(runner, rows: list[dict[str, Any]]):
     return True
 
 
-def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str, Any]]):
+def bulk_orm_apply_simple_models(
+    runner,
+    model_string: str,
+    rows: list[dict[str, Any]],
+    *,
+    preview: bool = False,
+):
+    """Apply rows, or - with ``preview`` - classify them and write nothing.
+
+    ``preview`` exists so the drift report can state how many objects actually
+    differ instead of counting every fetched row as a change. It reuses this
+    function rather than reimplementing the comparison, because a second
+    normaliser drifts from this one and the symptom is a drift figure that is
+    wrong in whichever direction is least noticeable.
+
+    Read-only is not simply "return before the write". This function writes
+    twice during dependency resolution, before it has classified anything: it
+    creates missing manufacturers for device types and platforms, and missing
+    VRFs for prefixes. Both are suppressed under ``preview``, which is safe AND
+    accurate - a row whose dependency is absent from NetBox cannot itself exist
+    in NetBox, so counting it as a create is the right answer rather than an
+    approximation.
+
+    Returns a ``{"creates", "updates", "unchanged"}`` mapping under ``preview``,
+    or ``None`` for a model whose bespoke path does not support it yet, so the
+    caller can fall back to the upper-bound estimate rather than report a
+    confident zero for something never compared.
+    """
     from django.db import transaction
     from django.db.models import Q
 
+    # Each bespoke path was audited for writes it performs on models other than
+    # its own before being given a preview mode, because a preview that
+    # inherited them would change an operator's NetBox while claiming to
+    # measure it. Only macaddress came back clean. The others are listed with
+    # what they do, so nobody wires one up on the assumption that returning
+    # before the final bulk_create is sufficient - it is not:
+    #
+    #   interface       `cable.delete()`, plus two recursive self-calls
+    #   device          creates Tag and TaggedItem rows
+    #   ipaddress       Device.objects.bulk_update (primary-IP assignment)
+    #   virtualchassis  Device.objects.bulk_update
+    #
+    # Until each is handled they report no comparison, which keeps their
+    # upper-bound estimate rather than a confident zero.
     if model_string == "dcim.macaddress":
-        return bulk_orm_apply_macaddress(runner, rows)
+        return bulk_orm_apply_macaddress(runner, rows, preview=preview)
     if model_string == "dcim.virtualchassis":
-        return bulk_orm_apply_virtualchassis(runner, rows)
+        return None if preview else bulk_orm_apply_virtualchassis(runner, rows)
     if model_string == "ipam.ipaddress":
-        return bulk_orm_apply_ipaddress(runner, rows)
+        return None if preview else bulk_orm_apply_ipaddress(runner, rows)
     if model_string == "dcim.interface":
-        return bulk_orm_apply_interface(runner, rows)
+        return None if preview else bulk_orm_apply_interface(runner, rows)
     if model_string == "dcim.device":
-        return bulk_orm_apply_device(runner, rows)
+        return None if preview else bulk_orm_apply_device(runner, rows)
 
     from dcim.models import DeviceType
     from dcim.models import DeviceRole
@@ -520,7 +561,9 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
     }
     spec = specs.get(model_string)
     if not spec:
-        return False
+        # No spec means no comparison either; `None` keeps the caller on the
+        # upper-bound estimate rather than letting `False` read as zero drift.
+        return None if preview else False
 
     model = spec["model"]
     fields = tuple(spec["fields"])
@@ -560,7 +603,12 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
             for row in rows
             if row.get("manufacturer")
         ]
-        bulk_orm_apply_simple_models(runner, "dcim.manufacturer", manufacturer_rows)
+        # A preview must not create the dependency it is only looking at. Rows
+        # needing an absent manufacturer resolve it to None below and fall out
+        # as creates, which is what they are: NetBox cannot already hold a
+        # device type or platform under a manufacturer it does not have.
+        if not preview:
+            bulk_orm_apply_simple_models(runner, "dcim.manufacturer", manufacturer_rows)
         manufacturer_values = {
             value
             for row in manufacturer_rows
@@ -598,7 +646,9 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
             {"name": name, "rd": None, "description": "", "enforce_unique": False}
             for name in sorted(requested_vrf_names - existing_vrf_names)
         ]
-        if missing_vrf_rows:
+        # Same as the manufacturer case: a preview leaves the VRF table exactly
+        # as it found it, and a prefix whose VRF is absent counts as a create.
+        if missing_vrf_rows and not preview:
             bulk_orm_apply_simple_models(runner, "ipam.vrf", missing_vrf_rows)
         vrf_by_name = {}
         for batch in _chunks(list(requested_vrf_names)):
@@ -663,10 +713,19 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
                 lookup_values[field_name].append(value)
 
     if not normalized_rows:
+        # Every row was rejected for missing identity. Nothing to write, and for
+        # a preview nothing to change either - the rejections are reported
+        # separately rather than counted as drift.
+        if preview:
+            return {"creates": 0, "updates": 0, "unchanged": 0}
         return True
 
     if model_string in {"dcim.devicerole", "dcim.platform"}:
-        # These low-volume models retain the adapter-equivalent save path.
+        # These low-volume models retain the adapter-equivalent save path, which
+        # has no preview mode yet, so a preview reports no comparison for them
+        # rather than borrowing this function's answer.
+        if preview:
+            return None
         return bulk_orm_apply_tree_models(
             runner=runner,
             model_string=model_string,
@@ -717,7 +776,14 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
             # is redundant; a genuine constraint violation still surfaces via the
             # bulk_create IntegrityError -> per-row isolate path. Field validation
             # is kept.
-            obj.full_clean(validate_unique=False, validate_constraints=False)
+            #
+            # A preview skips it. It counts what would change, not whether the
+            # write would validate, and under preview a required dependency was
+            # deliberately not created - so a device type whose manufacturer is
+            # absent fails `full_clean` on a null FK while still being, plainly,
+            # a row NetBox does not have. Validation belongs to the apply.
+            if not preview:
+                obj.full_clean(validate_unique=False, validate_constraints=False)
             create_objects.append(obj)
             if model_string == "ipam.prefix":
                 prefix_vrf_ids.add(getattr(values.get("vrf"), "pk", None))
@@ -763,6 +829,13 @@ def bulk_orm_apply_simple_models(runner, model_string: str, rows: list[dict[str,
             runner.events_clearer.increment()
             continue
         runner.logger.increment_statistics(model_string, outcome="unchanged")
+
+    if preview:
+        # Everything above this line reads and classifies; everything below it
+        # writes. The counts come from the same normalisation, the same lookup
+        # and the same field comparison the apply uses, which is the whole point
+        # of routing the preview through here.
+        return {"creates": len(create_objects), "updates": len(update_objects)}
 
     from django.db import IntegrityError
 
@@ -868,7 +941,7 @@ def _is_parseable_mac(value) -> bool:
     return True
 
 
-def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
+def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]], *, preview=False):
     from dcim.models import Device
     from dcim.models import Interface
     from dcim.models import MACAddress
@@ -1162,6 +1235,13 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
             update_objects[mac.pk] = mac
         runner.logger.increment_statistics("dcim.macaddress", outcome="applied")
         runner.events_clearer.increment()
+
+    if preview:
+        # Audited for hidden writes before being wired up: unlike the other
+        # bespoke paths, this one touches no model but its own - no cross-model
+        # bulk_update, no dependency creation, no deletes - so classifying and
+        # returning here leaves NetBox untouched.
+        return {"creates": len(create_objects), "updates": len(update_objects)}
 
     from django.db import IntegrityError
 

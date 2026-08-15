@@ -173,9 +173,16 @@ def compute_drift_report(payload):
         ),
         reverse=True,
     )
-    comparison_available = bool(rows) and all(
-        row["comparison_available"] for row in rows
-    )
+    measured_rows = [row for row in rows if row["comparison_available"]]
+    unmeasured_rows = [row for row in rows if not row["comparison_available"]]
+    # Drift is reported over the models that were actually compared, rather than
+    # withheld until every model can be. Requiring all of them meant one
+    # uncovered model - and there is always at least one, because the
+    # adapter-only models have no comparison - reported "Not measured" for the
+    # whole estate on every run, permanently. "Drift 412 across 13 of 27 models"
+    # is useful and true; "Not measured" was neither.
+    comparison_available = bool(measured_rows)
+    fully_measured = bool(rows) and not unmeasured_rows
     # Fingerprint of a preview taken against an empty/unmerged NetBox: several
     # models, every one of them fully pending, zero removals. That is "here is
     # everything Forward has," not real per-row drift — flag it so the operator
@@ -190,8 +197,17 @@ def compute_drift_report(payload):
         "models": rows,
         "model_count": len(rows),
         "comparison_available": comparison_available,
+        # How much of the estate the drift figures actually cover. Reported
+        # alongside them rather than implied, so a partial measurement is never
+        # read as a whole-estate one.
+        "measured_model_count": len(measured_rows),
+        "unmeasured_model_count": len(unmeasured_rows),
+        "unmeasured_models": sorted(
+            row["model"] for row in unmeasured_rows if row.get("model")
+        ),
+        "fully_measured": fully_measured,
         "drifted_model_count": (
-            sum(1 for row in rows if not row["in_sync"])
+            sum(1 for row in measured_rows if not row["in_sync"])
             if comparison_available
             else None
         ),
@@ -199,7 +215,12 @@ def compute_drift_report(payload):
         "total_apply_work": total_apply_work,
         "total_upsert_candidates": total_upsert_candidates,
         "total_removes": total_removes,
-        "in_sync": total_drift == 0 if comparison_available else None,
+        # "In sync" is a claim about the whole estate, so it stays unanswered
+        # while any model is uncompared. Zero drift across the measured models
+        # is reported as `total_drift`, which says what it covers; answering
+        # "Yes" off a partial measurement would tell an operator they are in
+        # sync when nothing checked the rest.
+        "in_sync": (total_drift == 0) if (fully_measured and rows) else None,
         "looks_like_full_create": looks_like_full_create,
         "full_create_model_count": full_create_like,
         "generated_at": (
