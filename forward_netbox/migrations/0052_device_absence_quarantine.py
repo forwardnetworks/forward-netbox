@@ -8,8 +8,18 @@ import forward_netbox.models
 
 class Migration(migrations.Migration):
 
+    # `makemigrations` writes the newest dcim migration it can see, which was a
+    # NetBox 4.6.6 one - so this migration could not be applied on 4.6.5 at all,
+    # even though the plugin supports it. Shipped that way in 2.8.0 and caught by
+    # the 2.8.1 upgrade gate, which is the first leg to install a plugin version
+    # carrying this migration onto 4.6.5.
+    #
+    # All this actually needs is for `dcim.Device` to exist, so it depends on
+    # dcim's initial migration like every other migration here does. Changing a
+    # dependency does not re-run an applied migration; Django records those by
+    # name, and the ordering still holds because 0001 precedes everything.
     dependencies = [
-        ("dcim", "0241_nullify_empty_cable_end"),
+        ("dcim", "0001_initial"),
         ("forward_netbox", "0051_ownership_provenance_stamp_nullable"),
     ]
 
