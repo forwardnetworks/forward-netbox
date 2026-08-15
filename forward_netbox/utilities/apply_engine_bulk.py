@@ -453,8 +453,22 @@ def bulk_orm_apply_simple_models(
     from django.db import transaction
     from django.db.models import Q
 
+    # Each bespoke path was audited for writes it performs on models other than
+    # its own before being given a preview mode, because a preview that
+    # inherited them would change an operator's NetBox while claiming to
+    # measure it. Only macaddress came back clean. The others are listed with
+    # what they do, so nobody wires one up on the assumption that returning
+    # before the final bulk_create is sufficient - it is not:
+    #
+    #   interface       `cable.delete()`, plus two recursive self-calls
+    #   device          creates Tag and TaggedItem rows
+    #   ipaddress       Device.objects.bulk_update (primary-IP assignment)
+    #   virtualchassis  Device.objects.bulk_update
+    #
+    # Until each is handled they report no comparison, which keeps their
+    # upper-bound estimate rather than a confident zero.
     if model_string == "dcim.macaddress":
-        return None if preview else bulk_orm_apply_macaddress(runner, rows)
+        return bulk_orm_apply_macaddress(runner, rows, preview=preview)
     if model_string == "dcim.virtualchassis":
         return None if preview else bulk_orm_apply_virtualchassis(runner, rows)
     if model_string == "ipam.ipaddress":
@@ -821,13 +835,7 @@ def bulk_orm_apply_simple_models(
         # writes. The counts come from the same normalisation, the same lookup
         # and the same field comparison the apply uses, which is the whole point
         # of routing the preview through here.
-        return {
-            "creates": len(create_objects),
-            "updates": len(update_objects),
-            "unchanged": len(normalized_rows)
-            - len(create_objects)
-            - len(update_objects),
-        }
+        return {"creates": len(create_objects), "updates": len(update_objects)}
 
     from django.db import IntegrityError
 
@@ -933,7 +941,7 @@ def _is_parseable_mac(value) -> bool:
     return True
 
 
-def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
+def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]], *, preview=False):
     from dcim.models import Device
     from dcim.models import Interface
     from dcim.models import MACAddress
@@ -1227,6 +1235,13 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]]):
             update_objects[mac.pk] = mac
         runner.logger.increment_statistics("dcim.macaddress", outcome="applied")
         runner.events_clearer.increment()
+
+    if preview:
+        # Audited for hidden writes before being wired up: unlike the other
+        # bespoke paths, this one touches no model but its own - no cross-model
+        # bulk_update, no dependency creation, no deletes - so classifying and
+        # returning here leaves NetBox untouched.
+        return {"creates": len(create_objects), "updates": len(update_objects)}
 
     from django.db import IntegrityError
 

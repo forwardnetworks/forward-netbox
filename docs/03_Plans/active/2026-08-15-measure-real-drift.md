@@ -161,14 +161,60 @@ coverage; answering "Yes" off a partial measurement would tell an operator they
 are in sync when nothing checked the rest, which is the same confident-zero
 failure as (3) above wearing a different hat.
 
+## Slice two: the bespoke paths, audited
+
+The audit was run before any of them was wired up, and it justified itself.
+Slice one's hidden writes were dependency creates. These are worse - they are
+writes to models the function does not own, and one of them is a delete:
+
+| path | writes beyond its own rows |
+| --- | --- |
+| `macaddress` | none - **cleared** |
+| `interface` | **`cable.delete()`**, plus two recursive self-calls |
+| `device` | creates `Tag` and `TaggedItem` rows |
+| `ipaddress` | `Device.objects.bulk_update` (primary-IP assignment) |
+| `virtualchassis` | `Device.objects.bulk_update` |
+
+A preview on `interface` would have deleted cables. On `device` it would have
+created tags and tag assignments. "Return before the final `bulk_create`" is
+not sufficient for any of the four, and the dispatch now carries this table as
+a comment so nobody assumes otherwise.
+
+Only `macaddress` is wired up. The other four return `None` and keep their
+upper bound.
+
+### The shim is the cost of coverage
+
+Routing a preview through the apply path means satisfying whatever slice of the
+runner that path touches. `macaddress` alone needed `_content_type_for`,
+`_get_unique_or_raise`, `_lookup_interface`, `_dependency_failed`,
+`_mark_dependency_failed`, `_record_aggregated_skip_warning` and five caches -
+each checked for writes, each delegated to the same primitive the real runner
+uses so the preview resolves objects exactly as the apply would.
+
+That is the honest per-path cost, and it grows. `_record_issue` is now
+signature-agnostic rather than being widened every time a caller passes a new
+keyword.
+
+### Counting is uniform now
+
+Counts come from the per-row outcomes the classification already reports, not
+from arithmetic per function. Every path increments `applied` for a row it
+would write and `unchanged` for one it would not, so there is one definition
+instead of one per path - and the paths differ enough (skips, per-row
+rejections, in-memory duplicates) that row-total arithmetic quietly disagreed
+with them.
+
+`rejected` reads from the outcomes alone. Summing it with the issue count
+double-counted, because a single unusable row both files an issue and
+increments `failed`.
+
 ### Still to do
 
-The bespoke bulk paths - `device`, `interface`, `ipaddress`, `macaddress`,
-`virtualchassis` - return `None` and keep their upper bound. They are the
-reporting deployment's highest-volume models, so slice two is where this
-becomes useful to them rather than merely correct. Each needs the same audit
-for hidden writes before being wired up; do not assume the pattern found here
-is the only one.
+`interface`, `device`, `ipaddress` and `virtualchassis` - the reporting
+deployment's highest-volume models. Each needs its cross-model writes
+suppressed individually, and `interface`'s cable delete needs care rather than
+a guard: the classification may depend on it having happened.
 
 ## Rollback
 

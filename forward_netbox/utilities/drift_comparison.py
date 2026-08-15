@@ -57,10 +57,56 @@ class PreviewRunner:
         self.sync = sync
         self.logger = _PreviewStatistics()
         self.events_clearer = _PreviewEventsClearer()
+        self._content_types = {}
+        self._interface_by_device_name_cache = {}
+        self._missing_interface_by_device_name_cache = {}
+        self._device_by_name_cache = {}
+        self._primed_missing_unique_lookup_keys = set()
+        self._unique_lookup_cache = {}
         self.rejected_rows = 0
 
-    def _record_issue(self, model_string, message, row, context=None):
+    def _record_issue(self, *args, **kwargs):
+        # Deliberately signature-agnostic. Callers pass different keyword sets
+        # (`context`, `exception`, and more as paths are added), and a preview
+        # cares only that a row was unusable - not why, since it files nothing.
         self.rejected_rows += 1
+
+    def _content_type_for(self, model):
+        # Read-only: a cached ContentType lookup, which the macaddress path
+        # needs to compare an existing assignment against the incoming one.
+        from .sync_primitives import content_type_for
+
+        return content_type_for(self, model)
+
+    # --- read-only lookups the classification needs -------------------------
+    #
+    # Each is delegated to the same primitive the real runner uses, so the
+    # preview resolves objects exactly as the apply would. They were added one
+    # at a time as the classification demanded them; every one was checked for
+    # writes first, and the ones that write are why four of the five bespoke
+    # paths still report no comparison.
+
+    def _get_unique_or_raise(self, model, lookup):
+        from .sync_primitives import get_unique_or_raise
+
+        return get_unique_or_raise(self, model, lookup)
+
+    def _lookup_interface(self, device, interface_name):
+        from .sync_primitives import lookup_interface
+
+        return lookup_interface(self, device, interface_name)
+
+    # --- state the classification reports into, which a preview discards ----
+
+    def _dependency_failed(self, model_string, key):
+        # Nothing has been applied, so nothing can have failed as a dependency.
+        return False
+
+    def _mark_dependency_failed(self, model_string, row):
+        return None
+
+    def _record_aggregated_skip_warning(self, **kwargs):
+        return None
 
 
 def compare_model_rows(sync, model_string, rows):
@@ -89,4 +135,23 @@ def compare_model_rows(sync, model_string, rows):
         # count mapping is treated as "not compared" rather than coerced, so a
         # path this has not audited can never surface as zero drift.
         return None
-    return {**counts, "rejected": runner.rejected_rows}
+    outcomes = runner.logger.outcomes
+    return {
+        "creates": counts.get("creates", 0),
+        "updates": counts.get("updates", 0),
+        # Taken from the per-row outcomes the classification already reports
+        # rather than recomputed per path. Every path increments "unchanged"
+        # for a row it would not write, so this is one definition instead of
+        # one per function - and the paths differ enough (skips, per-row
+        # rejections, in-memory duplicates) that arithmetic on row totals would
+        # quietly disagree with them.
+        "unchanged": outcomes.get("unchanged", 0),
+        # A row the classification could not use is not a difference between
+        # the two systems; it is a defect in the row. Counted separately so it
+        # never inflates drift.
+        #
+        # Read from the outcomes alone, not added to `rejected_rows`: a single
+        # unusable row both files an issue and increments "failed", so summing
+        # the two counted it twice.
+        "rejected": outcomes.get("failed", 0) + outcomes.get("skipped", 0),
+    }

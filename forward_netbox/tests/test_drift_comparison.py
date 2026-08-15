@@ -131,12 +131,18 @@ class UncoveredModelsReportNoComparisonTest(TestCase):
     failure mode here that leads somewhere bad.
     """
 
-    def test_the_bespoke_bulk_paths_return_none_under_preview(self):
+    def test_the_unaudited_bespoke_paths_return_none_under_preview(self):
+        """Each of these writes to a model other than its own.
+
+        `interface` deletes cables, `device` creates Tag and TaggedItem rows,
+        and `ipaddress` and `virtualchassis` both bulk_update Device. Returning
+        before their final write would not make them read-only, so until each is
+        handled they must decline to answer rather than answer wrongly.
+        """
         for model_string in (
             "dcim.device",
             "dcim.interface",
             "ipam.ipaddress",
-            "dcim.macaddress",
             "dcim.virtualchassis",
         ):
             with self.subTest(model=model_string):
@@ -151,6 +157,37 @@ class UncoveredModelsReportNoComparisonTest(TestCase):
             compare_model_rows(None, "dcim.site", []),
             {"creates": 0, "updates": 0, "unchanged": 0, "rejected": 0},
         )
+
+
+class MacAddressComparisonTest(TestCase):
+    """macaddress was the one bespoke path the write audit cleared."""
+
+    def test_a_macaddress_preview_writes_nothing(self):
+        from dcim.models import MACAddress
+
+        before = MACAddress.objects.count()
+
+        compare_model_rows(
+            None,
+            "dcim.macaddress",
+            [
+                {
+                    "mac_address": "00:11:22:33:44:55",
+                    "device": "no-such-device",
+                    "interface": "eth0",
+                }
+            ],
+        )
+
+        self.assertEqual(MACAddress.objects.count(), before)
+
+    def test_it_answers_rather_than_declining(self):
+        # The point of auditing it: a clean path should report a comparison, not
+        # be lumped in with the ones that cannot.
+        result = compare_model_rows(None, "dcim.macaddress", [])
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["creates"], 0)
 
 
 class PartialCoverageIsReportedTest(TestCase):
