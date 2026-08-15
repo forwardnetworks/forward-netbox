@@ -124,6 +124,52 @@ drift over the measured models plus an explicit count of the unmeasured ones.
   for this feature, and it is the assertion that would have caught the
   side-effecting design.
 
+## Slice one, as built
+
+`compare_model_rows` in `utilities/drift_comparison.py` calls
+`bulk_orm_apply_simple_models(..., preview=True)`. Covers `dcim.site`,
+`dcim.manufacturer`, `dcim.devicetype`, `ipam.vlan`, `ipam.vrf` and
+`ipam.prefix`.
+
+Making it read-only took **six** suppressions, not the one hidden write this
+plan predicted. The two extra classes were both found by running it, not by
+reading it:
+
+1. `:563` creates missing manufacturers - predicted.
+2. `:602` creates missing VRFs - predicted.
+3. Three non-dict exits (`return False` for an unknown model, `return True`
+   when every row was rejected, and the `bulk_orm_apply_tree_models`
+   delegation) would each have surfaced as **zero drift** rather than "not
+   compared". A bool is falsy and a caller reading counts off it reports a
+   confident zero.
+4. `full_clean` on creates rejects a row whose required dependency was
+   deliberately not created - a device type whose manufacturer is absent fails
+   on a null FK while still being, plainly, a row NetBox does not have. A
+   preview counts what would change; validation belongs to the apply.
+
+`compare_model_rows` additionally refuses anything that is not a count mapping,
+so a path this work has not audited can never surface as zero drift.
+
+### Reporting
+
+`comparison_available` is now `any`, not `all`, and the report carries
+`measured_model_count`, `unmeasured_model_count` and `unmeasured_models`.
+
+`in_sync` deliberately stays `None` until every model is compared. Zero drift
+across a measured subset is reported as `total_drift`, which states its
+coverage; answering "Yes" off a partial measurement would tell an operator they
+are in sync when nothing checked the rest, which is the same confident-zero
+failure as (3) above wearing a different hat.
+
+### Still to do
+
+The bespoke bulk paths - `device`, `interface`, `ipaddress`, `macaddress`,
+`virtualchassis` - return `None` and keep their upper bound. They are the
+reporting deployment's highest-volume models, so slice two is where this
+becomes useful to them rather than merely correct. Each needs the same audit
+for hidden writes before being wired up; do not assume the pattern found here
+is the only one.
+
 ## Rollback
 
 Revert. The report returns to "Not measured", which is where it has always been.
