@@ -142,7 +142,6 @@ class UncoveredModelsReportNoComparisonTest(TestCase):
         for model_string in (
             "dcim.device",
             "dcim.interface",
-            "ipam.ipaddress",
             "dcim.virtualchassis",
         ):
             with self.subTest(model=model_string):
@@ -185,6 +184,48 @@ class MacAddressComparisonTest(TestCase):
         # The point of auditing it: a clean path should report a comparison, not
         # be lumped in with the ones that cannot.
         result = compare_model_rows(None, "dcim.macaddress", [])
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["creates"], 0)
+
+
+class IpAddressComparisonTest(TestCase):
+    """ipaddress writes a VRF mid-classification, behind a runner call.
+
+    The audit grep looks for direct ORM writes and did not see it. It is
+    neutralised because the preview runner overrides `_ensure_vrf` with a
+    lookup - so these tests exist to hold that override in place, since losing
+    it would put VRF creation back into a read-only preview silently.
+    """
+
+    def test_an_ipaddress_preview_does_not_create_the_missing_vrf(self):
+        before = set(VRF.objects.values_list("name", flat=True))
+
+        compare_model_rows(
+            None,
+            "ipam.ipaddress",
+            [{"address": "10.77.0.1/32", "vrf": "vrf-absent-from-netbox"}],
+        )
+
+        self.assertEqual(set(VRF.objects.values_list("name", flat=True)), before)
+        self.assertFalse(VRF.objects.filter(name="vrf-absent-from-netbox").exists())
+
+    def test_an_ipaddress_preview_creates_no_address(self):
+        from ipam.models import IPAddress
+
+        before = IPAddress.objects.count()
+
+        result = compare_model_rows(
+            None,
+            "ipam.ipaddress",
+            [{"address": "10.77.0.2/32"}],
+        )
+
+        self.assertEqual(IPAddress.objects.count(), before)
+        self.assertIsNotNone(result)
+
+    def test_it_answers_rather_than_declining(self):
+        result = compare_model_rows(None, "ipam.ipaddress", [])
 
         self.assertIsNotNone(result)
         self.assertEqual(result["creates"], 0)

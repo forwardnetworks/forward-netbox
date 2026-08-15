@@ -167,21 +167,46 @@ The audit was run before any of them was wired up, and it justified itself.
 Slice one's hidden writes were dependency creates. These are worse - they are
 writes to models the function does not own, and one of them is a delete:
 
-| path | writes beyond its own rows |
-| --- | --- |
-| `macaddress` | none - **cleared** |
-| `interface` | **`cable.delete()`**, plus two recursive self-calls |
-| `device` | creates `Tag` and `TaggedItem` rows |
-| `ipaddress` | `Device.objects.bulk_update` (primary-IP assignment) |
-| `virtualchassis` | `Device.objects.bulk_update` |
+| path | writes beyond its own rows | state |
+| --- | --- | --- |
+| `macaddress` | none | **measured** |
+| `ipaddress` | `Device.objects.bulk_update`, **plus a VRF upsert via `runner._ensure_vrf`** | **measured** |
+| `interface` | **`cable.delete()`**, plus two recursive self-calls | deferred |
+| `device` | creates `Tag` and `TaggedItem` rows | deferred |
+| `virtualchassis` | creates `VirtualChassis`, THEN assigns devices to them | deferred |
 
 A preview on `interface` would have deleted cables. On `device` it would have
 created tags and tag assignments. "Return before the final `bulk_create`" is
-not sufficient for any of the four, and the dispatch now carries this table as
-a comment so nobody assumes otherwise.
+not sufficient for any of the three deferred paths, and the dispatch carries
+this table as a comment so nobody assumes otherwise.
 
-Only `macaddress` is wired up. The other four return `None` and keep their
-upper bound.
+### The audit method was wrong, and ipaddress proved it
+
+The first pass grepped for direct ORM writes - `bulk_create`, `bulk_update`,
+`.save(`, `.delete(`. That reported `ipaddress` as having one cross-model
+write. It has two: the second is `runner._ensure_vrf`, called during
+classification, which upserts a VRF. A grep for ORM calls cannot see a write
+behind a runner method.
+
+What makes that survivable is that **the preview runner is a write firewall**.
+Every `runner.` call is answered by the shim, so a write behind one is
+neutralised by construction, and a method the shim does not implement raises
+`AttributeError` rather than writing. Loud beats silent.
+
+So the grep is the right tool for direct writes and the wrong tool on its own.
+Adding a path means reading its `runner.` calls too. `_ensure_vrf` is now
+overridden with a lookup returning `None` for an absent VRF - the same
+treatment slice one gives an absent dependency, and correct for the same
+reason: an address cannot already exist under a VRF NetBox does not have.
+
+### virtualchassis was mis-triaged too
+
+Listed initially as a single `Device.objects.bulk_update`. It is two-phase: it
+creates `VirtualChassis` rows, then assigns devices to them, and the second
+phase reads `vc.pk` from the first. Skipping phase one does not yield a
+classifiable phase two. Same shape as `interface`'s cable delete - the
+classification depends on the write having happened - so it needs design, not
+a guard.
 
 ### The shim is the cost of coverage
 
@@ -211,10 +236,18 @@ increments `failed`.
 
 ### Still to do
 
-`interface`, `device`, `ipaddress` and `virtualchassis` - the reporting
-deployment's highest-volume models. Each needs its cross-model writes
-suppressed individually, and `interface`'s cable delete needs care rather than
-a guard: the classification may depend on it having happened.
+`device`, `interface` and `virtualchassis`.
+
+`device` is the tractable one: `Tag` and `TaggedItem` creation is a phase, and
+if it sits after device classification the same early return works. Check
+whether classification reads back the tags it creates before assuming so.
+
+`interface` and `virtualchassis` are not guard-shaped. In both, a write happens
+partway and later classification depends on its result - a deleted cable, a
+created `VirtualChassis`. Options are to model the intended post-write state
+without performing it, or to accept these two as permanently upper-bound and
+say so on the panel. The second is honest and cheap; the first is what an
+operator would want for `interface`, which is high volume.
 
 ## Rollback
 

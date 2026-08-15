@@ -462,17 +462,28 @@ def bulk_orm_apply_simple_models(
     #
     #   interface       `cable.delete()`, plus two recursive self-calls
     #   device          creates Tag and TaggedItem rows
-    #   ipaddress       Device.objects.bulk_update (primary-IP assignment)
-    #   virtualchassis  Device.objects.bulk_update
+    #   virtualchassis  creates VirtualChassis rows, THEN assigns devices to
+    #                   them - so the second phase needs the first to have
+    #                   happened and cannot simply be skipped
+    #
+    # `ipaddress` is handled: its direct writes are all in one block at the end,
+    # and the VRF upsert it performs mid-classification goes through
+    # `runner._ensure_vrf`, which the preview runner overrides with a lookup.
+    #
+    # Note the audit that produced this list greps for direct ORM writes and so
+    # does NOT see writes behind a runner call. That is safe only because the
+    # preview runner shims the whole runner surface - an unshimmed method raises
+    # instead of writing - and it is why adding a path means reading its runner
+    # calls too, not just grepping it.
     #
     # Until each is handled they report no comparison, which keeps their
     # upper-bound estimate rather than a confident zero.
     if model_string == "dcim.macaddress":
         return bulk_orm_apply_macaddress(runner, rows, preview=preview)
+    if model_string == "ipam.ipaddress":
+        return bulk_orm_apply_ipaddress(runner, rows, preview=preview)
     if model_string == "dcim.virtualchassis":
         return None if preview else bulk_orm_apply_virtualchassis(runner, rows)
-    if model_string == "ipam.ipaddress":
-        return None if preview else bulk_orm_apply_ipaddress(runner, rows)
     if model_string == "dcim.interface":
         return None if preview else bulk_orm_apply_interface(runner, rows)
     if model_string == "dcim.device":
@@ -2318,7 +2329,7 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]]):
     return True
 
 
-def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]]):
+def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]], *, preview=False):
     """Batched apply for ipam.ipaddress with adapter-parity semantics.
 
     Mirrors ``apply_ipam_ipaddress`` (sync_ipam.py) row-for-row — device and
@@ -2567,6 +2578,19 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]]):
             update_objects[ip.pk] = ip
         runner.logger.increment_statistics("ipam.ipaddress", outcome="applied")
         runner.events_clearer.increment()
+
+    if preview:
+        # Every direct write in this path - the released-primary Device
+        # bulk_update as well as the IPAddress create and update - is inside the
+        # block below, so returning here performs none of them.
+        #
+        # The VRF upsert this path also performs is NOT reached by that, because
+        # it happens during classification through `runner._ensure_vrf`. The
+        # preview runner overrides that method with a lookup, which is why the
+        # shim is a write firewall rather than a convenience: a write behind a
+        # runner call is neutralised by construction, and an unshimmed method
+        # raises rather than writing.
+        return {"creates": len(create_objects), "updates": len(update_objects)}
 
     from django.db import IntegrityError
 
