@@ -461,8 +461,7 @@ def bulk_orm_apply_simple_models(
     # before the final bulk_create is sufficient - it is not:
     #
     #   virtualchassis  creates VirtualChassis rows, THEN assigns devices to
-    #                   them - so the second phase needs the first to have
-    #                   happened and cannot simply be skipped
+    #                   them. Deliberately left unmeasured; see below.
     #
     # `ipaddress` is handled: its direct writes are all in one block at the end,
     # and the VRF upsert it performs mid-classification goes through
@@ -489,6 +488,27 @@ def bulk_orm_apply_simple_models(
         return bulk_orm_apply_macaddress(runner, rows, preview=preview)
     if model_string == "ipam.ipaddress":
         return bulk_orm_apply_ipaddress(runner, rows, preview=preview)
+    # virtualchassis is left unmeasured on purpose, not for want of effort.
+    #
+    # A shortcut does exist - a device whose target VirtualChassis is absent is
+    # unambiguously a change, the same reasoning that made `interface` and the
+    # absent-dependency cases work. What rules it out is that an unsaved VC
+    # breaks the device phase in three separate places, each silently:
+    #
+    #   `position_key = (vc.pk, position)`  - every to-be-created VC collapses
+    #       to (None, position), so unrelated VCs collide as one occupied slot
+    #   `device.virtual_chassis_id == vc.pk` - a device with NO chassis compares
+    #       equal to None and is counted UNCHANGED
+    #   `device.full_clean()`               - validates against an unsaved FK
+    #
+    # The middle one under-counts drift while looking correct, which is the
+    # exact failure this whole feature exists to prevent, and it would need all
+    # three handled to avoid it. Against that: virtualchassis is low volume, and
+    # measuring it unlocks nothing - `in_sync` stays unanswered regardless,
+    # because the adapter-only models have no comparison either.
+    #
+    # So it declines to answer. That is a worse report and a better number than
+    # the alternative.
     if model_string == "dcim.virtualchassis":
         return None if preview else bulk_orm_apply_virtualchassis(runner, rows)
     if model_string == "dcim.interface":

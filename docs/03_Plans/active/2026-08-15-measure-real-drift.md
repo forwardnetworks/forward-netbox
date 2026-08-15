@@ -283,17 +283,44 @@ directly, so a caller with no sync raised. The shim now carries a null sync that
 reports no opt-in parameters. Production always passes the real one, so this
 only affects callers that have none, and it degrades rather than guesses.
 
-### Still to do
+### virtualchassis: decided, not outstanding
 
-`virtualchassis`, and it is the one genuinely different case.
+An earlier version of this plan said there was "no verdict to shortcut to" for
+`virtualchassis`. That was wrong, and worth correcting rather than quietly
+dropping: a device whose target `VirtualChassis` is absent is unambiguously a
+change, exactly the reasoning that made `interface` and every absent-dependency
+case work. It is tractable.
 
-Its second phase reads `vc.pk` from rows the first phase creates, so unlike
-`interface` there is no verdict to shortcut to: the classification cannot be
-computed without the write. Either model the intended post-write state, or
-accept it as permanently upper-bound and label it. It is a low-volume model, so
-the second is defensible and the first is probably not worth it - but inventing
-a number for it would be worse than either, so it declines to answer until
-someone decides.
+What rules it out is that an unsaved VC breaks the device phase in three
+separate places, and two of them fail silently:
+
+- `position_key = (vc.pk, position)` - every to-be-created VC collapses to
+  `(None, position)`, so unrelated VCs collide as one occupied slot
+- `device.virtual_chassis_id == vc.pk` - a device with NO chassis compares equal
+  to `None` and is counted **unchanged**
+- `device.full_clean()` - validates against an unsaved foreign key
+
+The middle one under-counts drift while looking correct. That is the precise
+failure this feature exists to prevent, and avoiding it means getting all three
+right in the least-exercised path of the set.
+
+Against that: `virtualchassis` is low volume, and measuring it unlocks nothing.
+`in_sync` stays unanswered regardless, because the adapter-only models have no
+comparison either - so the estate is never "fully measured" whether this lands
+or not.
+
+**Decision: leave it declining to answer.** A model reported as unmeasured is a
+worse report and a better number than a model reported as in sync because three
+subtle comparisons all defaulted to "same". Revisit only if a deployment turns
+out to lean on virtual chassis.
+
+### Genuinely still open
+
+The adapter-only models - the lifecycle rows, cables, inventory items, modules,
+tagged items, FHRP groups, routing and peering. They have no bulk path at all,
+so none of this machinery reaches them, and each needs its own row resolution.
+That is a separate body of work, and until it happens `in_sync` stays `None` by
+design.
 
 ## Rollback
 
