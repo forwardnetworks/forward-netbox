@@ -39,6 +39,7 @@ from .bulk_delete import lock_related_writes_for_delete
 from .bulk_merge import _ApplyOneFailure
 from .bulk_merge import bulk_merge_changes
 from .diagnostics import describe_failure
+from .diagnostics import diagnostic_shape
 from .diagnostics import exception_type
 from .diagnostics import is_caused_rule_rejection
 from .diagnostics import safe_operation_failure
@@ -116,6 +117,31 @@ def _replication_side_effect_exists(collapsed_change) -> bool:
     return model_class.objects.filter(device_id=device_id, name=name).exists()
 
 
+def _row_identity(pk, change_data):
+    """Name the failed row by its NetBox pk, never by its own values.
+
+    Returns ``None`` when there is no pk to report, so a caller that has no
+    row in hand — the orchestration paths that record a whole-model failure —
+    keeps the message it always had, byte for byte.
+    """
+    if pk is None:
+        return None
+    # `CollapsedChange.key` is `(label_lower, pk)` and the pk can be an int or a
+    # UUID depending on the model. `str` is what makes it both readable in the
+    # message and safe to store in a JSONField; nothing downstream does
+    # arithmetic on it.
+    rendered = str(pk).strip()
+    if not rendered:
+        return None
+    return {
+        "pk": rendered,
+        # The row's fields, not their values — same treatment the sync-phase
+        # recorder gives `raw_data`.
+        "shape": diagnostic_shape(change_data) if change_data is not None else None,
+        "sentence": f"Affected NetBox row: pk {rendered}.",
+    }
+
+
 class _MergeIssueRecorder:
     """Record merge-time change failures as ForwardIngestionIssue rows."""
 
@@ -123,7 +149,7 @@ class _MergeIssueRecorder:
         self._ingestion = ingestion
         self._sync_logger = sync_logger
 
-    def record(self, *, model_string, exc):
+    def record(self, *, model_string, exc, pk=None, change_data=None):
         # The diagnosis has always been stored in `raw_data`, but the issue list
         # shows only the message — so the constraint or field sat one click away
         # while the list said nothing but the exception class. The sync-phase
@@ -143,6 +169,24 @@ class _MergeIssueRecorder:
                 "NetBox validation rejection, so the baseline was promoted "
                 "over this row."
             )
+        # An unsatisfiable row is resolved by editing it in NetBox, so "which
+        # row" is the one thing the operator has to know and the only thing the
+        # record did not say. A rejection reading "Merge for ipam.ipaddress
+        # failed ... violating primary-ip-reassignment-blocked" left them
+        # hunting for the address by hand.
+        #
+        # The identity is the NetBox primary key, NOT the row's own values. The
+        # pk is a NetBox-assigned surrogate that resolves to the object page in
+        # the operator's own NetBox, which is exactly where the edit has to
+        # happen; the address, device name and interface are customer data that
+        # this module refuses to persist anywhere else (`diagnostic_shape` keeps
+        # field names only, and the note below says the same about DETAIL
+        # values). Naming the pk answers the question without opening a hole in
+        # that boundary — and the pk was already being logged in the clear a few
+        # frames down, in the authoritative-delete guard.
+        row_identity = _row_identity(pk, change_data)
+        if row_identity:
+            message = f"{message} {row_identity['sentence']}"
         logger.error(
             "Merge row failed for %s (%s).",
             model_string,
@@ -156,13 +200,21 @@ class _MergeIssueRecorder:
         # bundle — to learn which constraint they violated. The diagnosis holds
         # schema identifiers only; the key values a Postgres DETAIL line embeds
         # are deliberately still not captured.
+        raw_data = dict(diagnosis)
+        if row_identity:
+            # Same split the sync recorder uses: the pk is an identifier, the
+            # change data is recorded as a shape. Keys stay disjoint from the
+            # diagnosis so anything already reading `raw_data` is unaffected.
+            raw_data["row_pk"] = row_identity["pk"]
+            if row_identity["shape"] is not None:
+                raw_data["row"] = row_identity["shape"]
         ForwardIngestionIssue.objects.create(
             ingestion=self._ingestion,
             phase=ForwardIngestionPhaseChoices.MERGE,
             model=model_string,
             message=message,
             exception=exc.__class__.__name__,
-            raw_data=diagnosis,
+            raw_data=raw_data,
         )
 
 
@@ -525,9 +577,12 @@ def merge_branch(
         nonlocal progress_failed, progress_unsatisfiable
         nonlocal last_heartbeat_at, last_log_at
         model_string = _model_string(collapsed_change.model_class)
+        key = getattr(collapsed_change, "key", None)
         issue_recorder.record(
             model_string=model_string,
             exc=exc,
+            pk=key[1] if isinstance(key, (tuple, list)) and len(key) > 1 else None,
+            change_data=getattr(collapsed_change, "postchange_data", None),
         )
         unsatisfiable = _is_destination_rule_rejection(exc)
         if unsatisfiable:

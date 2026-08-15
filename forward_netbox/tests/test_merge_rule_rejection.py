@@ -34,6 +34,68 @@ from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.health_checks import ingestion_check_message
 from forward_netbox.utilities.health_checks import ingestion_check_status
 from forward_netbox.utilities.merge import _is_destination_rule_rejection
+from forward_netbox.utilities.merge import _row_identity
+
+
+class MergeRowIdentityTests(SimpleTestCase):
+    """A recorded rejection has to say which row, without saying what is in it.
+
+    Resolving an unsatisfiable row means editing it in NetBox, and the record
+    named the model and the rule but never the object - so the operator had to
+    hunt for it. The identity reported is the NetBox pk, which resolves to the
+    object page; the address, device name and interface are customer values
+    this module does not persist anywhere else.
+    """
+
+    def test_no_pk_leaves_the_message_exactly_as_it_was(self):
+        # Whole-model failures have no row in hand. They must keep the message
+        # they always had, byte for byte.
+        self.assertIsNone(_row_identity(None, None))
+        self.assertIsNone(_row_identity(None, {"address": "10.0.0.1/24"}))
+        self.assertIsNone(_row_identity("   ", {}))
+
+    def test_the_pk_is_named_and_the_row_is_recorded_as_a_shape(self):
+        identity = _row_identity(
+            900002,
+            {
+                "address": "10.0.0.1/24",
+                "assigned_object_id": 7,
+                "assigned_object_type": 42,
+                "description": "core uplink",
+            },
+        )
+        self.assertEqual("900002", identity["pk"])
+        self.assertEqual("Affected NetBox row: pk 900002.", identity["sentence"])
+        self.assertEqual(
+            {
+                "type": "mapping",
+                "fields": [
+                    "address",
+                    "assigned_object_id",
+                    "assigned_object_type",
+                    "description",
+                ],
+            },
+            identity["shape"],
+        )
+
+    def test_no_customer_value_reaches_the_message_or_the_shape(self):
+        # The invariant, asserted rather than assumed: the pk is a NetBox
+        # surrogate, everything else about the row stays out.
+        identity = _row_identity(
+            900002, {"address": "10.0.0.1/24", "description": "core uplink"}
+        )
+        recorded = repr(identity)
+        self.assertNotIn("10.0.0.1", recorded)
+        self.assertNotIn("core uplink", recorded)
+
+    def test_a_uuid_pk_survives_and_a_delete_records_no_shape(self):
+        # Some NetBox models key on a UUID, and a branch-native DELETE carries
+        # no `postchange_data` at all.
+        pk = uuid4()
+        identity = _row_identity(pk, None)
+        self.assertEqual(str(pk), identity["pk"])
+        self.assertIsNone(identity["shape"])
 
 
 class DestinationRuleRejectionTests(SimpleTestCase):
@@ -460,6 +522,20 @@ class UnsatisfiableRowDispositionTest(TestCase):
         self.assertEqual("ipam.ipaddress", model)
         self.assertIn("primary-ip-reassignment-blocked", message)
         self.assertIn("Recorded and skipped", message)
+
+    def test_the_skipped_row_names_the_netbox_object_to_edit(self):
+        # Naming the rule told the operator what to do; it did not tell them
+        # where. The pk is the whole remedy: it resolves straight to the
+        # ipam.ipaddress page where the reassignment has to be cleared.
+        self._merge([PRIMARY_IP_REJECTION], applied=509)
+
+        issue = self.ingestion.issues.get()
+        self.assertIn("Affected NetBox row: pk 1.", issue.message)
+        self.assertEqual("1", issue.raw_data["row_pk"])
+        # The rule is still named, and the row's own values still are not.
+        self.assertIn("primary-ip-reassignment-blocked", issue.message)
+        self.assertNotIn("Cannot reassign IP address", issue.message)
+        self.assertNotIn("Cannot reassign IP address", str(issue.raw_data))
 
     def test_drift_evidence_no_longer_reports_the_run_as_failed(self):
         self._merge([PRIMARY_IP_REJECTION], applied=509)
