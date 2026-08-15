@@ -30,6 +30,22 @@ RELEASE_UPGRADE_PROJECT_NAME = "forward-netbox-artifact-upgrade"
 # gate seeds there and migrates onto the current runtime. Raise this only when
 # the oldest release reachable from PyPI supports something newer.
 UPGRADE_FROM_NETBOX_VER = "v4.6.5"
+
+# From-releases that cannot run on the default from-side runtime, so they seed
+# somewhere else. Which runtime a release can run on is a property of that
+# release, not of the run, so this is keyed by version rather than reached
+# through an environment variable - a global override would also move the
+# scenario suite's upgrade fixtures off 4.6.5 and silently drop the NetBox
+# upgrade path they exercise.
+UPGRADE_FROM_NETBOX_OVERRIDES = {
+    # 2.8.0's migration `0052_device_absence_quarantine` depends on
+    # `dcim.0241_nullify_empty_cable_end`, a 4.6.6 migration, so the graph will
+    # not build on 4.6.5 and the plugin cannot be installed there at all -
+    # despite declaring `min_version = "4.6.5"`. 2.8.1 fixes the migration and
+    # restores 4.6.5; the published 2.8.0 wheel cannot be changed, so the from
+    # side seeds where that release actually runs.
+    "2.8.0": "v4.6.6",
+}
 UPGRADE_FROM_CONSTRAINTS = "/source/development/constraints-upgrade-from.txt"
 ISOLATED_REDIS_DATABASE = 14
 ISOLATED_REDIS_CACHE_DATABASE = 15
@@ -1311,7 +1327,14 @@ def artifact_upgrade_test(context, from_version=None, from_netbox_ver=None):
     # and its pins do not resolve. Seeding on the runtime that release actually
     # supported and migrating onto the current one is the operator's real path,
     # and it exercises the NetBox upgrade as well as the plugin upgrade.
-    from_netbox_version = str(from_netbox_ver or UPGRADE_FROM_NETBOX_VER).strip()
+    # An explicit flag wins; otherwise the from release's own runtime override
+    # applies, and only then the default. `invoke ci` calls this as a pre-task
+    # with no arguments, so the override has to be reachable without one.
+    from_netbox_version = str(
+        from_netbox_ver
+        or UPGRADE_FROM_NETBOX_OVERRIDES.get(from_version)
+        or UPGRADE_FROM_NETBOX_VER
+    ).strip()
     previous_image = f"forward-netbox-upgrade-from:{from_version}"
     upgraded_image = f"forward-netbox-upgrade-to:{version}"
     upgrade_context = _compose_project_context(context, RELEASE_UPGRADE_PROJECT_NAME)

@@ -1401,6 +1401,28 @@ class UpgradeFromConstraintsTests(unittest.TestCase):
             tuple(int(part) for part in self.current["netbox-dlm"].split(".")),
         )
 
+    def test_a_from_release_seeds_on_a_runtime_it_can_actually_run_on(self):
+        """2.8.0 cannot be installed on the default from-side NetBox.
+
+        Its migration `0052_device_absence_quarantine` depends on
+        `dcim.0241_nullify_empty_cable_end`, a 4.6.6 migration, so the graph
+        will not build on 4.6.5 - despite the plugin declaring
+        `min_version = "4.6.5"`. 2.8.1 fixes the migration; the published 2.8.0
+        wheel cannot be fixed, so the upgrade gate seeds it where it runs.
+
+        Keyed by release rather than set globally on purpose: a blanket override
+        would also move the scenario suite's upgrade fixtures off 4.6.5 and drop
+        the NetBox upgrade path they exercise, which is real coverage and
+        unrelated to this one broken release.
+        """
+        self.assertEqual(tasks.UPGRADE_FROM_NETBOX_OVERRIDES.get("2.8.0"), "v4.6.6")
+        self.assertEqual(tasks.UPGRADE_FROM_NETBOX_VER, "v4.6.5")
+
+    def test_only_releases_that_need_an_override_carry_one(self):
+        # Each entry costs the 4.6.5 seeding for that release, so the list stays
+        # short and every addition has to be justified where it is written.
+        self.assertEqual(set(tasks.UPGRADE_FROM_NETBOX_OVERRIDES), {"2.8.0"})
+
     def test_every_other_pin_is_identical(self):
         expected = {
             name: pin
