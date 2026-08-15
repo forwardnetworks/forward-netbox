@@ -44,6 +44,18 @@ class _PreviewEventsClearer:
         return None
 
 
+class _NullSourceParameters:
+    parameters = {}
+
+
+class _NullSync:
+    """Stands in for a sync when the caller has none. Carries no parameters."""
+
+    source = _NullSourceParameters()
+    pk = None
+    name = ""
+
+
 class PreviewRunner:
     """A runner that records nothing and writes nothing.
 
@@ -54,15 +66,40 @@ class PreviewRunner:
     """
 
     def __init__(self, sync=None):
-        self.sync = sync
+        # Some paths read source parameters straight off the sync -
+        # `_scope_tags_enabled` does - so a caller with no sync gets a null
+        # object rather than an AttributeError. Production always passes the
+        # real sync, so this only affects callers that have none, and it
+        # degrades to "no opt-in parameters set" rather than guessing.
+        self.sync = sync if sync is not None else _NullSync()
         self.logger = _PreviewStatistics()
         self.events_clearer = _PreviewEventsClearer()
+        # Every lookup cache `sync_primitives` reads off a runner, seeded empty.
+        # Enumerated from that module rather than discovered one AttributeError
+        # at a time; they are all plain memoisation, so an empty one only costs
+        # a query.
         self._content_types = {}
-        self._interface_by_device_name_cache = {}
-        self._missing_interface_by_device_name_cache = {}
+        self._asn_by_number_cache = {}
         self._device_by_name_cache = {}
-        self._primed_missing_unique_lookup_keys = set()
+        self._interface_by_device_name_cache = {}
+        self._interface_canonical_cache = {}
+        self._module_bay_by_device_name_cache = {}
+        # The three negative caches are sets - the primitives call `.add` and
+        # `.discard` on them, not item assignment.
+        self._missing_device_by_name_cache = set()
+        self._missing_interface_by_device_name_cache = set()
+        self._missing_module_bay_by_device_name_cache = set()
+        self._tag_by_name_cache = {}
+        self._tag_by_slug_cache = {}
+        self._vrf_by_name_cache = {}
+        self._vrf_by_rd_cache = {}
         self._unique_lookup_cache = {}
+        self._primed_missing_unique_lookup_keys = set()
+        self._model_coalesce_fields = {}
+        self._conflict_policy = {}
+        self._device_tag_ids_cache = {}
+        self._scope_matched_tags = {}
+        self._scope_tag_objs = {}
         self.rejected_rows = 0
 
     def _record_issue(self, *args, **kwargs):
@@ -95,6 +132,76 @@ class PreviewRunner:
         from .sync_primitives import lookup_interface
 
         return lookup_interface(self, device, interface_name)
+
+    def _get_device_by_name(self, device_name):
+        from .sync_primitives import get_device_by_name
+
+        return get_device_by_name(self, device_name)
+
+    def _ipaddress_assignment_skip_reason(self, address):
+        from .sync_reporting import ipaddress_assignment_skip_reason
+
+        return ipaddress_assignment_skip_reason(address)
+
+    def _ensure_platform(self, row, *, manufacturer_authoritative=False):
+        """Find the platform, never create it - and never create a manufacturer.
+
+        The real `_ensure_platform` upserts, and calls `_ensure_manufacturer`,
+        which upserts too. Both are reached from inside the device
+        classification, so inheriting either would write while measuring. Same
+        class of trap as `_ensure_vrf`, and likewise invisible to a grep for ORM
+        calls.
+        """
+        from dcim.models import Platform
+
+        slug = str((row or {}).get("slug") or "").strip()
+        name = str((row or {}).get("name") or "").strip()
+        if slug:
+            match = Platform.objects.filter(slug=slug).order_by("pk").first()
+            if match is not None:
+                return match
+        if not name:
+            return None
+        return Platform.objects.filter(name=name).order_by("pk").first()
+
+    def _ensure_manufacturer(self, row):
+        from dcim.models import Manufacturer
+
+        slug = str((row or {}).get("slug") or "").strip()
+        name = str((row or {}).get("name") or "").strip()
+        if slug:
+            match = Manufacturer.objects.filter(slug=slug).order_by("pk").first()
+            if match is not None:
+                return match
+        if not name:
+            return None
+        return Manufacturer.objects.filter(name=name).order_by("pk").first()
+
+    def _ensure_vrf(self, row, *, update_existing=True):
+        """Find the VRF, never create or update it.
+
+        The real runner upserts here, which is why this override exists: the
+        method is called from inside the ipaddress classification, so inheriting
+        it would have written VRF rows during a read-only preview. The audit
+        grep did not catch it, because it is a write behind a runner call rather
+        than a direct ORM one - which is the case for the shim being a firewall
+        rather than a convenience.
+
+        Returning ``None`` for an absent VRF matches how slice one treats an
+        absent dependency: the address cannot already exist in NetBox under a
+        VRF NetBox does not have, so it classifies as a create.
+        """
+        from ipam.models import VRF
+
+        name = (row or {}).get("name")
+        rd = (row or {}).get("rd") or None
+        if rd:
+            match = VRF.objects.filter(rd=rd).order_by("pk").first()
+            if match is not None:
+                return match
+        if not name:
+            return None
+        return VRF.objects.filter(name=name).order_by("pk").first()
 
     # --- state the classification reports into, which a preview discards ----
 

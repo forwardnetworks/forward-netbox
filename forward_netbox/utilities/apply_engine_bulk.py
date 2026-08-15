@@ -460,23 +460,61 @@ def bulk_orm_apply_simple_models(
     # what they do, so nobody wires one up on the assumption that returning
     # before the final bulk_create is sufficient - it is not:
     #
-    #   interface       `cable.delete()`, plus two recursive self-calls
-    #   device          creates Tag and TaggedItem rows
-    #   ipaddress       Device.objects.bulk_update (primary-IP assignment)
-    #   virtualchassis  Device.objects.bulk_update
+    #   virtualchassis  creates VirtualChassis rows, THEN assigns devices to
+    #                   them. Deliberately left unmeasured; see below.
+    #
+    # `ipaddress` is handled: its direct writes are all in one block at the end,
+    # and the VRF upsert it performs mid-classification goes through
+    # `runner._ensure_vrf`, which the preview runner overrides with a lookup.
+    #
+    # `interface` is handled: its cabled-LAG conversions delete a cable and
+    # re-enter the function, so a preview skips them and counts those rows as
+    # the updates they plainly are.
+    #
+    # `device` is handled: its Tag, Device and TaggedItem writes all happen
+    # inside one transaction that classification does not read back from, and
+    # its `_ensure_platform` (which upserts a Platform, and a Manufacturer
+    # under it) is overridden by the preview runner with a lookup.
+    #
+    # Note the audit that produced this list greps for direct ORM writes and so
+    # does NOT see writes behind a runner call. That is safe only because the
+    # preview runner shims the whole runner surface - an unshimmed method raises
+    # instead of writing - and it is why adding a path means reading its runner
+    # calls too, not just grepping it.
     #
     # Until each is handled they report no comparison, which keeps their
     # upper-bound estimate rather than a confident zero.
     if model_string == "dcim.macaddress":
         return bulk_orm_apply_macaddress(runner, rows, preview=preview)
+    if model_string == "ipam.ipaddress":
+        return bulk_orm_apply_ipaddress(runner, rows, preview=preview)
+    # virtualchassis is left unmeasured on purpose, not for want of effort.
+    #
+    # A shortcut does exist - a device whose target VirtualChassis is absent is
+    # unambiguously a change, the same reasoning that made `interface` and the
+    # absent-dependency cases work. What rules it out is that an unsaved VC
+    # breaks the device phase in three separate places, each silently:
+    #
+    #   `position_key = (vc.pk, position)`  - every to-be-created VC collapses
+    #       to (None, position), so unrelated VCs collide as one occupied slot
+    #   `device.virtual_chassis_id == vc.pk` - a device with NO chassis compares
+    #       equal to None and is counted UNCHANGED
+    #   `device.full_clean()`               - validates against an unsaved FK
+    #
+    # The middle one under-counts drift while looking correct, which is the
+    # exact failure this whole feature exists to prevent, and it would need all
+    # three handled to avoid it. Against that: virtualchassis is low volume, and
+    # measuring it unlocks nothing - `in_sync` stays unanswered regardless,
+    # because the adapter-only models have no comparison either.
+    #
+    # So it declines to answer. That is a worse report and a better number than
+    # the alternative.
     if model_string == "dcim.virtualchassis":
         return None if preview else bulk_orm_apply_virtualchassis(runner, rows)
-    if model_string == "ipam.ipaddress":
-        return None if preview else bulk_orm_apply_ipaddress(runner, rows)
     if model_string == "dcim.interface":
-        return None if preview else bulk_orm_apply_interface(runner, rows)
+        return bulk_orm_apply_interface(runner, rows, preview=preview)
     if model_string == "dcim.device":
-        return None if preview else bulk_orm_apply_device(runner, rows)
+        return bulk_orm_apply_device(runner, rows, preview=preview)
 
     from dcim.models import DeviceType
     from dcim.models import DeviceRole
@@ -1312,6 +1350,7 @@ def bulk_orm_apply_interface(
     rows: list[dict[str, Any]],
     *,
     prechange_snapshots: dict[int, Any] | None = None,
+    preview: bool = False,
 ):
     """Batched apply for dcim.interface.
 
@@ -1758,6 +1797,28 @@ def bulk_orm_apply_interface(
             outcome[0] = "applied"
             resolved_lag_links.append((member, parent))
 
+    if preview:
+        # Two things make this path different from the others.
+        #
+        # It defers its per-row statistics to the end of the function instead of
+        # incrementing inline, so a preview has to emit them here or the shim
+        # sees nothing and reports zero drift.
+        #
+        # And the cabled-LAG conversions below are skipped outright. Each one
+        # deletes a cable and re-enters this function, which is the one thing a
+        # read-only measurement must not do. Those rows are still counted: an
+        # existing cabled interface becoming a LAG is unambiguously a change to
+        # a row NetBox already has, so it counts as an update. They are counted
+        # without being performed, which is the whole distinction. They cannot
+        # double-count, because both branches that fill `cabled_lag_rows`
+        # `continue` before reaching `create_objects` or `update_objects`.
+        for (outcome,) in row_outcomes:
+            runner.logger.increment_statistics("dcim.interface", outcome=outcome)
+        return {
+            "creates": len(create_objects),
+            "updates": len(update_objects) + len(cabled_lag_rows),
+        }
+
     from django.db import IntegrityError
 
     using = _active_write_alias()
@@ -1859,7 +1920,7 @@ def _device_field_differs(existing, field, value):
     return getattr(existing, field) != value
 
 
-def bulk_orm_apply_device(runner, rows: list[dict[str, Any]]):
+def bulk_orm_apply_device(runner, rows: list[dict[str, Any]], *, preview=False):
     """Batched apply for dcim.device with adapter-parity semantics.
 
     The clean common case — a device whose site/role/device-type (and optional
@@ -2208,6 +2269,21 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]]):
                 name_cache[tag.name] = tag
         return {name: tag for name, tag in resolved.items() if tag is not None}
 
+    if preview:
+        # Every write this path performs - the scope Tags, the Devices, and the
+        # TaggedItem assignments - happens inside the transaction below, and
+        # `_ensure_scope_tags_in_transaction` is called from within it rather
+        # than during classification. So returning here performs none of them,
+        # and no classification result depends on them having happened.
+        #
+        # Statistics are emitted first for the same reason as in the interface
+        # path: this function defers them to the end via `row_outcomes`, so a
+        # bare return would leave the shim seeing no rows and reporting zero
+        # drift for the largest model in the estate.
+        for (outcome,) in row_outcomes:
+            runner.logger.increment_statistics("dcim.device", outcome=outcome)
+        return {"creates": len(create_objects), "updates": len(update_objects)}
+
     with transaction.atomic(using=using):
         try:
             with transaction.atomic(using=using):
@@ -2318,7 +2394,7 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]]):
     return True
 
 
-def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]]):
+def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]], *, preview=False):
     """Batched apply for ipam.ipaddress with adapter-parity semantics.
 
     Mirrors ``apply_ipam_ipaddress`` (sync_ipam.py) row-for-row — device and
@@ -2567,6 +2643,19 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]]):
             update_objects[ip.pk] = ip
         runner.logger.increment_statistics("ipam.ipaddress", outcome="applied")
         runner.events_clearer.increment()
+
+    if preview:
+        # Every direct write in this path - the released-primary Device
+        # bulk_update as well as the IPAddress create and update - is inside the
+        # block below, so returning here performs none of them.
+        #
+        # The VRF upsert this path also performs is NOT reached by that, because
+        # it happens during classification through `runner._ensure_vrf`. The
+        # preview runner overrides that method with a lookup, which is why the
+        # shim is a write firewall rather than a convenience: a write behind a
+        # runner call is neutralised by construction, and an unshimmed method
+        # raises rather than writing.
+        return {"creates": len(create_objects), "updates": len(update_objects)}
 
     from django.db import IntegrityError
 

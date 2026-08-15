@@ -132,24 +132,18 @@ class UncoveredModelsReportNoComparisonTest(TestCase):
     """
 
     def test_the_unaudited_bespoke_paths_return_none_under_preview(self):
-        """Each of these writes to a model other than its own.
+        """The one path still without a comparison.
 
-        `interface` deletes cables, `device` creates Tag and TaggedItem rows,
-        and `ipaddress` and `virtualchassis` both bulk_update Device. Returning
-        before their final write would not make them read-only, so until each is
-        handled they must decline to answer rather than answer wrongly.
+        `virtualchassis` creates VirtualChassis rows and then reads their pks
+        back to assign devices, so skipping the first phase leaves the second
+        unclassifiable - there is no verdict to shortcut to, the way there was
+        for `interface`. Until that is handled it must decline to answer rather
+        than answer wrongly.
         """
-        for model_string in (
-            "dcim.device",
-            "dcim.interface",
-            "ipam.ipaddress",
-            "dcim.virtualchassis",
-        ):
-            with self.subTest(model=model_string):
-                self.assertIsNone(
-                    compare_model_rows(None, model_string, [{"name": "x"}]),
-                    f"{model_string} has no comparison yet and must not claim one",
-                )
+        self.assertIsNone(
+            compare_model_rows(None, "dcim.virtualchassis", [{"name": "x"}]),
+            "virtualchassis has no comparison yet and must not claim one",
+        )
 
     def test_an_empty_row_set_is_zero_drift_rather_than_unmeasured(self):
         # Nothing fetched genuinely is nothing to change, for any model.
@@ -188,6 +182,240 @@ class MacAddressComparisonTest(TestCase):
 
         self.assertIsNotNone(result)
         self.assertEqual(result["creates"], 0)
+
+
+class IpAddressComparisonTest(TestCase):
+    """ipaddress writes a VRF mid-classification, behind a runner call.
+
+    The audit grep looks for direct ORM writes and did not see it. It is
+    neutralised because the preview runner overrides `_ensure_vrf` with a
+    lookup - so these tests exist to hold that override in place, since losing
+    it would put VRF creation back into a read-only preview silently.
+    """
+
+    def test_an_ipaddress_preview_does_not_create_the_missing_vrf(self):
+        before = set(VRF.objects.values_list("name", flat=True))
+
+        compare_model_rows(
+            None,
+            "ipam.ipaddress",
+            [{"address": "10.77.0.1/32", "vrf": "vrf-absent-from-netbox"}],
+        )
+
+        self.assertEqual(set(VRF.objects.values_list("name", flat=True)), before)
+        self.assertFalse(VRF.objects.filter(name="vrf-absent-from-netbox").exists())
+
+    def test_an_ipaddress_preview_creates_no_address(self):
+        from ipam.models import IPAddress
+
+        before = IPAddress.objects.count()
+
+        result = compare_model_rows(
+            None,
+            "ipam.ipaddress",
+            [{"address": "10.77.0.2/32"}],
+        )
+
+        self.assertEqual(IPAddress.objects.count(), before)
+        self.assertIsNotNone(result)
+
+    def test_it_answers_rather_than_declining(self):
+        result = compare_model_rows(None, "ipam.ipaddress", [])
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["creates"], 0)
+
+
+class InterfaceComparisonTest(TestCase):
+    """interface deletes a cable partway through applying, and re-enters itself.
+
+    NetBox refuses `type=lag` on a cabled interface, so the apply removes the
+    cable and re-applies the row. A preview must not do that - it is the most
+    destructive thing any of these paths does - and must still count the row,
+    because an existing cabled interface becoming a LAG is plainly a change.
+    """
+
+    def setUp(self):
+        from dcim.models import Device
+        from dcim.models import DeviceRole
+        from dcim.models import DeviceType
+
+        site = Site.objects.create(name="I Site", slug="i-site")
+        mfr = Manufacturer.objects.create(name="I Mfr", slug="i-mfr")
+        dtype = DeviceType.objects.create(manufacturer=mfr, model="I DT", slug="i-dt")
+        role = DeviceRole.objects.create(name="I Role", slug="i-role")
+        self.device = Device.objects.create(
+            name="iface-dev", site=site, device_type=dtype, role=role
+        )
+
+    def test_a_cabled_lag_conversion_does_not_delete_the_cable(self):
+        from dcim.models import Cable
+        from dcim.models import Interface
+
+        left = Interface.objects.create(
+            device=self.device, name="Ethernet1", type="1000base-t"
+        )
+        right = Interface.objects.create(
+            device=self.device, name="Ethernet2", type="1000base-t"
+        )
+        cable = Cable.objects.create(
+            a_terminations=[left], b_terminations=[right], status="connected"
+        )
+        cables_before = Cable.objects.count()
+
+        result = compare_model_rows(
+            None,
+            "dcim.interface",
+            [{"device": "iface-dev", "name": "Ethernet1", "type": "lag"}],
+        )
+
+        self.assertEqual(Cable.objects.count(), cables_before)
+        self.assertTrue(Cable.objects.filter(pk=cable.pk).exists())
+        left.refresh_from_db()
+        self.assertIsNotNone(left.cable_id)
+        # Still counted, just not performed.
+        self.assertIsNotNone(result)
+        self.assertEqual(result["updates"], 1)
+
+    def test_an_interface_preview_creates_nothing(self):
+        from dcim.models import Interface
+
+        before = Interface.objects.count()
+
+        result = compare_model_rows(
+            None,
+            "dcim.interface",
+            [
+                {
+                    "device": "iface-dev",
+                    "name": "Ethernet9",
+                    "type": "1000base-t",
+                    "enabled": True,
+                }
+            ],
+        )
+
+        self.assertEqual(Interface.objects.count(), before)
+        self.assertEqual(result["creates"], 1)
+
+    def test_an_unchanged_interface_is_not_drift(self):
+        from dcim.models import Interface
+
+        Interface.objects.create(
+            device=self.device, name="Ethernet3", type="1000base-t"
+        )
+
+        result = compare_model_rows(
+            None,
+            "dcim.interface",
+            [
+                {
+                    "device": "iface-dev",
+                    "name": "Ethernet3",
+                    "type": "1000base-t",
+                    "enabled": True,
+                }
+            ],
+        )
+
+        self.assertEqual(result["creates"], 0)
+        self.assertEqual(result["updates"], 0)
+
+
+class DeviceComparisonTest(TestCase):
+    """device creates Tags and TaggedItems, and upserts a Platform.
+
+    The Tag and TaggedItem writes are inside the same transaction as the Device
+    write, so an early return skips them. The Platform upsert is not - it is
+    reached through `runner._ensure_platform` during classification, and it
+    creates a Manufacturer under it, so the preview runner overrides both.
+    """
+
+    def setUp(self):
+        from dcim.models import DeviceRole
+        from dcim.models import DeviceType
+
+        self.site = Site.objects.create(name="D Site", slug="d-site")
+        mfr = Manufacturer.objects.create(name="D Mfr", slug="d-mfr")
+        self.dtype = DeviceType.objects.create(
+            manufacturer=mfr, model="D DT", slug="d-dt"
+        )
+        self.role = DeviceRole.objects.create(name="D Role", slug="d-role")
+
+    def _row(self, name, **extra):
+        row = {
+            "name": name,
+            "site": "D Site",
+            "site_slug": "d-site",
+            "device_type": "D DT",
+            "device_type_slug": "d-dt",
+            "manufacturer": "D Mfr",
+            "manufacturer_slug": "d-mfr",
+            "role": "D Role",
+            "role_slug": "d-role",
+            "status": "active",
+        }
+        row.update(extra)
+        return row
+
+    def test_a_device_preview_creates_no_device(self):
+        from dcim.models import Device
+
+        before = Device.objects.count()
+
+        result = compare_model_rows(None, "dcim.device", [self._row("new-dev")])
+
+        self.assertEqual(Device.objects.count(), before)
+        self.assertIsNotNone(result)
+
+    def test_a_device_preview_creates_no_platform_or_manufacturer(self):
+        from dcim.models import Platform
+
+        platforms_before = Platform.objects.count()
+        mfrs_before = Manufacturer.objects.count()
+
+        compare_model_rows(
+            None,
+            "dcim.device",
+            [
+                self._row(
+                    "plat-dev",
+                    platform="Platform That Does Not Exist",
+                    platform_slug="platform-that-does-not-exist",
+                )
+            ],
+        )
+
+        self.assertEqual(Platform.objects.count(), platforms_before)
+        self.assertEqual(Manufacturer.objects.count(), mfrs_before)
+
+    def test_a_device_preview_creates_no_tags(self):
+        from extras.models import Tag
+        from extras.models import TaggedItem
+
+        tags_before = Tag.objects.count()
+        assignments_before = TaggedItem.objects.count()
+
+        compare_model_rows(None, "dcim.device", [self._row("tag-dev")])
+
+        self.assertEqual(Tag.objects.count(), tags_before)
+        self.assertEqual(TaggedItem.objects.count(), assignments_before)
+
+    def test_an_unchanged_device_is_not_drift(self):
+        from dcim.models import Device
+
+        Device.objects.create(
+            name="steady-dev",
+            site=self.site,
+            device_type=self.dtype,
+            role=self.role,
+            status="active",
+        )
+
+        result = compare_model_rows(None, "dcim.device", [self._row("steady-dev")])
+
+        self.assertEqual(result["creates"], 0)
+        self.assertEqual(result["updates"], 0)
 
 
 class PartialCoverageIsReportedTest(TestCase):

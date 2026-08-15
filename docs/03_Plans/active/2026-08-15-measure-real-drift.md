@@ -167,21 +167,46 @@ The audit was run before any of them was wired up, and it justified itself.
 Slice one's hidden writes were dependency creates. These are worse - they are
 writes to models the function does not own, and one of them is a delete:
 
-| path | writes beyond its own rows |
-| --- | --- |
-| `macaddress` | none - **cleared** |
-| `interface` | **`cable.delete()`**, plus two recursive self-calls |
-| `device` | creates `Tag` and `TaggedItem` rows |
-| `ipaddress` | `Device.objects.bulk_update` (primary-IP assignment) |
-| `virtualchassis` | `Device.objects.bulk_update` |
+| path | writes beyond its own rows | state |
+| --- | --- | --- |
+| `macaddress` | none | **measured** |
+| `ipaddress` | `Device.objects.bulk_update`, **plus a VRF upsert via `runner._ensure_vrf`** | **measured** |
+| `interface` | **`cable.delete()`**, plus two recursive self-calls | **measured** |
+| `device` | creates `Tag` and `TaggedItem` rows, **upserts a Platform and a Manufacturer under it** | **measured** |
+| `virtualchassis` | creates `VirtualChassis`, THEN assigns devices to them | deferred |
 
 A preview on `interface` would have deleted cables. On `device` it would have
 created tags and tag assignments. "Return before the final `bulk_create`" is
-not sufficient for any of the four, and the dispatch now carries this table as
-a comment so nobody assumes otherwise.
+not sufficient for any of the three deferred paths, and the dispatch carries
+this table as a comment so nobody assumes otherwise.
 
-Only `macaddress` is wired up. The other four return `None` and keep their
-upper bound.
+### The audit method was wrong, and ipaddress proved it
+
+The first pass grepped for direct ORM writes - `bulk_create`, `bulk_update`,
+`.save(`, `.delete(`. That reported `ipaddress` as having one cross-model
+write. It has two: the second is `runner._ensure_vrf`, called during
+classification, which upserts a VRF. A grep for ORM calls cannot see a write
+behind a runner method.
+
+What makes that survivable is that **the preview runner is a write firewall**.
+Every `runner.` call is answered by the shim, so a write behind one is
+neutralised by construction, and a method the shim does not implement raises
+`AttributeError` rather than writing. Loud beats silent.
+
+So the grep is the right tool for direct writes and the wrong tool on its own.
+Adding a path means reading its `runner.` calls too. `_ensure_vrf` is now
+overridden with a lookup returning `None` for an absent VRF - the same
+treatment slice one gives an absent dependency, and correct for the same
+reason: an address cannot already exist under a VRF NetBox does not have.
+
+### virtualchassis was mis-triaged too
+
+Listed initially as a single `Device.objects.bulk_update`. It is two-phase: it
+creates `VirtualChassis` rows, then assigns devices to them, and the second
+phase reads `vc.pk` from the first. Skipping phase one does not yield a
+classifiable phase two. Same shape as `interface`'s cable delete - the
+classification depends on the write having happened - so it needs design, not
+a guard.
 
 ### The shim is the cost of coverage
 
@@ -209,12 +234,93 @@ with them.
 double-counted, because a single unusable row both files an issue and
 increments `failed`.
 
-### Still to do
+### interface, and why it was not the hard case after all
 
-`interface`, `device`, `ipaddress` and `virtualchassis` - the reporting
-deployment's highest-volume models. Each needs its cross-model writes
-suppressed individually, and `interface`'s cable delete needs care rather than
-a guard: the classification may depend on it having happened.
+It was written off as not guard-shaped, on the reasoning that later
+classification depends on the cable delete having happened. Reading it properly
+says otherwise.
+
+The conversion exists because NetBox refuses `type=lag` on a cabled interface,
+so the apply snapshots while cabled, deletes the cable, and re-enters this
+function to apply the row as an ordinary interface. The recursion performs the
+change in two legal steps. **A preview does not need the steps, only the
+verdict** - an existing cabled interface becoming a LAG is unambiguously a
+change to a row NetBox already has. So the conversions are skipped whole and
+those rows count as updates. Counted without being performed.
+
+They cannot double-count: both branches filling `cabled_lag_rows` `continue`
+before reaching `create_objects` or `update_objects`.
+
+One structural gotcha, and it is a new variant of the recurring one. Interface
+is the first path that defers its per-row statistics to the end of the function
+rather than incrementing inline. A plain early return before the write block
+would have emitted none of them, so the shim would have seen no rows and
+reported **zero drift** for the highest-volume model in the estate. The preview
+return emits the outcomes before returning.
+
+That is the third time this feature has produced a confident zero from an
+unmeasured path - after the bool exits and the `all()` gate. It is worth
+treating as the default failure mode of this work rather than a coincidence.
+
+### device
+
+Clean in the shape that mattered: the `Tag`, `Device` and `TaggedItem` writes
+all sit inside one transaction, and `_ensure_scope_tags_in_transaction` is
+called from within it rather than during classification, so nothing classified
+reads them back. One early return covers all three.
+
+The trap was `runner._ensure_platform`, which upserts a `Platform` and calls
+`_ensure_manufacturer` under it, which upserts too - reached during
+classification and invisible to the write grep. The same shape as `_ensure_vrf`
+in slice three, which is why it was looked for rather than discovered. Both are
+overridden with lookups.
+
+Like `interface`, `device` defers statistics via `row_outcomes`, so the preview
+return emits them before returning.
+
+One more surfaced here: `_scope_tags_enabled` reads `runner.sync.source`
+directly, so a caller with no sync raised. The shim now carries a null sync that
+reports no opt-in parameters. Production always passes the real one, so this
+only affects callers that have none, and it degrades rather than guesses.
+
+### virtualchassis: decided, not outstanding
+
+An earlier version of this plan said there was "no verdict to shortcut to" for
+`virtualchassis`. That was wrong, and worth correcting rather than quietly
+dropping: a device whose target `VirtualChassis` is absent is unambiguously a
+change, exactly the reasoning that made `interface` and every absent-dependency
+case work. It is tractable.
+
+What rules it out is that an unsaved VC breaks the device phase in three
+separate places, and two of them fail silently:
+
+- `position_key = (vc.pk, position)` - every to-be-created VC collapses to
+  `(None, position)`, so unrelated VCs collide as one occupied slot
+- `device.virtual_chassis_id == vc.pk` - a device with NO chassis compares equal
+  to `None` and is counted **unchanged**
+- `device.full_clean()` - validates against an unsaved foreign key
+
+The middle one under-counts drift while looking correct. That is the precise
+failure this feature exists to prevent, and avoiding it means getting all three
+right in the least-exercised path of the set.
+
+Against that: `virtualchassis` is low volume, and measuring it unlocks nothing.
+`in_sync` stays unanswered regardless, because the adapter-only models have no
+comparison either - so the estate is never "fully measured" whether this lands
+or not.
+
+**Decision: leave it declining to answer.** A model reported as unmeasured is a
+worse report and a better number than a model reported as in sync because three
+subtle comparisons all defaulted to "same". Revisit only if a deployment turns
+out to lean on virtual chassis.
+
+### Genuinely still open
+
+The adapter-only models - the lifecycle rows, cables, inventory items, modules,
+tagged items, FHRP groups, routing and peering. They have no bulk path at all,
+so none of this machinery reaches them, and each needs its own row resolution.
+That is a separate body of work, and until it happens `in_sync` stays `None` by
+design.
 
 ## Rollback
 
