@@ -460,7 +460,6 @@ def bulk_orm_apply_simple_models(
     # what they do, so nobody wires one up on the assumption that returning
     # before the final bulk_create is sufficient - it is not:
     #
-    #   device          creates Tag and TaggedItem rows
     #   virtualchassis  creates VirtualChassis rows, THEN assigns devices to
     #                   them - so the second phase needs the first to have
     #                   happened and cannot simply be skipped
@@ -472,6 +471,11 @@ def bulk_orm_apply_simple_models(
     # `interface` is handled: its cabled-LAG conversions delete a cable and
     # re-enter the function, so a preview skips them and counts those rows as
     # the updates they plainly are.
+    #
+    # `device` is handled: its Tag, Device and TaggedItem writes all happen
+    # inside one transaction that classification does not read back from, and
+    # its `_ensure_platform` (which upserts a Platform, and a Manufacturer
+    # under it) is overridden by the preview runner with a lookup.
     #
     # Note the audit that produced this list greps for direct ORM writes and so
     # does NOT see writes behind a runner call. That is safe only because the
@@ -490,7 +494,7 @@ def bulk_orm_apply_simple_models(
     if model_string == "dcim.interface":
         return bulk_orm_apply_interface(runner, rows, preview=preview)
     if model_string == "dcim.device":
-        return None if preview else bulk_orm_apply_device(runner, rows)
+        return bulk_orm_apply_device(runner, rows, preview=preview)
 
     from dcim.models import DeviceType
     from dcim.models import DeviceRole
@@ -1896,7 +1900,7 @@ def _device_field_differs(existing, field, value):
     return getattr(existing, field) != value
 
 
-def bulk_orm_apply_device(runner, rows: list[dict[str, Any]]):
+def bulk_orm_apply_device(runner, rows: list[dict[str, Any]], *, preview=False):
     """Batched apply for dcim.device with adapter-parity semantics.
 
     The clean common case — a device whose site/role/device-type (and optional
@@ -2244,6 +2248,21 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]]):
             if isinstance(name_cache, dict):
                 name_cache[tag.name] = tag
         return {name: tag for name, tag in resolved.items() if tag is not None}
+
+    if preview:
+        # Every write this path performs - the scope Tags, the Devices, and the
+        # TaggedItem assignments - happens inside the transaction below, and
+        # `_ensure_scope_tags_in_transaction` is called from within it rather
+        # than during classification. So returning here performs none of them,
+        # and no classification result depends on them having happened.
+        #
+        # Statistics are emitted first for the same reason as in the interface
+        # path: this function defers them to the end via `row_outcomes`, so a
+        # bare return would leave the shim seeing no rows and reporting zero
+        # drift for the largest model in the estate.
+        for (outcome,) in row_outcomes:
+            runner.logger.increment_statistics("dcim.device", outcome=outcome)
+        return {"creates": len(create_objects), "updates": len(update_objects)}
 
     with transaction.atomic(using=using):
         try:

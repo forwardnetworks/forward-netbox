@@ -132,23 +132,18 @@ class UncoveredModelsReportNoComparisonTest(TestCase):
     """
 
     def test_the_unaudited_bespoke_paths_return_none_under_preview(self):
-        """The two paths still without a comparison.
+        """The one path still without a comparison.
 
-        `device` creates Tag and TaggedItem rows. `virtualchassis` creates
-        VirtualChassis rows and then reads their pks back to assign devices, so
-        skipping the first phase leaves the second unclassifiable. Returning
-        before their final write would not make either read-only, so until each
-        is handled they must decline to answer rather than answer wrongly.
+        `virtualchassis` creates VirtualChassis rows and then reads their pks
+        back to assign devices, so skipping the first phase leaves the second
+        unclassifiable - there is no verdict to shortcut to, the way there was
+        for `interface`. Until that is handled it must decline to answer rather
+        than answer wrongly.
         """
-        for model_string in (
-            "dcim.device",
-            "dcim.virtualchassis",
-        ):
-            with self.subTest(model=model_string):
-                self.assertIsNone(
-                    compare_model_rows(None, model_string, [{"name": "x"}]),
-                    f"{model_string} has no comparison yet and must not claim one",
-                )
+        self.assertIsNone(
+            compare_model_rows(None, "dcim.virtualchassis", [{"name": "x"}]),
+            "virtualchassis has no comparison yet and must not claim one",
+        )
 
     def test_an_empty_row_set_is_zero_drift_rather_than_unmeasured(self):
         # Nothing fetched genuinely is nothing to change, for any model.
@@ -322,6 +317,102 @@ class InterfaceComparisonTest(TestCase):
                 }
             ],
         )
+
+        self.assertEqual(result["creates"], 0)
+        self.assertEqual(result["updates"], 0)
+
+
+class DeviceComparisonTest(TestCase):
+    """device creates Tags and TaggedItems, and upserts a Platform.
+
+    The Tag and TaggedItem writes are inside the same transaction as the Device
+    write, so an early return skips them. The Platform upsert is not - it is
+    reached through `runner._ensure_platform` during classification, and it
+    creates a Manufacturer under it, so the preview runner overrides both.
+    """
+
+    def setUp(self):
+        from dcim.models import DeviceRole
+        from dcim.models import DeviceType
+
+        self.site = Site.objects.create(name="D Site", slug="d-site")
+        mfr = Manufacturer.objects.create(name="D Mfr", slug="d-mfr")
+        self.dtype = DeviceType.objects.create(
+            manufacturer=mfr, model="D DT", slug="d-dt"
+        )
+        self.role = DeviceRole.objects.create(name="D Role", slug="d-role")
+
+    def _row(self, name, **extra):
+        row = {
+            "name": name,
+            "site": "D Site",
+            "site_slug": "d-site",
+            "device_type": "D DT",
+            "device_type_slug": "d-dt",
+            "manufacturer": "D Mfr",
+            "manufacturer_slug": "d-mfr",
+            "role": "D Role",
+            "role_slug": "d-role",
+            "status": "active",
+        }
+        row.update(extra)
+        return row
+
+    def test_a_device_preview_creates_no_device(self):
+        from dcim.models import Device
+
+        before = Device.objects.count()
+
+        result = compare_model_rows(None, "dcim.device", [self._row("new-dev")])
+
+        self.assertEqual(Device.objects.count(), before)
+        self.assertIsNotNone(result)
+
+    def test_a_device_preview_creates_no_platform_or_manufacturer(self):
+        from dcim.models import Platform
+
+        platforms_before = Platform.objects.count()
+        mfrs_before = Manufacturer.objects.count()
+
+        compare_model_rows(
+            None,
+            "dcim.device",
+            [
+                self._row(
+                    "plat-dev",
+                    platform="Platform That Does Not Exist",
+                    platform_slug="platform-that-does-not-exist",
+                )
+            ],
+        )
+
+        self.assertEqual(Platform.objects.count(), platforms_before)
+        self.assertEqual(Manufacturer.objects.count(), mfrs_before)
+
+    def test_a_device_preview_creates_no_tags(self):
+        from extras.models import Tag
+        from extras.models import TaggedItem
+
+        tags_before = Tag.objects.count()
+        assignments_before = TaggedItem.objects.count()
+
+        compare_model_rows(None, "dcim.device", [self._row("tag-dev")])
+
+        self.assertEqual(Tag.objects.count(), tags_before)
+        self.assertEqual(TaggedItem.objects.count(), assignments_before)
+
+    def test_an_unchanged_device_is_not_drift(self):
+        from dcim.models import Device
+
+        Device.objects.create(
+            name="steady-dev",
+            site=self.site,
+            device_type=self.dtype,
+            role=self.role,
+            status="active",
+        )
+
+        result = compare_model_rows(None, "dcim.device", [self._row("steady-dev")])
 
         self.assertEqual(result["creates"], 0)
         self.assertEqual(result["updates"], 0)

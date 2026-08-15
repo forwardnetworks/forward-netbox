@@ -172,7 +172,7 @@ writes to models the function does not own, and one of them is a delete:
 | `macaddress` | none | **measured** |
 | `ipaddress` | `Device.objects.bulk_update`, **plus a VRF upsert via `runner._ensure_vrf`** | **measured** |
 | `interface` | **`cable.delete()`**, plus two recursive self-calls | **measured** |
-| `device` | creates `Tag` and `TaggedItem` rows | deferred |
+| `device` | creates `Tag` and `TaggedItem` rows, **upserts a Platform and a Manufacturer under it** | **measured** |
 | `virtualchassis` | creates `VirtualChassis`, THEN assigns devices to them | deferred |
 
 A preview on `interface` would have deleted cables. On `device` it would have
@@ -262,19 +262,38 @@ That is the third time this feature has produced a confident zero from an
 unmeasured path - after the bool exits and the `all()` gate. It is worth
 treating as the default failure mode of this work rather than a coincidence.
 
+### device
+
+Clean in the shape that mattered: the `Tag`, `Device` and `TaggedItem` writes
+all sit inside one transaction, and `_ensure_scope_tags_in_transaction` is
+called from within it rather than during classification, so nothing classified
+reads them back. One early return covers all three.
+
+The trap was `runner._ensure_platform`, which upserts a `Platform` and calls
+`_ensure_manufacturer` under it, which upserts too - reached during
+classification and invisible to the write grep. The same shape as `_ensure_vrf`
+in slice three, which is why it was looked for rather than discovered. Both are
+overridden with lookups.
+
+Like `interface`, `device` defers statistics via `row_outcomes`, so the preview
+return emits them before returning.
+
+One more surfaced here: `_scope_tags_enabled` reads `runner.sync.source`
+directly, so a caller with no sync raised. The shim now carries a null sync that
+reports no opt-in parameters. Production always passes the real one, so this
+only affects callers that have none, and it degrades rather than guesses.
+
 ### Still to do
 
-`device` and `virtualchassis`.
+`virtualchassis`, and it is the one genuinely different case.
 
-`device` looks tractable: `Tag` and `TaggedItem` creation is a phase, and if it
-sits after device classification the same early return works. Check whether
-classification reads back the tags it creates before assuming so.
-
-`virtualchassis` is the genuinely awkward one. Its second phase reads `vc.pk`
-from rows the first phase creates, so there is no verdict to shortcut to the
-way there was for `interface`. Either model the intended post-write state, or
-accept it as permanently upper-bound and say so - it is a low-volume model, so
-the second is defensible.
+Its second phase reads `vc.pk` from rows the first phase creates, so unlike
+`interface` there is no verdict to shortcut to: the classification cannot be
+computed without the write. Either model the intended post-write state, or
+accept it as permanently upper-bound and label it. It is a low-volume model, so
+the second is defensible and the first is probably not worth it - but inventing
+a number for it would be worse than either, so it declines to answer until
+someone decides.
 
 ## Rollback
 
