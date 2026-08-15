@@ -1229,6 +1229,37 @@ class MergeIssueRecorderTest(TestCase):
         self.assertNotIn("Save with update_fields", str(issue.raw_data))
         self.assertTrue(has_blocking_issues(self.ingestion))
 
+    def test_a_recorded_row_names_its_pk_and_records_its_shape(self):
+        from forward_netbox.utilities.merge import _MergeIssueRecorder
+
+        recorder = _MergeIssueRecorder(self.ingestion, None)
+        recorder.record(
+            model_string="ipam.ipaddress",
+            exc=Exception("Save with update_fields did not affect any rows."),
+            pk=900002,
+            change_data={"address": "10.0.0.1/24", "assigned_object_id": 7},
+        )
+
+        issue = self.ingestion.issues.get()
+        # The message keeps its machine-readable prefix and gains the one thing
+        # an operator needs to act: which object to open in NetBox.
+        self.assertEqual(
+            "Merge for ipam.ipaddress failed (Exception). "
+            "Affected NetBox row: pk 900002.",
+            issue.message,
+        )
+        self.assertEqual("900002", issue.raw_data["row_pk"])
+        self.assertEqual(
+            {"type": "mapping", "fields": ["address", "assigned_object_id"]},
+            issue.raw_data["row"],
+        )
+        # The diagnosis keys are untouched, so anything already reading
+        # `raw_data` keeps working.
+        self.assertEqual("Exception", issue.raw_data["exception_type"])
+        # And the row's own values still never land in either surface.
+        self.assertNotIn("10.0.0.1", issue.message)
+        self.assertNotIn("10.0.0.1", str(issue.raw_data))
+
     def test_synced_model_failures_recorded_per_change(self):
         from forward_netbox.utilities.merge import _MergeIssueRecorder
 
