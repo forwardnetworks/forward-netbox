@@ -109,7 +109,23 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = check_release_lineage(args.release_commit, args.version)
     except LineageError as exc:
-        print(f"release lineage would be REFUSED: {exc}", file=sys.stderr)
+        # Name what was measured, not just the verdict. `--release-commit`
+        # defaults to `origin/main`, which is right when this runs after the
+        # release PR merges and wrong before it - and a bare "lineage has 3
+        # commits and needs at least 4" reads as a real refusal either way.
+        # Resolving the ref here costs nothing and turns "the release is
+        # broken" into "you measured the wrong commit".
+        try:
+            resolved = provenance._git_capture(
+                "rev-parse", "--short", args.release_commit
+            ).strip()
+            measured = f"{args.release_commit} ({resolved})"
+        except Exception:  # noqa: BLE001 - the refusal matters more than the ref
+            measured = args.release_commit
+        print(
+            f"release lineage would be REFUSED for {measured}: {exc}",
+            file=sys.stderr,
+        )
         return 1
     print("release lineage looks publishable:")
     for key, value in result.items():
