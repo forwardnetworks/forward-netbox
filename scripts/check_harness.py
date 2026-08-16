@@ -197,7 +197,7 @@ REQUIRED_TEXT = {
     ],
     ".github/workflows/release.yml": [
         "fetch-depth: 0",
-        "refs/tags/v2.8.0",
+        "refs/tags/v2.8.1",
         "verify_release_provenance.py",
         "--git-files",
         "--protected-history",
