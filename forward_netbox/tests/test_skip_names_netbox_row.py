@@ -213,6 +213,27 @@ class DeleteByCoalesceNamesTheRowTest(TestCase):
         self.assertTrue(caught.exception.dependency_is_protecting)
         self.assertIn("dcim.site", caught.exception.dependency)
 
+    def test_an_object_without_a_pk_still_raises_the_skip(self):
+        # A diagnostic on an error path must never replace the error it is
+        # describing. Reading `obj.pk` directly turned the whole skip into an
+        # AttributeError for any object that has none.
+        from dcim.models import Site
+
+        from forward_netbox.utilities import sync_primitives
+
+        class _NoPk:
+            def delete(self):
+                raise ProtectedError("protected", set())
+
+        runner = SimpleNamespace()
+
+        with self.assertRaises(ForwardDependencySkipError) as caught:
+            with _patched_get_unique(sync_primitives, _NoPk()):
+                sync_primitives.delete_by_coalesce(runner, Site, [{"slug": "x"}])
+
+        self.assertIsNone(caught.exception.netbox_pk)
+        self.assertTrue(caught.exception.dependency_is_protecting)
+
     def test_a_successful_delete_still_returns_true(self):
         from dcim.models import Site
 
