@@ -496,6 +496,11 @@ def delete_by_coalesce(runner, model, lookups):
                     dependency=_protecting_model_labels(exc),
                     dependency_is_protecting=True,
                     context=lookup,
+                    # Which row was held back. Everything identifying about
+                    # `lookup` is the object's own name or slug and is redacted
+                    # before it persists, so without the pk five blocked sites
+                    # record five identical sentences.
+                    netbox_pk=obj.pk,
                 ) from exc
             forget_lookup_object(runner, obj)
             return True

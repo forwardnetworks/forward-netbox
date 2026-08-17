@@ -72,6 +72,7 @@ class ForwardDataError(ForwardSyncError):
         issue_id: int | None = None,
         dependency: str | None = None,
         dependency_is_protecting: bool = False,
+        netbox_pk=None,
     ):
         super().__init__(message)
         self.model_string = model_string
@@ -95,6 +96,16 @@ class ForwardDataError(ForwardSyncError):
         # `netbox_dlm.softwareversion`, which is backwards for a missing parent
         # and exactly right for a surviving child.
         self.dependency_is_protecting = bool(dependency_is_protecting)
+        # The pk of the NetBox row this failure is ABOUT, when the raiser had
+        # the object in hand. A pk is an internal identifier, not customer
+        # data, so unlike `context` it survives redaction — which is the whole
+        # point. A customer reading five `dcim.site row processing skipped
+        # (...; still referenced by dcim.device)` rows could tell that some
+        # sites were held back and not *which* ones, because every value that
+        # would have said so is a name or a slug and is reduced to its key
+        # names before anything persists it. Same reasoning, and the same
+        # sentence, as the merge recorder's `_row_identity`.
+        self.netbox_pk = None if netbox_pk is None else str(netbox_pk).strip() or None
 
 
 class ForwardSearchError(ForwardDataError):
