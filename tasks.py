@@ -559,11 +559,29 @@ def release_preflight(context):
     context.run(f"{shlex.quote(sys.executable)} scripts/check_release_preflight.py")
 
 
-@task(name="release-authorization-check")
-def release_authorization_check(context, version="2.6.0"):
+@task(
+    name="release-authorization-check",
+    help={"version": "Release version to check, e.g. 2.8.1. Required."},
+)
+def release_authorization_check(context, version=None):
+    """Check one release's authorization record.
+
+    `version` has no default on purpose. It used to default to "2.6.0", so a
+    bare `invoke release-authorization-check` silently checked a years-old
+    release and reported on it - during 2.8.0 that read as a failure of the
+    release in flight and cost a real detour. A release check that quietly
+    measures the wrong release is worse than one that refuses to guess.
+    """
+    version = str(version or "").strip()
+    if not version:
+        raise Exit(
+            "Pass the release being checked, e.g. "
+            "`invoke release-authorization-check --version 2.8.1`.",
+            code=2,
+        )
     context.run(
         f"{shlex.quote(sys.executable)} scripts/check_release_authorization.py "
-        f"--version {shlex.quote(str(version))}"
+        f"--version {shlex.quote(version)}"
     )
 
 
