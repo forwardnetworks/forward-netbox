@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from django.test import TestCase
 
 from forward_netbox.exceptions import ForwardQueryError
@@ -12,11 +14,18 @@ class ForwardSyncRunnerContractTest(TestCase):
         self.runner = object.__new__(ForwardSyncRunner)
         self.runner._model_coalesce_fields = {
             "dcim.site": [("slug",), ("name",)],
+            "dcim.macaddress": [("mac_address",)],
             "dcim.cable": [
                 ("device", "interface", "remote_device", "remote_interface")
             ],
             "ipam.fhrpgroup": [("protocol", "group_id", "address", "vrf")],
         }
+        # `_split_diff_rows` reports rows the removal policy holds back.
+        self.warnings = []
+        self.runner.sync = None
+        self.runner.logger = SimpleNamespace(
+            log_warning=lambda message, obj=None: self.warnings.append(message)
+        )
 
     def test_conflict_policy_defaults_to_strict_and_uses_cable_override(self):
         self.assertEqual(self.runner._conflict_policy("dcim.device"), "strict")
@@ -49,18 +58,23 @@ class ForwardSyncRunnerContractTest(TestCase):
         self.assertEqual(delete_rows, [])
 
     def test_split_diff_rows_deletes_modified_rows_when_identity_changes(self):
+        # On a model the removal policy allows. `dcim.site` used to stand in
+        # here, which is exactly the model the policy now refuses - see
+        # DiffRemovalAllowlistTest below.
         diff_rows = [
             {
                 "type": "MODIFIED",
-                "before": {"slug": "site-a", "name": "Site A"},
-                "after": {"slug": "site-b", "name": "Site B"},
+                "before": {"mac_address": "00:00:00:00:00:01"},
+                "after": {"mac_address": "00:00:00:00:00:02"},
             }
         ]
 
-        upsert_rows, delete_rows = self.runner._split_diff_rows("dcim.site", diff_rows)
+        upsert_rows, delete_rows = self.runner._split_diff_rows(
+            "dcim.macaddress", diff_rows
+        )
 
-        self.assertEqual(upsert_rows, [{"slug": "site-b", "name": "Site B"}])
-        self.assertEqual(delete_rows, [{"slug": "site-a", "name": "Site A"}])
+        self.assertEqual(upsert_rows, [{"mac_address": "00:00:00:00:00:02"}])
+        self.assertEqual(delete_rows, [{"mac_address": "00:00:00:00:00:01"}])
 
     def test_fhrp_rows_for_one_group_share_a_shard_key(self):
         # Both routers of an HSRP group must bucket into one shard so the diff

@@ -105,6 +105,103 @@ BASELINE_REMOVAL_MODELS = frozenset(
 )
 
 
+# Models a Forward NQE DIFF may remove. Also an ALLOWLIST, and for the same
+# reasons - it was missing for two releases after the baseline path got one.
+#
+# The two producers were guarded asymmetrically. `BASELINE_REMOVAL_MODELS`
+# refuses `dcim.site`, `dcim.devicetype`, `ipam.vrf` and `dcim.device` by name,
+# with the reasoning written out directly above. `_split_diff_rows` refused
+# nothing: every `DELETED` row became a delete for any model, and the only gate
+# downstream is the ACI suppression check. So the exact models one path
+# protects, the other deleted unattended.
+#
+# A deployment on 2.8.1 showed it: an `ipam.vrf`, a `dcim.devicetype` and three
+# `dcim.site` rows all reached `delete()`. Nothing was lost, because PROTECT
+# refused them - a database constraint caught what a gate should have. A site
+# with no devices, or a device type with no devices, has nothing holding it.
+#
+# The diff signal is NOT stronger evidence than baseline absence, which is the
+# tempting reason to allow more here. A `DELETED` row means the row was in the
+# query result at the before-snapshot and is not at the after-snapshot, and a
+# device disabled in Forward, a failed collection, and a narrowed query all
+# produce exactly that.
+#
+# This governs `DELETED` rows only. A `MODIFIED` row whose identity key changed
+# is a RENAME: Forward reports the same object under a new identity, and the
+# after-side is written in the same batch, so the before-row is superseded by a
+# row we are creating. Refusing that preserves nothing and strands a duplicate
+# nothing will collect. See `_split_diff_rows`, which draws the line.
+#
+# Wider than the baseline list on purpose, though. Baseline reconciliation
+# compares against rows the plugin itself persisted, so it can only speak for
+# models it has a baseline for; the diff speaks for whatever the query covers.
+# The additions are all rows the plugin solely authors and no operator
+# maintains by hand.
+#
+# REFUSED here, with the same reasons as the baseline list:
+#   dcim.device, dcim.site      - operator-gated through Scope Reconciliation
+#                                 -> Prune orphans, which exists precisely
+#                                 because absence is not evidence
+#   dcim.devicetype/platform/   - shared catalogues; an empty one is not garbage
+#     manufacturer/devicerole     and may be a Device Type Library import
+#   ipam.prefix/vlan/vrf        - global IPAM, never pruned by device scope
+#   netbox_dlm.softwareversion  - a catalogue with children
+#
+# `DIFF_REMOVAL_REFUSED_MODELS` below names them, and a test asserts every
+# delete handler on the runner appears in exactly one of the two sets - so a
+# model added later cannot land in neither and silently inherit "deletable".
+DIFF_REMOVAL_MODELS = frozenset(
+    BASELINE_REMOVAL_MODELS
+    | {
+        # Device-derived and plugin-authored, like the baseline set.
+        "dcim.virtualchassis",
+        "extras.taggeditem",
+        "netbox_peering_manager.peeringsession",
+        # ACI inventory. Kept deletable because a stale fabric object is real
+        # garbage, and this path already carries its own brake:
+        # `should_suppress_aci_deletes` holds every ACI delete back unless
+        # `aci_allow_deletes` is set, because a failed APIC collection empties
+        # the fabric query.
+        "netbox_cisco_aci.acibridgedomain",
+        "netbox_cisco_aci.acifabric",
+        "netbox_cisco_aci.acifilter",
+        "netbox_cisco_aci.acil3out",
+        "netbox_cisco_aci.acinode",
+        "netbox_cisco_aci.acipod",
+        "netbox_cisco_aci.acitenant",
+        "netbox_cisco_aci.acivrf",
+    }
+)
+
+
+# The other half of the partition. Not decorative: the parity test reads it, so
+# removing a model from here without adding it above breaks the build rather
+# than quietly making it deletable.
+DIFF_REMOVAL_REFUSED_MODELS = frozenset(
+    {
+        "dcim.device",
+        "dcim.site",
+        "dcim.devicetype",
+        "dcim.platform",
+        "dcim.manufacturer",
+        "dcim.devicerole",
+        "ipam.prefix",
+        "ipam.vlan",
+        "ipam.vrf",
+        "netbox_dlm.softwareversion",
+    }
+)
+
+
+def diff_removals_allowed(model_string) -> bool:
+    """Whether a Forward diff may turn `DELETED` rows into deletes.
+
+    Fail closed. A model in neither set is unknown to this policy, and the
+    2.7.11 regression is what "unknown defaults to deletable" costs.
+    """
+    return model_string in DIFF_REMOVAL_MODELS
+
+
 class RemovalReconciliationRefused(Exception):
     """The removal set was too large a share of the baseline to trust."""
 
