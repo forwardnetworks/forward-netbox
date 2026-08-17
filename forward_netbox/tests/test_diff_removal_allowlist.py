@@ -204,11 +204,12 @@ class SplitDiffRowsAppliesThePolicyTest(SimpleTestCase):
         runner = self._runner()
 
         runner._split_diff_rows(
-            "dcim.site", self._deleted({"slug": "hq-datacenter-3", "name": "HQ DC3"})
+            "dcim.site",
+            self._deleted({"slug": "example-site-slug", "name": "Example Site"}),
         )
 
-        self.assertNotIn("hq-datacenter-3", runner.warnings[0])
-        self.assertNotIn("HQ DC3", runner.warnings[0])
+        self.assertNotIn("example-site-slug", runner.warnings[0])
+        self.assertNotIn("Example Site", runner.warnings[0])
 
     def test_an_allowed_model_still_deletes_and_stays_quiet(self):
         runner = self._runner()
