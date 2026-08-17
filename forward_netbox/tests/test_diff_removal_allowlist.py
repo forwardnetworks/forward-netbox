@@ -31,6 +31,8 @@ from forward_netbox.utilities.full_removal_reconciliation import (
     DIFF_REMOVAL_REFUSED_MODELS,
 )
 from forward_netbox.utilities.full_removal_reconciliation import diff_removals_allowed
+from forward_netbox.utilities.full_removal_reconciliation import PRUNE_REMOVAL_MODELS
+from forward_netbox.utilities.full_removal_reconciliation import prune_removals_allowed
 from forward_netbox.utilities.sync import ForwardSyncRunner
 
 
@@ -305,3 +307,60 @@ class SplitDiffRowsAppliesThePolicyTest(SimpleTestCase):
         )
 
         self.assertEqual([], runner.warnings)
+
+
+class PruneRemovalPolicyTest(SimpleTestCase):
+    """The third producer, found the same way as the second.
+
+    A customer on 2.8.2 still had six `netbox_dlm.softwareversion`
+    protected-delete skips after the diff and baseline paths were both gated.
+    Rows dropped by device-tag scope become deletes whenever
+    `device_tag_prune_out_of_scope` is on, and nothing consulted a model policy
+    on the way.
+    """
+
+    def test_prune_may_remove_devices_and_sites(self):
+        # This is what Prune orphans is FOR. Refusing it would break the
+        # feature, not protect anything.
+        self.assertTrue(prune_removals_allowed("dcim.device"))
+        self.assertTrue(prune_removals_allowed("dcim.site"))
+
+    def test_prune_may_not_remove_shared_catalogues(self):
+        # "This device left tag scope" is not a statement about a catalogue.
+        for model_string in (
+            "netbox_dlm.softwareversion",
+            "dcim.devicetype",
+            "dcim.platform",
+            "dcim.manufacturer",
+            "dcim.devicerole",
+        ):
+            with self.subTest(model_string=model_string):
+                self.assertFalse(prune_removals_allowed(model_string))
+
+    def test_prune_may_not_remove_global_ipam(self):
+        for model_string in ("ipam.prefix", "ipam.vlan", "ipam.vrf"):
+            with self.subTest(model_string=model_string):
+                self.assertFalse(prune_removals_allowed(model_string))
+
+    def test_prune_still_removes_device_derived_rows(self):
+        for model_string in ("dcim.interface", "ipam.ipaddress", "dcim.macaddress"):
+            with self.subTest(model_string=model_string):
+                self.assertTrue(prune_removals_allowed(model_string))
+
+    def test_an_unknown_model_fails_closed(self):
+        self.assertFalse(prune_removals_allowed("dcim.somethingnew"))
+
+    def test_prune_is_the_diff_policy_plus_exactly_device_and_site(self):
+        # The one respect in which the operator-gated path may be wider, stated
+        # as an equality so a third model cannot be added quietly.
+        self.assertEqual(
+            {"dcim.device", "dcim.site"},
+            PRUNE_REMOVAL_MODELS - DIFF_REMOVAL_MODELS,
+        )
+
+    def test_every_deletable_model_is_classified_for_prune_too(self):
+        deletable = _models_with_a_delete_handler()
+        self.assertEqual(
+            set(),
+            deletable - (PRUNE_REMOVAL_MODELS | DIFF_REMOVAL_REFUSED_MODELS),
+        )

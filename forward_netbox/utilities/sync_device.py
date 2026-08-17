@@ -37,24 +37,44 @@ def delete_dcim_device(runner, row):
         device = runner._get_unique_or_raise(Device, lookup)
         if device is None:
             return False
-        with transaction.atomic(using=branch.connection_name):
-            if not emit_branch_object_changes((), (), [device]):
-                raise RuntimeError(
-                    "Branch device deletion requires an attributed request context."
-                )
-            request_token = current_request.set(None)
-            try:
-                collector_delete_without_model_signals(
-                    Device.objects.using(branch.connection_name).filter(pk=device.pk),
-                    signal_free_models=frozenset(),
-                    # Identity provenance lives in main until merge finalization.
-                    # Ignore only that sidecar while collecting branch-local
-                    # cascades; every scope, parent, and operator-owned relation
-                    # retains normal PROTECT.
-                    ignored_related_models={ForwardDeviceIdentity},
-                )
-            finally:
-                current_request.reset(request_token)
+        from django.db.models.deletion import ProtectedError
+
+        from .sync_primitives import protected_delete_skip
+
+        try:
+            with transaction.atomic(using=branch.connection_name):
+                if not emit_branch_object_changes((), (), [device]):
+                    raise RuntimeError(
+                        "Branch device deletion requires an attributed request context."
+                    )
+                request_token = current_request.set(None)
+                try:
+                    collector_delete_without_model_signals(
+                        Device.objects.using(branch.connection_name).filter(
+                            pk=device.pk
+                        ),
+                        signal_free_models=frozenset(),
+                        # Identity provenance lives in main until merge
+                        # finalization. Ignore only that sidecar while
+                        # collecting branch-local cascades; every scope,
+                        # parent, and operator-owned relation retains normal
+                        # PROTECT.
+                        ignored_related_models={ForwardDeviceIdentity},
+                    )
+                finally:
+                    current_request.reset(request_token)
+        except ProtectedError as exc:
+            # The branch collector raises straight past `delete_by_coalesce`,
+            # so this was the one delete path whose ProtectedError reached the
+            # generic handler and was recorded as a FAILED row. A failed row
+            # blocks baseline promotion permanently, which puts the whole
+            # drift report back to "Not measured" - a strictly worse outcome
+            # than the delete simply not happening. A customer hit it on 2.8.2:
+            # `dcim.device row processing failed (ProtectedError).`, naming
+            # neither what held the device nor which device it was.
+            raise protected_delete_skip(
+                Device, exc, obj=device, context=lookup
+            ) from exc
         return True
 
     return runner._delete_by_coalesce(

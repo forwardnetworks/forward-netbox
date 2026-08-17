@@ -475,6 +475,42 @@ def _protecting_model_labels(exc) -> str:
     return ", ".join(sorted(labels))
 
 
+def protected_delete_skip(model, exc, *, obj=None, context=None):
+    """Turn a `ProtectedError` into the skip it actually is.
+
+    Every delete path must route through this. A `ProtectedError` that reaches
+    a generic handler is recorded as a FAILED row rather than a skipped one,
+    and the difference is not cosmetic: a single failed row blocks baseline
+    promotion permanently, so the drift report goes back to reading
+    "Not measured" for the whole deployment. A customer's `dcim.device` delete
+    did exactly that on 2.8.2 - it is deleted through the branch collector
+    rather than through `delete_by_coalesce`, so it never reached this
+    conversion and reported `row processing failed (ProtectedError).` with no
+    dependency and no row identity.
+
+    This skip is the inverse of every other one: nothing is missing, the object
+    is still referenced and the database refuses to prune it. Naming the models
+    still pointing at it is the whole answer, and they are schema identifiers -
+    unlike `context`, which is the object's own name or slug.
+    """
+    return ForwardDependencySkipError(
+        f"Skipping delete for `{model._meta.label_lower}` due to protected dependencies: {exc}",
+        model_string=model._meta.label_lower,
+        dependency=_protecting_model_labels(exc),
+        dependency_is_protecting=True,
+        context=context or {},
+        # Which row was held back. Everything identifying about `context` is
+        # the object's own name or slug and is redacted before it persists, so
+        # without the pk five blocked sites record five identical sentences.
+        #
+        # `getattr`, not `obj.pk`: this is a diagnostic on an error path, and
+        # the one thing it must never do is replace the skip with an
+        # AttributeError. Every real NetBox model has a pk; the guard is for
+        # whatever else reaches here.
+        netbox_pk=getattr(obj, "pk", None),
+    )
+
+
 def delete_by_coalesce(runner, model, lookups):
     lookups = _dedupe_lookups([lookup for lookup in lookups or [] if lookup])
     if not lookups:
@@ -485,27 +521,8 @@ def delete_by_coalesce(runner, model, lookups):
             try:
                 obj.delete()
             except ProtectedError as exc:
-                # This skip is the inverse of every other one: nothing is
-                # missing, the object is still referenced and the database
-                # refuses to prune it. Naming the models still pointing at it is
-                # the whole answer, and they are schema identifiers — unlike
-                # `lookup`, which is the object's own name or slug.
-                raise ForwardDependencySkipError(
-                    f"Skipping delete for `{model._meta.label_lower}` due to protected dependencies: {exc}",
-                    model_string=model._meta.label_lower,
-                    dependency=_protecting_model_labels(exc),
-                    dependency_is_protecting=True,
-                    context=lookup,
-                    # Which row was held back. Everything identifying about
-                    # `lookup` is the object's own name or slug and is redacted
-                    # before it persists, so without the pk five blocked sites
-                    # record five identical sentences.
-                    #
-                    # `getattr`, not `obj.pk`: this is a diagnostic on an error
-                    # path, and the one thing it must never do is replace the
-                    # skip with an AttributeError. Every real NetBox model has
-                    # a pk; the guard is for whatever else reaches here.
-                    netbox_pk=getattr(obj, "pk", None),
+                raise protected_delete_skip(
+                    model, exc, obj=obj, context=lookup
                 ) from exc
             forget_lookup_object(runner, obj)
             return True
