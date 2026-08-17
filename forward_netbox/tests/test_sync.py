@@ -6747,7 +6747,11 @@ select {name: site.name, slug: site.name}
             fetch_all=True,
         )
         client.run_nqe_query.assert_not_called()
-        logger.add_statistics_total.assert_called_once_with("dcim.site", 3)
+        # Two rows, not three: `site-1` is a plain DELETED row for a model the
+        # removal policy refuses (`dcim.site` is operator-gated through Prune
+        # orphans), so it is held back at the split and never counted, applied
+        # or deleted. See test_diff_removal_allowlist for the policy itself.
+        logger.add_statistics_total.assert_called_once_with("dcim.site", 2)
         runner._apply_model_rows.assert_called_once_with(
             "dcim.site",
             [
@@ -6755,10 +6759,7 @@ select {name: site.name, slug: site.name}
                 {"name": "site-3b", "slug": "site-3"},
             ],
         )
-        runner._delete_model_rows.assert_called_once_with(
-            "dcim.site",
-            [{"name": "site-1", "slug": "site-1"}],
-        )
+        runner._delete_model_rows.assert_not_called()
         ingestion.refresh_from_db()
         self.assertEqual(ingestion.sync_mode, "diff")
 
