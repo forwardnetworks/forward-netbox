@@ -193,6 +193,34 @@ DIFF_REMOVAL_REFUSED_MODELS = frozenset(
 )
 
 
+# Models the operator's tag-scope prune may remove. The THIRD producer, found
+# the same way as the second: a customer on 2.8.2 still had six
+# `netbox_dlm.softwareversion` protected-delete skips after both other paths
+# were gated, because rows filtered out by device-tag scope become deletes
+# whenever `device_tag_prune_out_of_scope` is on, and nothing consulted a model
+# policy on the way.
+#
+# Wider than the diff list in exactly one respect, and it has to be: removing
+# devices and their sites IS what Prune orphans is for, and an operator turned
+# it on deliberately after a shrink guard and a confirm-in-Forward warning.
+#
+# But "this device left tag scope" is not a statement about a SHARED CATALOGUE.
+# A software version, a device type or a VRF is not device-derived, so device
+# scope cannot speak for it - the same sentence the baseline list already
+# carries for the same models. Pruning them because a device moved out of scope
+# deletes rows the operator never chose to delete and that Forward will
+# recreate.
+PRUNE_REMOVAL_MODELS = frozenset(DIFF_REMOVAL_MODELS | {"dcim.device", "dcim.site"})
+
+
+def prune_removals_allowed(model_string) -> bool:
+    """Whether the tag-scope prune may delete rows of this model.
+
+    Fail closed, like its siblings.
+    """
+    return model_string in PRUNE_REMOVAL_MODELS
+
+
 def diff_removals_allowed(model_string) -> bool:
     """Whether a Forward diff may turn `DELETED` rows into deletes.
 

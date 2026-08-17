@@ -118,8 +118,29 @@
             </td>
           </tr>
           <tr>
+            <th scope="row">{% trans "Models compared" %}</th>
+            <td>
+              {{ report.measured_model_count }} / {{ report.model_count }}
+              {% if report.measured_model_count == 0 %}
+                {% if report.payload_predates_measurement %}
+                  <div class="text-warning small mt-1">
+                    {% trans "This preview was taken before drift measurement existed. Re-run Preview Dependencies to get real numbers." %}
+                  </div>
+                {% else %}
+                  <div class="text-warning small mt-1">
+                    {% trans "The preview ran but compared no models. This is a defect rather than a stale report - please send the preview JSON." %}
+                  </div>
+                {% endif %}
+              {% elif report.unmeasured_model_count %}
+                <div class="text-muted small mt-1">
+                  {% trans "Not compared:" %} {{ report.unmeasured_models|join:", " }}
+                </div>
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
             <th scope="row">{% trans "Drifted models" %}</th>
-            <td>{% if report.comparison_available %}{{ report.drifted_model_count }} / {{ report.model_count }}{% else %}{% trans "Not measured" %}{% endif %}</td>
+            <td>{% if report.comparison_available %}{{ report.drifted_model_count }} / {{ report.measured_model_count }}{% else %}{% trans "Not measured" %}{% endif %}</td>
           </tr>
           <tr>
             <th scope="row">{% trans "Total drift" %}</th>

@@ -52,6 +52,7 @@ from .full_removal_reconciliation import coalesce_identity
 from .full_removal_reconciliation import compute_full_removals
 from .full_removal_reconciliation import network_complete_removals
 from .full_removal_reconciliation import previous_full_rows
+from .full_removal_reconciliation import prune_removals_allowed
 from .full_removal_reconciliation import RemovalReconciliationRefused
 from .model_contracts import architecture_default_coalesce_fields_for_model
 from .query_diagnostics import (
@@ -2932,7 +2933,26 @@ class ForwardQueryFetcher:
         filtered_rows, removed_rows = self._apply_device_tag_scope(
             model_string, rows, context
         )
-        delete_rows = removed_rows if context.device_tag_prune_out_of_scope else []
+        # Prune-out-of-scope is an operator decision about DEVICES leaving tag
+        # scope, so it may remove devices, their sites, and the rows derived
+        # from them - but not a shared catalogue or global IPAM, which device
+        # scope cannot speak for. Without this the prune deleted whatever the
+        # scope filter dropped, which is how a customer kept getting
+        # `netbox_dlm.softwareversion` protected-delete skips after both other
+        # delete producers were gated.
+        delete_rows = []
+        if context.device_tag_prune_out_of_scope and removed_rows:
+            if prune_removals_allowed(model_string):
+                delete_rows = removed_rows
+            else:
+                self.logger.log_warning(
+                    f"Held back {len(removed_rows)} out-of-scope delete(s) for "
+                    f"{model_string}: Prune orphans removes devices and the "
+                    "rows derived from them, and this model is a shared "
+                    "catalogue or global IPAM that device scope does not speak "
+                    "for. The rows stay in NetBox.",
+                    obj=self.sync,
+                )
         delete_rows = delete_rows + self._full_run_removals(
             model_string=model_string,
             current_rows=filtered_rows,

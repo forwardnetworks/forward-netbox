@@ -175,6 +175,16 @@ def compute_drift_report(payload):
     )
     measured_rows = [row for row in rows if row["comparison_available"]]
     unmeasured_rows = [row for row in rows if not row["comparison_available"]]
+    # Why nothing was measured, when nothing was. "Not measured" in every cell
+    # is the same words for three unrelated situations, and a deployment that
+    # hit one of them could not tell which - re-running the preview, which is
+    # the fix for exactly one of the three, looked identical to the others.
+    #
+    # `comparison_coverage` is written by every preview since 2.8.1, so its
+    # absence dates the payload rather than describing it.
+    payload_predates_measurement = bool(rows) and not (
+        isinstance(payload, dict) and payload.get("comparison_coverage") is not None
+    )
     # Drift is reported over the models that were actually compared, rather than
     # withheld until every model can be. Requiring all of them meant one
     # uncovered model - and there is always at least one, because the
@@ -206,6 +216,10 @@ def compute_drift_report(payload):
             row["model"] for row in unmeasured_rows if row.get("model")
         ),
         "fully_measured": fully_measured,
+        # True when the payload is older than drift measurement itself, which
+        # a re-run of the preview fixes. False with `measured_model_count == 0`
+        # means the preview DID run and compared nothing, which it does not.
+        "payload_predates_measurement": payload_predates_measurement,
         "drifted_model_count": (
             sum(1 for row in measured_rows if not row["in_sync"])
             if comparison_available
