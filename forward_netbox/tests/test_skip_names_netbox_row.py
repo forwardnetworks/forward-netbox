@@ -130,10 +130,10 @@ class SkipMessageNamesTheRowTest(_Recorded):
             "dcim.site",
             netbox_pk=884,
             dependency="dcim.device",
-            context={"slug": "hq-datacenter-3"},
+            context={"slug": "example-site-slug"},
         )
         persisted = f"{issue.message} {issue.coalesce_fields} {issue.raw_data}"
-        self.assertNotIn("hq-datacenter-3", persisted)
+        self.assertNotIn("example-site-slug", persisted)
         self.assertIn("884", issue.message)
 
     def test_two_blocked_sites_no_longer_read_identically(self):
