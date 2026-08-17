@@ -496,6 +496,16 @@ def delete_by_coalesce(runner, model, lookups):
                     dependency=_protecting_model_labels(exc),
                     dependency_is_protecting=True,
                     context=lookup,
+                    # Which row was held back. Everything identifying about
+                    # `lookup` is the object's own name or slug and is redacted
+                    # before it persists, so without the pk five blocked sites
+                    # record five identical sentences.
+                    #
+                    # `getattr`, not `obj.pk`: this is a diagnostic on an error
+                    # path, and the one thing it must never do is replace the
+                    # skip with an AttributeError. Every real NetBox model has
+                    # a pk; the guard is for whatever else reaches here.
+                    netbox_pk=getattr(obj, "pk", None),
                 ) from exc
             forget_lookup_object(runner, obj)
             return True

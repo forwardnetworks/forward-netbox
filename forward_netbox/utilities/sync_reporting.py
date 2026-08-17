@@ -435,10 +435,23 @@ def record_issue(
         if exception_name == "ForwardDependencySkipError" or log_level != "failure"
         else "failed"
     )
+    # Name the NetBox row the failure is about, when the raiser had it in hand.
+    # The merge recorder was given this in 2.8.1 and the sync recorder was not,
+    # so a customer's five protected-delete skips read as five identical
+    # sentences: `dcim.site row processing skipped (...; still referenced by
+    # dcim.device).` The model was named, the direction was named, and the one
+    # fact needed to go look - which site - was the only thing missing, because
+    # every value that would have said so is a name or a slug and is reduced to
+    # its key names by `diagnostic_shape` before it persists. A pk is not.
+    #
+    # Appended, never substituted: a raiser that has no row in hand records
+    # exactly the message it recorded before, byte for byte.
+    netbox_pk = getattr(exception, "netbox_pk", None) if exception is not None else None
+    identity_sentence = f" Affected NetBox row: pk {netbox_pk}." if netbox_pk else ""
     message = (
         message
         if is_dependency_skip_summary
-        else f"{model_string} row processing {outcome_word} ({detail})."
+        else f"{model_string} row processing {outcome_word} ({detail}).{identity_sentence}"
     )
     context_data = (
         json_safe_value(context or {})
@@ -450,6 +463,11 @@ def record_issue(
     # (`type`/`fields` vs `exception_type`/`constraint_name`/...), so this stays
     # readable for anything already consuming the shape.
     raw_data = {**diagnostic_shape(row or {}), **diagnosis}
+    if netbox_pk:
+        # Structured alongside the sentence, the way the merge recorder stores
+        # it, so anything reading issues programmatically does not have to
+        # parse English out of `message`.
+        raw_data["netbox_pk"] = netbox_pk
     issue_key = (
         runner.ingestion.pk if runner.ingestion else None,
         ForwardIngestionPhaseChoices.SYNC,
