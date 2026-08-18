@@ -4,10 +4,21 @@ Install the plugin package, enable the required plugins, run the migrations, and
 
 ## Requirements
 
-- NetBox 4.6.5 required (4.5.x and earlier are no longer supported); requires netbox-branching 1.1.1
+- NetBox `4.6.x`, `4.6.5` or newer (`4.5.x` and earlier are not supported).
+  Tested and validated on `4.6.8`.
+- `netboxlabs-netbox-branching` `1.1.x`. Tested on `1.1.2`.
+- Forward `26.6` is the baseline for async NQE.
 
-Forward 26.6 is the baseline for async NQE.
-- `netboxlabs-netbox-branching`
+### Planning for NetBox 4.7
+
+The plugin declares `max_version = "4.6.99"`, so it refuses to load on NetBox
+`4.7` rather than half-working there. That is deliberate and will lift once the
+release gate has actually run against a `4.7` runtime.
+
+NetBox `4.7` also raises its own service minimums to **PostgreSQL 15+** and
+**Redis 6+**. Those are NetBox's requirements rather than the plugin's, and they
+are worth checking before planning that upgrade, because they are the part that
+is not fixed by installing a newer plugin.
 
 ## Package Installation
 
