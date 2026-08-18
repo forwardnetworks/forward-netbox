@@ -59,7 +59,7 @@ migrations, e.g. netbox-dlm `0.2.0+`; older builds need
 
 ## Release Compatibility
 
-The `2.8.2` release requires NetBox `4.6.x` (>= `4.6.5`, tested on `4.6.6`) and `netbox-branching` `1.1.x` (tested on `1.1.2`). Expand for the published release history and release notes.
+The `2.8.2` release requires NetBox `4.6.x` (>= `4.6.5`, tested on `4.6.8`) and `netbox-branching` `1.1.x` (tested on `1.1.2`). Expand for the published release history and release notes.
 
 <details>
 <summary>Release compatibility history</summary>
