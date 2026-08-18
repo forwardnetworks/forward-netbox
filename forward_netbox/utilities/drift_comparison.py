@@ -227,8 +227,22 @@ def compare_model_rows(sync, model_string, rows):
     """
     from .apply_engine_bulk import bulk_orm_apply_simple_models
 
-    if not rows:
-        return {"creates": 0, "updates": 0, "unchanged": 0, "rejected": 0}
+    # No shortcut for an empty row list.
+    #
+    # There used to be one: no rows, therefore nothing to create or update,
+    # therefore a confident zero. It is true arithmetic and the wrong answer,
+    # because it answers for models this function cannot compare at all.
+    # `netbox_dlm.softwareversion` is adapter-only and has no comparison; a
+    # deployment reporting 45 Forward rows for it still reached this line with
+    # an empty row list, took the shortcut, and the drift report showed it
+    # measured and `In sync: Yes` - the only affirmative claim on the page,
+    # made by the one branch that never looked at NetBox.
+    #
+    # An empty row list is not evidence of agreement. It means either that the
+    # model genuinely has nothing incoming, or that its rows never reached this
+    # comparison - and those two are indistinguishable from here. So the
+    # dispatcher answers instead, exactly as it does for a non-empty list: a
+    # zero for a model it can compare, `None` for one it cannot.
     runner = PreviewRunner(sync=sync)
     counts = bulk_orm_apply_simple_models(
         runner,
