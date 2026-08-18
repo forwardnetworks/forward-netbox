@@ -197,7 +197,7 @@ REQUIRED_TEXT = {
     ],
     ".github/workflows/release.yml": [
         "fetch-depth: 0",
-        "refs/tags/v2.8.2",
+        "refs/tags/v2.8.3",
         "verify_release_provenance.py",
         "--git-files",
         "--protected-history",
@@ -885,6 +885,11 @@ def _documentation_bridge_rule():
     here. A second copy drifts the moment either side moves, and a harness
     check that passes while the verifier fails is worse than no check at all -
     the entire value of checking early is that the two agree.
+
+    Both halves come from there, for the same reason: the path predicate AND
+    the hash-keyed exceptions to it. Loading only the predicate would make this
+    check stricter than the verifier it exists to predict, which fails the same
+    agreement test as being laxer.
     """
     path = Path(__file__).resolve().parent / "verify_release_provenance.py"
     spec = importlib.util.spec_from_file_location(
@@ -895,7 +900,9 @@ def _documentation_bridge_rule():
         raise ImportError(f"cannot load release provenance rule from {path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module._is_documentation_path
+    return module._is_documentation_path, getattr(
+        module, "BRIDGE_CONTENT_EXCEPTIONS", {}
+    )
 
 
 def _check_post_release_bridge_is_documentation_only(failures: list[str]) -> None:
@@ -948,7 +955,7 @@ def _check_post_release_bridge_is_documentation_only(failures: list[str]) -> Non
     bridge = bridge_match.group("commit")
 
     try:
-        is_documentation_path = _documentation_bridge_rule()
+        is_documentation_path, bridge_exceptions = _documentation_bridge_rule()
     except Exception as exc:
         failures.append(
             "release provenance bridge rule is not loadable, so the post-release "
@@ -966,7 +973,12 @@ def _check_post_release_bridge_is_documentation_only(failures: list[str]) -> Non
         )
         return
 
-    disqualifying = sorted(path for path in changed if not is_documentation_path(path))
+    excused = tuple(bridge_exceptions.get(bridge, ()))
+    disqualifying = sorted(
+        path
+        for path in changed
+        if not is_documentation_path(path) and path not in excused
+    )
     if disqualifying:
         failures.append(
             f"post-release bridge {bridge[:10]} after {tag} is not "

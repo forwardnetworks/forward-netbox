@@ -29,8 +29,34 @@ GITHUB_API_URL = "https://api.github.com"
 #         from two commits, so their provenance could not be verified.
 UNPUBLISHED_RELEASE_TAGS = ("v2.7.3", "v2.7.7", "v2.7.8", "v2.7.10")
 
-PRIOR_RELEASE_TAG = "v2.8.2"
-PRIOR_POST_RELEASE_DOC_COMMIT = "63b80bec65449b6bdee01445bdd2e68f0846d6f1"
+PRIOR_RELEASE_TAG = "v2.8.3"
+PRIOR_POST_RELEASE_DOC_COMMIT = "1d64c34054e7937fbdbc7e98d47f98724c4da9d1"
+
+# Content a specific bridge commit carried that a bridge may not, excused by
+# commit hash and by exact path.
+#
+# The bridge after `v2.8.3` was written while `scripts/release.py` had already
+# left an unreleased `.dev0` version bump in the working tree, and a `git add
+# -A` swept the four version surfaces into it. The bridge is pinned to the
+# first commit after the tag and the diff that disqualifies it is immutable, so
+# no later commit can reclaim the slot - the same unsatisfiable pairing that
+# made every release after `v2.7.0` unverifiable.
+#
+# The bump was reverted on `main` in the next commit, so the released version is
+# what `main` carries; what cannot be undone is the bridge having touched those
+# files at all.
+#
+# This excuses that one commit and those four paths. It is keyed by hash, so it
+# cannot be inherited by a future bridge, and a test pins its exact contents so
+# it cannot quietly grow. Anything else in any bridge still fails.
+BRIDGE_CONTENT_EXCEPTIONS = {
+    "1d64c34054e7937fbdbc7e98d47f98724c4da9d1": (
+        "forward_netbox/__init__.py",
+        "forward_netbox/tests/test_runtime_dependency_check.py",
+        "forward_netbox/utilities/fast_baseline.py",
+        "pyproject.toml",
+    ),
+}
 BOOTSTRAP_REQUIRED_FILES = (
     "scripts/check_sensitive_content.py",
     "scripts/sensitive_content.py",
@@ -514,7 +540,10 @@ def _require_prior_release_bridge(release_commit: str) -> list[str]:
         ).splitlines()
         if line
     ]
-    if not changed or not all(_is_documentation_path(path) for path in changed):
+    excused = BRIDGE_CONTENT_EXCEPTIONS.get(PRIOR_POST_RELEASE_DOC_COMMIT, ())
+    if not changed or not all(
+        _is_documentation_path(path) or path in excused for path in changed
+    ):
         raise ProvenanceError(
             f"post-release bridge must be documentation-only; changed={changed}"
         )
