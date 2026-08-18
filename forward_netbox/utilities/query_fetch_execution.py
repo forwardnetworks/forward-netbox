@@ -409,6 +409,10 @@ class ForwardQueryFetcher:
         self._diff_timeout_lock = Lock()
         self._diff_timeout_counts: dict[str, int] = {}
         self.pending_workload_states = []
+        # Full normalised rows per model, captured before the durable delta
+        # narrows them. The drift preview measures against these; the plan
+        # is built from the narrowed workloads.
+        self.comparison_rows_by_model: dict[str, list[dict]] = {}
         self._contributor_lock = Lock()
         self._pending_contributor_seeds: dict[str, ContributorRelationSeed] = {}
         self._pending_contributor_work_relations: list[ContributorWorkRelation] = []
@@ -971,6 +975,7 @@ class ForwardQueryFetcher:
         model_strings=None,
         shard_scope=None,
         include_diagnostics,
+        capture_comparison_rows=False,
     ) -> list[BranchWorkload]:
         workloads = []
         self.model_results = list(self._failed_model_results.values())
@@ -1028,6 +1033,34 @@ class ForwardQueryFetcher:
             self._append_ipaddress_diagnostics(context)
             self._append_ipaddress_parent_prefix_diagnostics(workloads)
             self._append_routing_diagnostics(context)
+        # Capture the full normalised rows BEFORE the durable delta narrows
+        # them, because the delta is computed against this plugin's own record
+        # of what Forward last returned - not against NetBox.
+        #
+        # `apply_durable_workload_deltas` drops any workload whose upsert and
+        # delete lists are both empty, which is correct for a PLAN (there is
+        # nothing to stage) and wrong for a MEASUREMENT. The drift preview built
+        # its comparison from the surviving workloads, so a model that had not
+        # changed since the last run vanished from the comparison entirely,
+        # reported "Not measured", and fell back to an estimate of every fetched
+        # row. The models in perfect sync were the ones shown as maximally
+        # uncertain - one deployment saw 30 of 32 models that way.
+        #
+        # These rows are what a comparison has to read to say anything true
+        # about drift: an empty delta means Forward has not changed, and says
+        # nothing about whether NetBox still matches it.
+        #
+        # Opt-in, because it pins every fetched row for the lifetime of the
+        # fetcher. On the sync path the rows the delta discards become garbage
+        # immediately, and keeping them alive there would be a memory
+        # regression at the scale that makes this worth measuring at all. Only
+        # the preview asks for them.
+        self.comparison_rows_by_model = {}
+        if capture_comparison_rows:
+            for workload in workloads:
+                self.comparison_rows_by_model.setdefault(
+                    workload.model_string, []
+                ).extend(workload.upsert_rows or [])
         workloads, self.pending_workload_states, state_summaries = (
             apply_durable_workload_deltas(self.sync, workloads)
         )
