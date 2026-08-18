@@ -79,3 +79,31 @@ Restore the previous baseline in both places. The gate returns to refusing.
   that reports "clean" while never looking at a category is worth distrusting.
   Worth a scripted pre-tag check that covers every surface the release gate
   covers, rather than a habit.
+
+## Second advance
+
+The first advance was not enough, and the reason is worth recording because it
+is the same mistake one layer up.
+
+The publish refused a second time. Two of the recovery documents - this one and
+the release plan - quoted the offending filename verbatim while explaining that
+the filename was the problem. Documenting a leak by reproducing it puts the
+value back into the scanned surface, and the scanner does not care that the new
+copy is an explanation.
+
+So the baseline advances again, past those two commits and past the wording fix
+that removed the quotes.
+
+What made the difference this time was not more care. It was
+`.sensitive-patterns.local.txt` - gitignored, and named in every failure
+message the scanner has ever printed. Nobody had created it. Without it the
+local gate ran against a strictly smaller pattern feed than the release gate,
+so "I read it carefully and it is clean" was the only check available, and it
+was wrong twice. With it, the failure reproduces locally in under a second,
+before a tag exists to burn.
+
+Creating it immediately found a surface neither refusal had reached: a stale
+remote-tracking ref still carrying the old branch name. Ref names are scanned
+too. So are tag names, and paths, and file contents - four surfaces, and the
+review that produced the first tag covered one of them while reporting the tree
+clean.
