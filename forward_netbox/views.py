@@ -535,7 +535,9 @@ def _dependency_dry_run_payload(sync, *, client=None):
     client = client or sync.source.get_client()
     fetcher = ForwardQueryFetcher(sync, client, sync.logger)
     context = fetcher.resolve_context()
-    workloads = fetcher.fetch_workloads(context, include_diagnostics=True)
+    workloads = fetcher.fetch_workloads(
+        context, include_diagnostics=True, capture_comparison_rows=True
+    )
     failed_models = [
         result.model_string
         for result in fetcher.model_results
@@ -564,13 +566,22 @@ def _dependency_dry_run_payload(sync, *, client=None):
     # never did; it costs no Forward calls, because the Forward half is already
     # in `workloads`. Models with no comparison yet return None and keep their
     # upper-bound estimate rather than reporting a confident zero.
-    from collections import defaultdict
-
     from .utilities.drift_comparison import compare_model_rows
 
-    rows_by_model = defaultdict(list)
-    for workload in workloads:
-        rows_by_model[workload.model_string].extend(workload.upsert_rows or [])
+    # Measure against the rows the fetch produced, NOT against `workloads`.
+    #
+    # `workloads` is the PLAN, and the plan legitimately excludes any model with
+    # nothing to stage: `apply_durable_workload_deltas` drops a workload whose
+    # upsert and delete lists are both empty. Building the comparison from it
+    # meant a model that had not changed since the last run was absent from
+    # `comparison_by_model`, so its `.get()` returned None, the report called it
+    # "Not measured", and its estimate fell back to every fetched row.
+    #
+    # The result was an exact inversion: the models in perfect sync were the
+    # ones displayed as maximally uncertain. One deployment saw 30 of 32 models
+    # that way, each showing change candidates precisely equal to its Forward
+    # row count, which is the signature of the fallback rather than of drift.
+    rows_by_model = fetcher.comparison_rows_by_model
     comparison_by_model = {
         model_string: compare_model_rows(sync, model_string, rows)
         for model_string, rows in rows_by_model.items()
