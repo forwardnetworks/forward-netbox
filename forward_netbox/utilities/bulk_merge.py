@@ -563,14 +563,47 @@ def _split_bidirectional_create_cycles(collapsed_changes, change_logger):
             break
 
 
-def _is_bulk_safe(model_class) -> bool:
-    """A model may be bulk_create'd on merge only if it is not an MPTT tree.
+# The bookkeeping columns django-mptt adds to every tree model. Checked as a
+# SIGNATURE rather than only by base class, because the base class is the part
+# upstream can change without telling us.
+_MPTT_FIELD_SIGNATURE = frozenset({"lft", "rght", "tree_id", "level"})
 
-    MPTT models (region, site/tenant/contact groups, etc.) must save per
-    object so the tree fields recompute against the destination tree; bulk_create
-    bypasses that and corrupts the hierarchy.
+
+def _is_tree_model(model_class) -> bool:
+    """Whether this model maintains hierarchy state that a bulk insert skips.
+
+    Two independent tests, and either one is enough. `issubclass(MPTTModel)` is
+    exact while django-mptt is what NetBox uses; the field signature keeps
+    working if the base class moves but the columns stay.
+
+    Why both: NetBox 4.7 replaces the deprecated `NestedGroupModel` with an
+    ltree implementation. If django-mptt is uninstalled with it, the import at
+    the top of this module fails loudly and someone fixes it. The dangerous
+    case is the quiet one - mptt still installed as somebody's transitive
+    dependency while NetBox models no longer inherit from it. Then
+    `issubclass` simply answers False for every former tree model, they all
+    become "bulk safe", and `bulk_create` skips the per-object save that keeps
+    the hierarchy coherent. No error, corrupted tree.
+
+    `test_tree_model_detection.py` guards the residual gap: it asserts this
+    function still recognises a real nested-group model in the installed
+    NetBox, so a detector that has stopped detecting fails the suite instead of
+    silently reporting everything flat.
     """
-    return not issubclass(model_class, MPTTModel)
+    if issubclass(model_class, MPTTModel):
+        return True
+    field_names = {field.name for field in model_class._meta.fields}
+    return _MPTT_FIELD_SIGNATURE <= field_names
+
+
+def _is_bulk_safe(model_class) -> bool:
+    """A model may be bulk_create'd on merge only if it is not a tree.
+
+    Tree models (region, site/tenant/contact groups, device roles) must save
+    per object so the hierarchy fields recompute against the destination tree;
+    bulk_create bypasses that and corrupts it.
+    """
+    return not _is_tree_model(model_class)
 
 
 def _full_clean_fast(instance, change_logger, written_fields=None):
