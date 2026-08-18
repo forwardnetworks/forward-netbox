@@ -107,6 +107,35 @@ def build_latest_sync_evidence(ingestion, preview_payload=None):
     }
 
 
+def _coverage_value(payload, key):
+    """Read one field out of the preview's `comparison_coverage`, or None."""
+    coverage = payload.get("comparison_coverage") if isinstance(payload, dict) else None
+    if not isinstance(coverage, dict):
+        return None
+    value = coverage.get(key)
+    return value if isinstance(value, (int, float)) else None
+
+
+def _slowest_compared_model(rows):
+    """Name the model that cost the most, so a total does not hide one outlier.
+
+    A single slow model and thirty even ones produce the same total and need
+    different responses, and the report is the only place anyone will look.
+    """
+    timed = [
+        row
+        for row in rows
+        if row.get("comparison_available") and row.get("comparison_runtime_ms")
+    ]
+    if not timed:
+        return None
+    slowest = max(timed, key=lambda row: row["comparison_runtime_ms"])
+    return {
+        "model": slowest.get("model"),
+        "runtime_ms": slowest["comparison_runtime_ms"],
+    }
+
+
 def compute_drift_report(payload):
     """Build a per-model drift summary from a dependency dry-run payload.
 
@@ -165,6 +194,7 @@ def compute_drift_report(payload):
                 "comparison_available": comparison_available,
                 "drift": drift,
                 "in_sync": in_sync,
+                "comparison_runtime_ms": result.get("comparison_runtime_ms"),
             }
         )
     rows.sort(
@@ -211,6 +241,13 @@ def compute_drift_report(payload):
         # alongside them rather than implied, so a partial measurement is never
         # read as a whole-estate one.
         "measured_model_count": len(measured_rows),
+        # What the measurement cost, straight from the preview rather than
+        # estimated here. Absent on payloads written before it was recorded,
+        # which is why these are None rather than zero - a zero would read as
+        # "instant" for a preview that never reported.
+        "comparison_runtime_ms": _coverage_value(payload, "runtime_ms"),
+        "comparison_rows_compared": _coverage_value(payload, "rows_compared"),
+        "slowest_compared_model": _slowest_compared_model(rows),
         "unmeasured_model_count": len(unmeasured_rows),
         "unmeasured_models": sorted(
             row["model"] for row in unmeasured_rows if row.get("model")

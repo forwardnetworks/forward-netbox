@@ -1,4 +1,5 @@
 import logging
+import time
 
 from core.choices import ObjectChangeActionChoices
 from core.exceptions import SyncError
@@ -473,7 +474,9 @@ def _dependency_plan_item_summary(item):
     }
 
 
-def _dependency_model_result_summary(result, comparison=None):
+def _dependency_model_result_summary(
+    result, comparison=None, comparison_runtime_ms=None
+):
     # ``fetcher.model_results`` are ForwardModelResult dataclasses, not dicts —
     # calling result.get(...) on them raised AttributeError and errored the whole
     # dependency preview (hidden as null-data until 2.2.4 surfaced job errors).
@@ -520,6 +523,12 @@ def _dependency_model_result_summary(result, comparison=None):
         # a difference between the two systems when it is a defect in the row.
         "comparison_rejected_rows": (comparison or {}).get("rejected", 0),
         "unchanged_rows": (comparison or {}).get("unchanged", 0),
+        # How long this model's comparison took. Recorded for every model that
+        # was compared, so a slow one can be named rather than inferred from a
+        # total. `None` where there was no comparison to time.
+        "comparison_runtime_ms": (
+            comparison_runtime_ms if comparison is not None else None
+        ),
         "runtime_ms": float(data.get("runtime_ms") or 0.0),
         # Preserve aggregate state evidence without copying diagnostic samples or
         # source identifiers into the preview job payload.
@@ -582,12 +591,46 @@ def _dependency_dry_run_payload(sync, *, client=None):
     # that way, each showing change candidates precisely equal to its Forward
     # row count, which is the signature of the fallback rather than of drift.
     rows_by_model = fetcher.comparison_rows_by_model
-    comparison_by_model = {
-        model_string: compare_model_rows(sync, model_string, rows)
-        for model_string, rows in rows_by_model.items()
-    }
+    # Time it, per model.
+    #
+    # This comparison is work the preview did not do before: on a converged
+    # estate every model now classifies its full row set, where previously the
+    # whole thing was skipped and reported as unmeasured. The job cannot time
+    # out over it - `enqueue_forward_job` floors every Forward job at 7200s and
+    # the entire 1M-row merge projection is under 1800s - but "cannot fail" is
+    # not the same as "costs nothing", and how long it actually takes on a large
+    # fabric has never been observed.
+    #
+    # So the preview reports its own cost instead of anyone estimating it. The
+    # numbers arrive with the payload, from the estate that has the scale.
+    comparison_by_model = {}
+    comparison_runtime_ms_by_model = {}
+    comparison_rows_by_model_count = {}
+    for model_string, rows in rows_by_model.items():
+        started = time.perf_counter()
+        comparison_by_model[model_string] = compare_model_rows(sync, model_string, rows)
+        comparison_runtime_ms_by_model[model_string] = round(
+            (time.perf_counter() - started) * 1000, 1
+        )
+        comparison_rows_by_model_count[model_string] = len(rows)
     measured_models = sum(
         1 for value in comparison_by_model.values() if value is not None
+    )
+    # Rows the comparison actually read, counted only for models it could
+    # compare. Rows handed to a model with no comparison were not measured, and
+    # including them would make the cost per row look better than it is.
+    compared_rows = sum(
+        count
+        for model_string, count in comparison_rows_by_model_count.items()
+        if comparison_by_model.get(model_string) is not None
+    )
+    comparison_runtime_ms = round(
+        sum(
+            runtime
+            for model_string, runtime in comparison_runtime_ms_by_model.items()
+            if comparison_by_model.get(model_string) is not None
+        ),
+        1,
     )
     return {
         "generated_at": timezone.now().isoformat(),
@@ -615,11 +658,17 @@ def _dependency_dry_run_payload(sync, *, client=None):
         "comparison_coverage": {
             "measured_models": measured_models,
             "total_models": len(comparison_by_model),
+            # What the measurement cost, reported rather than estimated.
+            "runtime_ms": comparison_runtime_ms,
+            "rows_compared": compared_rows,
         },
         "model_results": [
             _dependency_model_result_summary(
                 result,
                 comparison=comparison_by_model.get(
+                    (result.as_dict().get("model") or "")
+                ),
+                comparison_runtime_ms=comparison_runtime_ms_by_model.get(
                     (result.as_dict().get("model") or "")
                 ),
             )

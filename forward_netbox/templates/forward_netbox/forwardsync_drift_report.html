@@ -138,6 +138,24 @@
               {% endif %}
             </td>
           </tr>
+          {% if report.comparison_runtime_ms is not None %}
+            <tr>
+              <th scope="row">{% trans "Comparison cost" %}</th>
+              <td>
+                {{ report.comparison_runtime_ms|floatformat:0 }} ms
+                {% if report.comparison_rows_compared %}
+                  <span class="text-muted">
+                    {% blocktrans with rows=report.comparison_rows_compared %}for {{ rows }} rows{% endblocktrans %}
+                  </span>
+                {% endif %}
+                {% if report.slowest_compared_model %}
+                  <div class="text-muted small mt-1">
+                    {% blocktrans with model=report.slowest_compared_model.model ms=report.slowest_compared_model.runtime_ms|floatformat:0 %}Slowest: {{ model }} at {{ ms }} ms{% endblocktrans %}
+                  </div>
+                {% endif %}
+              </td>
+            </tr>
+          {% endif %}
           <tr>
             <th scope="row">{% trans "Drifted models" %}</th>
             <td>{% if report.comparison_available %}{{ report.drifted_model_count }} / {{ report.measured_model_count }}{% else %}{% trans "Not measured" %}{% endif %}</td>
