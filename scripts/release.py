@@ -810,7 +810,35 @@ def stage_finish(version: str) -> None:
             "tagged release workflow did not publish identical PyPI and GitHub "
             f"artifacts (conclusion={conclusion!r})"
         )
-    stage_post_release(version, tag)
+    # The release is DONE at this point: the tag exists, the workflow
+    # published identical PyPI and GitHub artifacts, and every gate passed.
+    # What follows is convenience staging, and it must not be able to report
+    # the release as failed.
+    #
+    # It could, and did, on every release since 2.7.13. `stage_post_release`
+    # runs `check_harness.py`, which requires the provenance anchor to name the
+    # release the table calls current - and the anchor cannot advance until the
+    # bridge commit exists, which cannot happen until the pull request this
+    # step is trying to open has merged. The check is unsatisfiable by
+    # construction at the moment it runs, so the command exited 1 after a
+    # completely successful release. An exit status that says "failed" when the
+    # artifacts are live teaches people to stop reading it.
+    try:
+        stage_post_release(version, tag)
+    except Exception as exc:  # noqa: BLE001 - the release already succeeded
+        print(
+            f"\n[release] v{version} PUBLISHED SUCCESSFULLY.\n"
+            f"[release] post-release staging did not complete ({exc}).\n"
+            "[release] That is follow-up work, not a failed release. Do it by "
+            "hand:\n"
+            "\n"
+            "    1. open the documentation-only post-release bridge on main\n"
+            "    2. advance PRIOR_RELEASE_TAG and PRIOR_POST_RELEASE_DOC_COMMIT\n"
+            "       to that bridge commit, and promote the release table\n"
+            "\n"
+            "The harness fails until the anchor lands, so this cannot be "
+            "forgotten quietly - only deferred.\n"
+        )
 
 
 def _next_patch_version(version: str) -> str:
