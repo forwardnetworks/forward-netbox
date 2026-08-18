@@ -99,9 +99,18 @@ choose.
   would destroy a commit the operator may want; leaving them standing on it is
   what caused the harm.
 
-## Open
+## Follow-up, resolved separately
 
-- `check_harness.py --base origin/main` inside `stage_post_release` is
-  unsatisfiable by construction at the point it runs, so that stage fails on
-  every release and the recovery path is now the normal path. The check should
-  either move after the merge or be dropped from that stage.
+The claim first written here - that `check_harness.py --base origin/main` is
+unsatisfiable by construction inside `stage_post_release` - was wrong, and the
+release log says so plainly:
+
+    commit ba4fb396ad changes high-risk paths without a plan file in the same
+    commit: forward_netbox/utilities/fast_baseline.py, pyproject.toml
+
+The gate was working. It refused a commit that changed high-risk version
+surfaces with no plan file, which is exactly what it is for, and the `.dev0`
+bump `stage_open_next` writes never had one. Satisfiable, and never satisfied.
+
+Fixed in the change that makes the stage open the documentation-only bridge
+instead, which is the commit a release actually needs next.
