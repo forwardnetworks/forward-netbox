@@ -46,6 +46,23 @@ REGION_COUNT = 5
 # Commit staging in chunks so setup does not hold one giant transaction (setup
 # cost is not the measurement target).
 STAGE_CHUNK = 2_000
+# Above this, the host is oversubscribed and a wall-clock projection says more
+# about the other work on the box than about the merge. One is full occupancy;
+# 1.5 allows normal background noise while still catching a parallel build.
+MAX_LOAD_PER_CORE = 1.5
+
+
+def _load_per_core():
+    """One-minute load average per CPU, or None where it cannot be read."""
+    import os
+
+    try:
+        cores = os.cpu_count() or 1
+        return os.getloadavg()[0] / cores
+    except (OSError, AttributeError):  # pragma: no cover - platform dependent
+        return None
+
+
 SUPPORTED_RETRY_TIMEOUT_SECONDS = 7_200
 # Keep half of the configured worker timeout available for queueing and
 # transient variance while allowing the measured retry path to use the
@@ -262,6 +279,27 @@ class BulkMergeScaleTest(TransactionTestCase):
             Site.objects.filter(slug__startswith="scale-site-").count(), SITE_COUNT
         )
         projected_1m_retry_seconds = remerge_secs * 1_000_000 / total_staged
+        # A wall-clock projection is only a statement about this code when the
+        # machine taking it was free to run it. On a contended host it measures
+        # the contention: a kernel compile on a 32-core box turned a 1662s
+        # projection into 4382s and failed this assertion, while the same
+        # revision on the same runtime passed minutes later. That is a
+        # confident regression report from a measurement that was never valid -
+        # the failure mode this codebase keeps finding, in a test.
+        #
+        # So refuse to answer rather than answer wrongly. Skipping is the
+        # correct outcome: an unmeasurable performance gate must not read as
+        # either pass or fail.
+        load_per_core = _load_per_core()
+        if load_per_core is not None and load_per_core > MAX_LOAD_PER_CORE:
+            self.skipTest(
+                "host load per core is "
+                f"{load_per_core:.2f} (limit {MAX_LOAD_PER_CORE}); a wall-clock "
+                "projection taken here measures the contention, not the merge. "
+                f"Projection was {projected_1m_retry_seconds:.0f}s against a "
+                f"{SUPPORTED_RETRY_TIMEOUT_SECONDS * RETRY_TIMEOUT_HEADROOM_RATIO:.0f}s "
+                "budget; re-run on an idle host."
+            )
         self.assertLess(
             projected_1m_retry_seconds,
             SUPPORTED_RETRY_TIMEOUT_SECONDS * RETRY_TIMEOUT_HEADROOM_RATIO,
