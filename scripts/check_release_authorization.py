@@ -66,7 +66,7 @@ EVIDENCE_BASE_RE = re.compile(
 )
 EVIDENCE_REQUIRED_TEXT_PATTERNS = {
     "exact-runtime-artifact": (
-        re.compile(r"\bNetBox\s+4\.6\.6\b", re.IGNORECASE),
+        re.compile(r"\bNetBox\s+4\.6\.8\b", re.IGNORECASE),
         re.compile(r"\bBranching\s+1\.1\.2\b", re.IGNORECASE),
         re.compile(r"\bPython\s+3\.14\b", re.IGNORECASE),
         re.compile(r"\bSBOM\b", re.IGNORECASE),
@@ -87,13 +87,13 @@ RELEASE_RUNTIME_ENVIRONMENT = {
     "FORWARD_NETBOX_DOCKER_PROJECT": "forward-netbox-release-gate",
     "FORWARD_NETBOX_POSTGRES_DATA_PATH": "netbox-postgres-data",
     "FORWARD_NETBOX_WORKER_AUTORELOAD": "0",
-    "NETBOX_VER": "v4.6.6",
+    "NETBOX_VER": "v4.6.8",
 }
 ACCEPTANCE_RUNTIME_ENVIRONMENT = {
     "FORWARD_NETBOX_DOCKER_PROJECT": "forward-netbox-upgrade26",
     "FORWARD_NETBOX_POSTGRES_DATA_PATH": "netbox-postgres-data",
     "FORWARD_NETBOX_WORKER_AUTORELOAD": "0",
-    "NETBOX_VER": "v4.6.6",
+    "NETBOX_VER": "v4.6.8",
 }
 
 
@@ -138,7 +138,7 @@ def _safe_environment_assignment(assignment: str) -> bool:
         # cannot be used to smuggle a value into the recorded command.
         return value == "1"
     return (name, value) in {
-        ("NETBOX_VER", "v4.6.6"),
+        ("NETBOX_VER", "v4.6.8"),
         ("FORWARD_NETBOX_WORKER_AUTORELOAD", "0"),
         ("FORWARD_NETBOX_POSTGRES_DATA_PATH", "netbox-postgres-data"),
     }

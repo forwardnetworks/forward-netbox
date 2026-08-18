@@ -7,7 +7,7 @@ services:
       - "${FORWARD_NETBOX_HOST_PORT:-8000}:8000"
     env_file: env/netbox.env
     environment:
-      NETBOX_VER: "${NETBOX_VER:-v4.6.6}"
+      NETBOX_VER: "${NETBOX_VER:-v4.6.8}"
     secrets:
       - api_token_pepper_1
       - db_password
@@ -31,7 +31,7 @@ services:
       context: ../
       dockerfile: development/Dockerfile
       args:
-        NETBOX_VER: "${NETBOX_VER:-v4.6.6}"
+        NETBOX_VER: "${NETBOX_VER:-v4.6.8}"
   netbox-worker:
     !!merge <<: *netbox
     depends_on:
@@ -40,7 +40,7 @@ services:
     ports: []
     environment:
       FORWARD_NETBOX_WORKER_AUTORELOAD: "${FORWARD_NETBOX_WORKER_AUTORELOAD:-1}"
-      NETBOX_VER: "${NETBOX_VER:-v4.6.6}"
+      NETBOX_VER: "${NETBOX_VER:-v4.6.8}"
     command:
       - sh
       - -lc
