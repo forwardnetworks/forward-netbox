@@ -7,9 +7,15 @@ Return every version surface on `main` to `2.8.3`, the version that shipped.
 ## Why
 
 `stage_post_release` ran far enough to write a `2.8.4.dev0` bump across the
-four version surfaces before it failed on an unrelated step, and the edits were
-left in the working tree. They were then swept into the post-release bridge
-commit by a `git add -A` that nobody had checked `git status` before running.
+four version surfaces and COMMIT it onto `release/2.8.4-post-release`, then
+failed on a later step and left the operator standing on that branch. The next
+`git checkout -b` branched from there and inherited the commit, which the
+squash merge folded into the post-release bridge.
+
+Note what did NOT catch it: the working tree was clean the whole time, because
+the bump was committed rather than left uncommitted. `git status` showed
+nothing. The check that would have caught it is `git branch --show-current`,
+or branching explicitly from `origin/main`.
 
 `main` must carry the released version between releases. Customers install this
 plugin from source, so a `main` that says `2.8.4.dev0` is a version that was

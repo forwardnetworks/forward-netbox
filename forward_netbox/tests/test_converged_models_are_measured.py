@@ -17,9 +17,6 @@ tests pin the two halves of that: the drop still happens for the plan, and the
 rows offered to the comparison survive it.
 """
 
-from dataclasses import dataclass
-from dataclasses import field
-
 from django.test import SimpleTestCase
 
 from forward_netbox.utilities.branch_budget import BranchWorkload
