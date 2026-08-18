@@ -2,7 +2,7 @@ from dcim.api.serializers import DeviceSerializer
 from django.contrib.contenttypes.models import ContentType
 from netbox.api.fields import ChoiceField
 from netbox.api.fields import ContentTypeField
-from netbox.api.serializers import NestedGroupModelSerializer
+from netbox.api.serializers import OrganizationalModelSerializer
 from netbox_branching.api.serializers import BranchSerializer
 from rest_framework import serializers
 
@@ -80,7 +80,7 @@ class JobScheduleRequestSerializer(serializers.Serializer):
         return data
 
 
-class ForwardNQEMapSerializer(NestedGroupModelSerializer):
+class ForwardNQEMapSerializer(OrganizationalModelSerializer):
     netbox_model = ContentTypeField(
         queryset=ContentType.objects.filter(FORWARD_SUPPORTED_SYNC_MODELS)
     )
@@ -128,7 +128,7 @@ class ForwardNQEMapSerializer(NestedGroupModelSerializer):
         )
 
 
-class ForwardSourceSerializer(NestedGroupModelSerializer):
+class ForwardSourceSerializer(OrganizationalModelSerializer):
     status = ChoiceField(choices=ForwardSourceStatusChoices, read_only=True)
     type = ChoiceField(choices=ForwardSourceDeploymentChoices)
 
@@ -163,7 +163,7 @@ class ForwardSourceSerializer(NestedGroupModelSerializer):
         return data
 
 
-class ForwardSyncSerializer(NestedGroupModelSerializer):
+class ForwardSyncSerializer(OrganizationalModelSerializer):
     status = ChoiceField(choices=ForwardSyncStatusChoices, read_only=True)
     source = ForwardSourceSerializer(nested=True)
     enabled_models = serializers.SerializerMethodField(read_only=True)
@@ -230,7 +230,7 @@ class ForwardSyncSerializer(NestedGroupModelSerializer):
         return data
 
 
-class ForwardDeviceAnalysisSerializer(NestedGroupModelSerializer):
+class ForwardDeviceAnalysisSerializer(OrganizationalModelSerializer):
     sync = ForwardSyncSerializer(nested=True)
     device = DeviceSerializer(nested=True)
 
@@ -260,7 +260,7 @@ class ForwardDeviceAnalysisSerializer(NestedGroupModelSerializer):
         )
 
 
-class ForwardDriftPolicySerializer(NestedGroupModelSerializer):
+class ForwardDriftPolicySerializer(OrganizationalModelSerializer):
     baseline_mode = ChoiceField(choices=ForwardDriftPolicyBaselineChoices)
 
     class Meta:
@@ -284,7 +284,7 @@ class ForwardDriftPolicySerializer(NestedGroupModelSerializer):
         brief_fields = ("id", "display", "name", "enabled", "baseline_mode")
 
 
-class ForwardValidationRunSerializer(NestedGroupModelSerializer):
+class ForwardValidationRunSerializer(OrganizationalModelSerializer):
     status = ChoiceField(choices=ForwardValidationStatusChoices, read_only=True)
     sync = ForwardSyncSerializer(nested=True)
     policy = ForwardDriftPolicySerializer(nested=True, required=False, allow_null=True)
@@ -324,7 +324,7 @@ class ForwardValidationRunOverrideSerializer(serializers.Serializer):
     reason = serializers.CharField()
 
 
-class ForwardIngestionSerializer(NestedGroupModelSerializer):
+class ForwardIngestionSerializer(OrganizationalModelSerializer):
     branch = BranchSerializer(read_only=True)
     sync = ForwardSyncSerializer(nested=True)
     validation_run = ForwardValidationRunSerializer(nested=True, required=False)
@@ -373,7 +373,7 @@ class ForwardIngestionSerializer(NestedGroupModelSerializer):
         return dict((obj.snapshot_info or {}).get("fast_baseline_load") or {})
 
 
-class ForwardIngestionIssueSerializer(NestedGroupModelSerializer):
+class ForwardIngestionIssueSerializer(OrganizationalModelSerializer):
     phase = ChoiceField(choices=ForwardIngestionPhaseChoices, read_only=True)
     ingestion = ForwardIngestionSerializer(nested=True)
 
