@@ -313,6 +313,49 @@ def check_sensitive_pattern_parity(environment: dict[str, str] | None = None) ->
     return f"verified against {PATTERN_FEED_VARIABLE}"
 
 
+def _outcome(detail: str) -> str:
+    """Say `skipped` for a check that declined to run.
+
+    Several checks return a `skipped (reason)` string when they cannot decide -
+    no plan yet, no `origin/main`, already tagged. Every one of them was printed
+    under a `passed:` prefix, so the release log read
+
+        release preflight passed: evidence base commit skipped (v2.8.3 is
+        already tagged)
+
+    which reports a pass for the one check that did not run. That is the defect
+    this repository keeps finding in its own products, and it was sitting in the
+    tool that gates releases: an operator scanning for the word `passed` sees
+    five, and five checks did not happen.
+
+    A skipped check is not a failure and must not stop a release - the reasons
+    are all legitimate. It simply must not claim to be a pass.
+    """
+    if "UNVERIFIED" in detail:
+        # The parity gap is the one that has actually refused tags. Printing it
+        # as a pass is how a known hole reads as a clean run.
+        return "unverified"
+    return "skipped" if "skipped" in detail else "passed"
+
+
+def _report_lines(version, dependencies, advisories, evidence_base, pattern_parity):
+    checks = (
+        (f"version {version} consistent across surfaces", "passed"),
+        (f"UI harness dependencies present ({dependencies})", "passed"),
+        (advisories, _outcome(advisories)),
+        (f"evidence base commit {evidence_base}", _outcome(evidence_base)),
+        (f"sensitive pattern parity {pattern_parity}", _outcome(pattern_parity)),
+    )
+    lines = []
+    for detail, outcome in checks:
+        # The detail already carries the word for its own state; the prefix
+        # supplies it, so drop the duplicate rather than print it twice.
+        if outcome == "skipped":
+            detail = detail.replace("skipped (", "(", 1).replace(" skipped:", ":", 1)
+        lines.append(f"release preflight {outcome}: {detail}")
+    return lines
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true", help="emit the results as JSON")
@@ -338,13 +381,10 @@ def main() -> int:
     if arguments.json:
         print(json.dumps(result, sort_keys=True))
     else:
-        print(f"release preflight passed: version {version} consistent across surfaces")
-        print(
-            f"release preflight passed: UI harness dependencies present ({dependencies})"
-        )
-        print(f"release preflight passed: {advisories}")
-        print(f"release preflight passed: evidence base commit {evidence_base}")
-        print(f"release preflight passed: sensitive pattern parity {pattern_parity}")
+        for line in _report_lines(
+            version, dependencies, advisories, evidence_base, pattern_parity
+        ):
+            print(line)
     return 0
 
 

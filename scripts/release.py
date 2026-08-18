@@ -876,12 +876,34 @@ def stage_post_release(version: str, tag: str) -> None:
     print(f"[post-release] opening {branch} for v{version}")
 
     run(["git", "fetch", "origin", "main"])
-    run(["git", "checkout", "-B", branch, "origin/main"])
-    stage_open_next(next_version, write=True)
-    run(["git", "add", "-A"])
-    run(["git", "commit", "-m", f"release: open {next_version} on main"])
-    run([sys.executable, "scripts/check_harness.py", "--base", "origin/main"])
-    run(["git", "push", "--no-verify", "-u", "origin", branch])
+    # Where the operator started, so a failure below puts them back there.
+    #
+    # This function checks out a new branch and COMMITS a `.dev0` bump onto it
+    # before running a check that can fail. When it did, it left the operator
+    # standing on that branch with the bump already committed and a clean
+    # working tree - nothing to see in `git status`. The next `git checkout -b`
+    # branched from there and inherited the commit, which is how the v2.8.3
+    # post-release bridge ended up carrying four version surfaces and
+    # disqualifying itself permanently.
+    #
+    # A tool that moves the operator somewhere and then fails must move them
+    # back. Leaving them on a branch they did not choose, holding a commit they
+    # did not make, is a trap that a clean `git status` actively conceals.
+    starting_branch = _capture(["git", "branch", "--show-current"]) or "main"
+    try:
+        run(["git", "checkout", "-B", branch, "origin/main"])
+        stage_open_next(next_version, write=True)
+        run(["git", "add", "-A"])
+        run(["git", "commit", "-m", f"release: open {next_version} on main"])
+        run([sys.executable, "scripts/check_harness.py", "--base", "origin/main"])
+        run(["git", "push", "--no-verify", "-u", "origin", branch])
+    except Exception:
+        print(
+            f"[post-release] failed; returning you to {starting_branch}. "
+            f"The partial work is on {branch} if you want it."
+        )
+        run(["git", "checkout", "--force", starting_branch], check=False)
+        raise
 
     print(
         "\n[post-release] merge that pull request, then advance the anchor:\n"

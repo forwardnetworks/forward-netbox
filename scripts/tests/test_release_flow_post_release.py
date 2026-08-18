@@ -5,6 +5,7 @@
 # not exist until its pull request lands.
 from __future__ import annotations
 
+import inspect
 import unittest
 from unittest.mock import patch
 
@@ -77,3 +78,44 @@ class StagePostReleaseTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PostReleaseReturnsTheOperatorHomeTest(unittest.TestCase):
+    """A stage that moves you and then fails must move you back.
+
+    `stage_post_release` checks out a new branch and commits a `.dev0` bump onto
+    it before running a check that can fail. When that check failed it left the
+    operator standing on the new branch, holding a commit they did not make,
+    with a CLEAN working tree - so `git status` showed nothing wrong. The next
+    `git checkout -b` inherited the commit, and that is how the v2.8.3
+    post-release bridge came to carry four version surfaces and disqualify
+    itself permanently as `PRIOR_POST_RELEASE_DOC_COMMIT`.
+
+    A clean `git status` actively concealed it, which is why the fix is in the
+    tool and not in a habit.
+    """
+
+    def test_failure_checks_the_starting_branch_back_out(self):
+        source = inspect.getsource(release.stage_post_release)
+        self.assertIn("starting_branch", source)
+        self.assertIn("branch --show-current", source.replace('", "', " "))
+        self.assertIn("raise", source)
+
+    def test_the_checkout_and_commit_are_inside_the_guard(self):
+        source = inspect.getsource(release.stage_post_release)
+        guarded = source[
+            source.index("    try:") : source.index("    except Exception:")
+        ]
+        for fragment in ('"-B"', '"commit"', "check_harness.py", '"push"'):
+            self.assertIn(
+                fragment,
+                guarded,
+                f"{fragment} must run inside the guard, or a failure there "
+                "leaves the operator on a branch they did not choose",
+            )
+
+    def test_the_recovery_checkout_does_not_mask_the_original_failure(self):
+        source = inspect.getsource(release.stage_post_release)
+        recovery = source[source.index("except Exception:") :]
+        self.assertIn("check=False", recovery)
+        self.assertIn("raise", recovery)
