@@ -878,6 +878,87 @@ def _check_release_anchor_tracks_current_release(failures: list[str]) -> None:
     )
 
 
+# Files carrying a tested-on NetBox pin, and the non-canonical versions each is
+# allowed to mention. An empty set means every NetBox 4.6.x literal in that file
+# must be the tested runtime.
+#
+# The allowances are historical facts, not stale pins. Rewriting them into the
+# current version would make them false:
+#   4.6.5  - `min_version`, the declared minimum, and the FROM side of the
+#            upgrade leg, which must stay at the minimum to test the jump
+#   4.6.6  - a migration comment naming the release that added
+#            `dcim.0241_nullify_empty_cable_end`, and
+#            `UPGRADE_FROM_NETBOX_OVERRIDES`, which records that 2.8.0 could not
+#            install on 4.6.5
+TESTED_RUNTIME_PIN_FILES = {
+    "development/docker-compose.yml": frozenset(),
+    "scripts/validate_installed_artifact.py": frozenset(),
+    "scripts/validate_sbom.py": frozenset(),
+    "scripts/check_release_authorization.py": frozenset(),
+    "tasks.py": frozenset({"4.6.5", "4.6.6"}),
+}
+
+
+def _tested_netbox_version() -> str | None:
+    """Read the declared tested runtime, or None if it cannot be found."""
+    path = REPO_ROOT / "scripts/tested_runtime.py"
+    if not path.exists():
+        return None
+    match = re.search(
+        r'^TESTED_NETBOX_VERSION = "(?P<version>[0-9]+\.[0-9]+\.[0-9]+)"$',
+        path.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    return match.group("version") if match else None
+
+
+def _check_tested_runtime_pins_agree(failures: list[str]) -> None:
+    """Every tested-on pin must name the version `tested_runtime` declares.
+
+    The 4.6.8 uplift enumerated the sites by hand and still left one behind:
+    `check_release_authorization.py` writes its copy as the escaped regex
+    `4\\.6\\.8`, which no search for `4.6.8` finds. A sweep reported itself
+    complete while leaving a check that would have refused correct evidence
+    after the tag existed.
+
+    So this reads both the plain and the escaped form, and it fails with the
+    file and the offending version named, which turns the next uplift into
+    "change one constant and fix what the harness lists".
+    """
+    declared = _tested_netbox_version()
+    if declared is None:
+        failures.append(
+            "scripts/tested_runtime.py must declare TESTED_NETBOX_VERSION so the "
+            "tested-on pins have something to agree with"
+        )
+        return
+
+    # Plain `4.6.8` or `v4.6.8`, and the regex-escaped `4\.6\.8`.
+    pattern = re.compile(r"v?(?P<version>[0-9]+(?:\\?\.)[0-9]+(?:\\?\.)[0-9]+)")
+    for relative, allowed in sorted(TESTED_RUNTIME_PIN_FILES.items()):
+        path = REPO_ROOT / relative
+        if not path.exists():
+            failures.append(
+                f"{relative} is pinned to the tested runtime but does not exist; "
+                "update TESTED_RUNTIME_PIN_FILES or restore the file"
+            )
+            continue
+        seen = set()
+        for match in pattern.finditer(path.read_text(encoding="utf-8")):
+            version = match.group("version").replace("\\", "")
+            if not version.startswith("4."):
+                continue
+            if version == declared or version in allowed:
+                continue
+            seen.add(version)
+        for version in sorted(seen):
+            failures.append(
+                f"{relative} mentions NetBox {version} but the tested runtime is "
+                f"{declared}: update the pin, or record it in "
+                "TESTED_RUNTIME_PIN_FILES if it is a historical fact"
+            )
+
+
 def _documentation_bridge_rule():
     """Return the release verifier's own post-release bridge path rule.
 
@@ -1065,6 +1146,7 @@ def main() -> int:
     _check_plan_directory(failures, "docs/03_Plans/active")
     _check_plan_directory(failures, "docs/03_Plans/completed")
     _check_plan_lifecycle(failures)
+    _check_tested_runtime_pins_agree(failures)
     _check_agents_entrypoint(failures)
     _check_knowledge_freshness(failures)
     _check_retired_runtime_paths(failures)
