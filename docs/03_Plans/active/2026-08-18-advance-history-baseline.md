@@ -11,8 +11,8 @@ without rewriting public history.
 The v2.8.3 publish workflow refused the tag. Its sensitive-content step runs
 the release-only superset feed and reported a redacted PATH,
 `path:sha256:e478676137834484`, which is
-`docs/03_Plans/active/2026-08-17-blake-2.8.2-followups.md` - a filename this
-repository created. Nothing was published: build and publish were skipped.
+a plan filename this repository created, which carried a customer contact's
+given name. Nothing was published: build and publish were skipped.
 
 `#228` renamed the file, which fixes the working-tree scan. It does not fix the
 history scan: `scan_commit_history` calls `scan_name(path, kind="path")` for
