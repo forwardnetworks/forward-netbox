@@ -805,39 +805,36 @@ if __name__ == "__main__":
 class BridgeContentExceptionsAreNarrowTest(unittest.TestCase):
     """The bridge exception must not become a general escape hatch.
 
-    A bridge commit is required to be documentation-only, and the requirement is
-    pinned to the first commit after the release tag, so a bridge that carries
-    anything else disqualifies itself permanently - no later commit can reclaim
-    the slot. That happened once, to the bridge after `v2.8.3`, when an
-    unreleased version bump left in the working tree was swept into it.
+    A bridge commit must be documentation-only, and the requirement is pinned to
+    the first commit after the release tag, so a bridge carrying anything else
+    disqualifies itself permanently - no later commit can reclaim the slot. That
+    happened once, to the bridge after `v2.8.3`, when an unreleased version bump
+    was inherited into it.
 
-    The exception that excuses it is keyed by commit hash and lists exact
-    paths. These tests exist so it stays that way: an exception that grows a
-    wildcard, an extra path, or a second commit is a decision someone has to
-    make deliberately and defend in review, not something that drifts in
-    alongside an unrelated change.
+    It was excused by commit hash, and the hash key is what made the excuse
+    temporary: once the anchor moved to `v2.8.4` the entry stopped being
+    consulted and was deleted. So the expected state of this table is EMPTY, and
+    these tests pin that - plus the shape any future entry must take, if the
+    stage that generates bridges ever regresses.
     """
 
-    def test_only_the_known_bridge_is_excused(self):
+    def test_the_table_is_empty(self):
         self.assertEqual(
-            set(provenance.BRIDGE_CONTENT_EXCEPTIONS),
-            {"1d64c34054e7937fbdbc7e98d47f98724c4da9d1"},
+            provenance.BRIDGE_CONTENT_EXCEPTIONS,
+            {},
+            "an excuse for a provenance rule should not outlive the anchor it "
+            "was written for; delete the entry when the anchor passes it",
         )
 
-    def test_the_excused_paths_are_exactly_the_version_surfaces(self):
-        self.assertEqual(
-            provenance.BRIDGE_CONTENT_EXCEPTIONS[
-                "1d64c34054e7937fbdbc7e98d47f98724c4da9d1"
-            ],
-            (
-                "forward_netbox/__init__.py",
-                "forward_netbox/tests/test_runtime_dependency_check.py",
-                "forward_netbox/utilities/fast_baseline.py",
-                "pyproject.toml",
-            ),
-        )
+    def test_any_entry_is_keyed_by_a_full_commit_hash(self):
+        for commit in provenance.BRIDGE_CONTENT_EXCEPTIONS:
+            self.assertRegex(
+                commit,
+                r"^[0-9a-f]{40}$",
+                "keyed by hash so a future bridge cannot inherit the excuse",
+            )
 
-    def test_no_exception_uses_a_wildcard(self):
+    def test_no_entry_uses_a_wildcard_or_a_directory(self):
         for commit, paths in provenance.BRIDGE_CONTENT_EXCEPTIONS.items():
             for path in paths:
                 self.assertNotIn("*", path, f"{commit} excuses a glob, not a path")
@@ -845,7 +842,7 @@ class BridgeContentExceptionsAreNarrowTest(unittest.TestCase):
                     path.endswith("/"), f"{commit} excuses a directory, not a path"
                 )
 
-    def test_an_unexcused_commit_gets_no_exception(self):
+    def test_an_unlisted_commit_gets_no_exception(self):
         self.assertEqual(
             provenance.BRIDGE_CONTENT_EXCEPTIONS.get("0" * 40, ()),
             (),

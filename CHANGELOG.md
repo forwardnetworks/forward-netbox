@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v2.8.4
 
-Release candidate; Fix: the drift report measures a converged estate instead of reporting it as maximally uncertain.
+Fix: the drift report measures a converged estate instead of reporting it as maximally uncertain.
 
 ## v2.8.3
 
