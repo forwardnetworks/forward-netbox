@@ -39,7 +39,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git fetch --no-tags origin main:refs/remotes/origin/main
-          git fetch --force origin refs/tags/v2.8.4:refs/tags/v2.8.4
+          git fetch --force origin refs/tags/v2.8.5:refs/tags/v2.8.5
           set -o pipefail
           for attempt in $(seq 1 120); do
             provenance_log="$(mktemp)"

@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v2.8.5
 
-Release candidate; Fix: a failed sync names what failed, and a redacted warning is no longer reported as a failure.
+Fix: a failed sync names what failed, and a redacted warning is no longer reported as a failure.
 
 ## v2.8.4
 
