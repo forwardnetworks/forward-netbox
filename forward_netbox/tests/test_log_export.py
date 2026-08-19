@@ -19,6 +19,8 @@ from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardOwnershipReconciliation
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
+from forward_netbox.utilities.diagnostics import SAFE_FAILURE_LOG_PREFIX
+from forward_netbox.utilities.diagnostics import SAFE_WARNING_LOG_MESSAGE
 
 
 class ForwardIngestionLogExportViewTest(TestCase):
@@ -286,7 +288,13 @@ class ForwardIngestionLogExportViewTest(TestCase):
         self.assertEqual(export_response.status_code, 200)
         self.assertNotIn(sentinel, log_response.content.decode())
         self.assertNotIn(sentinel, export_response.content.decode())
-        self.assertContains(log_response, "The operation failed")
+        # The row this test writes is a WARNING, so the replacement must not
+        # claim an operation failed. A redacted warning used to render the
+        # failure sentence, and a deployment's bundle showed thirty of them
+        # seconds into a healthy run - routine preflight notices, each pointing
+        # at failure evidence that was empty because nothing had failed.
+        self.assertContains(log_response, SAFE_WARNING_LOG_MESSAGE)
+        self.assertNotContains(log_response, SAFE_FAILURE_LOG_PREFIX)
 
     def test_sync_support_bundle_exposes_only_job_error_type(self):
         sentinel = "sentinel-private-job-detail"

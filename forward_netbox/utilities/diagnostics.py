@@ -17,6 +17,29 @@ SAFE_FAILURE_LOG_MESSAGE = (
     "The operation failed. No classifier was recorded on this row; see this "
     "run's ingestion issues and per-model failure evidence."
 )
+# A warning is not a failure, and saying so cost a real diagnosis.
+#
+# `_FAILURE_LEVELS` includes "warning" because a warning body can carry
+# customer data - a query name is customer-chosen - so it must be redacted like
+# any other. But the replacement sentence asserted that an operation had FAILED,
+# which is a different claim from "this text was redacted".
+#
+# A deployment's support bundle showed thirty of these seconds into a healthy
+# run, one per model, each pointing at ingestion issues and per-model failure
+# evidence that were empty - because nothing had failed. They were the routine
+# preflight notice that a model cannot run a diff and "still syncs". The run's
+# actual defect was elsewhere, and thirty invented failures is what the operator
+# and the support engineer had to read past to find it.
+#
+# So the redaction stays and the claim matches the level.
+# Deliberately does not contain `SAFE_FAILURE_LOG_PREFIX`. A support engineer
+# greps a bundle for that phrase, and a warning that spells it out - even to
+# deny it - is found by that grep and counted again.
+SAFE_WARNING_LOG_MESSAGE = (
+    "A warning was recorded and its detail is redacted. No classifier was "
+    "recorded on this row; a warning is not a failure."
+)
+_WARNING_LEVELS = {"warning"}
 _FAILURE_LEVELS = {"critical", "error", "failure", "warning"}
 _SENSITIVE_DIAGNOSTIC_KEYS = {
     "error",
@@ -165,6 +188,70 @@ def _http_status_slug(exc) -> str:
     return ""
 
 
+_MISSING_KEY_EXCEPTION = "KeyError"
+_SCHEMA_FIELD_NAMES = None
+
+
+def _schema_field_names() -> frozenset:
+    """Field names this plugin's own model contracts declare.
+
+    A `KeyError` is the one exception whose entire diagnostic value is the key,
+    and the key is also the token most likely to be customer data - a device
+    name used to index a lookup. So it was redacted wholesale, and a customer's
+    sync failed with `Forward ingestion failed (KeyError).` and no model, no
+    row and no key. Nothing in the bundle could narrow it further.
+
+    The distinction the redaction needs is not "is this a string" but "did this
+    repository choose this name". `MODEL_SYNC_CONTRACTS` is exactly that: every
+    field name the sync contracts declare is vocabulary this code wrote, not
+    anything a fabric supplied. A key drawn from it can be named safely; a key
+    that is not stays redacted, which keeps a device-name key silent even
+    though it is the one that would be most useful.
+    """
+    global _SCHEMA_FIELD_NAMES
+    if _SCHEMA_FIELD_NAMES is None:
+        from .sync_contracts import MODEL_SYNC_CONTRACTS
+
+        names = set()
+        # The model labels themselves, not only their fields. A dict keyed by
+        # `model_string` is as common in this codebase as one keyed by a field
+        # name, and `ipam.ipaddress` is no more customer data than `status` is.
+        names.update(MODEL_SYNC_CONTRACTS)
+        for contract in MODEL_SYNC_CONTRACTS.values():
+            names.update(contract.required_fields or ())
+            names.update(contract.allowed_coalesce_fields or ())
+            names.update(contract.preserve_existing_on_blank_fields or ())
+            for group in contract.default_coalesce_fields or ():
+                names.update(group)
+        _SCHEMA_FIELD_NAMES = frozenset(
+            name for name in names if isinstance(name, str) and name
+        )
+    return _SCHEMA_FIELD_NAMES
+
+
+def missing_key_reason(exc) -> str:
+    """`missing-key-<field>` when a KeyError names a field this schema declares.
+
+    The slug is normalised to the shape `recovered_classifiers` can read back -
+    lowercase, hyphen separated - because a reason that cannot be recovered
+    from the rendered message is discarded by the log renderer and the support
+    bundle, which is how the classifier work was undone once before.
+    """
+    args = getattr(exc, "args", ()) or ()
+    if len(args) != 1 or not isinstance(args[0], str):
+        return ""
+    key = args[0]
+    if key not in _schema_field_names():
+        return ""
+    # `.` and `_` both become `-`: the readback pattern accepts neither, and a
+    # reason that cannot be recovered from the rendered message is discarded by
+    # the log renderer and the support bundle.
+    slug = key.replace("_", "-").replace(".", "-").casefold()
+    if not re.fullmatch(r"[a-z][a-z0-9]*(?:[+-][a-z0-9]+)*", slug):
+        return ""
+    return f"missing-key-{slug}"
+
+
 def failure_reason(exc) -> str:
     """A value-free characterisation of why something failed, or ``""``.
 
@@ -173,6 +260,11 @@ def failure_reason(exc) -> str:
     """
     if exception_type(exc) == _OWNERSHIP_CONFLICT_EXCEPTION:
         return ownership_conflict_reason(exc)
+    if exception_type(exc) == _MISSING_KEY_EXCEPTION:
+        # A KeyError's message is the key and nothing else, so the generic
+        # needle rules below can only match it by coincidence. Answer from the
+        # key or answer nothing.
+        return missing_key_reason(exc)
     slugs = []
     status_slug = _http_status_slug(exc)
     if status_slug:
@@ -421,6 +513,16 @@ def safe_job_error_summary(error) -> str:
     return f"Job failed ({'; '.join(parts)})."
 
 
+def safe_log_message(message, level: str = "") -> str:
+    """Redact a log row's body, claiming only what its level supports."""
+    parts = recovered_classifiers(message)
+    if parts:
+        return f"{SAFE_FAILURE_LOG_PREFIX} ({'; '.join(parts)})."
+    if str(level).lower() in _WARNING_LEVELS:
+        return SAFE_WARNING_LOG_MESSAGE
+    return SAFE_FAILURE_LOG_MESSAGE
+
+
 def safe_failure_log_message(message) -> str:
     """Keep a failure row's classifier instead of flattening it to one sentence.
 
@@ -443,14 +545,14 @@ def _sanitize_log_rows(rows):
             rendered = list(row)
             level = str(rendered[1] if len(rendered) > 1 else "").lower()
             if level in _FAILURE_LEVELS and len(rendered) > 4:
-                rendered[4] = safe_failure_log_message(rendered[4])
+                rendered[4] = safe_log_message(rendered[4], level)
             sanitized.append(rendered)
             continue
         if isinstance(row, dict):
             rendered = sanitize_job_diagnostics(row)
             level = str(rendered.get("level") or "").lower()
             if level in _FAILURE_LEVELS and "message" in rendered:
-                rendered["message"] = safe_failure_log_message(rendered["message"])
+                rendered["message"] = safe_log_message(rendered["message"], level)
             sanitized.append(rendered)
             continue
         sanitized.append(REDACTED_DIAGNOSTIC)
