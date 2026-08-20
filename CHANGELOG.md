@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.8.7
+
+Release candidate; Drift preview compares converged rows in bulk instead of per row; drift rows identify their workload.
+
 ## v2.8.6
 
 Fix: a failed sync records where it happened, readable in NetBox without a shell.
