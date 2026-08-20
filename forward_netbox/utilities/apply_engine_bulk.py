@@ -142,11 +142,44 @@ def _current_change_diff_data(model, object_ids):
 
 
 def _sync_branch_change_diffs(branch, object_changes, action):
-    """Batch the ChangeDiff state normally produced by post_save signals."""
+    """Batch the ChangeDiff state normally produced by post_save signals.
+
+    Grouped by each change's own ``changed_object_type``, never by the first
+    change in the batch. This function used to type the WHOLE batch from
+    ``object_changes[0]`` and match existing diffs by bare ``object_id`` - so a
+    caller that emitted two models in one list (the ipaddress path emits the
+    IPs it wrote and the Devices whose primary-ip claims those IPs released)
+    filed the second model's changes against the first model's diffs whenever
+    the pks collided, and created diffs whose ``object_type`` said IPAddress
+    while their ``original`` held a serialized Device.
+
+    A later shard updating an IPAddress whose pk matched then found that
+    corrupted diff, and Branching's ``_update_conflicts`` - which iterates
+    ``original``'s keys and indexes ``modified`` directly - raised ``KeyError``
+    on the first field one model has and the other does not. Reproduced both
+    ways: with the IP's own diff first the key is ``vrf``; with the corrupted
+    Device-content diff first the batch also creates a SECOND diff under the
+    same (type, object_id), and the key is a Device-only field - which is not
+    sync-contract vocabulary, and is why the deployment that hit this saw a
+    KeyError that the contract-keyed naming could not name. It cost that
+    deployment three syncs of about half an hour each, deterministically,
+    because the same data produced the same pk collision in the same shard
+    every run.
+
+    Grouping here rather than at the call sites means a future caller mixing
+    models is correct by construction instead of corrupting quietly.
+    """
     from core.choices import ObjectChangeActionChoices
     from django.utils import timezone
 
     if not object_changes:
+        return
+    by_type = {}
+    for change in object_changes:
+        by_type.setdefault(change.changed_object_type, []).append(change)
+    if len(by_type) > 1:
+        for object_type, typed_changes in by_type.items():
+            _sync_branch_change_diffs(branch, typed_changes, action)
         return
     object_type = object_changes[0].changed_object_type
     object_ids = [change.changed_object_id for change in object_changes]
