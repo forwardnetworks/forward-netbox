@@ -131,9 +131,61 @@ def _slowest_compared_model(rows):
         return None
     slowest = max(timed, key=lambda row: row["comparison_runtime_ms"])
     return {
-        "model": slowest.get("model"),
+        "model": slowest.get("label") or slowest.get("model"),
         "runtime_ms": slowest["comparison_runtime_ms"],
     }
+
+
+def _label_rows(rows):
+    """Give every row a label that identifies it, not just its model.
+
+    There is one row per WORKLOAD, and a model may have several - a deployment
+    with three `dcim.inventoryitem` maps got three rows all reading
+    `dcim.inventoryitem`, one showing 0 rows and 56 removals, another 48 and 0.
+    Nothing on the page said which map was which, and "Not compared" listed the
+    same name three times in a row, which reads as a rendering bug.
+
+    So the model name is kept where it is unambiguous, and only a model with
+    more than one workload is qualified by the query behind it. Qualifying
+    every row would push a redundant suffix onto the twenty-odd models that
+    have exactly one.
+
+    A workload with no query name still has to be distinguishable from its
+    siblings, or the collision this fixes survives in the one case where the
+    payload is thinnest, so it falls back to its position among them.
+    """
+    counts = {}
+    for row in rows:
+        counts[row["model"]] = counts.get(row["model"], 0) + 1
+    seen = {}
+    for row in rows:
+        model = row["model"]
+        position = seen.get(model, 0)
+        seen[model] = position + 1
+        if counts[model] < 2:
+            row["label"] = model or ""
+            continue
+        qualifier = row.get("query_name") or f"#{position + 1}"
+        row["label"] = f"{model} ({qualifier})"
+    # Two workloads for one model can share a query name - the same map run over
+    # different shard keys does - and qualifying by name alone would then
+    # reproduce the collision this exists to remove. The execution value that
+    # actually separates them is shard data and does not belong on the page, so
+    # position is what disambiguates the remainder.
+    label_counts = {}
+    for row in rows:
+        label_counts[row["label"]] = label_counts.get(row["label"], 0) + 1
+    repeated = {label for label, count in label_counts.items() if count > 1}
+    if not repeated:
+        return
+    positions = {}
+    for row in rows:
+        label = row["label"]
+        if label not in repeated:
+            continue
+        position = positions.get(label, 0)
+        positions[label] = position + 1
+        row["label"] = f"{label} #{position + 1}"
 
 
 def compute_drift_report(payload):
@@ -186,6 +238,7 @@ def compute_drift_report(payload):
         rows.append(
             {
                 "model": result.get("model"),
+                "query_name": result.get("query_name") or "",
                 "forward_rows": result.get("row_count"),
                 "pending_changes": upsert_candidates,
                 "pending_removes": removes,
@@ -197,6 +250,7 @@ def compute_drift_report(payload):
                 "comparison_runtime_ms": result.get("comparison_runtime_ms"),
             }
         )
+    _label_rows(rows)
     rows.sort(
         key=lambda row: (
             row["drift"] if row["drift"] is not None else row["estimated_apply_work"]
@@ -250,7 +304,7 @@ def compute_drift_report(payload):
         "slowest_compared_model": _slowest_compared_model(rows),
         "unmeasured_model_count": len(unmeasured_rows),
         "unmeasured_models": sorted(
-            row["model"] for row in unmeasured_rows if row.get("model")
+            row["label"] for row in unmeasured_rows if row.get("label")
         ),
         "fully_measured": fully_measured,
         # True when the payload is older than drift measurement itself, which
