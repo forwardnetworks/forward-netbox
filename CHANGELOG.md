@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.8.8
+
+Release candidate; Fix: the dependency preview runs again on deployments with optional plugins installed.
+
 ## v2.8.7
 
 Drift preview compares converged rows in bulk instead of per row; drift rows identify their workload.
