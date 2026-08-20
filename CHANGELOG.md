@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v2.8.8
 
-Release candidate; Fix: the dependency preview runs again on deployments with optional plugins installed.
+Fix: the dependency preview runs again on deployments with optional plugins installed.
 
 ## v2.8.7
 
