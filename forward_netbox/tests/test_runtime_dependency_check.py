@@ -23,7 +23,7 @@ class RuntimeDependencyCheckTest(SimpleTestCase):
         self.assertIsNotNone(_resolved_branching_version())
 
     def test_plugin_config_version_matches_package_release(self):
-        self.assertEqual(NetboxForwardConfig.version, "2.8.7")
+        self.assertEqual(NetboxForwardConfig.version, "2.8.8")
 
     def test_exact_runtime_passes(self):
         _check_runtime_dependencies()
