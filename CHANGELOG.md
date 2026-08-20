@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v2.8.6
 
-Release candidate; Fix: a failed sync records where it happened, readable in NetBox without a shell.
+Fix: a failed sync records where it happened, readable in NetBox without a shell.
 
 ## v2.8.5
 
