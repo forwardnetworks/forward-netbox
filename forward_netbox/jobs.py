@@ -1149,21 +1149,49 @@ def _dependency_preview_work(job):
         job.data = json_safe_value(payload)
         job.save(update_fields=["data"])
     except Exception as exc:
+        import traceback as _traceback
+
         from .utilities.api_usage import record_forward_api_usage
+        from .utilities.diagnostics import plugin_raise_site
+        from .utilities.diagnostics import with_raise_site
 
         # Record the failure on the job so it is visible in the UI (the Data
         # panel) instead of an empty Error field with null data.
+        #
+        # And name WHERE it failed. A deployment lost its whole drift report to
+        # a bare `AttributeError` here - no file, no line, no attribute - which
+        # is the same opacity the raise-site work removed from sync and merge
+        # failures in 2.8.6. This path was never wired into it, so the one job
+        # an operator runs to look at their estate was the one that could still
+        # fail anonymously.
+        raise_site = plugin_raise_site(exc)
         job.data = {
-            "error": safe_operation_failure("Forward dependency preview", exc),
+            "error": with_raise_site(
+                safe_operation_failure("Forward dependency preview", exc),
+                {"raise_site": raise_site},
+            ),
             "error_type": exception_type(exc),
+            # Redacted wholesale on export by `sanitize_job_diagnostics`, so it
+            # is readable on the job page and never leaves the deployment.
+            "traceback": "".join(
+                _traceback.format_exception(type(exc), exc, exc.__traceback__)
+            ),
             "forward_api_usage": record_forward_api_usage(sync, client),
         }
         job.save(update_fields=["data"])
-        if type(exc) in (SyncError, JobTimeoutException):
-            logger.error(
-                "Forward dependency preview failed (%s).",
-                exception_type(exc),
-            )
+        # Log every failure, and the UNEXPECTED ones with their traceback.
+        #
+        # The condition used to be the other way round: only `SyncError` and
+        # `JobTimeoutException` were logged, and without `exc_info`. Those are
+        # the two this code anticipated, so the exceptions it did NOT anticipate
+        # - the ones actually worth a server-log entry - produced no log line at
+        # all. An `AttributeError` here wrote nothing anywhere.
+        expected = type(exc) in (SyncError, JobTimeoutException)
+        logger.error(
+            "Forward dependency preview failed (%s).",
+            exception_type(exc),
+            exc_info=not expected,
+        )
         raise
 
 
