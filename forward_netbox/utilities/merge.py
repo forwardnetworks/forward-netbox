@@ -44,6 +44,7 @@ from .diagnostics import exception_type
 from .diagnostics import is_caused_rule_rejection
 from .diagnostics import safe_operation_failure
 from .diagnostics import structured_failure_diagnosis
+from .diagnostics import with_raise_site
 from .merge_observability import checkpoint_merge_attempt
 from .merge_observability import initialize_merge_attempt
 from .merge_observability import mark_merge_attempt_applied
@@ -160,6 +161,10 @@ class _MergeIssueRecorder:
             safe_operation_failure(f"Merge for {model_string}", exc),
             diagnosis,
         )
+        # Same treatment as the sync recorder: name the line it came from. The
+        # merge recorder was the one left behind last time this file gained a
+        # diagnostic, which is the reason for doing both together.
+        message = with_raise_site(message, diagnosis)
         if _is_destination_rule_rejection(exc):
             # The issue list is where an operator actually looks, and a row that
             # was skipped reads there exactly like one that will be retried.

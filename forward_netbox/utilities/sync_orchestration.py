@@ -20,6 +20,7 @@ from .diagnostics import describe_failure
 from .diagnostics import exception_type
 from .diagnostics import safe_operation_failure
 from .diagnostics import structured_failure_diagnosis
+from .diagnostics import with_raise_site
 from .runtime_guidance import log_worker_timeout_guidance
 
 logger = logging.getLogger("forward_netbox.models")
@@ -58,7 +59,24 @@ def _build_forward_ingestion(sync, job, executor):
 
 
 def _record_forward_sync_failure(sync, job, executor, ingestion, exc):
-    logger.error("Forward sync failed (%s).", exception_type(exc))
+    # `exc_info=True` on purpose, and only here.
+    #
+    # This is the Python logger, which writes to the deployment's OWN server log
+    # - journald, or wherever NetBox is configured to log. It is not the job
+    # record, not the ingestion issue and not the support bundle, all of which
+    # stay redacted; nothing exported gains a value it did not have.
+    #
+    # Until now the plugin passed `exc_info` nowhere, so every logger call
+    # recorded the exception class and nothing more - exactly what the issue row
+    # already showed. A deployment hit the same unhandled KeyError on two
+    # consecutive releases, and the traceback survived only because RQ re-raises
+    # and logs it itself. That is luck, not design: an operator asked "where did
+    # it fail" had to be walked through reading RQ's failed-job registry out of
+    # Redis.
+    #
+    # The server log is the one place a full traceback belongs, because it never
+    # leaves the deployment.
+    logger.error("Forward sync failed (%s).", exception_type(exc), exc_info=True)
     sync.status = ForwardSyncStatusChoices.FAILED
     if ingestion is None:
         ingestion = getattr(executor, "current_ingestion", None)
@@ -91,6 +109,11 @@ def _record_forward_sync_failure(sync, job, executor, ingestion, exc):
     # captured.
     diagnosis = structured_failure_diagnosis(exc)
     message = describe_failure(message, diagnosis)
+    # Where it was raised, inside this package. A deployment hit the same
+    # unhandled KeyError on two consecutive releases and neither the issue row,
+    # the job error nor the plugin log recorded a location - the traceback
+    # existed only because RQ re-raises, which is luck rather than design.
+    message = with_raise_site(message, diagnosis)
     sync.logger.log_failure(message, obj=ingestion)
     ForwardIngestionIssue.objects.create(
         ingestion=ingestion,

@@ -1830,11 +1830,31 @@ class ForwardSyncModelTest(TestCase):
         self.assertEqual(sync.status, ForwardSyncStatusChoices.FAILED)
         self.assertEqual(self.source.status, ForwardSourceStatusChoices.FAILED)
         issue = ingestion.issues.get()
-        self.assertEqual(issue.message, "Forward ingestion failed (RuntimeError).")
-        # A plain exception has no schema detail to add, so the classifier is
-        # all that is recorded — but it is recorded, where `{}` used to be.
-        self.assertEqual(issue.raw_data, {"exception_type": "RuntimeError"})
+        # The classifier, then the in-package frame it was raised from. The
+        # line number is deliberately not asserted: it moves whenever the file
+        # above it changes, and pinning it would make this test fail for edits
+        # that have nothing to do with what it is checking.
+        self.assertTrue(
+            issue.message.startswith("Forward ingestion failed (RuntimeError) at "),
+            issue.message,
+        )
+        self.assertRegex(
+            issue.message,
+            r" at forward_netbox/[A-Za-z0-9_./-]+\.py:\d+:[A-Za-z0-9_]+\.$",
+        )
+        # A plain exception has no schema detail to add beyond the classifier
+        # and where it came from — but those are recorded, where `{}` used to be.
+        self.assertEqual(issue.raw_data["exception_type"], "RuntimeError")
+        self.assertTrue(issue.raw_data["raise_site"])
+        self.assertTrue(
+            all(
+                frame.startswith("forward_netbox/")
+                for frame in issue.raw_data["raise_site"]
+            ),
+            issue.raw_data["raise_site"],
+        )
         self.assertNotIn("boom", issue.message)
+        self.assertNotIn("boom", repr(issue.raw_data))
 
     @patch("forward_netbox.models.ForwardSource.get_client")
     @patch(
