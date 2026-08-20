@@ -123,6 +123,24 @@ class PreviewRunner:
     # writes first, and the ones that write are why four of the five bespoke
     # paths still report no comparison.
 
+    def _optional_model(self, app_label, model_name, model_string):
+        """Resolve a model from an optional plugin, or None when it is absent.
+
+        Read-only, and the only reason it is here is that the priming added in
+        2.8.7 reaches it: the routing identity primers ask for `BGPRouter`,
+        `BGPScope`, `OSPFInstance` and `OSPFArea` through this. Without it the
+        whole dependency preview died with a bare `AttributeError` on any
+        deployment that has `netbox_routing` installed - and the tests missed it
+        because they exercised `dcim.interface`, whose priming touches only
+        caches `PreviewRunner` already seeded.
+
+        `test_preview_runner_satisfies_the_priming_contract` now asserts the
+        whole attribute surface rather than one model's slice of it.
+        """
+        from .sync_primitives import optional_model
+
+        return optional_model(app_label, model_name, model_string)
+
     def _get_unique_or_raise(self, model, lookup):
         from .sync_primitives import get_unique_or_raise
 
