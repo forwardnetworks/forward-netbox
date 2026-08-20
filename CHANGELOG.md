@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.8.6
+
+Release candidate; Fix: a failed sync records where it happened, readable in NetBox without a shell.
+
 ## v2.8.5
 
 Fix: a failed sync names what failed, and a redacted warning is no longer reported as a failure.
