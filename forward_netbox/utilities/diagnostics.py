@@ -47,6 +47,11 @@ _SENSITIVE_DIAGNOSTIC_KEYS = {
     "worker_terminal_error",
 }
 _SAFE_DIAGNOSTIC_TOKEN = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+# The token pattern deliberately excludes `/`, because a token is not a path.
+# A source path needs its own rule, and it is still an allowlist: letters,
+# digits, underscore, dot, hyphen and the separator. Anything else - a space, a
+# quote, a colon - means the value is not the module path it is supposed to be.
+_SAFE_SOURCE_PATH = re.compile(r"^[A-Za-z0-9_./-]{1,160}$")
 
 
 def exception_type(exc) -> str:
@@ -446,6 +451,14 @@ _LOGGED_CLASSIFIER = re.compile(
     r"(?:\s*:\s*([a-z][a-z0-9]*(?:[+-][a-z0-9]+)*))?"
 )
 _MAX_LOGGED_CLASSIFIERS = 3
+# The raise site, recovered from a rendered message the same way a classifier
+# is. `safe_log_message` REBUILDS a failure line from what it can recover and
+# discards the rest, so a detail that is not recoverable here does not reach the
+# log export or the support bundle - it is written and then thrown away. That is
+# how a previous attempt at richer failure messages was undone.
+_LOGGED_RAISE_SITE = re.compile(
+    r"\bat (forward_netbox/[A-Za-z0-9_./-]{1,160}:\d{1,6}(?::[A-Za-z0-9_]{1,64})?)"
+)
 
 
 def recovered_classifiers(text) -> list[str]:
@@ -516,8 +529,10 @@ def safe_job_error_summary(error) -> str:
 def safe_log_message(message, level: str = "") -> str:
     """Redact a log row's body, claiming only what its level supports."""
     parts = recovered_classifiers(message)
+    site = recovered_raise_site(message)
     if parts:
-        return f"{SAFE_FAILURE_LOG_PREFIX} ({'; '.join(parts)})."
+        suffix = f" at {site}" if site else ""
+        return f"{SAFE_FAILURE_LOG_PREFIX} ({'; '.join(parts)}){suffix}."
     if str(level).lower() in _WARNING_LEVELS:
         return SAFE_WARNING_LOG_MESSAGE
     return SAFE_FAILURE_LOG_MESSAGE
@@ -686,6 +701,29 @@ def _validation_rules(exc) -> tuple[list[str], list[str]]:
     return sorted(matched), unrecognized
 
 
+def recovered_raise_site(text) -> str:
+    """The in-package frame a rendered message carries, or ``""``."""
+    match = _LOGGED_RAISE_SITE.search(str(text or ""))
+    return match.group(1) if match else ""
+
+
+def with_raise_site(message: str, diagnosis: dict) -> str:
+    """Append the innermost in-package frame to an operator-facing message.
+
+    A frame is not customer data - file, line and function are identifiers this
+    repository wrote - and it is the single fact that turns "failed (KeyError)"
+    into something actionable without another support round trip.
+    """
+    site = (diagnosis or {}).get("raise_site") or []
+    if not site:
+        return message
+    innermost = str(site[0])
+    if not _LOGGED_RAISE_SITE.search(f"at {innermost}"):
+        return message
+    stem = message[:-1] if message.endswith(".") else message
+    return f"{stem} at {innermost}."
+
+
 def describe_failure(message: str, diagnosis: dict) -> str:
     """Append the schema-level cause to an operator-facing failure message.
 
@@ -776,6 +814,47 @@ def is_caused_rule_rejection(exc, written_fields) -> bool:
     return bool(rejected & set(written_fields or ()))
 
 
+_MAX_RAISE_SITE_FRAMES = 8
+
+
+def plugin_raise_site(exc) -> list:
+    """Where in THIS package the exception was raised, as `module.py:line:function`.
+
+    A frame location is not customer data. The file, the line number and the
+    function name are identifiers this repository wrote, in the same category as
+    a constraint name or a field name, and unlike an exception message they
+    cannot quote a device or an address.
+
+    The tracebacks themselves are redacted wholesale - `error`, `traceback` and
+    `worker_terminal_error` are dropped - because a rendered traceback carries
+    the exception message and can carry locals. Dropping the frame LOCATIONS
+    along with them is what left a deployment's sync failing at the same point
+    on two consecutive releases with nothing recording where.
+
+    Only frames inside this package are kept. A third-party path can embed a
+    home directory, and a NetBox or Django frame says nothing this repository
+    can act on anyway. The innermost plugin frame comes first.
+    """
+    import traceback
+
+    frames = []
+    for frame in reversed(traceback.extract_tb(exc.__traceback__)):
+        filename = str(frame.filename or "")
+        marker = "/forward_netbox/"
+        if marker not in filename:
+            continue
+        relative = "forward_netbox/" + filename.split(marker, 1)[1]
+        name = str(frame.name or "")
+        if not _SAFE_SOURCE_PATH.fullmatch(relative):
+            continue
+        if not _SAFE_DIAGNOSTIC_TOKEN.fullmatch(name):
+            name = "redacted"
+        frames.append(f"{relative}:{frame.lineno}:{name}")
+        if len(frames) >= _MAX_RAISE_SITE_FRAMES:
+            break
+    return frames
+
+
 def structured_failure_diagnosis(exc) -> dict:
     """Schema-level detail about a failure, never the values that caused it.
 
@@ -790,6 +869,13 @@ def structured_failure_diagnosis(exc) -> dict:
     Postgres DETAIL line embeds, which are deliberately not captured here.
     """
     diagnosis = {"exception_type": exception_type(exc)}
+
+    # Where it was raised, inside this package. Answers "which line" without
+    # answering "for which value", and is the field that would have located a
+    # deployment's repeated KeyError immediately.
+    raise_site = plugin_raise_site(exc)
+    if raise_site:
+        diagnosis["raise_site"] = raise_site
 
     # psycopg surfaces unique/foreign-key violation metadata on the cause's
     # `diag`; these are catalogue names, not row contents.
