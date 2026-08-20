@@ -91,10 +91,31 @@ def _build_job_log_entries(log_data):
     return entries
 
 
-def safe_save_job_data(job, obj_with_logger):
+def safe_save_job_data(job, obj_with_logger, *, exc=None):
+    """Persist the run's log data, and on failure the traceback with it.
+
+    The traceback goes into `job.data["traceback"]`, which is the one place it
+    can be both visible and contained. An operator opens the job in NetBox and
+    reads it; `sanitize_job_diagnostics` replaces that key wholesale on export,
+    so the support bundle they send carries `<redacted diagnostic>` exactly as
+    it does today.
+
+    Until now it was nowhere. The job error is redacted at write time and the
+    ingestion issue records schema identifiers only, so answering "where did it
+    fail" meant reading RQ's failed-job registry out of Redis over a shell -
+    which a deployment should never be asked to do, and which on the run that
+    prompted this returned nothing newer than two months old.
+    """
     try:
         obj_with_logger.logger.flush()
         log_data = json_safe_value(obj_with_logger.logger.log_data)
+        if exc is not None:
+            import traceback as _traceback
+
+            log_data = dict(log_data or {})
+            log_data["traceback"] = "".join(
+                _traceback.format_exception(type(exc), exc, exc.__traceback__)
+            )
         job.data = log_data
         job.log_entries = _build_job_log_entries(log_data)
         job.save(update_fields=["data", "log_entries"])
@@ -624,7 +645,7 @@ def sync_forwardsync(job, *args, **kwargs):
                 sync.pk,
                 exception_type(exc),
             )
-        safe_save_job_data(job, sync)
+        safe_save_job_data(job, sync, exc=exc)
         terminate_job_once(
             job,
             status=JobStatusChoices.STATUS_ERRORED,
