@@ -251,7 +251,7 @@
       <tbody>
         {% for row in report.models %}
           <tr>
-            <td><code>{{ row.model }}</code></td>
+            <td><code>{{ row.label|default:row.model }}</code></td>
             <td>{{ row.forward_rows|placeholder }}</td>
             <td>{{ row.pending_changes }}</td>
             <td>{{ row.pending_removes }}</td>

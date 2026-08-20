@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import subprocess
 import urllib.parse
-import urllib.request
 from pathlib import Path
 
 
@@ -100,20 +100,70 @@ def _git_capture_bytes(*arguments: str) -> bytes:
     return result.stdout
 
 
+GITHUB_HTTP_ATTEMPTS = 4
+GITHUB_HTTP_TIMEOUT = 30
+
+
 def _github_json(path: str, token: str) -> object:
+    """Read one GitHub API endpoint, over a connection that is not closed.
+
+    `urllib.request` forces `Connection: close` on every request - `do_open`
+    sets the header after the caller's, so it cannot be overridden - and this
+    release host stalls close-mode responses. Measured on it: urllib completed
+    1 request in 10, `http.client` with keep-alive completed 6 in 6 and the
+    same client sending `close` completed 1 in 6. `gh` and `curl`, which both
+    keep the connection alive, were unaffected.
+
+    The stall cost four release cycles and was worked around with a
+    `sitecustomize` shim that stripped the header - which lived outside the
+    repository, so the tagged tree stayed broken. This is the durable version:
+    speak HTTP/1.1 directly and send no `Connection` header at all, leaving the
+    HTTP/1.1 default in place.
+
+    Retries are bounded and cover only transport faults. An HTTP status is an
+    answer, so a 404 or a 403 is raised on the first response rather than
+    attempted again - retrying a refusal would turn a clear provenance failure
+    into a slow one.
+    """
     endpoint = f"{GITHUB_API_URL}/repos/{GITHUB_REPOSITORY}"
     if path.strip("/"):
         endpoint = f"{endpoint}/{path.lstrip('/')}"
-    request = urllib.request.Request(
-        endpoint,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {token}",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
+    parsed = urllib.parse.urlsplit(endpoint)
+    selector = parsed.path + (f"?{parsed.query}" if parsed.query else "")
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "User-Agent": "forward-netbox-release-provenance",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    last_error: Exception | None = None
+    for _ in range(GITHUB_HTTP_ATTEMPTS):
+        connection = http.client.HTTPSConnection(
+            parsed.hostname,
+            parsed.port or 443,
+            timeout=GITHUB_HTTP_TIMEOUT,
+        )
+        try:
+            connection.request("GET", selector, headers=headers)
+            response = connection.getresponse()
+            body = response.read()
+            if response.status >= 400:
+                raise ProvenanceError(
+                    f"GitHub returned HTTP {response.status} for "
+                    f"{path or '<repository>'}: "
+                    f"{body.decode('utf-8', 'replace')[:200]}"
+                )
+            return json.loads(body)
+        except (OSError, http.client.HTTPException) as error:
+            # Transport only. `ProvenanceError` and a JSON decode failure are
+            # answers about the release and must not be retried into silence.
+            last_error = error
+        finally:
+            connection.close()
+    raise ProvenanceError(
+        f"GitHub request for {path or '<repository>'} failed after "
+        f"{GITHUB_HTTP_ATTEMPTS} attempts: {last_error}"
     )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return json.load(response)
 
 
 def _github_pages(path: str, token: str) -> list[dict]:

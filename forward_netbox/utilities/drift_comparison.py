@@ -243,11 +243,33 @@ def compare_model_rows(sync, model_string, rows):
     # comparison - and those two are indistinguishable from here. So the
     # dispatcher answers instead, exactly as it does for a non-empty list: a
     # zero for a model it can compare, `None` for one it cannot.
+    from .sync_primitives import prime_dependency_lookup_caches
+
     runner = PreviewRunner(sync=sync)
+    rows = list(rows)
+    # Prime the same dependency caches the apply primes, for the same reason.
+    #
+    # `apply_model_rows` calls this before handing rows to the classification
+    # (`sync_reporting.py`); this function called the classification directly and
+    # so never did. The classification then resolved every parent per row against
+    # caches that started empty and stayed cold - one query per interface, per
+    # MAC, per address - where the apply had already read them in bulk.
+    #
+    # A deployment measured it: 842s to compare 357,864 `dcim.interface` rows,
+    # 58% of a 24-minute preview, against an estate whose real drift was 387
+    # rows. The comparison was not slow because it compares; it was slow because
+    # it was the only caller doing the resolution one row at a time.
+    #
+    # Priming is bulk SELECTs into runner-local dicts - no writes, and the
+    # `PreviewRunner` seeds every cache this touches - so a preview may do it
+    # exactly as the apply does. Comparing against a primed cache and comparing
+    # against a cold one must return the same counts; `test_preview_primes_its_
+    # lookup_caches` pins that they do, so this stays a cost change only.
+    prime_dependency_lookup_caches(runner, model_string, rows)
     counts = bulk_orm_apply_simple_models(
         runner,
         model_string,
-        list(rows),
+        rows,
         preview=True,
     )
     if not isinstance(counts, dict):
