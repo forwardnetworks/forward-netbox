@@ -99,6 +99,32 @@ the next one needs the RQ registry again.
 - **Both recorders together.** The merge recorder was the one left behind the
   last time this file gained a diagnostic.
 
+## The operator must never need a shell
+
+The release owner's instruction, and the reason this change has a third part.
+
+Finding where a customer's sync failed required reading RQ's failed-job
+registry out of Redis over `manage.py shell`. That is not a support workflow,
+and on the run that prompted it the registry returned nothing newer than two
+months old - so the cost was paid and the answer was not there.
+
+The traceback now goes to `job.data["traceback"]`. NetBox renders job data on
+the job page, reachable from the ingestion, so it is readable without a shell.
+`sanitize_job_diagnostics` already replaces that key wholesale, so the support
+bundle carries `<redacted diagnostic>` exactly as before - verified in
+`_job_export_payload` rather than inferred from a bundle.
+
+It is deliberately NOT in the issue's `raw_data`, which is exported verbatim; a
+traceback there would leave the deployment.
+
+Three tiers, no shell in any of them:
+
+| surface | carries | leaves the deployment |
+| --- | --- | --- |
+| ingestion issue row | `file:line:function` | yes |
+| job page | full traceback | no |
+| support bundle | frames only | yes |
+
 ## Open
 
 - The defect itself is still unidentified. This makes it findable; the frames

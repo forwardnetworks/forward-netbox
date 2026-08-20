@@ -206,3 +206,48 @@ class TheServerLogHoldsTheTracebackTest(SimpleTestCase):
         self.assertIn("raw_data=diagnosis", source)
         self.assertNotIn("raw_data=exc", source)
         self.assertNotIn("message=str(exc)", source)
+
+
+class TheTracebackIsVisibleWithoutAShellTest(SimpleTestCase):
+    """An operator must never be asked to read Redis to find out where it failed.
+
+    The traceback is written to `job.data["traceback"]`, which NetBox renders on
+    the job page, and which `sanitize_job_diagnostics` replaces wholesale on
+    export - so it is readable on the deployment and redacted in the support
+    bundle they send back.
+    """
+
+    def test_the_traceback_is_redacted_on_export(self):
+        from forward_netbox.utilities.diagnostics import REDACTED_DIAGNOSTIC
+        from forward_netbox.utilities.diagnostics import sanitize_job_diagnostics
+
+        try:
+            _raise_key_error_with_a_customer_shaped_key()
+        except KeyError as exc:
+            import traceback
+
+            rendered = "".join(
+                traceback.format_exception(type(exc), exc, exc.__traceback__)
+            )
+
+        data = {"logs": [], "traceback": rendered}
+        exported = sanitize_job_diagnostics(data)
+        self.assertEqual(exported["traceback"], REDACTED_DIAGNOSTIC)
+        self.assertNotIn("switch-alpha.invalid", repr(exported))
+
+    def test_the_saver_accepts_an_exception_and_records_it(self):
+        import inspect
+
+        from forward_netbox import jobs
+
+        source = inspect.getsource(jobs.safe_save_job_data)
+        self.assertIn("exc=None", source)
+        self.assertIn('log_data["traceback"]', source)
+
+    def test_the_sync_failure_path_passes_the_exception(self):
+        import inspect
+
+        from forward_netbox import jobs
+
+        source = inspect.getsource(jobs.sync_forwardsync)
+        self.assertIn("safe_save_job_data(job, sync, exc=exc)", source)
