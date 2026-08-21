@@ -733,7 +733,24 @@ class DurableWorkloadStateTest(TestCase):
         )
         self.assertEqual(by_summary["netbox_dlm.cve"]["protected_delete_rows"], 1)
 
-    def test_owned_device_absent_from_first_authoritative_state_is_deleted(self):
+    def _quarantine_cleared(self, device):
+        """An absence streak past both default thresholds (3 runs, 72 hours)."""
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from forward_netbox.models import ForwardDeviceAbsence
+
+        now = timezone.now()
+        ForwardDeviceAbsence.objects.create(
+            sync=self.sync,
+            device=device,
+            consecutive_absent_runs=3,
+            first_absent_at=now - timedelta(hours=73),
+            last_absent_at=now,
+        )
+
+    def test_owned_device_absent_past_quarantine_is_deleted(self):
         from dcim.models import Device
         from dcim.models import DeviceRole
         from dcim.models import DeviceType
@@ -766,6 +783,11 @@ class DurableWorkloadStateTest(TestCase):
             source_device_key=device.name,
             device=device,
         )
+        # The absence must have been CONFIRMED, repeatedly and over time, before
+        # the sweep may act on it - the same quarantine Prune orphans requires.
+        # This used to assert deletion on the first absence with no evidence at
+        # all, which is the policy the quarantine exists to forbid.
+        self._quarantine_cleared(device)
 
         workloads, _, summaries = apply_durable_workload_deltas(
             self.sync,
@@ -783,6 +805,130 @@ class DurableWorkloadStateTest(TestCase):
             [{"name": "stale-device", "site": "Owned Device Site"}],
         )
         self.assertEqual(summaries[0]["ownership_delete_rows"], 1)
+        self.assertEqual(summaries[0]["ownership_quarantine_held_rows"], 0)
+
+    def test_owned_device_first_absence_is_held_by_the_quarantine(self):
+        """The policy change itself: one absence is not evidence.
+
+        No absence row exists for this device, so the quarantine holds it
+        fail-closed - by its reckoning the absence has been confirmed zero
+        times. The device survives, no delete workload is produced, and the
+        summary says why.
+        """
+        from dcim.models import Device
+        from dcim.models import DeviceRole
+        from dcim.models import DeviceType
+        from dcim.models import Manufacturer
+        from dcim.models import Site
+
+        site = Site.objects.create(name="Fresh Absence Site", slug="fresh-absence")
+        manufacturer = Manufacturer.objects.create(
+            name="Fresh Absence Vendor", slug="fresh-absence-vendor"
+        )
+        device_type = DeviceType.objects.create(
+            manufacturer=manufacturer,
+            model="Fresh Absence Type",
+            slug="fresh-absence-type",
+        )
+        role = DeviceRole.objects.create(
+            name="Fresh Absence Role", slug="fresh-absence-role"
+        )
+        device = Device.objects.create(
+            name="fresh-absent-device",
+            site=site,
+            device_type=device_type,
+            role=role,
+            status="active",
+        )
+        ingestion = self._ingestion("snapshot-0")
+        ForwardDeviceIdentity.objects.create(
+            sync=self.sync,
+            ingestion=ingestion,
+            source_device_key=device.name,
+            device=device,
+        )
+
+        workloads, _, summaries = apply_durable_workload_deltas(
+            self.sync,
+            [
+                _workload(
+                    [],
+                    model_string="dcim.device",
+                    coalesce_fields=[["name", "site"]],
+                )
+            ],
+        )
+
+        self.assertEqual(workloads, [])
+        self.assertEqual(summaries[0]["ownership_delete_rows"], 0)
+        self.assertEqual(summaries[0]["ownership_quarantine_held_rows"], 1)
+        self.assertTrue(Device.objects.filter(pk=device.pk).exists())
+
+    def test_a_mass_absence_is_a_fault_and_deletes_nothing(self):
+        """Past the floor and the ratio, absence stops being attrition.
+
+        Every device here has individually cleared the quarantine - that is the
+        point. A query fault absents the whole fleet for three days just as
+        convincingly as a decommission absents one device, so the per-device
+        test cannot tell them apart and the aggregate one must.
+        """
+        from dcim.models import Device
+        from dcim.models import DeviceRole
+        from dcim.models import DeviceType
+        from dcim.models import Manufacturer
+        from dcim.models import Site
+
+        from forward_netbox.utilities.scope_reconciliation import (
+            SCOPE_SHRINK_REFUSAL_FLOOR,
+        )
+
+        site = Site.objects.create(name="Mass Absence Site", slug="mass-absence")
+        manufacturer = Manufacturer.objects.create(
+            name="Mass Absence Vendor", slug="mass-absence-vendor"
+        )
+        device_type = DeviceType.objects.create(
+            manufacturer=manufacturer,
+            model="Mass Absence Type",
+            slug="mass-absence-type",
+        )
+        role = DeviceRole.objects.create(
+            name="Mass Absence Role", slug="mass-absence-role"
+        )
+        ingestion = self._ingestion("snapshot-0")
+        count = SCOPE_SHRINK_REFUSAL_FLOOR + 1
+        for index in range(count):
+            device = Device.objects.create(
+                name=f"mass-absent-{index}",
+                site=site,
+                device_type=device_type,
+                role=role,
+                status="active",
+            )
+            ForwardDeviceIdentity.objects.create(
+                sync=self.sync,
+                ingestion=ingestion,
+                source_device_key=device.name,
+                device=device,
+            )
+            self._quarantine_cleared(device)
+
+        workloads, _, summaries = apply_durable_workload_deltas(
+            self.sync,
+            [
+                _workload(
+                    [],
+                    model_string="dcim.device",
+                    coalesce_fields=[["name", "site"]],
+                )
+            ],
+        )
+
+        self.assertEqual(workloads, [])
+        self.assertEqual(summaries[0]["ownership_delete_rows"], 0)
+        self.assertEqual(summaries[0]["ownership_shrink_held_rows"], count)
+        self.assertEqual(
+            Device.objects.filter(name__startswith="mass-absent-").count(), count
+        )
 
     def test_current_scope_claim_protects_owned_device_from_delete(self):
         from dcim.models import Device
@@ -827,6 +973,10 @@ class DurableWorkloadStateTest(TestCase):
             tag=Tag.objects.create(name="Managed", slug="managed"),
             claim_type=ForwardDeviceTagClaim.ClaimType.SCOPE,
         )
+        # Past the quarantine deliberately, so the CLAIM is what saves the
+        # device - which is what this test exists to pin. Without this the
+        # quarantine holds it first and the claim guard is never consulted.
+        self._quarantine_cleared(device)
 
         workloads, _, summaries = apply_durable_workload_deltas(
             self.sync,
