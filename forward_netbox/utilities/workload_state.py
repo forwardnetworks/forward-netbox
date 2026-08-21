@@ -8,6 +8,7 @@ from django.apps import apps
 from django.db import transaction
 from django.db.models import Q
 from django.utils import timezone
+from rq.timeouts import JobTimeoutException
 
 from ..exceptions import ForwardQueryError
 from .delete_policy import should_suppress_aci_deletes
@@ -475,6 +476,26 @@ def _locally_referenced_delete_identities(
                 .values_list("platform__slug", "version")
                 .distinct()
             )
+        # The hand-list above omitted `InventoryItemSoftware`, which is exactly
+        # what a deployment's six protected-delete skips named. Read the rest
+        # from the schema so the next relation does not need remembering.
+        candidates = list(
+            SoftwareVersion.objects.filter(
+                platform__slug__in={item[0] for item in row_identities},
+                version__in={item[1] for item in row_identities},
+            ).values_list("pk", "platform__slug", "version")
+        )
+        held_pks = _reference_protected_pks(
+            SoftwareVersion,
+            [pk for pk, _slug, _version in candidates],
+            # Already modelled above, and from this run's rows rather than the
+            # database when the run is authoritative for them - so a child this
+            # run is deleting must not read as a blocker here.
+            ignore_labels=("netbox_dlm.DeviceSoftware", "netbox_dlm.Vulnerability"),
+        )
+        protected.update(
+            (slug, version) for pk, slug, version in candidates if pk in held_pks
+        )
         return {
             identity
             for identity, value in delete_entries.items()
@@ -487,6 +508,103 @@ def _locally_referenced_delete_identities(
     if model_string == "dcim.device":
         return _claimed_device_delete_identities(delete_entries)
     return set()
+
+
+# Ownership rows the device delete path releases on its way through, so a
+# device holding only these is still deletable. The tag-claim and virtual-parent
+# cases are separately held back by `_claimed_device_delete_identities`, which
+# is where that policy belongs; here they must not masquerade as a reference.
+OWNERSHIP_RELEASED_ON_DEVICE_DELETE = (
+    "forward_netbox.ForwardDeviceIdentity",
+    "forward_netbox.ForwardDeviceTagClaim",
+    "forward_netbox.ForwardVirtualParentClaim",
+    "forward_netbox.ForwardPreservedDeviceTagAssignment",
+)
+
+
+def _reference_protected_pks(model_class, pks, *, ignore_labels=()):
+    """Which of these rows the database will refuse to delete, read from the schema.
+
+    Every guard above this one hand-lists the relations it knows about, and each
+    hand-list has been wrong in the field. `netbox_dlm.softwareversion` protected
+    against image files, validated rules, device software and vulnerabilities -
+    but not `InventoryItemSoftware`, which is what a deployment's protected-delete
+    skips actually named. `dcim.device` listed no references at all.
+
+    So read the relations from the model rather than from memory.
+    `protecting_relations` returns every PROTECT/RESTRICT relation including the
+    hidden ones, so a relation added later is covered without anyone
+    remembering to come back here.
+
+    This is a hold-back, not a prediction of success: a row with no protecting
+    reference may still fail for another reason. The point is the converse - a
+    row WITH one cannot succeed, and staging it anyway is what produced a
+    refused delete recorded as done.
+
+    Asked of Django's own deletion collector rather than of the relation list,
+    because a one-level scan is not enough. `protecting_relations(Device)` does
+    not name `netbox_routing.BGPPeer` at all: a `BGPRouter` attaches to a device
+    through a GENERIC key, which carries no database constraint, and the
+    protection only appears further down the cascade the delete would perform -
+    router, then scope, then peer. A scan of the model's own reverse relations
+    reports that device as deletable and is wrong.
+
+    `Collector.collect` is the code `.delete()` itself runs, so it follows
+    cascades, generic relations and hidden relations by construction, and its
+    verdict is the database's.
+
+    Fails CLOSED. If the collector raises anything this does not recognise, the
+    row is held back rather than staged: on a destructive path, "cannot tell"
+    must mean "do not delete".
+    """
+    from django.db import DEFAULT_DB_ALIAS
+    from django.db.models.deletion import Collector
+    from django.db.models.deletion import ProtectedError
+    from django.db.models.deletion import RestrictedError
+
+    candidate_pks = {pk for pk in pks if pk is not None}
+    if not candidate_pks:
+        return set()
+    objects = list(model_class.objects.filter(pk__in=candidate_pks))
+    if not objects:
+        return set()
+
+    ignored = set(ignore_labels)
+
+    def _blocked(batch):
+        collector = Collector(using=DEFAULT_DB_ALIAS)
+        try:
+            collector.collect(batch)
+        except (ProtectedError, RestrictedError) as exc:
+            blockers = (
+                getattr(exc, "protected_objects", None)
+                or getattr(exc, "restricted_objects", None)
+                or ()
+            )
+            labels = {type(obj)._meta.label for obj in blockers}
+            # A reference the delete path itself clears is not a blocker. The
+            # plugin's own ownership rows are released immediately before the
+            # device delete, and an association row already being deleted in
+            # this run goes first by delete ordering. Without this the guard
+            # holds back EVERY managed device, because each one carries a
+            # PROTECT `ForwardDeviceIdentity` - which is how the first version
+            # of this silently disabled the sweep it was meant to make safe.
+            #
+            # An empty label set means the exception carried nothing readable,
+            # so it counts as a blocker under the fail-closed rule.
+            return not labels or bool(labels - ignored)
+        except JobTimeoutException:
+            raise
+        except Exception:  # noqa: BLE001 - unknown means unsafe, see docstring
+            return True
+        return False
+
+    # The whole set in one pass first: on a converged estate nothing is held and
+    # this costs one collect rather than one per row. Only when something IS
+    # held does it matter which, and only then is the per-row walk paid for.
+    if not _blocked(objects):
+        return set()
+    return {obj.pk for obj in objects if _blocked([obj])}
 
 
 def _claimed_device_delete_identities(delete_entries):
@@ -533,6 +651,29 @@ def _claimed_device_delete_identities(delete_entries):
         device_id
         for device_id, sync_ids in identity_syncs_by_device.items()
         if len(sync_ids) > 1
+    )
+    # And whatever the database itself will refuse.
+    #
+    # Every check above is about plugin OWNERSHIP - a claim, a preserved
+    # assignment, a second sync. None of them asks whether anything still
+    # points at the device. A deployment's sync therefore staged ten device
+    # deletes that `netbox_routing.bgppeer` rows held, and each one failed at
+    # apply time and was recorded as a skip. Worse, the durable state then
+    # tombstoned them as deleted, so nothing retried and the report went quiet
+    # while the devices were still there.
+    #
+    # Routing children are not produced as deletes by any path - their queries
+    # are device-name-scoped, so an out-of-scope device's peers are never even
+    # fetched - which means this is not an ordering problem that will resolve
+    # itself on a later run. The reference is permanent until an operator acts.
+    from dcim.models import Device
+
+    protected_device_ids.update(
+        _reference_protected_pks(
+            Device,
+            device_ids,
+            ignore_labels=OWNERSHIP_RELEASED_ON_DEVICE_DELETE,
+        )
     )
     protected_names = {
         row["source_device_key"]
