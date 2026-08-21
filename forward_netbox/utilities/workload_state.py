@@ -688,14 +688,21 @@ def _claimed_device_delete_identities(delete_entries):
 
 
 def _owned_device_rows(sync, coalesce_fields):
+    """Rows for every device identity this sync owns, plus name -> device pk.
+
+    The pk map exists for the quarantine join: absence streaks are recorded
+    against the Device row, while the sweep reasons in coalesce identities.
+    """
     from ..models import ForwardDeviceIdentity
 
     rows = []
+    device_id_by_name = {}
     identities = (
         ForwardDeviceIdentity.objects.filter(sync=sync)
         .order_by("source_device_key")
         .values(
             "source_device_key",
+            "device_id",
             "device__site__name",
             "device__site__slug",
         )
@@ -706,12 +713,13 @@ def _owned_device_rows(sync, coalesce_fields):
             "site": identity["device__site__name"],
             "site_slug": identity["device__site__slug"],
         }
+        device_id_by_name[identity["source_device_key"]] = identity["device_id"]
         for field_set in coalesce_fields:
             row = {field: values.get(field) for field in field_set}
             if all(value not in (None, "") for value in row.values()):
                 rows.append(row)
                 break
-    return rows
+    return rows, device_id_by_name
 
 
 def _software_version_catalog_rows():
@@ -850,21 +858,74 @@ def apply_durable_workload_deltas(sync, workloads):
         bootstrap_delete_identities = set()
         ownership_delete_identities = set()
         catalog_delete_identities = set()
+        ownership_quarantine_held = 0
+        ownership_shrink_held = 0
         if model_string == "dcim.device" and (current_state is None or compatible):
+            owned_rows, device_id_by_name = _owned_device_rows(sync, coalesce_fields)
             ownership_entries = build_state_entries(
                 model_string,
-                _owned_device_rows(sync, coalesce_fields),
+                owned_rows,
                 coalesce_fields,
             )
-            ownership_deletes = [
-                value["row"]
+            absent_entries = {
+                identity: value
                 for identity, value in ownership_entries.items()
                 if identity not in target_entries
+            }
+            # Absence from one result is not evidence. Deleting a device is the
+            # one act in this function an operator cannot undo, and the operator
+            # path - Prune orphans - already refuses to do it on a single
+            # observation: it requires the absence QUARANTINE (consecutive
+            # absent runs AND elapsed hours, both operator-tunable, fail-closed
+            # for a device with no absence record), because a device disabled in
+            # Forward is indistinguishable from one that was deleted. This sweep
+            # deleted on the first absence, gated only by ownership claims - and
+            # the scope claim is released by the same first observation, so the
+            # gate evaporated exactly one run before the delete fired.
+            #
+            # Same act, same evidence bar: the sweep now deletes only identities
+            # whose absence streak has cleared the same quarantine the prune
+            # uses. The streaks are maintained for every sync by the post-sync
+            # scope-tags job, and they lag this fetch by one run, which errs in
+            # the only acceptable direction - later, never sooner.
+            absent_ids = {
+                device_id_by_name.get(str(value["row"].get("name") or "").strip())
+                for value in absent_entries.values()
+            } - {None}
+            from .scope_reconciliation import partition_quarantined_orphans
+
+            partition = partition_quarantined_orphans(sync, sorted(absent_ids))
+            eligible_ids = set(partition["eligible_pks"])
+            ownership_quarantine_held = len(absent_ids) - len(eligible_ids)
+            # And the prune's other refusal, for the same reason it has one: a
+            # query that returns most of the fleet passes every per-device test,
+            # and every device missing from it then looks individually
+            # deletable. A shrink past the ratio is treated as a scope or query
+            # fault, not as attrition - unattended, there is no operator to ask,
+            # so the answer is to delete nothing and let the streaks keep
+            # advancing until someone looks.
+            from .scope_reconciliation import SCOPE_SHRINK_REFUSAL_FLOOR
+            from .scope_reconciliation import SCOPE_SHRINK_REFUSAL_RATIO
+
+            previously_managed = len(ownership_entries)
+            if (
+                previously_managed
+                and len(eligible_ids) > SCOPE_SHRINK_REFUSAL_FLOOR
+                and len(eligible_ids) / previously_managed > SCOPE_SHRINK_REFUSAL_RATIO
+            ):
+                ownership_shrink_held = len(eligible_ids)
+                eligible_ids = set()
+            ownership_deletes = [
+                value["row"]
+                for identity, value in absent_entries.items()
+                if device_id_by_name.get(str(value["row"].get("name") or "").strip())
+                in eligible_ids
             ]
             ownership_delete_identities = {
                 identity
-                for identity in ownership_entries
-                if identity not in target_entries
+                for identity, value in absent_entries.items()
+                if device_id_by_name.get(str(value["row"].get("name") or "").strip())
+                in eligible_ids
             }
             explicit_deletes = _deduplicate_rows(
                 model_string,
@@ -1058,6 +1119,8 @@ def apply_durable_workload_deltas(sync, workloads):
                     for identity in catalog_delete_identities
                 ),
                 "protected_delete_rows": protected_delete_count,
+                "ownership_quarantine_held_rows": ownership_quarantine_held,
+                "ownership_shrink_held_rows": ownership_shrink_held,
                 "unrepresented_peer": unrepresented_peer,
                 "tombstone_rows": sum(
                     value["action"] == "delete" for value in state_entries.values()
