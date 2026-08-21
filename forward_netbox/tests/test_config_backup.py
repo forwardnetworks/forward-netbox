@@ -45,8 +45,10 @@ class _FakeClient:
         self.rows = rows
         self.calls = []
 
-    def run_nqe_query(self, *, query, network_id, snapshot_id, limit, offset):
-        self.calls.append({"limit": limit, "offset": offset})
+    def run_nqe_query(
+        self, *, query, network_id, snapshot_id, parameters, limit, offset
+    ):
+        self.calls.append({"limit": limit, "offset": offset, "parameters": parameters})
         return self.rows[offset : offset + limit]
 
 
@@ -154,6 +156,13 @@ class ConfigBackupTest(TestCase):
         self.assertTrue(
             all(call["limit"] == CONFIG_BACKUP_PAGE_SIZE for call in client.calls)
         )
+        # And scoped at the FETCH: Forward is asked only for the devices this
+        # sync holds identities for, so out-of-scope configurations are never
+        # transferred just to be discarded.
+        self.assertEqual(
+            client.calls[0]["parameters"],
+            {"forward_netbox_shard_keys": ["fwd-router-1", "fwd-router-2"]},
+        )
 
     def test_unchanged_content_produces_no_second_commit(self):
         rows = [{"name": "fwd-router-1", "config": "hostname router-1\n"}]
@@ -204,6 +213,22 @@ class ConfigBackupTest(TestCase):
 
         self.assertEqual(result.skipped_reason, "snapshot already backed up")
         self.assertEqual(client.calls, [], "the fetch must be skipped entirely")
+
+    def test_no_identities_means_no_fetch(self):
+        """An unscoped shard-key list would pull the whole collected estate.
+
+        With no identities there is nothing to write, so the run must not ask
+        Forward for anything at all - passing an empty scope would read as
+        "unscoped" and transfer every configuration in the network.
+        """
+        ForwardDeviceIdentity.objects.filter(sync=self.sync).delete()
+
+        result, client = self._run(
+            [{"name": "fwd-router-1", "config": "hostname router-1\n"}]
+        )
+
+        self.assertEqual(result.skipped_reason, "no device identities for this sync")
+        self.assertEqual(client.calls, [])
 
     def test_an_empty_fetch_refuses_rather_than_committing_emptiness(self):
         with self.assertRaises(ForwardSyncError):

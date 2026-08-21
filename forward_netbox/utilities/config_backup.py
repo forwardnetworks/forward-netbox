@@ -222,6 +222,12 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
     url = _authenticated_url(data_source)
     branch_ref = _branch_ref(data_source)
     name_map = _identity_name_map(sync)
+    if not name_map:
+        # No identities means this sync manages no devices yet. Fetching would
+        # return the whole estate for an unscoped shard-key list and write
+        # none of it.
+        result.skipped_reason = "no device identities for this sync"
+        return result
     client = sync.source.get_client()
     network_id = (sync.source.parameters or {}).get("network_id")
     query = _load_backup_query()
@@ -254,11 +260,19 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
 
             new_blobs = []
             offset = 0
+            # Scope the FETCH, not just the write. The identity table is this
+            # sync's device scope - the same tag scope every other query is
+            # narrowed to - so passing its keys as shard keys means Forward
+            # returns configurations only for devices that have somewhere to
+            # go. Unscoped, the query returns the whole collected estate and
+            # the surplus is transferred only to be discarded.
+            shard_keys = sorted(name_map)
             while True:
                 rows = client.run_nqe_query(
                     query=query,
                     network_id=network_id,
                     snapshot_id=snapshot_id,
+                    parameters={"forward_netbox_shard_keys": shard_keys},
                     limit=CONFIG_BACKUP_PAGE_SIZE,
                     offset=offset,
                 )

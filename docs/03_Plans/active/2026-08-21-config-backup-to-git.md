@@ -37,6 +37,12 @@ where it lives.
   model rows. Direct client fetch, like the scope probes. Device mapping
   happens NetBox-side via `ForwardDeviceIdentity`, which is also why no alias
   variant is needed: the query never renders a NetBox name.
+- **Scoped at the FETCH, by the same tag scope as the rest of the sync.** The
+  query takes `forward_netbox_shard_keys`, exactly as every device-scoped
+  bundled query does, and the job passes the device names it holds identities
+  for. An unscoped fetch transfers the whole collected estate and discards
+  whatever has nowhere to go. Note the NQE convention that an EMPTY key list
+  means unscoped - so a sync with no identities must not fetch at all.
 - **Never `fetch_all`.** The client has row-count ceilings but no byte
   ceiling; 2.4 GB through `fetch_all` sits in worker RAM. Manual pagination
   with a small page size, each page written into the repo tree and discarded.
@@ -77,10 +83,10 @@ pattern, guarded by `current_post_sync_snapshot`) then:
 
 1. Reads the data source's url/username/password/branch.
 2. Fetches the remote head with dulwich into a temp bare repo; loads its tree.
-3. Pages the NQE query (name + config text, 100 rows/page); for each row that
-   maps to a NetBox device through `ForwardDeviceIdentity`, computes the blob
-   SHA and rewrites the tree entry under `configs/<netbox-device-name>.cfg`
-   only when it differs.
+3. Pages the NQE query (name + config text, 100 rows/page), scoped to the
+   identity table's device names; for each row, computes the blob SHA and
+   rewrites the tree entry under `configs/<netbox-device-name>.cfg` only when
+   it differs.
 4. If anything changed, commits with the snapshot ID and pushes; then calls
    `DataSource.sync()` so DataFiles - and Validity - are current immediately.
 5. Records counts (written, unchanged, unmapped, pages) on the job.
@@ -114,6 +120,10 @@ repository is the operator's and is untouched by a rollback.
 - **DataSource as the single config surface** - the repo Validity reads is by
   definition already configured in NetBox; duplicating url+secret in our
   parameters would be a second place for the same credential to rot.
+- **The query's trailing `;` is load-bearing** and was missing until a live
+  call rejected it. No unit test executes NQE against Forward, so the fake
+  client accepted a query the real one would not have - the reason this
+  feature was probed live before it was written and verified live after.
 - **Files keyed by NetBox device name**, because Validity's path templates
   render NetBox names; the identity table is the authoritative mapping and
   already handles aliasing.
@@ -122,9 +132,14 @@ repository is the operator's and is untouched by a rollback.
 
 - NQE diff optimization (above) once bundled queries carry org query ids in
   the customer's deployment.
-- Devices in Forward with a CONFIG output but no NetBox identity (~900 on the
-  probe network: out-of-scope or endpoints) are skipped and counted; whether
-  an operator wants them under a separate prefix is a follow-up question.
+- Devices in Forward with a CONFIG output but no NetBox identity are now
+  excluded at the fetch rather than counted and discarded, so `unmapped`
+  becomes a real signal: nonzero means an identity-mapping fault, not routine
+  out-of-scope inventory. Whether an operator wants unmanaged devices archived
+  under a separate prefix remains a product question, deliberately unanswered.
+  (An earlier draft of this plan estimated that population at ~900 by
+  subtracting a figure from one deployment from a count taken on another; the
+  number was not measured and has been removed rather than repeated.)
 - The 20 MB outlier config is one NQE row; page size 100 keeps worst-case page
   memory ~2 GB only if 100 such outliers cluster, which the probe says they do
   not (one device >20 MB). A per-page byte budget is noted as hardening.
