@@ -609,6 +609,21 @@ controls whether endpoint rows must carry the source include tags. Exclude tags
 always apply. CIMC management endpoints are excluded from standalone device
 import so parent-server inventory remains authoritative.
 
+`Config Backup Data Source` (`config_backup_data_source`) backs up each synced
+device's running configuration into the git repository behind the selected
+NetBox data source after every successful sync. The configurations are the ones
+Forward collected for the snapshot the sync ran against, so every commit is
+traceable to a named snapshot; the commit message records it. The push uses the
+data source's own URL, credentials, and branch - the plugin stores only the
+data source reference, never a credential - and the data source is synced
+afterward so DataFiles (and consumers such as Validity's golden-config checks)
+are current immediately. Files are written as `configs/<device-name>.cfg` using
+the NetBox device name. Only devices this sync manages are written; a run in
+which no configuration changed makes no commit, and a run against an
+already-backed-up snapshot skips the fetch entirely. Forward strips collected
+credentials, but configuration text retains hashed secrets (for example
+`enable secret`), so treat the repository as access-controlled material.
+
 Each sync records one resolved snapshot, validation run, ingestion, native
 Branching branch, and its stage/merge jobs. Dependency-ordered plan items are
 progress units inside that branch, not independent branches. If staging fails,

@@ -147,6 +147,12 @@ def _quarantine_threshold(value, default):
     return value
 
 
+def _git_data_source_queryset():
+    from core.models import DataSource
+
+    return DataSource.objects.filter(type="git").order_by("name")
+
+
 class ForwardSourceForm(NetBoxModelForm):
     comments = CommentField()
 
@@ -492,6 +498,19 @@ class ForwardSourceForm(NetBoxModelForm):
                 "always apply)."
             ),
         )
+        self.fields["config_backup_data_source"] = forms.ModelChoiceField(
+            required=False,
+            queryset=_git_data_source_queryset(),
+            label="Config Backup Data Source",
+            help_text=(
+                "Back up each synced device's running configuration - as "
+                "Forward collected it, per snapshot - into the git repository "
+                "behind this data source after every successful sync. The "
+                "push uses the data source's own URL, credentials and branch; "
+                "leave empty to disable. Configurations retain hashed "
+                "secrets, so treat the repository as access-controlled."
+            ),
+        )
         self.fields["sync_device_tags"] = FlexibleMultipleChoiceField(
             required=False,
             choices=(),
@@ -615,6 +634,9 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["device_tag_exclude_tags"].initial = exclude_initial
         self.fields["sync_device_tags"].initial = sync_tags_initial
         self.fields["sync_endpoints"].initial = bool(parameters.get("sync_endpoints"))
+        self.fields["config_backup_data_source"].initial = (
+            parameters.get("config_backup_data_source") or None
+        )
         self.fields["sync_generic_endpoints"].initial = bool(
             parameters.get("sync_generic_endpoints")
         )
@@ -691,6 +713,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "sync_endpoints",
                     "sync_generic_endpoints",
                     "scope_endpoints_by_include_tags",
+                    "config_backup_data_source",
                     name="Parameters",
                 )
             )
@@ -725,6 +748,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "sync_endpoints",
                     "sync_generic_endpoints",
                     "scope_endpoints_by_include_tags",
+                    "config_backup_data_source",
                     name="Parameters",
                 )
             )
@@ -877,6 +901,11 @@ class ForwardSourceForm(NetBoxModelForm):
             "apply_device_scope_tags": bool(cleaned.get("apply_device_scope_tags")),
             "sync_device_tags": sync_device_tags,
             "sync_endpoints": bool(cleaned.get("sync_endpoints")),
+            "config_backup_data_source": (
+                cleaned["config_backup_data_source"].pk
+                if cleaned.get("config_backup_data_source")
+                else None
+            ),
             "sync_generic_endpoints": bool(cleaned.get("sync_generic_endpoints")),
             "scope_endpoints_by_include_tags": bool(
                 cleaned.get("scope_endpoints_by_include_tags")
@@ -1081,6 +1110,11 @@ class ForwardSourceForm(NetBoxModelForm):
             ),
             "sync_device_tags": sync_device_tags,
             "sync_endpoints": bool(self.cleaned_data.get("sync_endpoints")),
+            "config_backup_data_source": (
+                self.cleaned_data["config_backup_data_source"].pk
+                if self.cleaned_data.get("config_backup_data_source")
+                else None
+            ),
             "sync_generic_endpoints": bool(
                 self.cleaned_data.get("sync_generic_endpoints")
             ),

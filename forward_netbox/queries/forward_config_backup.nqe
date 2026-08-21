@@ -1,0 +1,24 @@
+/**
+ * Raw device configurations, exactly as Forward collected them.
+ *
+ * NOT a registered query map: the rows are file contents, not NetBox model
+ * rows, so this never enters the workload/merge pipeline. The config-backup
+ * post-sync job loads it directly and pages through it with a small page
+ * size, because a row here averages half a megabyte and the client's
+ * ceilings count rows, not bytes.
+ *
+ * The name emitted is the FORWARD device name. Mapping to a NetBox device -
+ * including any aliasing - happens in the job via ForwardDeviceIdentity,
+ * which is why this query needs no alias variant.
+ *
+ * Forward strips collected credentials from these responses; hashed secrets
+ * in the configuration text itself (for example `enable secret 9 ...`)
+ * remain, as they do in any configuration backup.
+ */
+foreach device in network.devices
+foreach command in device.outputs.commands
+where command.commandType == CommandType.CONFIG
+select {
+  name: device.name,
+  config: command.response
+}
