@@ -200,7 +200,7 @@ def _runtime_decision():
     expected = {
         "netbox_series": "4.6",
         "branching_series": "1.1",
-        "forward_netbox": "2.8.8",
+        "forward_netbox": "2.8.9",
         # Each optional distribution lists every version validated against this
         # engine, not a single pin. An exact pin meant a customer upgrading one
         # optional plugin silently lost the fast baseline — no error, just a

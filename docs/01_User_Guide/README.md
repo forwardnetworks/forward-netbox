@@ -70,13 +70,14 @@ migrations, e.g. netbox-dlm `0.2.0+`; older builds need
 
 ## Release Compatibility
 
-The `2.8.8` release requires NetBox `4.6.x` (>= `4.6.5`, tested on `4.6.8`) and `netbox-branching` `1.1.x` (tested on `1.1.2`). Expand for the published release history and release notes.
+The `2.8.9` release candidate requires NetBox `4.6.x` (>= `4.6.5`, tested on `4.6.8`) and `netbox-branching` `1.1.x` (tested on `1.1.2`). Expand for the published release history and candidate notes.
 
 <details>
 <summary>Release compatibility history</summary>
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
+| `v2.8.9` | `4.6.x` (>= `4.6.5`) supported, tested on `4.6.8`; needs netbox-branching `1.1.x`, tested on `1.1.2` | Release candidate; Fix: a sync deletes a device only on the same quarantined evidence the operator prune requires, and never stages a delete the database will refuse. |
 | `v2.8.8` | `4.6.x` (>= `4.6.5`) supported, tested on `4.6.8`; needs netbox-branching `1.1.x`, tested on `1.1.2` | Current release; Fix: the dependency preview runs again on deployments with optional plugins installed. |
 | `v2.8.7` | `4.6.x` (>= `4.6.5`) supported, tested on `4.6.8`; needs netbox-branching `1.1.x`, tested on `1.1.2` | Superseded by `v2.8.8`; Drift preview compares converged rows in bulk instead of per row; drift rows identify their workload. |
 | `v2.8.6` | `4.6.x` (>= `4.6.5`) supported, tested on `4.6.8`; needs netbox-branching `1.1.x`, tested on `1.1.2` | Superseded by `v2.8.7`; Fix: a failed sync records where it happened, readable in NetBox without a shell. |
