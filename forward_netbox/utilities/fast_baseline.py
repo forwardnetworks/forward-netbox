@@ -21,6 +21,11 @@ from django.utils import timezone
 from .. import config as forward_config
 from ..choices import ForwardSyncStatusChoices
 from .version_series import series_matches
+from .validated_runtime import VALIDATED_BRANCHING_SERIES
+from .validated_runtime import VALIDATED_NETBOX_SERIES
+from .validated_runtime import VALIDATED_OPTIONAL_DISTRIBUTION_NAMES
+from .validated_runtime import VALIDATED_OPTIONAL_DISTRIBUTIONS
+from .validated_runtime import VALIDATED_PLUGIN_APPS
 
 FAST_BASELINE_SPEC_VERSION = 1
 FAST_BASELINE_ADVISORY_LOCK_ID = 0x46574442415345
@@ -178,19 +183,15 @@ def fast_baseline_runtime_tuple():
     netbox_version = getattr(release, "version", None) or getattr(
         settings, "VERSION", ""
     )
-    optional = {
-        "netbox-cisco-aci": "0.4.0",
-        "netbox-dlm": "0.4.1",
-        "netbox-peering-manager": "0.3.0",
-        "netbox-routing": "0.4.3",
-    }
+    # Derived, never repeated: a distribution EXPECTED by the decision below
+    # but not probed here reads as ABSENT and fails the match exactly as a
+    # wrong version would. Two lists cannot disagree if there is only one.
+    optional = VALIDATED_OPTIONAL_DISTRIBUTION_NAMES
     return {
         "netbox": str(netbox_version or ""),
         "branching": _distribution_version("netboxlabs-netbox-branching"),
         "forward_netbox": str(forward_config.version),
-        "optional_plugins": {
-            name: _distribution_version(name) for name in sorted(optional)
-        },
+        "optional_plugins": {name: _distribution_version(name) for name in optional},
         "plugin_apps": sorted(getattr(settings, "PLUGINS", ()) or ()),
     }
 
@@ -198,32 +199,16 @@ def fast_baseline_runtime_tuple():
 def _runtime_decision():
     actual = fast_baseline_runtime_tuple()
     expected = {
-        "netbox_series": "4.6",
-        "branching_series": "1.1",
+        "netbox_series": VALIDATED_NETBOX_SERIES,
+        "branching_series": VALIDATED_BRANCHING_SERIES,
         "forward_netbox": "2.8.9",
         # Each optional distribution lists every version validated against this
         # engine, not a single pin. An exact pin meant a customer upgrading one
         # optional plugin silently lost the fast baseline — no error, just a
         # first sync that takes hours instead of minutes — because the whole
         # tuple stopped matching.
-        "optional_plugins": {
-            "netbox-cisco-aci": frozenset({"0.4.0"}),
-            "netbox-dlm": frozenset(
-                {"0.4.1", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.9.1"}
-            ),
-            "netbox-peering-manager": frozenset({"0.3.0"}),
-            "netbox-routing": frozenset({"0.4.3"}),
-        },
-        "plugin_apps": sorted(
-            {
-                "forward_netbox",
-                "netbox_branching",
-                "netbox_cisco_aci",
-                "netbox_dlm",
-                "netbox_peering_manager",
-                "netbox_routing",
-            }
-        ),
+        "optional_plugins": VALIDATED_OPTIONAL_DISTRIBUTIONS,
+        "plugin_apps": sorted(VALIDATED_PLUGIN_APPS),
     }
     mismatched = (
         not series_matches(actual["netbox"], expected["netbox_series"])

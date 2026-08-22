@@ -21,6 +21,8 @@ from rq.timeouts import JobTimeoutException
 
 from .bulk_delete import lock_related_writes_for_delete
 from .version_series import series_matches
+from .validated_runtime import VALIDATED_OPTIONAL_DISTRIBUTIONS
+from .validated_runtime import VALIDATED_PLUGIN_APPS
 
 logger = logging.getLogger("forward_netbox.bulk_merge")
 
@@ -29,22 +31,9 @@ SET_BASED_MERGE_MODEL_SPEC_VERSIONS = {"dcim.macaddress": 1}
 SET_BASED_MERGE_ALLOWED_MODELS = frozenset(SET_BASED_MERGE_MODEL_SPEC_VERSIONS)
 SET_BASED_MERGE_SUPPORTED_NETBOX_SERIES = "4.6"
 SET_BASED_MERGE_SUPPORTED_BRANCHING_SERIES = "1.1"
-SET_BASED_MERGE_SUPPORTED_OPTIONAL_DISTRIBUTIONS = {
-    "netbox-cisco-aci": frozenset({"0.4.0"}),
-    "netbox-dlm": frozenset({"0.4.1", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.9.1"}),
-    "netbox-peering-manager": frozenset({"0.3.0"}),
-    "netbox-routing": frozenset({"0.4.3"}),
-}
-SET_BASED_MERGE_SUPPORTED_PLUGIN_APPS = frozenset(
-    {
-        "forward_netbox",
-        "netbox_branching",
-        "netbox_cisco_aci",
-        "netbox_dlm",
-        "netbox_peering_manager",
-        "netbox_routing",
-    }
-)
+
+SET_BASED_MERGE_SUPPORTED_OPTIONAL_DISTRIBUTIONS = VALIDATED_OPTIONAL_DISTRIBUTIONS
+SET_BASED_MERGE_SUPPORTED_PLUGIN_APPS = VALIDATED_PLUGIN_APPS
 SET_BASED_MAC_MODEL = "dcim.macaddress"
 _MAC_PAYLOAD_FIELDS = frozenset(
     {

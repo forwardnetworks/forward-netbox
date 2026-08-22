@@ -8,6 +8,8 @@ from netbox_branching.contextvars import active_branch
 
 from ..choices import FORWARD_SUPPORTED_MODELS
 from ..choices import ForwardApplyEngineChoices
+from .validated_runtime import VALIDATED_OPTIONAL_DISTRIBUTIONS
+from .validated_runtime import VALIDATED_PLUGIN_APPS
 from .version_series import series_matches
 
 
@@ -61,24 +63,13 @@ COPY_SQL_MODEL_SPEC_VERSIONS = {
     "dcim.macaddress": 1,
 }
 COPY_SQL_ALLOWED_MODELS = frozenset(COPY_SQL_MODEL_SPEC_VERSIONS)
+
 COPY_SQL_SUPPORTED_NETBOX_SERIES = "4.6"
 COPY_SQL_SUPPORTED_BRANCHING_SERIES = "1.1"
-COPY_SQL_SUPPORTED_OPTIONAL_DISTRIBUTIONS = {
-    "netbox-cisco-aci": frozenset({"0.4.0"}),
-    "netbox-dlm": frozenset({"0.4.1", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.9.1"}),
-    "netbox-peering-manager": frozenset({"0.3.0"}),
-    "netbox-routing": frozenset({"0.4.3"}),
-}
-COPY_SQL_SUPPORTED_PLUGIN_APPS = frozenset(
-    {
-        "forward_netbox",
-        "netbox_branching",
-        "netbox_cisco_aci",
-        "netbox_dlm",
-        "netbox_peering_manager",
-        "netbox_routing",
-    }
-)
+# Derived from the single validated-runtime declaration; see
+# `validated_runtime` for why these are no longer written out per engine.
+COPY_SQL_SUPPORTED_OPTIONAL_DISTRIBUTIONS = VALIDATED_OPTIONAL_DISTRIBUTIONS
+COPY_SQL_SUPPORTED_PLUGIN_APPS = VALIDATED_PLUGIN_APPS
 ADAPTER_REQUIRED_MODELS = set(FORWARD_SUPPORTED_MODELS) - BULK_ORM_ENABLED_MODELS
 
 ADAPTER_MODEL_BLOCKERS = {
