@@ -332,6 +332,93 @@ class ConfigBackupTest(TestCase):
         with self.assertRaises(ForwardSyncError):
             self._run([{"name": "fwd-router-1", "config": "x\n"}])
 
+    def test_changed_blobs_are_written_as_produced_not_accumulated(self):
+        """Peak memory on a large fleet depends on this, not on page size.
+
+        Measured on 3,400 synthetic devices (~1.9 GB of configs): holding
+        every changed `Blob` in a list until the fetch loop finished cost 4.2
+        GB of peak RSS - the whole fleet's blobs plus dulwich's own overhead,
+        resident at once. Writing each blob to the object store as soon as
+        it is produced cut that to 2.4 GB on the identical run. The NQE page
+        size bounds fetch memory; it says nothing about this accumulation,
+        which dominates on any run touching most of the fleet - a first
+        backup being exactly that case.
+
+        A count of `add_object` calls cannot tell "batched afterward" from
+        "written as produced" - both call it once per row, just at different
+        times. This crosses a real page boundary and records fetches and
+        writes on one shared timeline: fixed, page one's writes land before
+        the second fetch; accumulated, every write lands after the last
+        fetch. An earlier version of this test asserted only the count and
+        passed against the accumulating code it exists to catch - the
+        negative control that should have failed it, did not.
+        """
+        from unittest.mock import patch
+
+        from dulwich.object_store import DiskObjectStore
+
+        # More devices than one page, mapped through this test's own sync so
+        # the boundary is guaranteed to fall mid-fleet.
+        site = Site.objects.create(name="Order Site", slug="order-site")
+        mfr = Manufacturer.objects.create(name="Order Mfr", slug="order-mfr")
+        dtype = DeviceType.objects.create(
+            manufacturer=mfr, model="Order DT", slug="order-dt"
+        )
+        role = DeviceRole.objects.create(name="Order Role", slug="order-role")
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync, snapshot_id="snap-order"
+        )
+        count = CONFIG_BACKUP_PAGE_SIZE + 5
+        rows = []
+        for i in range(count):
+            device = Device.objects.create(
+                name=f"order-{i:03d}", site=site, device_type=dtype, role=role
+            )
+            ForwardDeviceIdentity.objects.create(
+                sync=self.sync,
+                ingestion=ingestion,
+                source_device_key=f"fwd-order-{i:03d}",
+                device=device,
+            )
+            rows.append(
+                {"name": f"fwd-order-{i:03d}", "config": f"hostname order-{i}\n"}
+            )
+
+        timeline = []
+        original_add_object = DiskObjectStore.add_object
+
+        def recording_add_object(self, obj):
+            if type(obj).__name__ == "Blob":
+                timeline.append("write")
+            return original_add_object(self, obj)
+
+        client = _FakeClient(rows)
+        original_fetch = client.run_nqe_query
+
+        def recording_fetch(**kwargs):
+            timeline.append("fetch")
+            return original_fetch(**kwargs)
+
+        client.run_nqe_query = recording_fetch
+        with patch.object(
+            ForwardSource, "get_client", return_value=client
+        ), patch.object(DiskObjectStore, "add_object", recording_add_object):
+            run_config_backup(self.sync, snapshot_id="snap-order")
+
+        self.assertEqual(
+            timeline.count("fetch"), 2, f"expected two pages, got {timeline}"
+        )
+        self.assertEqual(timeline.count("write"), count, "one write per changed row")
+        second_fetch_index = [i for i, e in enumerate(timeline) if e == "fetch"][1]
+        writes_before_second_fetch = timeline[:second_fetch_index].count("write")
+        self.assertGreater(
+            writes_before_second_fetch,
+            0,
+            "no write happened before the second page was fetched - every "
+            "blob was accumulated and written in one batch afterward, which "
+            f"is the regression this test exists to catch: timeline={timeline}",
+        )
+
 
 class ValidityReadsWhatWeWriteTest(TestCase):
     """The chain, end to end, through the consumer that motivated the feature.

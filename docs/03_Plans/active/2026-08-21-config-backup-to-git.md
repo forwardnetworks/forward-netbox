@@ -165,6 +165,8 @@ repository is the operator's and is untouched by a rollback.
   (An earlier draft of this plan estimated that population at ~900 by
   subtracting a figure from one deployment from a count taken on another; the
   number was not measured and has been removed rather than repeated.)
-- The 20 MB outlier config is one NQE row; page size 100 keeps worst-case page
-  memory ~2 GB only if 100 such outliers cluster, which the probe says they do
-  not (one device >20 MB). A per-page byte budget is noted as hardening.
+- The 20 MB outlier config is one NQE row; page size bounds fetch memory only,
+  not retention. **Measured and fixed in
+  `2026-08-22-config-backup-scale-test.md`**: at 3,400 devices / 1.9 GB, peak
+  RSS grew 4.2 GB because every changed blob was held in a list instead of
+  written as produced; fixed to a 2.4 GB delta on the identical run.
