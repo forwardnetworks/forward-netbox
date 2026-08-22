@@ -315,6 +315,116 @@ def _fast_path_runtime_check():
     )
 
 
+def _config_backup_delivery_check(sync):
+    """Is the chain from our commit to Validity's compliance run joined up?
+
+    Three separate things must agree for a backed-up configuration to reach
+    Validity, and every one of them succeeds independently while delivering
+    nothing if another is wrong:
+
+      1. the data source carries a `device_config_path` custom field, and it
+         renders to the paths this plugin writes;
+      2. some tenant's `data_source` custom field - or a data source marked
+         `default` - binds devices to that data source;
+      3. the data source has actually synced since the last push.
+
+    Get any of them wrong and the backup job reports success, the repository
+    holds the configurations, and Validity shows nothing. That is precisely
+    the failure this check exists to name, because nothing else in either
+    product will. Returns None when config backup is not enabled.
+    """
+    from .config_backup import CONFIG_BACKUP_PARAMETER_NAME
+    from .config_backup import CONFIG_BACKUP_REPO_PREFIX
+
+    source_parameters = getattr(getattr(sync, "source", None), "parameters", None) or {}
+    data_source_pk = source_parameters.get(CONFIG_BACKUP_PARAMETER_NAME)
+    if not data_source_pk:
+        return None
+
+    from django.apps import apps as django_apps
+
+    from core.models import DataSource
+
+    data_source = DataSource.objects.filter(pk=data_source_pk).first()
+    if data_source is None:
+        return _check(
+            name="Config backup delivery",
+            status="warn",
+            message=(
+                "Config backup names a data source that no longer exists; "
+                "no configuration is being written."
+            ),
+        )
+
+    problems = []
+    if data_source.last_synced is None:
+        problems.append(
+            f"data source “{data_source.name}” has never synced, so its files "
+            "are not visible to anything reading it"
+        )
+
+    if django_apps.is_installed("validity"):
+        expected_prefix = f"{CONFIG_BACKUP_REPO_PREFIX}/"
+        template = (data_source.custom_field_data or {}).get("device_config_path") or ""
+        if not template:
+            problems.append(
+                "Validity is installed but the data source has no "
+                "`device_config_path`, so Validity cannot locate any device's "
+                f"configuration (this plugin writes `{expected_prefix}"
+                "<device-name>.cfg`)"
+            )
+        elif expected_prefix not in template:
+            problems.append(
+                f"the data source's `device_config_path` (“{template}”) does "
+                f"not point at `{expected_prefix}`, where this plugin writes"
+            )
+        try:
+            from tenancy.models import Tenant
+
+            # Validity casts this value out of JSON, so NetBox may have
+            # stored it as a number or as a string depending on how it was
+            # set. Matching only one produces a confident FALSE warning that
+            # the binding is missing when it is right there.
+            bound = (
+                Tenant.objects.filter(
+                    custom_field_data__data_source=data_source.pk
+                ).exists()
+                or Tenant.objects.filter(
+                    custom_field_data__data_source=str(data_source.pk)
+                ).exists()
+            )
+            default = DataSource.objects.filter(
+                custom_field_data__default=True
+            ).exists()
+            if not bound and not default:
+                problems.append(
+                    "no tenant binds devices to this data source and no data "
+                    "source is marked `default`, so Validity will not read it "
+                    "for any device"
+                )
+        except JobTimeoutException:
+            raise
+        except Exception:  # noqa: BLE001 - a health check must never fail a page
+            pass
+
+    if problems:
+        return _check(
+            name="Config backup delivery",
+            status="warn",
+            message="Config backup is enabled but " + "; ".join(problems) + ".",
+        )
+    return _check(
+        name="Config backup delivery",
+        status="pass",
+        message=(
+            f"Config backup writes to “{data_source.name}”, which has synced "
+            "at least once and is reachable by its consumers. Whether that "
+            "sync is newer than the most recent backup commit is not checked "
+            "here."
+        ),
+    )
+
+
 def _base_variant_conflict_check(sync):
     """Warn when a base query and its opt-in variant are both enabled.
 
@@ -450,6 +560,9 @@ def sync_health_summary(sync):
     fast_path_check = _fast_path_runtime_check()
     if fast_path_check is not None:
         checks.append(fast_path_check)
+    config_backup_check = _config_backup_delivery_check(sync)
+    if config_backup_check is not None:
+        checks.append(config_backup_check)
     variant_conflict_check = _base_variant_conflict_check(sync)
     if variant_conflict_check is not None:
         checks.append(variant_conflict_check)

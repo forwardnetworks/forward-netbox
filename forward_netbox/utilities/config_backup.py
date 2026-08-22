@@ -145,9 +145,35 @@ def _authenticated_url(data_source):
     )
 
 
-def _branch_ref(data_source):
-    branch = (data_source.parameters or {}).get("branch") or "main"
-    return ("refs/heads/" + branch).encode("ascii")
+def _branch_ref(data_source, remote_refs=None):
+    """The ref to write, honouring the remote's own default when unset.
+
+    An explicit ``branch`` parameter on the data source wins. Without one this
+    used to assume ``main``, which is a guess, and it is wrong in the case that
+    matters most: a freshly initialised repository whose ``HEAD`` still points
+    at ``master``. The push then succeeds against a branch nobody reads, NetBox
+    clones ``HEAD``, finds nothing, and the data source syncs ZERO files - a
+    backup that reports success and delivers nothing.
+
+    So when the operator has not named a branch, follow the remote's ``HEAD``
+    and write where the remote itself says its default is. Only when the remote
+    offers no opinion at all - a genuinely empty repository - is a default
+    invented, and then it matches the initial branch git and dulwich create.
+    """
+    branch = (data_source.parameters or {}).get("branch")
+    if branch:
+        return ("refs/heads/" + str(branch)).encode("ascii")
+    symrefs = getattr(remote_refs, "symrefs", None) or {}
+    target = symrefs.get(b"HEAD")
+    if target:
+        return target
+    refs = getattr(remote_refs, "refs", None) or {}
+    head = refs.get(b"HEAD")
+    if head:
+        for name, value in refs.items():
+            if name.startswith(b"refs/heads/") and value == head:
+                return name
+    return b"refs/heads/main"
 
 
 def _identity_name_map(sync):
@@ -175,22 +201,22 @@ def _safe_file_name(device_name):
     return name + ".cfg"
 
 
-def _fetch_remote_head(repo, url, branch_ref):
-    """Fetch the remote branch tip into `repo`; None for an empty remote."""
+def _fetch_remote(repo, url):
+    """Fetch the remote into `repo` and return what it advertised."""
     from dulwich import porcelain
 
     try:
-        result = porcelain.fetch(repo, url)
+        return porcelain.fetch(repo, url)
     except Exception as exc:
         raise ForwardSyncError(
             f"config backup could not fetch the data source repository "
             f"({type(exc).__name__})."
         ) from exc
-    refs = getattr(result, "refs", None) or {}
-    head = refs.get(branch_ref)
-    if head is None and refs:
-        head = refs.get(b"HEAD")
-    return head
+
+
+def _remote_head(remote_refs, branch_ref):
+    refs = getattr(remote_refs, "refs", None) or {}
+    return refs.get(branch_ref)
 
 
 def _tree_entries(repo, tree_sha):
@@ -220,7 +246,6 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
         return result
 
     url = _authenticated_url(data_source)
-    branch_ref = _branch_ref(data_source)
     name_map = _identity_name_map(sync)
     if not name_map:
         # No identities means this sync manages no devices yet. Fetching would
@@ -235,7 +260,9 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
     with tempfile.TemporaryDirectory(prefix="fwd-config-backup-") as workdir:
         repo = Repo.init_bare(workdir)
         try:
-            head = _fetch_remote_head(repo, url, branch_ref)
+            remote_refs = _fetch_remote(repo, url)
+            branch_ref = _branch_ref(data_source, remote_refs)
+            head = _remote_head(remote_refs, branch_ref)
 
             # Fast path: the head commit says it already holds this snapshot.
             # Even without it the run is write-free - every blob would match -

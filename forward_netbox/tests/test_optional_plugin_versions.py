@@ -105,6 +105,7 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
                 "netbox-dlm": dlm_version,
                 "netbox-peering-manager": "0.3.0",
                 "netbox-routing": "0.4.3",
+                "netbox-validity": "3.5.2",
             },
             "plugin_apps": sorted(
                 {
@@ -114,6 +115,7 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
                     "netbox_dlm",
                     "netbox_peering_manager",
                     "netbox_routing",
+                    "validity",
                 }
             ),
         }
@@ -134,6 +136,7 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
                 "netbox-dlm": "0.5.0",
                 "netbox-peering-manager": "0.3.0",
                 "netbox-routing": "0.4.3",
+                "netbox-validity": "3.5.2",
             },
             "plugin_apps": sorted(
                 {
@@ -143,6 +146,7 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
                     "netbox_dlm",
                     "netbox_peering_manager",
                     "netbox_routing",
+                    "validity",
                 }
             ),
         }

@@ -11,6 +11,7 @@ PLUGINS = [
     "netbox_routing",
     "netbox_peering_manager",
     "netbox_cisco_aci",
+    "validity",
     "forward_netbox",
 ]
 

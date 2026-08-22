@@ -20,15 +20,17 @@ The negative space matters most here:
 
 import tempfile
 
+from core.models import DataSource
 from dcim.models import Device
 from dcim.models import DeviceRole
 from dcim.models import DeviceType
 from dcim.models import Manufacturer
 from dcim.models import Site
 from django.contrib.auth import get_user_model
+from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
+from extras.models import CustomField
 
-from core.models import DataSource
 from forward_netbox.exceptions import ForwardSyncError
 from forward_netbox.models import ForwardDeviceIdentity
 from forward_netbox.models import ForwardIngestion
@@ -56,7 +58,7 @@ def _read_config_blob(repo_path, file_name):
     from dulwich.repo import Repo
 
     with Repo(repo_path) as repo:
-        head = repo.refs[b"refs/heads/main"]
+        head = repo.refs[repo.refs.follow(b"HEAD")[0][1]]
         commit = repo.object_store[head]
         root = repo.object_store[commit.tree]
         _mode, configs_sha = dict(
@@ -74,7 +76,7 @@ def _head_and_message(repo_path):
     from dulwich.repo import Repo
 
     with Repo(repo_path) as repo:
-        head = repo.refs[b"refs/heads/main"]
+        head = repo.refs[repo.refs.follow(b"HEAD")[0][1]]
         commit = repo.object_store[head]
         return head, commit.message.decode(), list(commit.parents)
 
@@ -272,6 +274,54 @@ class ConfigBackupTest(TestCase):
 
         self.assertNotIn(marker, json.dumps(result.as_dict()))
 
+    def test_the_push_follows_the_remote_default_branch(self):
+        """A backup that pushes where nobody reads is a silent data-loss bug.
+
+        `Repo.init_bare` leaves HEAD pointing at refs/heads/master. Assuming
+        `main` when the data source names no branch meant the push succeeded,
+        NetBox cloned HEAD, found nothing, and the data source synced ZERO
+        files - success reported, nothing delivered. Found by running the
+        whole chain against Validity, not by any unit test here.
+        """
+        from dulwich.repo import Repo
+
+        with Repo(self.tmp.name) as repo:
+            head_target = repo.refs.follow(b"HEAD")[0][1]
+        self.assertEqual(
+            head_target,
+            b"refs/heads/master",
+            "fixture assumption: a bare repo's HEAD is master, which is what "
+            "makes this test meaningful",
+        )
+
+        result, _client = self._run(
+            [{"name": "fwd-router-1", "config": "hostname router-1\n"}]
+        )
+
+        self.assertTrue(result.pushed)
+        with Repo(self.tmp.name) as repo:
+            refs = repo.get_refs()
+        self.assertIn(
+            b"refs/heads/master",
+            refs,
+            "the commit must land on the branch the remote calls default, "
+            f"not on an assumed one; refs are {sorted(refs)}",
+        )
+
+    def test_an_explicit_branch_parameter_still_wins(self):
+        self.data_source.parameters = {"branch": "backups"}
+        self.data_source.save()
+
+        result, _client = self._run(
+            [{"name": "fwd-router-1", "config": "hostname router-1\n"}]
+        )
+
+        self.assertTrue(result.pushed)
+        from dulwich.repo import Repo
+
+        with Repo(self.tmp.name) as repo:
+            self.assertIn(b"refs/heads/backups", repo.get_refs())
+
     def test_a_non_git_data_source_is_refused(self):
         local = DataSource.objects.create(
             name="local-files", type="local", source_url="file:///tmp"
@@ -281,3 +331,111 @@ class ConfigBackupTest(TestCase):
 
         with self.assertRaises(ForwardSyncError):
             self._run([{"name": "fwd-router-1", "config": "x\n"}])
+
+
+class ValidityReadsWhatWeWriteTest(TestCase):
+    """The chain, end to end, through the consumer that motivated the feature.
+
+    Every step of this succeeds independently while delivering nothing if
+    another is wrong, which is exactly how the branch bug hid: the backup
+    reported `pushed=True` with a commit SHA while the data source synced zero
+    files. Only running the whole chain - push, sync, and Validity's own path
+    resolution - shows whether a configuration actually arrives.
+
+    Validity binds a device to its file through the data source's
+    `device_config_path` custom field, rendered as Jinja2 with `device` in
+    context. That contract is asserted here rather than assumed, so a Validity
+    release that changes it fails this test instead of silently orphaning
+    every backup.
+
+    Skipped when Validity is not installed; it is an optional integration.
+    """
+
+    def setUp(self):
+        from django.apps import apps as django_apps
+
+        if not django_apps.is_installed("validity"):
+            self.skipTest("netbox-validity is not installed")
+
+        from dulwich.repo import Repo
+
+        self.tmp = tempfile.TemporaryDirectory(prefix="cfg-validity-")
+        self.addCleanup(self.tmp.cleanup)
+        Repo.init_bare(self.tmp.name).close()
+
+        self.data_source = DataSource.objects.create(
+            name="validity-config-backups", type="git", source_url=self.tmp.name
+        )
+        cf, _created = CustomField.objects.get_or_create(
+            name="device_config_path",
+            defaults={"type": "text", "label": "Device config path"},
+        )
+        cf.object_types.set([ContentType.objects.get_for_model(DataSource)])
+        cf.save()
+        self.data_source.custom_field_data["device_config_path"] = (
+            "configs/{{device.name}}.cfg"
+        )
+        self.data_source.save()
+
+        user = get_user_model().objects.create_user(username="validity-owner")
+        source = ForwardSource.objects.create(
+            name="validity-source",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "network_id": "net-1",
+                "config_backup_data_source": self.data_source.pk,
+            },
+        )
+        self.sync = ForwardSync.objects.create(
+            name="validity-sync", source=source, user=user
+        )
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync, snapshot_id="snap-v1"
+        )
+        site = Site.objects.create(name="V Site", slug="v-site")
+        mfr = Manufacturer.objects.create(name="V Mfr", slug="v-mfr")
+        dtype = DeviceType.objects.create(manufacturer=mfr, model="V DT", slug="v-dt")
+        role = DeviceRole.objects.create(name="V Role", slug="v-role")
+        self.device = Device.objects.create(
+            name="validity-edge-1", site=site, device_type=dtype, role=role
+        )
+        ForwardDeviceIdentity.objects.create(
+            sync=self.sync,
+            ingestion=ingestion,
+            source_device_key="fwd-validity-edge-1",
+            device=self.device,
+        )
+
+    def test_a_backed_up_config_is_readable_by_validity(self):
+        from unittest.mock import patch
+
+        from validity.models import VDataSource
+        from validity.models import VDevice
+
+        config = "hostname validity-edge-1\n!\nntp server 192.0.2.1\n!\nend\n"
+        client = _FakeClient([{"name": "fwd-validity-edge-1", "config": config}])
+        with patch.object(ForwardSource, "get_client", return_value=client):
+            result = run_config_backup(self.sync, snapshot_id="snap-v1")
+        self.assertTrue(result.pushed)
+
+        self.data_source.refresh_from_db()
+        self.data_source.sync()
+        self.assertTrue(
+            self.data_source.datafiles.exists(),
+            "the data source synced no files - the commit landed somewhere "
+            "NetBox does not read, which is the failure this test exists for",
+        )
+
+        vds = VDataSource.objects.get(pk=self.data_source.pk)
+        vdev = VDevice.objects.get(pk=self.device.pk)
+        rendered = vds.get_config_path(vdev)
+
+        self.assertEqual(rendered, f"configs/{self.device.name}.cfg")
+        data_file = vds.datafiles.filter(path=rendered).first()
+        self.assertIsNotNone(
+            data_file,
+            f"Validity resolves {rendered} but no data file has that path; "
+            f"available: {sorted(vds.datafiles.values_list('path', flat=True))}",
+        )
+        self.assertEqual(data_file.data_as_string, config)

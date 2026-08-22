@@ -38,6 +38,14 @@ VALIDATED_PLUGIN_APPS = frozenset(
         "netbox_dlm",
         "netbox_peering_manager",
         "netbox_routing",
+        # netbox-validity is a CONSUMER integration: it reads configuration
+        # files from a git data source and writes nothing the apply engines
+        # touch. It is listed here anyway, because this set is an exact match
+        # that fails closed - its mere presence in PLUGINS would otherwise
+        # disable the fast paths entirely. This entry is a claim that they
+        # were validated with it installed; the COPY/SQL paired-branch
+        # equivalence tests are that validation.
+        "validity",
     }
 )
 
@@ -49,6 +57,7 @@ VALIDATED_OPTIONAL_DISTRIBUTIONS = {
     "netbox-dlm": frozenset({"0.4.1", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.9.1"}),
     "netbox-peering-manager": frozenset({"0.3.0"}),
     "netbox-routing": frozenset({"0.4.3"}),
+    "netbox-validity": frozenset({"3.5.2"}),
 }
 
 # The distributions whose versions a runtime probe reports. Derived rather than

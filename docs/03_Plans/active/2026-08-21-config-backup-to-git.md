@@ -91,6 +91,28 @@ pattern, guarded by `current_post_sync_snapshot`) then:
    `DataSource.sync()` so DataFiles - and Validity - are current immediately.
 5. Records counts (written, unchanged, unmapped, pages) on the job.
 
+## Validation - proven against Validity end to end
+
+The whole chain was run in the development runtime with `netbox-validity`
+installed: our backup job -> git push -> `DataSource.sync()` -> `DataFile` ->
+`VDataSource.get_config_path(device)` -> matching data file -> content
+identical to what Forward returned. Validity binds a device to its
+configuration through a `device_config_path` custom field on the data source,
+rendered as Jinja2 with `device` in context, so `configs/{{device.name}}.cfg`
+is exactly what our layout produces.
+
+**That test failed on its first run, and the failure was the point.** The data
+source synced ZERO files while the backup reported `pushed=True`. A bare
+repository's `HEAD` points at `refs/heads/master`; this code assumed `main`
+when the data source names no branch, so the push landed on a branch nobody
+reads, NetBox cloned `HEAD`, and found nothing. Every counter said success and
+nothing was delivered - the worst failure shape available. No unit test here
+could have caught it, because they all inspect the repository we push TO;
+only cloning it the way NetBox does exposes the mismatch.
+
+The branch is now resolved from the remote's own `HEAD`, with an explicit
+`branch` parameter still winning, and two regression tests pin both paths.
+
 ## Validation
 
 Unit tests against a local bare repository (dulwich end-to-end, no network):
@@ -120,6 +142,9 @@ repository is the operator's and is untouched by a rollback.
 - **DataSource as the single config surface** - the repo Validity reads is by
   definition already configured in NetBox; duplicating url+secret in our
   parameters would be a second place for the same credential to rot.
+- **Never assume the default branch.** See the validation section: assuming
+  `main` produced a silent no-op backup. The remote's `HEAD` is the only
+  authority on where its default lives.
 - **The query's trailing `;` is load-bearing** and was missing until a live
   call rejected it. No unit test executes NQE against Forward, so the fake
   client accepted a query the real one would not have - the reason this

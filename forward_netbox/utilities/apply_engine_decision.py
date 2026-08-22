@@ -67,7 +67,10 @@ COPY_SQL_ALLOWED_MODELS = frozenset(COPY_SQL_MODEL_SPEC_VERSIONS)
 COPY_SQL_SUPPORTED_NETBOX_SERIES = "4.6"
 COPY_SQL_SUPPORTED_BRANCHING_SERIES = "1.1"
 # Derived from the single validated-runtime declaration; see
-# `validated_runtime` for why these are no longer written out per engine.
+# `validated_runtime` for why these are no longer written out per engine, and
+# for the netbox-validity entry - a CONSUMER integration reads configuration
+# files from a git data source and writes nothing this engine touches, and is
+# listed there because this tuple is an exact match that fails closed.
 COPY_SQL_SUPPORTED_OPTIONAL_DISTRIBUTIONS = VALIDATED_OPTIONAL_DISTRIBUTIONS
 COPY_SQL_SUPPORTED_PLUGIN_APPS = VALIDATED_PLUGIN_APPS
 ADAPTER_REQUIRED_MODELS = set(FORWARD_SUPPORTED_MODELS) - BULK_ORM_ENABLED_MODELS
