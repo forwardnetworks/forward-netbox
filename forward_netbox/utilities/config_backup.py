@@ -285,7 +285,6 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
             else:
                 config_entries = {}
 
-            new_blobs = []
             offset = 0
             # Scope the FETCH, not just the write. The identity table is this
             # sync's device scope - the same tag scope every other query is
@@ -319,7 +318,18 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
                     if existing is not None and existing[1] == blob.id:
                         result.unchanged += 1
                         continue
-                    new_blobs.append(blob)
+                    # Written immediately rather than accumulated. A held list
+                    # of every changed Blob for the run is fine at fixture
+                    # scale and is not fine at fleet scale: measured on 3,400
+                    # synthetic devices (~1.9 GB of configs), holding them all
+                    # until the fetch loop finished cost 4.2 GB of peak RSS -
+                    # roughly 2.2x the payload, because each Blob object and
+                    # its zlib buffer live alongside the raw text. The comment
+                    # that sized the NQE page at 100 rows reasoned about fetch
+                    # memory; it did not reason about this accumulation, which
+                    # dominates peak memory on any run that touches most of
+                    # the fleet - a first backup being exactly that case.
+                    repo.object_store.add_object(blob)
                     config_entries[entry_name] = (0o100644, blob.id)
                     result.written += 1
                 if len(rows) < CONFIG_BACKUP_PAGE_SIZE:
@@ -338,8 +348,6 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
                 result.skipped_reason = "no configuration changed"
                 return result
 
-            for blob in new_blobs:
-                repo.object_store.add_object(blob)
             config_tree = Tree()
             for entry_name in sorted(config_entries):
                 mode, sha = config_entries[entry_name]
