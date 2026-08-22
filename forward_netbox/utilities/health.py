@@ -1,6 +1,8 @@
 import logging
 from collections import Counter
 
+from rq.timeouts import JobTimeoutException
+
 from .branching import missing_branch_table_report
 from .forward_api import LATEST_PROCESSED_SNAPSHOT
 from .health_apply_fetch import apply_engine_summary as _apply_engine_summary_impl
@@ -225,6 +227,94 @@ _BASE_VARIANT_QUERY_PAIRS = (
 )
 
 
+def _fast_path_runtime_check():
+    """Say when the fast paths are switched off, and by what.
+
+    Three subsystems refuse to run unless the installed plugin set exactly
+    matches a validated tuple: the COPY/SQL apply engine, the set-based merge,
+    and the fast baseline. Failing closed is right - their SQL is generated
+    against a known schema - but the consequence is invisible. Installing any
+    NetBox plugin this release has not validated silently costs a deployment
+    all three, and for the fast baseline that is a first sync taking hours
+    instead of minutes, with no error raised anywhere and nothing in the UI
+    that mentions it.
+
+    The decision objects already carry the reason. Nothing surfaced it, so the
+    only way to discover it was to notice a sync being slow and go reading
+    engine internals. This check names the unexpected plugins - the actionable
+    part - rather than dumping both tuples.
+
+    Returns None when every fast path is available, which is the ordinary case
+    and needs no row on the page.
+    """
+    from django.conf import settings
+
+    from .apply_engine_decision import COPY_SQL_SUPPORTED_PLUGIN_APPS
+    from .fast_baseline import _runtime_decision as _fast_baseline_runtime_decision
+    from .merge_set_based import SET_BASED_MERGE_SUPPORTED_PLUGIN_APPS
+    from .validated_runtime import missing_plugin_apps
+    from .validated_runtime import unexpected_plugin_apps
+
+    actual_apps = frozenset(getattr(settings, "PLUGINS", ()) or ())
+    disabled = []
+
+    try:
+        baseline = _fast_baseline_runtime_decision()
+        if not baseline.enabled and baseline.reason_code == "unsupported_runtime_tuple":
+            disabled.append("the fast baseline (first sync takes hours, not minutes)")
+    except JobTimeoutException:
+        raise
+    except Exception:  # noqa: BLE001 - a health check must not break the page
+        pass
+
+    if actual_apps != COPY_SQL_SUPPORTED_PLUGIN_APPS:
+        disabled.append("the COPY/SQL apply engine")
+    if actual_apps != SET_BASED_MERGE_SUPPORTED_PLUGIN_APPS:
+        disabled.append("the set-based merge")
+
+    if not disabled:
+        return None
+
+    # The declaration's own helpers, rather than re-deriving the comparison
+    # here: this check exists because the validated set used to be spelled out
+    # in several places, and adding another spelling would be the same mistake.
+    unexpected = unexpected_plugin_apps(actual_apps)
+    missing = missing_plugin_apps(actual_apps)
+    causes = []
+    if unexpected:
+        causes.append(
+            "installed plugins this release has not validated: "
+            + ", ".join(f"`{name}`" for name in unexpected)
+        )
+    if missing:
+        causes.append(
+            "validated plugins that are not installed: "
+            + ", ".join(f"`{name}`" for name in missing)
+        )
+    if not causes:
+        # The app set matches but a VERSION does not, which the subsystems
+        # report separately; say so rather than implying the plugin list is
+        # wrong.
+        causes.append(
+            "an optional plugin version outside the validated set (the plugin "
+            "list itself matches)"
+        )
+
+    return _check(
+        name="Fast apply paths",
+        status="warn",
+        message=(
+            "Disabled: "
+            + "; ".join(disabled)
+            + ". Cause: "
+            + "; ".join(causes)
+            + ". These subsystems require an exact runtime match and fail "
+            "closed, so syncs still succeed - only more slowly, and with no "
+            "other warning."
+        ),
+    )
+
+
 def _base_variant_conflict_check(sync):
     """Warn when a base query and its opt-in variant are both enabled.
 
@@ -357,6 +447,9 @@ def sync_health_summary(sync):
     optin_feature_check = _optin_feature_map_state_check(sync)
     if optin_feature_check is not None:
         checks.append(optin_feature_check)
+    fast_path_check = _fast_path_runtime_check()
+    if fast_path_check is not None:
+        checks.append(fast_path_check)
     variant_conflict_check = _base_variant_conflict_check(sync)
     if variant_conflict_check is not None:
         checks.append(variant_conflict_check)
