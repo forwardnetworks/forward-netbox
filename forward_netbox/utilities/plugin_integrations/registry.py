@@ -243,11 +243,54 @@ DLM_INTEGRATION = OptionalPluginIntegration(
 )
 
 
+VALIDITY_INTEGRATION = OptionalPluginIntegration(
+    key="compliance.validity",
+    app_label="validity",
+    display_name="NetBox Validity",
+    # A CONSUMER, not a destination - the first of its kind in this registry.
+    #
+    # Every other integration here is somewhere this plugin WRITES: Forward
+    # rows are synced into its models through query maps and an adapter, so it
+    # declares required models, supported models and a sync contract. Nothing
+    # is ever written into Validity's models. The config-backup job writes
+    # configuration files into the git repository behind a NetBox data source,
+    # and Validity reads that data source; the two never touch the same table.
+    #
+    # So the model tuples are empty on purpose, and leaving them empty is not
+    # an omission to be filled in later. What this entry buys is visibility:
+    # the version lands in the support bundle alongside the others, and the
+    # health check can tell an operator whether the chain from our commit to
+    # Validity's compliance run is actually joined up - which is the failure
+    # this integration exists to surface, because every part of it succeeds
+    # independently while delivering nothing.
+    required_models=(),
+    supported_models=(),
+    package_name="netbox-validity",
+    required_package_version="3.5.2",
+    supported_package_versions=("3.5.2",),
+    enabled_by_default=False,
+    status="supported",
+    notes=(
+        "Consumer integration: this plugin writes device configurations into "
+        "the git repository behind a NetBox data source and Validity reads "
+        "them for golden-config compliance. Nothing is written into "
+        "Validity's own models.",
+        "Validity binds a device to a data source through the device's "
+        "TENANT `data_source` custom field, or a data source marked "
+        "`default`; and it locates each device's file through the data "
+        "source's `device_config_path` custom field, rendered as a Jinja2 "
+        "template with `device` in context. Both are operator-owned NetBox "
+        "objects this plugin deliberately does not write.",
+    ),
+)
+
+
 OPTIONAL_PLUGIN_INTEGRATIONS = (
     ROUTING_INTEGRATION,
     PEERING_INTEGRATION,
     ACI_INTEGRATION,
     DLM_INTEGRATION,
+    VALIDITY_INTEGRATION,
 )
 
 

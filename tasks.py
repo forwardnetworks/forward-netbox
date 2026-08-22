@@ -1250,6 +1250,7 @@ def artifact_test(context):
             "'  \"netbox-dlm==0.9.1\",' "
             "'  \"netbox-peering-manager==0.3.0\",' "
             "'  \"netbox-routing==0.4.3\",' "
+            "'  \"netbox-validity==3.5.2\",' "
             "']' "
             "> /tmp/netbox-runtime-pyproject.toml",
             "UV_CACHE_DIR=/tmp/uv-cache uv tool run --isolated "

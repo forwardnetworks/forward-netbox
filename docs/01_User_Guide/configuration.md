@@ -609,6 +609,59 @@ controls whether endpoint rows must carry the source include tags. Exclude tags
 always apply. CIMC management endpoints are excluded from standalone device
 import so parent-server inventory remains authoritative.
 
+### Golden-config checks with NetBox Validity
+
+`netbox-validity` is a supported optional integration, and the only one this
+plugin CONSUMES rather than writes into: config backup commits configurations
+to a git data source and Validity reads that data source. Nothing is written
+into Validity's own models.
+
+Install it like the other optional integrations, and **install the package
+before adding it to `PLUGINS`** - NetBox refuses to start with a plugin listed
+that is not installed:
+
+```bash
+pip install netbox-validity==3.5.2   # then add "validity" to PLUGINS
+python manage.py migrate
+```
+
+Three settings connect the two sides, all of them NetBox objects this plugin
+deliberately does not write:
+
+1. On the git data source, set the `device_config_path` custom field to
+   `configs/{{device.name}}.cfg` - that is where config backup writes.
+2. Bind devices to the data source the way Validity expects: set the
+   `data_source` custom field on the devices' **tenant**, or mark one data
+   source `default`.
+3. Let the data source sync. Config backup triggers a sync after each push, so
+   ordinarily this is automatic.
+
+Get any of these wrong and both products report success while Validity shows
+nothing: the backup commits, the repository holds the configurations, and no
+device resolves a file. The sync **Health** tab checks all three and says which
+one is missing.
+
+Because the fast apply engines validate the exact set of installed plugins,
+adding ANY plugin they do not know about disables them - COPY/SQL, set-based
+merge, and the fast baseline all fail closed, turning a first sync from minutes
+into hours with no error. `netbox-validity` 3.5.2 is validated against all
+three. A different version, or another plugin entirely, is not.
+
+`Config Backup Data Source` (`config_backup_data_source`) backs up each synced
+device's running configuration into the git repository behind the selected
+NetBox data source after every successful sync. The configurations are the ones
+Forward collected for the snapshot the sync ran against, so every commit is
+traceable to a named snapshot; the commit message records it. The push uses the
+data source's own URL, credentials, and branch - the plugin stores only the
+data source reference, never a credential - and the data source is synced
+afterward so DataFiles (and consumers such as Validity's golden-config checks)
+are current immediately. Files are written as `configs/<device-name>.cfg` using
+the NetBox device name. Only devices this sync manages are written; a run in
+which no configuration changed makes no commit, and a run against an
+already-backed-up snapshot skips the fetch entirely. Forward strips collected
+credentials, but configuration text retains hashed secrets (for example
+`enable secret`), so treat the repository as access-controlled material.
+
 Each sync records one resolved snapshot, validation run, ingestion, native
 Branching branch, and its stage/merge jobs. Dependency-ordered plan items are
 progress units inside that branch, not independent branches. If staging fails,

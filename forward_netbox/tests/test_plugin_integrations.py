@@ -25,6 +25,11 @@ class OptionalPluginIntegrationRegistryTest(TestCase):
                 "peering.netbox_peering_manager",
                 "aci.netbox_cisco_aci",
                 "lifecycle.netbox_dlm",
+                # A CONSUMER integration: this plugin writes configuration
+                # files into a git data source and Validity reads them.
+                # Nothing is written into Validity's models, so its model
+                # tuples are empty by design - see the registry entry.
+                "compliance.validity",
             ],
         )
         self.assertEqual(
@@ -49,6 +54,7 @@ class OptionalPluginIntegrationRegistryTest(TestCase):
                 "peering.netbox_peering_manager",
                 "aci.netbox_cisco_aci",
                 "lifecycle.netbox_dlm",
+                "compliance.validity",
             },
         )
         self.assertEqual(
@@ -68,6 +74,7 @@ class OptionalPluginIntegrationRegistryTest(TestCase):
                 "netbox-peering-manager": "0.3.0",
                 "netbox-cisco-aci": "0.3.9",
                 "netbox-dlm": "0.9.1",
+                "netbox-validity": "3.5.2",
             }
             return versions[package_name]
 

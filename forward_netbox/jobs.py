@@ -335,6 +335,48 @@ def _maybe_enqueue_device_analysis_refresh(
         logger.warning("Auto device-analysis refresh enqueue failed: %s", exc)
 
 
+def _maybe_enqueue_config_backup(
+    sync,
+    *,
+    snapshot_id=None,
+    ingestion_id=None,
+    exclude_job_id=None,
+):
+    """Opt-in: after a successful sync, back up device configs to git.
+
+    Enabled per source by ``config_backup_data_source`` naming a git data
+    source. Gated here only on the parameter being set; the job itself
+    validates it, so a misconfigured value fails visibly on the job rather
+    than silently never enqueueing.
+    """
+    from .utilities.config_backup import CONFIG_BACKUP_PARAMETER_NAME
+
+    snapshot_id = str(snapshot_id or "").strip()
+    if (
+        sync.status != ForwardSyncStatusChoices.COMPLETED
+        or not snapshot_id
+        or not (getattr(sync.source, "parameters", None) or {}).get(
+            CONFIG_BACKUP_PARAMETER_NAME
+        )
+    ):
+        return
+    try:
+        name = f"{sync.name} - config backup (auto)"
+        if _sync_has_active_job(sync, name, exclude_job_id=exclude_job_id):
+            return
+        return ConfigBackupJob.enqueue(
+            instance=sync,
+            user=sync.user,
+            name=name,
+            snapshot_id=snapshot_id,
+            ingestion_id=ingestion_id,
+        )
+    except JobTimeoutException:
+        raise
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("Auto config-backup enqueue failed: %s", exc)
+
+
 def _maybe_enqueue_backfilled_tag_refresh(
     sync,
     *,
@@ -450,6 +492,12 @@ def _enqueue_post_sync_overlays(
             ingestion_id=ingestion_id,
             exclude_job_id=exclude_job_id,
         )
+        config_backup_job = _maybe_enqueue_config_backup(
+            sync,
+            snapshot_id=snapshot_id,
+            ingestion_id=ingestion_id,
+            exclude_job_id=exclude_job_id,
+        )
         return {
             "scheduled": True,
             "ingestion_id": ingestion_id,
@@ -457,6 +505,7 @@ def _enqueue_post_sync_overlays(
             "tag_job_id": getattr(tag_job, "pk", None),
             "parent_job_id": getattr(parent_job, "pk", None),
             "analysis_job_id": getattr(analysis_job, "pk", None),
+            "config_backup_job_id": getattr(config_backup_job, "pk", None),
         }
     except JobTimeoutException:
         raise
@@ -937,6 +986,49 @@ def _refresh_forward_device_analysis_work(job, *args, **kwargs):
                 "Forward device analysis failed (%s).",
                 exception_type(exc),
             )
+        raise
+
+
+def _run_forward_config_backup_work(job, *args, **kwargs):
+    """Background config backup to the configured git data source.
+
+    The result carries counts and durations only; configuration text never
+    reaches job data, logs, or bundles.
+    """
+    from .utilities.config_backup import run_config_backup
+    from .utilities.post_sync import current_post_sync_snapshot
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    try:
+        sync.logger = SyncLogging(job=job.pk)
+        with current_post_sync_snapshot(
+            sync,
+            kwargs.get("snapshot_id"),
+            ingestion_id=kwargs.get("ingestion_id"),
+        ):
+            result = run_config_backup(
+                sync,
+                snapshot_id=kwargs.get("snapshot_id"),
+                logger=sync.logger,
+            )
+        job.data = _overlay_job_data(result.as_dict(), kwargs)
+        job.save(update_fields=["data"])
+    except StalePostSyncSnapshotError:
+        _complete_stale_post_sync_overlay(job, sync, **kwargs)
+    except Exception as exc:
+        job.data = _overlay_job_data(
+            {
+                "error": safe_operation_failure("Forward config backup", exc),
+                "error_type": exception_type(exc),
+            },
+            kwargs,
+        )
+        job.save(update_fields=["data"])
+        logger.error(
+            "Forward config backup failed (%s).",
+            exception_type(exc),
+            exc_info=type(exc) not in (SyncError, JobTimeoutException),
+        )
         raise
 
 
@@ -1863,6 +1955,16 @@ class DeviceAnalysisRefreshJob(ForwardJobRunner):
 
     def run(self, *args, **kwargs):
         _refresh_forward_device_analysis_work(self.job, *args, **kwargs)
+
+
+class ConfigBackupJob(ForwardJobRunner):
+    """Snapshot-guarded backup of device configurations to a git data source."""
+
+    class Meta:
+        name = "config backup"
+
+    def run(self, *args, **kwargs):
+        _run_forward_config_backup_work(self.job, *args, **kwargs)
 
 
 class DeviceScopeTagReconciliationJob(ForwardJobRunner):

@@ -257,6 +257,9 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
             "sync_endpoints",
             "sync_generic_endpoints",
             "scope_endpoints_by_include_tags",
+            # A pk, not a secret: the credentials live on the data source,
+            # which NetBox masks itself.
+            "config_backup_data_source",
         }
         parameters = {
             key: value
