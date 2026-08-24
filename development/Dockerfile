@@ -17,7 +17,7 @@ RUN chmod +x /opt/netbox/launch-netbox.sh
 
 RUN uv pip install --constraint ${CONSTRAINTS} ${PACKAGE}
 RUN uv pip install --constraint ${CONSTRAINTS} \
-    netbox-cisco-aci netbox-dlm netbox-peering-manager netbox-routing
+    netbox-cisco-aci netbox-dlm netbox-peering-manager netbox-routing netbox-validity
 RUN uv pip install "watchdog[watchmedo]"
 RUN uv pip install coverage
 

@@ -91,7 +91,22 @@ jobs:
           python scripts/check_release_authorization.py \
             --version "${GITHUB_REF_NAME#v}"
       - name: Audit pinned runtime dependencies
-        run: pip-audit --progress-spinner off -r constraints.txt
+        # Calls the preflight's own check, not a bare pip-audit invocation, so
+        # the accepted-advisory list (ACCEPTED_DEPENDENCY_ADVISORIES) lives in
+        # exactly one place. A second, hand-copied ignore list here is the same
+        # mistake that let validated-plugin tuples drift out of lockstep.
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, 'scripts')
+          from check_release_preflight import check_dependency_advisories
+          from check_release_preflight import PreflightError
+          try:
+              print(check_dependency_advisories())
+          except PreflightError as exc:
+              print(f'::error::{exc}')
+              sys.exit(1)
+          "
       - name: Run release-specific provenance gate
         # The exact NetBox matrix, CodeQL, and trusted scanner are required
         # status checks on main and have already run on this exact tree. Do not
