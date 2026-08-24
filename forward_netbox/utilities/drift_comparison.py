@@ -101,6 +101,11 @@ class PreviewRunner:
         self._scope_matched_tags = {}
         self._scope_tag_objs = {}
         self.rejected_rows = 0
+        # Set by `_upsert_values_from_defaults` for the row it just resolved.
+        # False rather than None so a path that reads it without an upsert
+        # having run reports "no change" instead of raising - the adapter
+        # comparison only reads it after an upsert it made itself.
+        self.last_upsert_would_change = False
 
     def _record_issue(self, *args, **kwargs):
         # Deliberately signature-agnostic. Callers pass different keyword sets
@@ -195,6 +200,65 @@ class PreviewRunner:
             return None
         return Manufacturer.objects.filter(name=name).order_by("pk").first()
 
+    def _upsert_values_from_defaults(
+        self,
+        model_string,
+        model,
+        *,
+        values,
+        coalesce_sets,
+        create_instance_attrs=None,
+    ):
+        """Find the row, never create or update it, and say whether it differs.
+
+        This is the primitive every adapter-only model writes through, so it is
+        the single override that makes them previewable at all. The real one
+        creates the row when absent and saves the fields that differ; this one
+        resolves through the same coalesce lookups and stops.
+
+        ``last_upsert_would_change`` records whether the apply would have
+        written, computed with ``_model_field_value_matches`` - the comparator
+        the real upsert uses - so a preview cannot disagree with the apply about
+        what counts as a difference. A second comparison written here would be
+        wrong in whichever direction is least noticeable, which is the failure
+        this whole feature exists to avoid.
+
+        ``create_instance_attrs`` is accepted and ignored on purpose: it exists
+        for side effects of ``save()`` (``dcim.Module``'s ``_adopt_components``,
+        which makes NetBox core instantiate component rows), and a preview never
+        saves.
+        """
+        from .sync_primitives import _authoritative_update_values
+        from .sync_primitives import _dedupe_lookups
+        from .sync_primitives import _model_field_value_matches
+        from .sync_primitives import coalesce_lookup
+        from .sync_primitives import get_unique_or_raise
+
+        lookups = _dedupe_lookups(
+            [coalesce_lookup(values, *coalesce_set) for coalesce_set in coalesce_sets]
+        )
+        obj = None
+        for lookup in lookups:
+            if not lookup:
+                continue
+            obj = get_unique_or_raise(self, model, lookup)
+            if obj is not None:
+                break
+        if obj is None:
+            # Absent, so the apply would create it. Reported as a create by the
+            # caller; `would_change` is not the question for a row that is not
+            # there at all.
+            self.last_upsert_would_change = False
+            return None, True
+        self.last_upsert_would_change = any(
+            not _model_field_value_matches(model, obj, field, value)
+            for field, value in _authoritative_update_values(
+                model._meta.label_lower,
+                values,
+            ).items()
+        )
+        return obj, False
+
     def _ensure_vrf(self, row, *, update_existing=True):
         """Find the VRF, never create or update it.
 
@@ -232,6 +296,56 @@ class PreviewRunner:
 
     def _record_aggregated_skip_warning(self, **kwargs):
         return None
+
+
+def _compare_extras_taggeditem(runner, rows):
+    """Classify feature-tag assignments one row at a time.
+
+    The adapter-only models have no bulk path, so there is nothing to call with
+    ``preview=True`` and return counts from; each row is applied on its own.
+    That makes the loop the caller's job rather than the apply function's, and
+    it is the shape every remaining adapter model will use.
+    """
+    from ..exceptions import ForwardDependencySkipError
+    from ..exceptions import ForwardSearchError
+    from .sync_interface import apply_extras_taggeditem
+
+    counts = {"creates": 0, "updates": 0, "unchanged": 0, "rejected": 0}
+    for row in rows:
+        try:
+            outcome = apply_extras_taggeditem(runner, row, preview=True)
+        except (ForwardDependencySkipError, ForwardSearchError):
+            # An unusable row is a defect in the row, not a difference between
+            # the two systems, so it is counted apart from drift rather than
+            # inflating it. The apply raises the same pair for a device it
+            # cannot resolve.
+            counts["rejected"] += 1
+            continue
+        except KeyError:
+            # `row["device"]` / `row["tag"]` absent. Same class as above: the
+            # row cannot be applied, and calling that zero drift would be the
+            # confident-zero failure this feature exists to prevent.
+            counts["rejected"] += 1
+            continue
+        if outcome not in counts:
+            # An outcome this function does not recognise must not be silently
+            # dropped into "unchanged". Refusing the whole model is the honest
+            # answer, and the caller falls back to the upper bound for it.
+            return None
+        counts[outcome] += 1
+    return counts
+
+
+# Adapter-only models that can be compared, and the function that does it.
+#
+# Absence from this mapping is the "no comparison" answer for a model, which is
+# what every adapter model gave before this: the caller keeps its upper-bound
+# estimate rather than reporting a zero nothing measured. Adding a model here
+# means auditing its `runner.` calls, not just grepping it for ORM writes - the
+# writes that matter in these paths hide behind `_ensure_*` and `_upsert_*`.
+_ADAPTER_COMPARISONS = {
+    "extras.taggeditem": _compare_extras_taggeditem,
+}
 
 
 def compare_model_rows(sync, model_string, rows):
@@ -284,6 +398,9 @@ def compare_model_rows(sync, model_string, rows):
     # against a cold one must return the same counts; `test_preview_primes_its_
     # lookup_caches` pins that they do, so this stays a cost change only.
     prime_dependency_lookup_caches(runner, model_string, rows)
+    adapter_comparison = _ADAPTER_COMPARISONS.get(model_string)
+    if adapter_comparison is not None:
+        return adapter_comparison(runner, rows)
     counts = bulk_orm_apply_simple_models(
         runner,
         model_string,
