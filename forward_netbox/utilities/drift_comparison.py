@@ -14,6 +14,8 @@ figure wrong in whichever direction is least noticeable - worse than no figure,
 because an operator would act on it.
 """
 
+from rq.timeouts import JobTimeoutException
+
 
 class _PreviewStatistics:
     """Absorb the per-row outcome calls the classification makes."""
@@ -146,9 +148,46 @@ class PreviewRunner:
         return None
 
     def _coalesce_sets_for(self, model_string, default_sets):
+        """The coalesce sets the APPLY would use, not this call site's defaults.
+
+        `coalesce_sets_for` reads `_model_coalesce_fields`, which the real
+        runner fills from the resolved query specs before ingestion
+        (`sync_execution.py:115`). A preview never runs that resolution, so the
+        dict stayed empty and every lookup silently fell back to the hard-coded
+        defaults passed in here.
+
+        That is not cosmetic: an operator who narrows `dcim.inventoryitem`
+        coalescing to ("device", "name") because serials are unreliable gets an
+        apply that resolves and UPDATES the existing row, and a preview that
+        misses it and reports a create - phantom drift on every such row, every
+        run. Resolved lazily and memoised, because it costs a spec lookup and
+        only the adapter models ask.
+        """
         from .sync_primitives import coalesce_sets_for
 
+        if model_string not in self._model_coalesce_fields:
+            self._model_coalesce_fields[model_string] = self._resolved_coalesce_fields(
+                model_string
+            )
         return coalesce_sets_for(self, model_string, default_sets)
+
+    def _resolved_coalesce_fields(self, model_string):
+        """What the apply would resolve for this model, or `[]` to fall back."""
+        from .model_contracts import architecture_default_coalesce_fields_for_model
+        from .query_registry import get_query_specs
+
+        try:
+            specs = get_query_specs(model_string)
+            if specs and specs[0].coalesce_fields:
+                return [list(field_set) for field_set in specs[0].coalesce_fields]
+            return architecture_default_coalesce_fields_for_model(model_string) or []
+        except JobTimeoutException:
+            # A worker boundary must never be swallowed by a lookup.
+            raise
+        except Exception:  # noqa: BLE001 - fall back to the caller's defaults
+            # A preview must not fail because a spec could not be resolved; the
+            # caller's defaults are what this method returned before it existed.
+            return []
 
     def _is_module_native_inventory_row(self, row):
         """Read-only, and read from the apply's own table.
@@ -411,11 +450,21 @@ class PreviewRunner:
     def _ensure_module_bay(self, device, row):
         """Find the bay, never create it.
 
-        The real one upserts a `ModuleBay` when the device has none. An absent
-        bay means the module cannot already exist, so the caller classifies the
-        row as a create - the same treatment every absent dependency gets.
+        The real one upserts a `ModuleBay` when the device has none, coalescing
+        on the CLEANED name from `module_bay_plan_row` rather than the raw one.
+        The same cleaning is applied here, or a bay Forward reports as
+        ``"Slot 1 "`` would miss a NetBox ``"Slot 1"`` and the row would be
+        classified a create against a module that already exists.
         """
-        return self._lookup_module_bay(device, row.get("module_bay"))
+        from .module_readiness import module_bay_plan_row
+
+        existing = self._lookup_module_bay(device, row.get("module_bay"))
+        if existing is not None:
+            return existing
+        cleaned = (module_bay_plan_row(row) or {}).get("name")
+        if not cleaned or cleaned == row.get("module_bay"):
+            return None
+        return self._lookup_module_bay(device, cleaned)
 
     def _ensure_module_type(self, row):
         """Find the module type, never create it - nor a manufacturer under it.
@@ -423,6 +472,14 @@ class PreviewRunner:
         The real one upserts a `ModuleType` and calls `_ensure_manufacturer`
         beneath it, both reached during classification. Same trap as
         `_ensure_platform`, which nests the same manufacturer write.
+
+        Resolved through `get_unique_or_raise` rather than a raw queryset, for
+        two reasons. It reads the cache `prime_dependency_lookup_caches` has
+        already filled for this model - a raw `.filter()` per row threw that
+        priming away and reintroduced the per-row resolution cost 2.8.7 exists
+        to remove. And it RAISES on an ambiguous match, where `.first()` would
+        silently take the lowest pk and let a preview succeed on a row the
+        apply refuses.
         """
         from dcim.models.modules import ModuleType
 
@@ -432,13 +489,12 @@ class PreviewRunner:
                 "slug": (row or {}).get("manufacturer_slug"),
             }
         )
-        model = str((row or {}).get("model") or "").strip()
+        model = (row or {}).get("model")
         if manufacturer is None or not model:
             return None
-        return (
-            ModuleType.objects.filter(manufacturer=manufacturer, model=model)
-            .order_by("pk")
-            .first()
+        return self._get_unique_or_raise(
+            ModuleType,
+            {"manufacturer": manufacturer, "model": model},
         )
 
     def _ensure_vrf(self, row, *, update_existing=True):

@@ -231,13 +231,15 @@ def apply_dcim_module(runner, row, *, preview=False):
         return False
     module_bay = runner._ensure_module_bay(device, row)
     module_type = runner._ensure_module_type(row)
-    if preview and (module_bay is None or module_type is None):
-        # The preview runner resolves rather than creates, so a `None` here
-        # means NetBox has no such bay or type. The module cannot already exist
-        # under one it does not have, which makes this unambiguously a create -
-        # and short-circuiting avoids a coalesce lookup on a null dependency
-        # matching some unrelated row.
-        return "creates"
+    # The unadoptable-component check comes FIRST, before any absent-dependency
+    # short-circuit.
+    #
+    # It decides whether the apply will EVER write this row, and that verdict
+    # does not depend on whether the bay exists yet: the apply creates the bay,
+    # then hits this and skips permanently. Short-circuiting on a missing bay
+    # ahead of it reported a create for a row no run will ever apply - drift
+    # that never clears, which is the non-convergence the `rejected`
+    # classification exists to prevent.
     blocking = _unadoptable_component_names(device, module_type)
     if blocking:
         # `_adopt_components` cannot cover this. NetBox builds its adoption
@@ -253,7 +255,13 @@ def apply_dcim_module(runner, row, *, preview=False):
             model_string="dcim.module",
             reason="component-claimed-by-another-module",
             warning_message=(
-                f"Skipping module in bay `{module_bay.name}` on `{device.name}`: "
+                # The bay name comes from the ROW, not from `module_bay`. The
+                # apply always has a bay here because `_ensure_module_bay`
+                # creates one; a preview resolves instead, so an absent bay is
+                # `None` and dereferencing it raised. The row's name is what
+                # that bay would be called either way.
+                f"Skipping module in bay `{row.get('module_bay')}` on "
+                f"`{device.name}`: "
                 f"its module type would create {len(blocking)} component(s) whose "
                 "names are already used on the device by a different module, "
                 "which NetBox cannot adopt."
@@ -261,6 +269,17 @@ def apply_dcim_module(runner, row, *, preview=False):
             sample=device.name,
         )
         return False
+    if preview and module_bay is None:
+        # The bay is the module's IDENTITY - the coalesce set is
+        # ("device", "module_bay") - so with no bay in NetBox there is no
+        # module row to resolve against and this is a create.
+        #
+        # An absent module_type deliberately does NOT short-circuit here.
+        # `module_type` is not part of that identity, so a bay that already
+        # holds a module gets an UPDATE when the card is swapped for a type
+        # NetBox has not seen; calling it a create would split creates and
+        # updates wrongly for every hardware replacement.
+        return "creates"
     _, created = runner._upsert_values_from_defaults(
         "dcim.module",
         Module,

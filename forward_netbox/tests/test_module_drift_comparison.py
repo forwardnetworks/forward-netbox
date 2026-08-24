@@ -195,6 +195,67 @@ class ModulePreviewTest(TestCase):
         self.assertEqual(result["rejected"], 1)
         self.assertEqual(result["creates"], 0)
 
+    def test_a_claimed_component_is_rejected_even_when_the_bay_is_absent(self):
+        """The permanent-skip verdict does not depend on the bay existing.
+
+        The apply creates the missing bay and THEN hits the collision and skips,
+        so a preview that short-circuited on the absent bay reported a create
+        for a row no run will ever apply. Found by review; the sibling test
+        creates the bay first and so never covered this ordering.
+        """
+        module_type = self._module_type()
+        from dcim.models import InterfaceTemplate
+
+        InterfaceTemplate.objects.create(
+            module_type=module_type, name="Ethernet1/1", type="1000base-t"
+        )
+        other_bay = ModuleBay.objects.create(device=self.device, name="Slot 9")
+        other_module = Module.objects.create(
+            device=self.device,
+            module_bay=other_bay,
+            module_type=module_type,
+            status="active",
+        )
+        Interface.objects.filter(device=self.device, name="Ethernet1/1").update(
+            module=other_module
+        )
+        # Deliberately NO "Slot 1" bay.
+        self.assertFalse(
+            ModuleBay.objects.filter(device=self.device, name="Slot 1").exists()
+        )
+
+        result = compare_model_rows(None, "dcim.module", [self._row()])
+
+        self.assertEqual(result["creates"], 0)
+        self.assertEqual(result["rejected"], 1)
+
+    def test_a_swapped_card_in_an_existing_bay_is_an_update_not_a_create(self):
+        """`module_type` is not part of the module's identity.
+
+        The coalesce set is ("device", "module_bay"), so a bay that already
+        holds a module gets an UPDATE when the card is swapped for a type
+        NetBox has not seen yet. Treating an absent type as a create split
+        creates and updates wrongly for every hardware replacement.
+        """
+        bay = self._bay()
+        old_type = ModuleType.objects.create(
+            manufacturer=self.mfr, model="MT-OLD", part_number="", description=""
+        )
+        Module.objects.create(
+            device=self.device,
+            module_bay=bay,
+            module_type=old_type,
+            status="active",
+            serial="SN-1",
+        )
+        # The row names MT-1, which NetBox does not have.
+        self.assertFalse(ModuleType.objects.filter(model="MT-1").exists())
+
+        result = compare_model_rows(None, "dcim.module", [self._row()])
+
+        self.assertEqual(result["creates"], 0)
+        self.assertEqual(result["updates"], 1)
+
     def test_a_component_claimed_by_another_module_is_rejected_not_a_create(self):
         # NetBox can only adopt a component belonging to NO module. One already
         # claimed by a different module makes the template instantiation fail

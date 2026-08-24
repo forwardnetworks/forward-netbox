@@ -138,7 +138,7 @@ def apply_extras_taggeditem(runner, row, *, preview=False):
         # no-change, and the preview runner reports it from the same comparator
         # the real upsert uses.
         return "updates" if runner.last_upsert_would_change else "unchanged"
-    _device_add_tag(runner, device, tag)  # NEGATIVE-CONTROL-MARKER
+    _device_add_tag(runner, device, tag)
 
 
 def apply_dcim_macaddress(runner, row):
