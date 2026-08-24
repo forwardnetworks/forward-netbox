@@ -2,9 +2,12 @@
 
 ## Goal
 
-Cut the cost of the `dcim.macaddress` drift comparison, which one deployment
-measured at 270,640 ms for 121,900 rows - 42% of its entire 10.6-minute
-report - without moving a single count.
+Stop the `dcim.macaddress` drift comparison constructing and validating model
+objects it never saves, without moving a single count.
+
+Note the goal has been narrowed since this plan was written. It began as "cut
+the 270,640 ms this model cost one deployment"; measurement showed the change
+does not touch that deployment's case at all. See Validation.
 
 ## Why
 
@@ -80,8 +83,24 @@ Measured on the same box as the earlier numbers, 4,000 rows, half existing:
 | before | 3.117 | 9,000 | 12,470 ms |
 | after | 0.052 | 13 | 207 ms |
 
-60x. Extrapolated to the deployment's 121,900 rows: ~270 s becomes ~6 s,
-returning ~4.4 minutes of its 10.6-minute report.
+**That measurement was incomplete, and the conclusion drawn from it was
+wrong.** Seeding MACs that existed but were UNASSIGNED makes every seeded row
+take the update branch - a drifted shape. Re-measured across the shapes that
+actually occur:
+
+| estate shape | before | after |
+| --- | --- | --- |
+| converged (present AND correctly assigned) | 0.063 ms/row | 0.063 - no change |
+| present, needs reassignment | 2.786 ms/row | 0.066 |
+| all creates (first sync) | 3.481 ms/row | 0.041 |
+
+So the win is ~70x on a first sync (121,900 MACs, ~7 min -> ~5 s) and on
+drifted estates, and NOTHING on a converged one, because the unchanged branch
+never constructed anything to begin with.
+
+The reporting deployment's macaddress is converged (drift 0, In sync), so this
+change does not speed up its next run. The earlier claim that it returns ~4.4
+minutes of that report is retracted.
 
 Contract tests: create/update/unchanged classification unchanged; duplicate
 incoming rows collapse to one create (negative control: breaking the
@@ -93,7 +112,8 @@ apply path this file also implements.
 ## Rollback
 
 Revert. The comparison returns to constructing and validating per row, which
-is correct and 60x slower.
+is correct and ~70x slower on create-heavy runs, and identical on converged
+ones.
 
 ## Decision Log
 
@@ -101,16 +121,28 @@ is correct and 60x slower.
   loops looked expensive and measured cheap; the bulk path looked done and
   measured dominant. Both conclusions came from the same harness.
 - **Take the divergence, pinned.** The alternative - keeping `full_clean` for
-  classification fidelity on rows that are already broken - costs 42% of the
-  report for a distinction the drift numbers barely express.
+  classification fidelity on rows that are already broken - costs ~70x on a
+  first sync for a distinction the drift numbers barely express.
+- **Re-measure when the fixture shape is a guess.** The first numbers here
+  were taken at "50% already present", chosen for branch coverage rather than
+  because it modelled anything. It modelled a drifted estate, and the
+  deployment in question is converged - so a real 70x improvement was written
+  up as a saving that deployment will not see. The create/assignment ratio was
+  the whole story and was not a knob until it had already misled a conclusion.
 - **A sentinel over a model instance.** Constructing even an unvalidated
   `MACAddress` pays the custom-field cost; the downstream code reads exactly
   two attributes and a pk, so that is what the sentinel carries.
 
 ## Open
 
-- `dcim.interface` at 357,274 rows is the deployment's next-largest compared
-  model; whether its bulk preview carries similar dead weight has not been
-  measured.
+- **That deployment's 270 s for this model is still unexplained.** At converged
+  rates it should cost ~8 s. Whatever it is, it is not the per-row work fixed
+  here. Untested candidates: instantiating 121,900 NetBox model objects in the
+  bulk prefetch, branching overhead during the sync, custom-field
+  configuration. Worth measuring against its data rather than guessing.
+- `dcim.interface` at 357,274 rows was measured and is NOT a problem for that
+  deployment: 0.060 ms/row converged (~21 s). On a first sync it is 1.799
+  ms/row (~10.7 min), so the exposure there is first-sync, and it carries the
+  same construct-per-create shape this change removed for macaddress.
 - Three adapter models remain uncompared: lifecycle (netbox-dlm), peering,
   routing.
