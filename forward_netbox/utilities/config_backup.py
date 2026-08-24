@@ -40,6 +40,8 @@ from urllib.parse import quote
 from urllib.parse import urlsplit
 from urllib.parse import urlunsplit
 
+from rq.timeouts import JobTimeoutException
+
 from ..exceptions import ForwardSyncError
 
 CONFIG_BACKUP_PARAMETER_NAME = "config_backup_data_source"
@@ -207,6 +209,8 @@ def _fetch_remote(repo, url):
 
     try:
         return porcelain.fetch(repo, url)
+    except JobTimeoutException:
+        raise
     except Exception as exc:
         raise ForwardSyncError(
             f"config backup could not fetch the data source repository "
@@ -374,6 +378,8 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
 
             try:
                 porcelain.push(repo, url, [branch_ref + b":" + branch_ref])
+            except JobTimeoutException:
+                raise
             except Exception as exc:
                 raise ForwardSyncError(
                     f"config backup could not push to the data source "
@@ -389,6 +395,8 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
         data_source.refresh_from_db()
         data_source.sync()
         result.data_source_synced = True
+    except JobTimeoutException:
+        raise
     except Exception as exc:  # noqa: BLE001 - recorded, never fatal
         result.warnings.append(
             f"data source sync did not complete ({type(exc).__name__}); "

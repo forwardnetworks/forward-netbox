@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.9.0
+
+Release candidate; Feature: back up device configurations from Forward into a git data source for Validity golden-config checks, plus the runtime-validation refactor and health check it required.
+
 ## v2.8.9
 
 Fix: a sync deletes a device only on the same quarantined evidence the operator prune requires, and never stages a delete the database will refuse.

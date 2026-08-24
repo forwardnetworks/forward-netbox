@@ -15,6 +15,7 @@ REQUIRED_COMPONENTS = {
     "netbox-dlm": "0.9.1",
     "netbox-peering-manager": "0.3.0",
     "netbox-routing": "0.4.3",
+    "netbox-validity": "3.5.2",
     "netboxlabs-netbox-branching": "1.1.2",
     "pyzipper": "0.4.0",
 }

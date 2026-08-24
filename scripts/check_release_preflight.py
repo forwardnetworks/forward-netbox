@@ -134,6 +134,24 @@ def check_ui_harness_dependencies() -> str:
 
 CONSTRAINTS = REPO_ROOT / "constraints.txt"
 
+# Advisories we accept rather than fix, because forward_netbox's own code never
+# exercises the vulnerable path. Each entry needs a comment naming why, and the
+# SAME ids must be passed to `pip-audit` in release.yml - a waiver only one of
+# the two checks knows about reintroduces the exact gap this preflight exists
+# to close (a release that passes here and fails in the actual workflow).
+ACCEPTED_DEPENDENCY_ADVISORIES = {
+    # PYSEC-2026-2858 / CVE-2026-44405: paramiko <=4.0.0 allows SHA-1 in
+    # rsakey.py; fixed only in paramiko 5.0.0. paramiko reaches constraints.txt
+    # transitively through netbox-validity's own dependencies (dulwich,
+    # django-storages[sftp], scrapli, scrapli_netconf, scp, netmiko) - netmiko
+    # pins paramiko <5.0, so 5.0.0 is unreachable without dropping Validity.
+    # forward_netbox never imports paramiko, netmiko, or scrapli itself
+    # (confirmed by grep); the vulnerable code path is Validity's own SSH
+    # device-polling, which config backup exists specifically to avoid using.
+    # Revisit when netmiko or Validity relaxes the paramiko ceiling.
+    "PYSEC-2026-2858",
+}
+
 
 def check_dependency_advisories() -> str:
     """No pinned dependency may carry a known advisory.
@@ -163,8 +181,11 @@ def check_dependency_advisories() -> str:
             "before the gate. Install it (`pip install pip-audit`) or the release "
             "workflow will be the first thing to notice an advisory."
         )
+    command = [executable, "--progress-spinner", "off", "-r", str(CONSTRAINTS)]
+    for vuln_id in sorted(ACCEPTED_DEPENDENCY_ADVISORIES):
+        command += ["--ignore-vuln", vuln_id]
     completed = subprocess.run(
-        [executable, "--progress-spinner", "off", "-r", str(CONSTRAINTS)],
+        command,
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -174,6 +195,11 @@ def check_dependency_advisories() -> str:
         raise PreflightError(
             "pinned dependencies carry a known advisory, which will fail CI and "
             f"the release workflow:\n{detail}"
+        )
+    if ACCEPTED_DEPENDENCY_ADVISORIES:
+        return (
+            "no unaccepted advisories in constraints.txt (ignoring: "
+            f"{', '.join(sorted(ACCEPTED_DEPENDENCY_ADVISORIES))})"
         )
     return "no known advisories in constraints.txt"
 
