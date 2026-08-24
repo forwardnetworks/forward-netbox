@@ -302,6 +302,98 @@ class MacAddressPreviewCostContractTest(TestCase):
         self.assertEqual(result["creates"] + result["rejected"], 1)
 
 
+class InterfacePreviewCostContractTest(TestCase):
+    """The interface preview stopped validating, and stopped mutating."""
+
+    @classmethod
+    def setUpTestData(cls):
+        from dcim.models import Device
+        from dcim.models import DeviceRole
+        from dcim.models import DeviceType
+
+        site = Site.objects.create(name="IfCost Site", slug="ifcost-site")
+        mfr = Manufacturer.objects.create(name="IfCost Mfr", slug="ifcost-mfr")
+        dtype = DeviceType.objects.create(
+            manufacturer=mfr, model="IfCost DT", slug="ifcost-dt"
+        )
+        role = DeviceRole.objects.create(name="IfCost Role", slug="ifcost-role")
+        cls.device = Device.objects.create(
+            name="ifcost-dev", site=site, device_type=dtype, role=role, status="active"
+        )
+
+    def _row(self, name="Ethernet1", **extra):
+        row = {
+            "device": "ifcost-dev",
+            "name": name,
+            "type": "1000base-t",
+            "enabled": True,
+        }
+        row.update(extra)
+        return row
+
+    def test_an_absent_interface_is_a_create(self):
+        result = compare_model_rows(None, "dcim.interface", [self._row()])
+
+        self.assertEqual(result["creates"], 1)
+        self.assertEqual(result["updates"], 0)
+
+    def test_a_matching_interface_is_unchanged(self):
+        from dcim.models import Interface
+
+        Interface.objects.create(
+            device=self.device, name="Ethernet1", type="1000base-t", enabled=True
+        )
+
+        result = compare_model_rows(None, "dcim.interface", [self._row()])
+
+        self.assertEqual(result["creates"], 0)
+        self.assertEqual(result["updates"], 0)
+        self.assertEqual(result["unchanged"], 1)
+
+    def test_a_drifted_interface_is_an_update(self):
+        from dcim.models import Interface
+
+        Interface.objects.create(
+            device=self.device, name="Ethernet1", type="1000base-t", enabled=False
+        )
+
+        result = compare_model_rows(None, "dcim.interface", [self._row()])
+
+        self.assertEqual(result["updates"], 1)
+        self.assertEqual(result["creates"], 0)
+
+    def test_an_invalid_interface_row_counts_as_a_create_under_preview(self):
+        """The deliberate divergence, same shape as the macaddress one.
+
+        `_validate_interface` runs `full_clean` and classifies a rejected row
+        as failed. The preview skips it - that is the whole win, 29,139 ms to
+        1,467 ms at 16,000 first-sync rows - so such a row counts as a create.
+        Overstates drift, never understates it.
+
+        If this starts failing because the preview now rejects the row, the
+        divergence was closed: update the plan and delete this test KNOWINGLY,
+        because the cost comes back with it.
+        """
+        result = compare_model_rows(
+            None,
+            "dcim.interface",
+            # A type NetBox's own field validation refuses.
+            [self._row("Ethernet7", type="not-a-real-interface-type")],
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["creates"] + result["rejected"], 1)
+
+    def test_a_preview_creates_no_interface(self):
+        from dcim.models import Interface
+
+        before = Interface.objects.count()
+
+        compare_model_rows(None, "dcim.interface", [self._row("Ethernet99")])
+
+        self.assertEqual(Interface.objects.count(), before)
+
+
 class IpAddressComparisonTest(TestCase):
     """ipaddress writes a VRF mid-classification, behind a runner call.
 

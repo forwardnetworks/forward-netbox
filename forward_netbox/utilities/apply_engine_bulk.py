@@ -1764,7 +1764,24 @@ def bulk_orm_apply_interface(
                 # DB query (constraint violations still surface via isolate).
                 # Every field of a new interface is written by this row, so a
                 # rejection here is always ours and never pre-existing state.
-                disposition = _validate_interface(interface, row, device, set(defaults))
+                # `_validate_interface` runs `full_clean`, which a preview does
+                # not need and which dominated this model's cost: at 16,000
+                # first-sync rows it was 29,139 ms / 9,000 queries against
+                # 1,467 ms / 36 without it. Constructing the Interface is
+                # CHEAP - it is the validation that queries, so unlike the
+                # macaddress path the object is still built and still flows
+                # into LAG resolution unchanged.
+                #
+                # Same deliberate, pinned divergence as macaddress: a row
+                # `full_clean` would reject counts here as a create rather than
+                # failed. Overstates drift, never understates it. Held by
+                # `test_an_invalid_row_counts_as_a_create_under_preview` in
+                # `test_drift_comparison`.
+                disposition = (
+                    "ok"
+                    if preview
+                    else _validate_interface(interface, row, device, set(defaults))
+                )
                 if disposition != "ok":
                     # No outcome slot has been appended for this row yet, so the
                     # tail loop will not count it; count it here as the
@@ -1791,11 +1808,29 @@ def bulk_orm_apply_interface(
         outcome = ["unchanged"]
         row_outcomes.append(outcome)
         if changed_values:
-            _snapshot_once(existing)
-            for field, value in changed_values:
-                setattr(existing, field, value)
-            disposition = _validate_interface(
-                existing, row, device, {field for field, _ in changed_values}
+            if not preview:
+                # Skipped under preview because the snapshot exists solely to
+                # feed the branch diff of a write that never happens, and the
+                # mutation solely to stage that write. `changed_values` already
+                # decided the row differs.
+                #
+                # Honest scope, having tried to justify it more strongly and
+                # failed: this is NOT fixing a laundering bug like the one in
+                # `_ensure_fhrp_vip`. Duplicate rows for one interface are
+                # deduplicated upstream, so no second row ever reads the
+                # mutated object, and no test written here could distinguish
+                # the two behaviours. Nor is it measurable - 36 queries either
+                # way on the shapes benchmarked. It stands on being work a
+                # preview provably does not need, and nothing more.
+                _snapshot_once(existing)
+                for field, value in changed_values:
+                    setattr(existing, field, value)
+            disposition = (
+                "ok"
+                if preview
+                else _validate_interface(
+                    existing, row, device, {field for field, _ in changed_values}
+                )
             )
             if disposition != "ok":
                 # The outcome slot is already appended, so the tail loop counts
