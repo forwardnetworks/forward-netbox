@@ -170,7 +170,27 @@ def apply_dcim_inventoryitem(runner, row, *, preview=False):
         return "updates" if runner.last_upsert_would_change else "unchanged"
 
 
-def apply_dcim_module(runner, row):
+def apply_dcim_module(runner, row, *, preview=False):
+    """Apply the module, or - with ``preview`` - classify and write nothing.
+
+    Every write on this path is behind a ``runner.`` call, so the firewall
+    covers them: ``_ensure_module_bay`` (upserts a ModuleBay),
+    ``_ensure_module_type`` (upserts a ModuleType and a Manufacturer beneath
+    it) and ``_upsert_values_from_defaults``.
+
+    That last one is the dangerous one, and the reason a returned-early preview
+    would not have been enough on its own. It passes
+    ``create_instance_attrs={"_adopt_components": True}``, and NetBox core's
+    ``Module.save()`` then instantiates the module type's component templates -
+    console ports, interfaces, power ports and the rest - as real rows on the
+    device. The preview override never saves, so none of that happens, and
+    ``create_instance_attrs`` is accepted and ignored precisely because it only
+    matters to a save.
+
+    An absent bay or module type classifies the row as a create rather than
+    being resolved: a module cannot already exist in a bay NetBox does not
+    have, or with a type it does not have.
+    """
     from dcim.models import Module
 
     try:
@@ -211,6 +231,13 @@ def apply_dcim_module(runner, row):
         return False
     module_bay = runner._ensure_module_bay(device, row)
     module_type = runner._ensure_module_type(row)
+    if preview and (module_bay is None or module_type is None):
+        # The preview runner resolves rather than creates, so a `None` here
+        # means NetBox has no such bay or type. The module cannot already exist
+        # under one it does not have, which makes this unambiguously a create -
+        # and short-circuiting avoids a coalesce lookup on a null dependency
+        # matching some unrelated row.
+        return "creates"
     blocking = _unadoptable_component_names(device, module_type)
     if blocking:
         # `_adopt_components` cannot cover this. NetBox builds its adoption
@@ -234,7 +261,7 @@ def apply_dcim_module(runner, row):
             sample=device.name,
         )
         return False
-    runner._upsert_values_from_defaults(
+    _, created = runner._upsert_values_from_defaults(
         "dcim.module",
         Module,
         values={
@@ -256,3 +283,7 @@ def apply_dcim_module(runner, row):
         # IntegrityError (dcim_interface_unique_device_name, etc.).
         create_instance_attrs={"_adopt_components": True},
     )
+    if preview:
+        if created:
+            return "creates"
+        return "updates" if runner.last_upsert_would_change else "unchanged"

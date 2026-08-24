@@ -403,6 +403,44 @@ class PreviewRunner:
             return obj, False, changed
         return obj, False
 
+    def _lookup_module_bay(self, device, module_bay_name):
+        from .sync_primitives import lookup_module_bay
+
+        return lookup_module_bay(self, device, module_bay_name)
+
+    def _ensure_module_bay(self, device, row):
+        """Find the bay, never create it.
+
+        The real one upserts a `ModuleBay` when the device has none. An absent
+        bay means the module cannot already exist, so the caller classifies the
+        row as a create - the same treatment every absent dependency gets.
+        """
+        return self._lookup_module_bay(device, row.get("module_bay"))
+
+    def _ensure_module_type(self, row):
+        """Find the module type, never create it - nor a manufacturer under it.
+
+        The real one upserts a `ModuleType` and calls `_ensure_manufacturer`
+        beneath it, both reached during classification. Same trap as
+        `_ensure_platform`, which nests the same manufacturer write.
+        """
+        from dcim.models.modules import ModuleType
+
+        manufacturer = self._ensure_manufacturer(
+            {
+                "name": (row or {}).get("manufacturer"),
+                "slug": (row or {}).get("manufacturer_slug"),
+            }
+        )
+        model = str((row or {}).get("model") or "").strip()
+        if manufacturer is None or not model:
+            return None
+        return (
+            ModuleType.objects.filter(manufacturer=manufacturer, model=model)
+            .order_by("pk")
+            .first()
+        )
+
     def _ensure_vrf(self, row, *, update_existing=True):
         """Find the VRF, never create or update it.
 
@@ -512,6 +550,12 @@ def _compare_dcim_cable(runner, rows):
     return _compare_adapter_rows(runner, rows, apply_dcim_cable)
 
 
+def _compare_dcim_module(runner, rows):
+    from .sync_inventory_module import apply_dcim_module
+
+    return _compare_adapter_rows(runner, rows, apply_dcim_module)
+
+
 def _compare_ipam_fhrpgroup(runner, rows):
     from .sync_ipam import apply_ipam_fhrpgroup
 
@@ -556,6 +600,7 @@ _ADAPTER_COMPARISONS = {
     "dcim.cable": _compare_dcim_cable,
     "dcim.inventoryitem": _compare_dcim_inventoryitem,
     "ipam.fhrpgroup": _compare_ipam_fhrpgroup,
+    "dcim.module": _compare_dcim_module,
 }
 
 
