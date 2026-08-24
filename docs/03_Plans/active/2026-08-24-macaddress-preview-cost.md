@@ -135,11 +135,27 @@ ones.
 
 ## Open
 
-- **That deployment's 270 s for this model is still unexplained.** At converged
-  rates it should cost ~8 s. Whatever it is, it is not the per-row work fixed
-  here. Untested candidates: instantiating 121,900 NetBox model objects in the
-  bulk prefetch, branching overhead during the sync, custom-field
-  configuration. Worth measuring against its data rather than guessing.
+- **That deployment's 270 s for this model is still unexplained, and the local
+  hypotheses are now exhausted.** Converged macaddress measures ~0.065 ms/row
+  and is LINEAR to 64,000 rows (0.071 / 0.065 / 0.091 at 4k / 16k / 64k), so
+  its 121,900 rows should cost ~11 s. Ruled out by measurement, each with a
+  knob left in the harness so the next person does not repeat it:
+
+  | hypothesis | knob | result |
+  | --- | --- | --- |
+  | non-linear at scale | `FORWARD_ADAPTER_SCALE_ROWS` | linear to 64k |
+  | priming scales with estate, not batch | `FORWARD_ADAPTER_IFACES_PER_DEVICE` | 30x the interfaces, 1025 -> 1081 ms |
+  | per-row interface-lookup fallback | `FORWARD_ADAPTER_IFACE_MISS` | 3.8x, so ~30 s at its scale - not 270 |
+  | per-row construct/clean | (this change) | irrelevant when converged |
+  | branch-rewritten queries | read `_dependency_preview_work` | the preview job activates no branch |
+
+  What remains is environmental or a data shape this fixture does not model:
+  its hardware and concurrent load, custom fields configured on `MACAddress`,
+  or rows taking a branch the fixture does not produce. Closing it needs
+  per-model instrumentation from that deployment - a query count and a
+  breakdown by classification outcome - not another local fixture. The fixture
+  only models what it is told to, which is how the retracted claim above
+  happened in the first place.
 - `dcim.interface` at 357,274 rows was measured and is NOT a problem for that
   deployment: 0.060 ms/row converged (~21 s). On a first sync it is 1.799
   ms/row (~10.7 min), so the exposure there is first-sync, and it carries the

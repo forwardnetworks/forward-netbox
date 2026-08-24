@@ -173,19 +173,33 @@ class AdapterComparisonCostTest(TestCase):
         """
         from dcim.models import MACAddress
 
+        # ESTATE size, not row count. The reporting deployment carries 357,274
+        # interfaces against 121,900 MACs - roughly 3 interfaces per MAC - and
+        # `prime_dependency_lookup_caches` primes interface identity for this
+        # model. If priming scales with the estate rather than the batch, a
+        # fixture with one interface per device cannot see it.
+        per_device = int(os.environ.get("FORWARD_ADAPTER_IFACES_PER_DEVICE", "1"))
         interfaces = [
-            Interface(device=device, name="Ethernet1", type="1000base-t")
+            Interface(device=device, name=f"Ethernet{n}", type="1000base-t")
             for device in self.devices
+            for n in range(1, per_device + 1)
         ]
         Interface.objects.bulk_create(interfaces)
 
+        # Rows whose interface the prefetch cannot resolve fall back to a
+        # PER-ROW `runner._lookup_interface`, which does canonical-name
+        # matching - several queries each. A deployment whose MAC rows name
+        # interfaces NetBox does not carry would pay that on every row, and no
+        # amount of the batch being converged would avoid it.
+        miss_ratio = float(os.environ.get("FORWARD_ADAPTER_IFACE_MISS", "0"))
         rows = []
         for index in range(ROWS):
             device = self.devices[index % len(self.devices)]
+            missing = (index % 100) < int(miss_ratio * 100)
             rows.append(
                 {
                     "device": device.name,
-                    "interface": "Ethernet1",
+                    "interface": "NoSuchIface%d" % index if missing else "Ethernet1",
                     "mac": "00:11:22:%02x:%02x:%02x"
                     % (index // 65536 % 256, index // 256 % 256, index % 256),
                 }
