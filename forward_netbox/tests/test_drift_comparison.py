@@ -184,6 +184,124 @@ class MacAddressComparisonTest(TestCase):
         self.assertEqual(result["creates"], 0)
 
 
+class MacAddressPreviewCostContractTest(TestCase):
+    """The classification a fast preview keeps, and the one divergence it buys.
+
+    The preview stopped constructing MACAddress objects and running
+    `full_clean` per row - on the measuring deployment that was 42% of the
+    whole report's cost for this one model. The counts must not have moved,
+    and the single deliberate divergence must stay pinned so removing it later
+    is a decision rather than an accident.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from dcim.models import Device
+        from dcim.models import DeviceRole
+        from dcim.models import DeviceType
+        from dcim.models import Interface
+
+        site = Site.objects.create(name="Mac Site", slug="mac-site")
+        mfr = Manufacturer.objects.create(name="Mac Mfr", slug="mac-mfr")
+        dtype = DeviceType.objects.create(
+            manufacturer=mfr, model="Mac DT", slug="mac-dt"
+        )
+        role = DeviceRole.objects.create(name="Mac Role", slug="mac-role")
+        cls.device = Device.objects.create(
+            name="mac-dev", site=site, device_type=dtype, role=role, status="active"
+        )
+        cls.interface = Interface.objects.create(
+            device=cls.device, name="Ethernet1", type="1000base-t"
+        )
+        cls.second_interface = Interface.objects.create(
+            device=cls.device, name="Ethernet2", type="1000base-t"
+        )
+
+    def _row(self, mac, interface="Ethernet1"):
+        return {"device": "mac-dev", "interface": interface, "mac": mac}
+
+    def test_an_absent_mac_is_a_create_and_nothing_is_constructed(self):
+        result = compare_model_rows(
+            None, "dcim.macaddress", [self._row("00:11:22:33:44:01")]
+        )
+
+        self.assertEqual(result["creates"], 1)
+        self.assertEqual(result["updates"], 0)
+
+    def test_a_reassignment_is_an_update(self):
+        from dcim.models import MACAddress
+
+        MACAddress.objects.create(mac_address="00:11:22:33:44:02")
+
+        result = compare_model_rows(
+            None, "dcim.macaddress", [self._row("00:11:22:33:44:02")]
+        )
+
+        self.assertEqual(result["updates"], 1)
+        self.assertEqual(result["creates"], 0)
+
+    def test_a_matching_assignment_is_unchanged(self):
+        from django.contrib.contenttypes.models import ContentType
+        from dcim.models import Interface
+        from dcim.models import MACAddress
+
+        MACAddress.objects.create(
+            mac_address="00:11:22:33:44:03",
+            assigned_object_type=ContentType.objects.get_for_model(Interface),
+            assigned_object_id=self.interface.pk,
+        )
+
+        result = compare_model_rows(
+            None, "dcim.macaddress", [self._row("00:11:22:33:44:03")]
+        )
+
+        self.assertEqual(result["creates"], 0)
+        self.assertEqual(result["updates"], 0)
+        self.assertEqual(result["unchanged"], 1)
+
+    def test_duplicate_incoming_rows_collapse_to_one_create(self):
+        # Two rows, one canonical MAC, two interfaces. The apply keys creates by
+        # canonical MAC and lets the second row take the update branch against
+        # the in-memory first, contributing nothing to the counts. The preview's
+        # sentinel must walk the same path: pk=None, so the update branch skips
+        # it, exactly as it skips an unsaved in-memory create.
+        result = compare_model_rows(
+            None,
+            "dcim.macaddress",
+            [
+                self._row("00:11:22:33:44:04"),
+                self._row("00:11:22:33:44:04", interface="Ethernet2"),
+            ],
+        )
+
+        self.assertEqual(result["creates"], 1)
+        self.assertEqual(result["updates"], 0)
+
+    def test_an_invalid_row_counts_as_a_create_under_preview(self):
+        """THE deliberate divergence, pinned so it stays deliberate.
+
+        The apply runs `full_clean` and counts a row it rejects as failed. The
+        preview skips `full_clean` - that is where the 42% went - so the same
+        row counts as a create. Overstated drift is the safe direction: an
+        operator investigates a number that will not converge, where an
+        understated one tells them nothing is wrong.
+
+        If this test starts failing because the preview now rejects the row,
+        the divergence was closed - update the plan and delete this test
+        KNOWINGLY, because the cost that motivated the skip comes back with it.
+        """
+        result = compare_model_rows(
+            None,
+            "dcim.macaddress",
+            # Parseable as a MAC by the plugin, refused by NetBox's own field
+            # validation (EUI64 where the model wants EUI48).
+            [self._row("00:11:22:33:44:55:66:77")],
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["creates"] + result["rejected"], 1)
+
+
 class IpAddressComparisonTest(TestCase):
     """ipaddress writes a VRF mid-classification, behind a runner call.
 

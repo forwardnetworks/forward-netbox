@@ -162,6 +162,84 @@ class AdapterComparisonCostTest(TestCase):
             "extras.taggeditem", len(rows), elapsed, len(captured.captured_queries)
         )
 
+    def test_macaddress_comparison_cost(self):
+        """The single most expensive model on the reporting deployment.
+
+        Not an adapter model - `dcim.macaddress` goes through the BULK path and
+        is already compared in production, where it spent 270,640 ms on 121,900
+        rows: 42% of that deployment's entire comparison. Measured here because
+        the adapter loops turned out to be cheap and this is where the time
+        actually goes.
+        """
+        from dcim.models import MACAddress
+
+        interfaces = [
+            Interface(device=device, name="Ethernet1", type="1000base-t")
+            for device in self.devices
+        ]
+        Interface.objects.bulk_create(interfaces)
+
+        rows = []
+        for index in range(ROWS):
+            device = self.devices[index % len(self.devices)]
+            rows.append(
+                {
+                    "device": device.name,
+                    "interface": "Ethernet1",
+                    "mac": "00:11:22:%02x:%02x:%02x"
+                    % (index // 65536 % 256, index // 256 % 256, index % 256),
+                }
+            )
+        # Half present, so both classification branches are exercised.
+        MACAddress.objects.bulk_create(
+            [
+                MACAddress(mac_address=rows[index]["mac"])
+                for index in range(0, len(rows), 2)
+            ]
+        )
+
+        if os.environ.get("FORWARD_ADAPTER_PROFILE") == "1":
+            import cProfile
+            import io as _io
+            import pstats
+
+            profiler = cProfile.Profile()
+            profiler.enable()
+            compare_model_rows(None, "dcim.macaddress", rows)
+            profiler.disable()
+            buffer = _io.StringIO()
+            pstats.Stats(profiler, stream=buffer).sort_stats("tottime").print_stats(18)
+            print(buffer.getvalue())
+
+        started = time.perf_counter()
+        with CaptureQueriesContext(connection) as captured:
+            result = compare_model_rows(None, "dcim.macaddress", rows)
+        elapsed = time.perf_counter() - started
+
+        self.assertIsNotNone(result)
+        self._report(
+            "dcim.macaddress (BULK)",
+            len(rows),
+            elapsed,
+            len(captured.captured_queries),
+        )
+        # The cost is query COUNT, not query complexity, so the useful
+        # diagnostic is which SQL shape repeats - not which single one is slow.
+        import re
+        from collections import Counter
+
+        shapes = Counter()
+        spent = {}
+        for query in captured.captured_queries:
+            shape = re.sub(r"\d+", "N", query["sql"])[:150]
+            shapes[shape] += 1
+            spent[shape] = spent.get(shape, 0.0) + float(query["time"])
+        for shape, count in shapes.most_common(5):
+            print(
+                f"[adapter-scale]   x{count} ({spent[shape] * 1000:.0f} ms total): "
+                f"{shape}"
+            )
+
     def test_cable_comparison_cost(self):
         """Cables resolve two devices and two interfaces per row."""
         interfaces = []
