@@ -44,13 +44,20 @@ _MODULE_COMPONENT_TEMPLATES = (
 )
 
 
-def _unadoptable_component_names(device, module_type):
+def _unadoptable_component_names(device, module_type, claimed_cache=None):
     """Component names this module type would create that are already claimed.
 
     NetBox adopts an existing component only when it belongs to no module
     (`module__isnull=True`). One already assigned to a different module is
     neither adoptable nor replaceable, so instantiating the template violates
     the per-device unique name constraint. Returns the colliding names.
+
+    ``claimed_cache`` memoises the per-device claimed-name sets, which is eight
+    queries a row otherwise. It is OPT-IN and the real runner does not offer
+    one, deliberately: an apply CREATES modules as it goes, so a device's
+    claimed names change during the run and a cache would answer with stale
+    state. A preview writes nothing, so they cannot change, and the preview
+    runner supplies the dict.
     """
     blocking = []
     for template_attribute, component_attribute in _MODULE_COMPONENT_TEMPLATES:
@@ -58,9 +65,15 @@ def _unadoptable_component_names(device, module_type):
         components = getattr(device, component_attribute, None)
         if templates is None or components is None:
             continue
-        claimed = set(
-            components.filter(module__isnull=False).values_list("name", flat=True)
-        )
+        cache_key = (device.pk, component_attribute)
+        if claimed_cache is not None and cache_key in claimed_cache:
+            claimed = claimed_cache[cache_key]
+        else:
+            claimed = set(
+                components.filter(module__isnull=False).values_list("name", flat=True)
+            )
+            if claimed_cache is not None:
+                claimed_cache[cache_key] = claimed
         if not claimed:
             continue
         for name in templates.all().values_list("name", flat=True):
@@ -240,7 +253,12 @@ def apply_dcim_module(runner, row, *, preview=False):
     # ahead of it reported a create for a row no run will ever apply - drift
     # that never clears, which is the non-convergence the `rejected`
     # classification exists to prevent.
-    blocking = _unadoptable_component_names(device, module_type)
+    blocking = _unadoptable_component_names(
+        device,
+        module_type,
+        # Absent on the real runner by design - see the helper's docstring.
+        claimed_cache=getattr(runner, "_claimed_component_names_cache", None),
+    )
     if blocking:
         # `_adopt_components` cannot cover this. NetBox builds its adoption
         # candidates as `device.<components>.filter(module__isnull=True)`, so a

@@ -110,6 +110,11 @@ class PreviewRunner:
         self._model_coalesce_fields = {}
         self._device_tag_ids_cache = {}
         self._cable_between_cache = {}
+        # Per-device claimed component names, for `_unadoptable_component_names`.
+        # Safe here and ONLY here: a preview writes nothing, so a device's
+        # claimed names cannot change mid-run. The real runner deliberately has
+        # no such attribute, because an apply creates modules as it goes.
+        self._claimed_component_names_cache = {}
         self._scope_matched_tags = {}
         self._scope_tag_objs = {}
         self.rejected_rows = 0
@@ -219,14 +224,17 @@ class PreviewRunner:
         role_name = row.get("role")
         if not role_name:
             return None
-        slug = str(row.get("role_slug") or "").strip()
+        # `row["role_slug"]` is INDEXED, not `.get()`, because the real
+        # `_ensure_inventory_item_role` indexes it. A row missing that key
+        # raises KeyError there and is counted as a rejected row; a `.get()`
+        # here returned None and classified the same row as a create, so the
+        # two paths disagreed about a row that is simply malformed.
+        slug = str(row["role_slug"] or "").strip()
         if slug:
-            match = InventoryItemRole.objects.filter(slug=slug).order_by("pk").first()
+            match = self._get_unique_or_raise(InventoryItemRole, {"slug": slug})
             if match is not None:
                 return match
-        return (
-            InventoryItemRole.objects.filter(name=str(role_name)).order_by("pk").first()
-        )
+        return self._get_unique_or_raise(InventoryItemRole, {"name": str(role_name)})
 
     def _delete_by_coalesce(self, model, lookups):
         """Never delete while measuring.
@@ -368,10 +376,16 @@ class PreviewRunner:
         lookups = _dedupe_lookups(
             [coalesce_lookup(values, *coalesce_set) for coalesce_set in coalesce_sets]
         )
+        usable = [lookup for lookup in lookups if lookup]
+        if not usable:
+            # Exactly what `coalesce_update_or_create` raises. Falling through
+            # to "would create" instead reported drift for a row the apply
+            # cannot process at all - a tag row with neither `tag` nor
+            # `tag_slug`, say - and that drift never cleared, because every
+            # subsequent run raised the same way.
+            raise ValueError("At least one coalesce lookup must be provided.")
         obj = None
-        for lookup in lookups:
-            if not lookup:
-                continue
+        for lookup in usable:
             obj = get_unique_or_raise(self, model, lookup)
             if obj is not None:
                 break
@@ -417,10 +431,12 @@ class PreviewRunner:
         from .sync_primitives import _model_field_value_matches
         from .sync_primitives import get_unique_or_raise
 
+        usable = [lookup for lookup in (coalesce_lookups or []) if lookup]
+        if not usable:
+            # Same refusal the real primitive makes; see the sibling override.
+            raise ValueError("At least one coalesce lookup must be provided.")
         obj = None
-        for lookup in coalesce_lookups or []:
-            if not lookup:
-                continue
+        for lookup in usable:
             obj = get_unique_or_raise(self, model, lookup)
             if obj is not None:
                 break
@@ -483,13 +499,14 @@ class PreviewRunner:
         """
         from dcim.models.modules import ModuleType
 
+        # Indexed, not `.get()`, to match the real `_ensure_module_type`. A row
+        # missing `manufacturer`, `manufacturer_slug` or `model` raises
+        # KeyError in the apply and is counted rejected; `.get()` here turned
+        # the same malformed row into a create.
         manufacturer = self._ensure_manufacturer(
-            {
-                "name": (row or {}).get("manufacturer"),
-                "slug": (row or {}).get("manufacturer_slug"),
-            }
+            {"name": row["manufacturer"], "slug": row["manufacturer_slug"]}
         )
-        model = (row or {}).get("model")
+        model = row["model"]
         if manufacturer is None or not model:
             return None
         return self._get_unique_or_raise(
@@ -569,10 +586,14 @@ def _compare_adapter_rows(runner, rows, apply_row, *, uncomparable_outcomes=()):
             # inflating it.
             counts["rejected"] += 1
             continue
-        except KeyError:
-            # A row missing a key the apply indexes directly (`row["device"]`).
-            # Same class as above; calling it zero drift would be the
-            # confident-zero failure this feature exists to prevent.
+        except (KeyError, ValueError):
+            # KeyError: a row missing a key the apply indexes directly
+            # (`row["device"]`). ValueError: a row that yields no usable
+            # coalesce lookup, which `coalesce_update_or_create` refuses.
+            # Both are rows the apply cannot process, so both are defects in
+            # the row rather than differences between the two systems -
+            # calling either zero drift would be the confident-zero failure
+            # this feature exists to prevent.
             counts["rejected"] += 1
             continue
         if outcome in uncomparable_outcomes:
