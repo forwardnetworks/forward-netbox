@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.9.1
+
+Release candidate; Accepts netbox-branching 1.1.3 and records the validated runtime in the lockfile.
+
 ## v2.9.0
 
 Feature: back up device configurations from Forward into a git data source for Validity golden-config checks, plus the runtime-validation refactor and health check it required.
