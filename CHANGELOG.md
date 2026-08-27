@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v2.9.1
 
-Release candidate; Accepts netbox-branching 1.1.3 and records the validated runtime in the lockfile.
+Accepts netbox-branching 1.1.3 and records the validated runtime in the lockfile.
 
 ## v2.9.0
 
