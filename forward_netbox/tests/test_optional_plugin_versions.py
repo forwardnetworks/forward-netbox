@@ -129,7 +129,7 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
 
         tuple_ = {
             "netbox": "4.6.9",
-            "branching": "1.1.2",
+            "branching": "1.1.3",
             "forward_netbox": fast_baseline.forward_config.version,
             "optional_plugins": {
                 "netbox-cisco-aci": "0.4.0",

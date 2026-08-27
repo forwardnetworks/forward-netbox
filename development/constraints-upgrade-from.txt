@@ -3,7 +3,7 @@
 # The upgrade gate installs a previously released wheel, and a previous release
 # supports the runtime it shipped against — not the current one. Releases before
 # 2.6.7 pinned `netboxlabs-netbox-branching==1.1.1` exactly and capped NetBox at
-# 4.6.5, so applying the current `constraints.txt` (branching 1.1.2) to that
+# 4.6.5, so applying the current `constraints.txt` (branching 1.1.3) to that
 # install is unsatisfiable, not merely out of date. The gate failed closed on
 # exactly this for every available from-version.
 #
