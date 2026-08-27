@@ -1363,7 +1363,7 @@ class UpgradeFromConstraintsTests(unittest.TestCase):
 
     The upgrade gate's from side needs its own constraints because releases
     before 2.6.7 pin `netboxlabs-netbox-branching==1.1.1` exactly, which the
-    current pin of 1.1.2 cannot satisfy. That is the only difference the
+    current pin of 1.1.3 cannot satisfy. That is the only difference the
     upgrade is meant to exercise; anything else drifting between the two sides
     would silently change what the gate compares.
     """
