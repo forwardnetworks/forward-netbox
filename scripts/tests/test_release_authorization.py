@@ -26,7 +26,7 @@ class ReleaseAuthorizationTest(unittest.TestCase):
             "`rtk env FORWARD_NETBOX_DOCKER_PROJECT=forward-netbox-release-gate "
             "FORWARD_NETBOX_POSTGRES_DATA_PATH=netbox-postgres-data "
             "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.8 "
-            "invoke artifact-test` passed: NetBox 4.6.8, Branching 1.1.2, "
+            "invoke artifact-test` passed: NetBox 4.6.8, Branching 1.1.3, "
             "Python 3.14, and SBOM validation; 0 errors."
         ),
         "scale-and-failure": (
