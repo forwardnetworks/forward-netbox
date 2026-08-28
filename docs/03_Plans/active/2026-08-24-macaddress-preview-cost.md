@@ -148,14 +148,40 @@ ones.
   | per-row interface-lookup fallback | `FORWARD_ADAPTER_IFACE_MISS` | 3.8x, so ~30 s at its scale - not 270 |
   | per-row construct/clean | (this change) | irrelevant when converged |
   | branch-rewritten queries | read `_dependency_preview_work` | the preview job activates no branch |
+  | custom fields on `MACAddress` | `FORWARD_ADAPTER_CUSTOM_FIELDS` | 100 fields cost 0.077 ms/row - 2,850 would be needed |
+
+  **Custom fields are now off that list.** They were written up as unreachable
+  without knowing the deployment's configuration, which was true of a
+  REPRODUCTION and not of a SENSITIVITY sweep - the sweep does not need their
+  number, only the slope. Converged, 16,000 rows, populated `custom_field_data`
+  on every seeded row:
+
+  | custom fields | ms/row | of which the MAC fetch |
+  | --- | --- | --- |
+  | 0 | 0.065 | 98 ms |
+  | 10 | 0.071 | 134 ms |
+  | 30 | 0.089 | 334 ms |
+  | 100 | 0.142 | 818 ms |
+
+  0.00077 ms/row per field across that range, so explaining 2.26 ms/row takes
+  ~2,850 custom fields on `MACAddress`. Two further things the sweep says: the
+  count stays FLAT at 40 queries for 16,000 rows at every setting, and most of
+  what custom fields DO cost lands in the fetch SQL rather than in Python -
+  wider JSONB coming back, not slower object handling.
 
   What remains is environmental or a data shape this fixture does not model:
-  its hardware and concurrent load, custom fields configured on `MACAddress`,
-  or rows taking a branch the fixture does not produce. Closing it needs
-  per-model instrumentation from that deployment - a query count and a
-  breakdown by classification outcome - not another local fixture. The fixture
-  only models what it is told to, which is how the retracted claim above
-  happened in the first place.
+  its hardware and concurrent load, table bloat or a query plan that flips at
+  122,478 rows, a Postgres a network hop away, or rows taking a branch the
+  fixture does not produce. Closing it needs per-model instrumentation from
+  that deployment - a query count, the share of the runtime spent in SQL, and a
+  breakdown by classification outcome - not another local fixture. The first
+  two now ship; see
+  `docs/03_Plans/active/2026-08-28-preview-reports-its-query-count.md`. The
+  flat 40 queries measured here is exactly why the SQL time had to ship WITH
+  the count: that deployment will report a low count, and a low count on its
+  own reads as Python when this fixture cannot rule out a slow query at its
+  scale. The fixture only models what it is told to, which is how the retracted
+  claim above happened in the first place.
 - `dcim.interface` at 357,274 rows was measured and is NOT a problem for that
   deployment: 0.060 ms/row converged (~21 s). On a first sync it is 1.799
   ms/row (~10.7 min), so the exposure there is first-sync, and it carries the

@@ -216,6 +216,32 @@ class AdapterComparisonCostTest(TestCase):
         from django.contrib.contenttypes.models import ContentType
 
         interface_ct = ContentType.objects.get_for_model(Interface)
+
+        # Custom fields configured on MACAddress: the one suspect left on the
+        # remaining list that a fixture can actually reach. Not a reproduction
+        # - we do not know how many that deployment has - but a SENSITIVITY
+        # sweep, which does not need to. If 30 fields barely move ms/row, the
+        # hypothesis dies whatever their configuration is; if 30 fields move it
+        # a lot, the number to ask them for is finally worth asking.
+        custom_field_count = int(os.environ.get("FORWARD_ADAPTER_CUSTOM_FIELDS", "0"))
+        custom_field_data = {}
+        if custom_field_count:
+            from extras.models import CustomField
+
+            mac_ct = ContentType.objects.get_for_model(MACAddress)
+            for index in range(custom_field_count):
+                field = CustomField.objects.create(
+                    name=f"scale_cf_{index}",
+                    type="text",
+                    label=f"Scale CF {index}",
+                )
+                field.object_types.set([mac_ct])
+                # A populated value, not an empty one: the converged path never
+                # constructs a MACAddress, so if custom fields cost anything
+                # here it is deserializing the JSONB that comes back with the
+                # existing rows - and an empty dict would not carry any.
+                custom_field_data[f"scale_cf_{index}"] = f"scale-value-{index}" * 3
+
         by_device = {
             interface.device_id: interface
             for interface in Interface.objects.filter(name="Ethernet1")
@@ -223,6 +249,8 @@ class AdapterComparisonCostTest(TestCase):
         seeded = []
         for index in range(int(len(rows) * seed_ratio)):
             mac = MACAddress(mac_address=rows[index]["mac"])
+            if custom_field_data:
+                mac.custom_field_data = dict(custom_field_data)
             if seed_assigned:
                 device = self.devices[index % len(self.devices)]
                 target = by_device.get(device.pk)
@@ -253,7 +281,8 @@ class AdapterComparisonCostTest(TestCase):
         self.assertIsNotNone(result)
         self._report(
             f"dcim.macaddress (BULK, {seed_ratio:.0%} present"
-            f"{', assigned' if seed_assigned else ''})",
+            f"{', assigned' if seed_assigned else ''}"
+            f"{f', {custom_field_count} custom fields' if custom_field_count else ''})",
             len(rows),
             elapsed,
             len(captured.captured_queries),
