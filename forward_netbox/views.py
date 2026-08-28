@@ -7,6 +7,7 @@ from core.models import ObjectChange
 from django.apps import apps
 from django.contrib import messages
 from django.core.exceptions import ValidationError
+from django.db import connection
 from django.db import models
 from django.db.models.functions import Greatest
 from django.http import HttpResponseBadRequest
@@ -475,7 +476,7 @@ def _dependency_plan_item_summary(item):
 
 
 def _dependency_model_result_summary(
-    result, comparison=None, comparison_runtime_ms=None
+    result, comparison=None, comparison_runtime_ms=None, comparison_queries=None
 ):
     # ``fetcher.model_results`` are ForwardModelResult dataclasses, not dicts —
     # calling result.get(...) on them raised AttributeError and errored the whole
@@ -529,11 +530,32 @@ def _dependency_model_result_summary(
         "comparison_runtime_ms": (
             comparison_runtime_ms if comparison is not None else None
         ),
+        # Paired with the runtime so a slow model says WHY it is slow. `None`
+        # for a model with no comparison, exactly as the runtime is: reporting
+        # zero queries for work that never ran would read as "free".
+        "comparison_queries": (comparison_queries if comparison is not None else None),
         "runtime_ms": float(data.get("runtime_ms") or 0.0),
         # Preserve aggregate state evidence without copying diagnostic samples or
         # source identifiers into the preview job payload.
         "durable_workload_state": durable_state,
     }
+
+
+class _QueryCounter:
+    """Count queries through Django's execute wrapper.
+
+    `connection.queries` is only populated under DEBUG, which a release
+    deployment never runs with - so the number that matters most is exactly the
+    one that is absent in production. The wrapper is always active and costs an
+    integer increment per query.
+    """
+
+    def __init__(self):
+        self.count = 0
+
+    def __call__(self, execute, sql, params, many, context):
+        self.count += 1
+        return execute(sql, params, many, context)
 
 
 def _dependency_dry_run_payload(sync, *, client=None):
@@ -603,15 +625,34 @@ def _dependency_dry_run_payload(sync, *, client=None):
     #
     # So the preview reports its own cost instead of anyone estimating it. The
     # numbers arrive with the payload, from the estate that has the scale.
+    # Count queries as well as milliseconds.
+    #
+    # A runtime alone cannot tell the two failure shapes apart, and they want
+    # opposite fixes. A deployment reported `dcim.macaddress` at 276,377 ms for
+    # 122,478 fully converged rows - 2.26 ms/row against 0.065 ms/row measured
+    # locally for the same converged shape. Time says "slow"; only a query count
+    # says whether it is slow because it issued a hundred thousand queries or
+    # slow inside Python. Every hypothesis tested locally against that number
+    # was eliminated, and the next one needs this to be worth testing.
+    #
+    # `connection.queries` is only populated when DEBUG is on, so the count is
+    # taken from the cursor-execution wrapper instead, which is always active
+    # and adds one integer increment per query.
     comparison_by_model = {}
     comparison_runtime_ms_by_model = {}
+    comparison_queries_by_model = {}
     comparison_rows_by_model_count = {}
     for model_string, rows in rows_by_model.items():
+        counter = _QueryCounter()
         started = time.perf_counter()
-        comparison_by_model[model_string] = compare_model_rows(sync, model_string, rows)
+        with connection.execute_wrapper(counter):
+            comparison_by_model[model_string] = compare_model_rows(
+                sync, model_string, rows
+            )
         comparison_runtime_ms_by_model[model_string] = round(
             (time.perf_counter() - started) * 1000, 1
         )
+        comparison_queries_by_model[model_string] = counter.count
         comparison_rows_by_model_count[model_string] = len(rows)
     measured_models = sum(
         1 for value in comparison_by_model.values() if value is not None
@@ -631,6 +672,13 @@ def _dependency_dry_run_payload(sync, *, client=None):
             if comparison_by_model.get(model_string) is not None
         ),
         1,
+    )
+    # Summed over the same models as the runtime, so cost per row and queries
+    # per row are read from the same denominator.
+    comparison_queries = sum(
+        queries
+        for model_string, queries in comparison_queries_by_model.items()
+        if comparison_by_model.get(model_string) is not None
     )
     return {
         "generated_at": timezone.now().isoformat(),
@@ -660,6 +708,10 @@ def _dependency_dry_run_payload(sync, *, client=None):
             "total_models": len(comparison_by_model),
             # What the measurement cost, reported rather than estimated.
             "runtime_ms": comparison_runtime_ms,
+            # Queries alongside milliseconds, because the two distinguish the
+            # only fix directions that differ: a high count is chatter to
+            # batch, a low count with a high runtime is work inside Python.
+            "queries": comparison_queries,
             "rows_compared": compared_rows,
         },
         "model_results": [
@@ -669,6 +721,9 @@ def _dependency_dry_run_payload(sync, *, client=None):
                     (result.as_dict().get("model") or "")
                 ),
                 comparison_runtime_ms=comparison_runtime_ms_by_model.get(
+                    (result.as_dict().get("model") or "")
+                ),
+                comparison_queries=comparison_queries_by_model.get(
                     (result.as_dict().get("model") or "")
                 ),
             )
