@@ -231,7 +231,7 @@ class TheReportCarriesTheQueryCountTest(SimpleTestCase):
         self.assertIsNone(report["slowest_compared_model"]["queries"])
 
 
-class TheQueryCounterActuallyCountsTest(TestCase):
+class TheQueryMeterActuallyMeasuresTest(TestCase):
     """The tests above feed a synthetic payload; this one tests the meter.
 
     Without this, everything above could pass while the preview reported a
@@ -249,40 +249,194 @@ class TheQueryCounterActuallyCountsTest(TestCase):
         from django.db import connection
         from django.test import override_settings
 
-        from forward_netbox.views import _QueryCounter
+        from forward_netbox.views import _QueryMeter
 
-        counter = _QueryCounter()
+        meter = _QueryMeter()
         with override_settings(DEBUG=False):
-            with connection.execute_wrapper(counter):
+            with connection.execute_wrapper(meter):
                 Site.objects.count()
                 Site.objects.count()
 
-        self.assertEqual(counter.count, 2)
+        self.assertEqual(meter.count, 2)
 
     def test_it_counts_nothing_when_nothing_runs(self):
         from django.db import connection
 
-        from forward_netbox.views import _QueryCounter
+        from forward_netbox.views import _QueryMeter
 
-        counter = _QueryCounter()
-        with connection.execute_wrapper(counter):
+        meter = _QueryMeter()
+        with connection.execute_wrapper(meter):
             pass
 
-        self.assertEqual(counter.count, 0)
+        self.assertEqual(meter.count, 0)
 
     def test_the_wrapper_returns_the_query_result_unchanged(self):
         # A counter that swallowed or altered results would corrupt every
         # comparison it measured.
         from django.db import connection
 
-        from forward_netbox.views import _QueryCounter
+        from forward_netbox.views import _QueryMeter
 
         Site.objects.create(name="Counter Site", slug="counter-site")
-        counter = _QueryCounter()
-        with connection.execute_wrapper(counter):
+        meter = _QueryMeter()
+        with connection.execute_wrapper(meter):
             names = list(
                 Site.objects.filter(slug="counter-site").values_list("name", flat=True)
             )
 
         self.assertEqual(names, ["Counter Site"])
-        self.assertGreater(counter.count, 0)
+        self.assertGreater(meter.count, 0)
+
+    def test_it_times_the_queries_it_counts(self):
+        from django.db import connection
+
+        from forward_netbox.views import _QueryMeter
+
+        meter = _QueryMeter()
+        with connection.execute_wrapper(meter):
+            Site.objects.count()
+
+        self.assertEqual(meter.count, 1)
+        self.assertGreater(meter.seconds, 0.0)
+
+    def test_it_times_nothing_when_nothing_runs(self):
+        # Paired with the count for the same reason: a meter that reported
+        # elapsed time for work that never ran would be worse than silent.
+        from django.db import connection
+
+        from forward_netbox.views import _QueryMeter
+
+        meter = _QueryMeter()
+        with connection.execute_wrapper(meter):
+            pass
+
+        self.assertEqual(meter.seconds, 0.0)
+
+    def test_a_failing_query_still_reports_what_it_spent(self):
+        """The `finally`, and the reason it is one.
+
+        A query that raises has still spent its time in the database, and it is
+        disproportionately likely to be the slow one - a statement timeout is
+        the expensive query, not a cheap one. Recording the elapsed time only
+        on the success path would drop the measurement in precisely the case
+        that motivated taking it.
+        """
+        from django.db import ProgrammingError
+        from django.db import connection
+        from django.db import transaction
+
+        from forward_netbox.views import _QueryMeter
+
+        meter = _QueryMeter()
+        # The failing statement aborts the surrounding transaction, so it runs
+        # inside its own atomic block: leaving that block by exception rolls
+        # the savepoint back and the connection stays usable for teardown.
+        with self.assertRaises(ProgrammingError):
+            with transaction.atomic():
+                with connection.execute_wrapper(meter):
+                    with connection.cursor() as cursor:
+                        cursor.execute("SELECT * FROM a_table_that_does_not_exist")
+
+        self.assertEqual(meter.count, 1)
+        self.assertGreater(meter.seconds, 0.0)
+
+
+class TheReportSaysHowMuchOfItWasSqlTest(SimpleTestCase):
+    """A low query count does not mean the database was not the problem.
+
+    The converged comparison issues a flat handful of queries - 13 for 4,000
+    rows locally - so the deployment spending 276,377 ms will report a low
+    count too, and a low count against a high runtime reads as work inside
+    Python. It has a second reading: few queries, each slow. A sequential scan
+    over 122,478 rows, or a Postgres a network hop away, produces exactly the
+    same count and wants an index or a move, not a rewrite. Only the share of
+    the runtime spent inside the database separates them.
+    """
+
+    def test_the_sql_time_comes_from_the_preview(self):
+        report = compute_drift_report(
+            _payload(
+                [
+                    {
+                        "model": "dcim.macaddress",
+                        "row_count": 122478,
+                        "estimated_changes": 0,
+                        "change_estimate_kind": "exact_comparison",
+                        "comparison_runtime_ms": 276377.0,
+                        "comparison_queries": 13,
+                        "comparison_sql_ms": 271900.0,
+                    }
+                ],
+                coverage={
+                    "measured_models": 1,
+                    "total_models": 1,
+                    "runtime_ms": 276377.0,
+                    "queries": 13,
+                    "sql_ms": 271900.0,
+                    "rows_compared": 122478,
+                },
+            )
+        )
+        self.assertEqual(report["comparison_sql_ms"], 271900.0)
+
+    def test_the_slowest_model_carries_its_sql_time(self):
+        # Thirteen queries and 271,900 ms of SQL is a slow query. Thirteen
+        # queries and 40 ms of SQL is Python. The report must be able to say
+        # which, about the model it just named.
+        report = compute_drift_report(
+            _payload(
+                [
+                    {
+                        "model": "dcim.macaddress",
+                        "row_count": 122478,
+                        "estimated_changes": 0,
+                        "change_estimate_kind": "exact_comparison",
+                        "comparison_runtime_ms": 276377.0,
+                        "comparison_queries": 13,
+                        "comparison_sql_ms": 271900.0,
+                    },
+                    {
+                        "model": "dcim.site",
+                        "row_count": 93,
+                        "estimated_changes": 0,
+                        "change_estimate_kind": "exact_comparison",
+                        "comparison_runtime_ms": 12.0,
+                        "comparison_queries": 4,
+                        "comparison_sql_ms": 9.0,
+                    },
+                ],
+                coverage={"measured_models": 2, "total_models": 2},
+            )
+        )
+        self.assertEqual(report["slowest_compared_model"]["model"], "dcim.macaddress")
+        self.assertEqual(report["slowest_compared_model"]["sql_ms"], 271900.0)
+
+    def test_a_payload_without_the_sql_time_reports_none_not_zero(self):
+        # The count shipped one release before the timing did, so a payload
+        # carrying a count and no SQL time is a real shape, not a hypothetical.
+        # Zero would read as "the database was free", which is the exact wrong
+        # conclusion to hand someone reading a 276-second model.
+        report = compute_drift_report(
+            _payload(
+                [
+                    {
+                        "model": "dcim.macaddress",
+                        "row_count": 122478,
+                        "estimated_changes": 0,
+                        "change_estimate_kind": "exact_comparison",
+                        "comparison_runtime_ms": 276377.0,
+                        "comparison_queries": 13,
+                    }
+                ],
+                coverage={
+                    "measured_models": 1,
+                    "total_models": 1,
+                    "runtime_ms": 276377.0,
+                    "queries": 13,
+                    "rows_compared": 122478,
+                },
+            )
+        )
+        self.assertEqual(report["comparison_queries"], 13)
+        self.assertIsNone(report["comparison_sql_ms"])
+        self.assertIsNone(report["slowest_compared_model"]["sql_ms"])
