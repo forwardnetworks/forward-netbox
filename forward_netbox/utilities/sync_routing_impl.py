@@ -124,16 +124,55 @@ def delete_netbox_routing_ospfinterface(runner, row):
     return runner._delete_by_coalesce(OSPFInterface, [{"interface": interface}])
 
 
-def apply_netbox_routing_bgppeer(runner, row):
-    return runner._ensure_netbox_routing_bgppeer(row)
+def preview_routing_outcome(runner, obj):
+    """Classify one routing row from what the shimmed upserts reported.
+
+    A routing row is not one object. A single BGP peer resolves - and the apply
+    would write - up to five: two ASNs, the neighbour `IPAddress`, a
+    `BGPRouter`, a `BGPScope`, and the peer itself. `netbox_routing.bgprouter`
+    and `netbox_routing.bgpscope` have no Forward query of their own; they exist
+    only as parents built while applying a peer. So a router this run would
+    rewrite is drift that NO model would report if this function looked only at
+    the leaf row, and the peer model would read `unchanged` while every run
+    rewrote 360 routers - the confident zero this feature exists to prevent.
+
+    Hence the verdict is the strongest outcome across every upsert the row
+    performed, taken from the preview runner's own record of them, rather than
+    from `last_upsert_would_change` alone the way the flat DLM rows are
+    classified.
+
+    ``obj is None`` means a parent was absent, so the leaf cannot already
+    exist: the row is a create.
+    """
+    if obj is None:
+        return "creates"
+    outcomes = getattr(runner, "upsert_outcomes", ())
+    if "creates" in outcomes:
+        return "creates"
+    if "updates" in outcomes:
+        return "updates"
+    return "unchanged"
 
 
-def apply_netbox_routing_bgpaddressfamily(runner, row):
-    return runner._ensure_bgp_address_family(row)
+def apply_netbox_routing_bgppeer(runner, row, *, preview=False):
+    peer = runner._ensure_netbox_routing_bgppeer(row)
+    if preview:
+        return preview_routing_outcome(runner, peer)
+    return peer
 
 
-def apply_netbox_routing_bgppeeraddressfamily(runner, row):
-    return runner._ensure_bgp_peer_address_family(row)
+def apply_netbox_routing_bgpaddressfamily(runner, row, *, preview=False):
+    address_family = runner._ensure_bgp_address_family(row)
+    if preview:
+        return preview_routing_outcome(runner, address_family)
+    return address_family
+
+
+def apply_netbox_routing_bgppeeraddressfamily(runner, row, *, preview=False):
+    peer_address_family = runner._ensure_bgp_peer_address_family(row)
+    if preview:
+        return preview_routing_outcome(runner, peer_address_family)
+    return peer_address_family
 
 
 def apply_netbox_routing_ospfinstance(runner, row):
@@ -148,13 +187,24 @@ def apply_netbox_routing_ospfinterface(runner, row):
     return runner._ensure_ospf_interface(row)
 
 
-def apply_netbox_peering_manager_peeringsession(runner, row):
+def apply_netbox_peering_manager_peeringsession(runner, row, *, preview=False):
+    """Bind the session to its peer, or - with ``preview`` - classify only.
+
+    Every write in this path is behind a ``runner.`` call the preview overrides,
+    including `_ensure_peering_relationship`, which upserts a `Relationship`.
+    The one thing it needs of its own is the guard below: the session coalesces
+    on `bgp_peer` alone, so an absent peer would look the session up on
+    ``{"bgp_peer": None}`` and match whichever unrelated session has no peer.
+    """
     PeeringSession = runner._optional_model(
         "netbox_peering_manager",
         "PeeringSession",
         "netbox_peering_manager.peeringsession",
     )
     bgp_peer = runner._ensure_netbox_routing_bgppeer(row)
+    if preview and bgp_peer is None:
+        # The peer is absent, so its session cannot already exist either.
+        return "creates"
     values = runner._model_field_values(
         PeeringSession,
         {
@@ -163,22 +213,43 @@ def apply_netbox_peering_manager_peeringsession(runner, row):
             "service_reference": row.get("service_reference") or "",
         },
     )
-    runner._upsert_values_from_defaults(
+    session, _ = runner._upsert_values_from_defaults(
         "netbox_peering_manager.peeringsession",
         PeeringSession,
         values=values,
         coalesce_sets=[("bgp_peer",)],
     )
+    if preview:
+        return preview_routing_outcome(runner, session)
 
 
-def bgp_vrf(runner, row):
-    return routing_vrf(runner, row)
+#: Returned by `routing_vrf` under preview when the row NAMES a VRF that NetBox
+#: does not have. Distinct from `None`, which means the row names no VRF at all
+#: and the object genuinely belongs in the global table.
+VRF_ABSENT = object()
 
 
-def routing_vrf(runner, row):
+def bgp_vrf(runner, row, *, preview=False):
+    return routing_vrf(runner, row, preview=preview)
+
+
+def routing_vrf(runner, row, *, preview=False):
+    """Resolve the row's VRF; under preview, distinguish absent from global.
+
+    The real `_ensure_vrf` CREATES a missing VRF. The preview runner's override
+    resolves and returns `None` instead, which collides with the answer for a
+    row that names no VRF at all - and the collision is not cosmetic. Every
+    coalesce set below includes `vrf`, so a row whose VRF does not exist yet
+    would look its object up on `vrf=None` and match the unrelated GLOBAL one:
+    an OSPF instance or BGP scope that the apply would create would be reported
+    as already present and unchanged.
+
+    That is the confident-zero failure this feature exists to prevent, so the
+    two answers are kept apart and the callers report a create.
+    """
     if not row.get("vrf"):
         return None
-    return runner._ensure_vrf(
+    vrf = runner._ensure_vrf(
         {
             "name": row["vrf"],
             "rd": None,
@@ -187,6 +258,9 @@ def routing_vrf(runner, row):
         },
         update_existing=False,
     )
+    if preview and vrf is None:
+        return VRF_ABSENT
+    return vrf
 
 
 def lookup_device_for_routing(runner, row, model_string, object_label):
@@ -232,13 +306,26 @@ def lookup_ipaddress_by_host(runner, *, address, vrf):
     return runner._get_unique_or_raise(IPAddress, lookup)
 
 
-def ensure_bgp_peer_ip(runner, row, vrf):
+def ensure_bgp_peer_ip(runner, row, vrf, *, preview=False):
+    """Find the neighbour address, and - under ``preview`` - never create it.
+
+    This save is DIRECT: it is not reached through any ``runner.`` call, so the
+    preview runner's firewall does not see it. Same shape as the FHRP virtual
+    IP and as cables, and the reason this path needs a ``preview`` argument
+    rather than another shim.
+
+    Returning ``None`` under preview says the address is absent. The caller
+    treats that as a create for the whole row, which is the honest answer: a
+    peer cannot already exist against a neighbour address NetBox does not have.
+    """
     from ipam.models import IPAddress
 
     neighbor_address = row["neighbor_address"]
     existing = lookup_ipaddress_by_host(runner, address=neighbor_address, vrf=vrf)
     if existing is not None:
         return existing
+    if preview:
+        return None
     ip_obj = IPAddress(
         address=host_address(neighbor_address),
         vrf=vrf,
@@ -344,17 +431,37 @@ def bgp_peer_address_family_comments(row):
     return "\n".join(lines)
 
 
-def bgp_peer_values(runner, row):
+def bgp_peer_values(runner, row, *, preview=False):
+    """Resolve everything a peer hangs off, or ``None`` if a parent is absent.
+
+    Under ``preview`` the ASNs and the neighbour address resolve rather than
+    create, so any of them can come back ``None``. Building the peer's values
+    against a missing parent would be worse than useless: ``ensure_bgp_router``
+    reads ``local_asn.asn`` for the router name and would raise
+    ``AttributeError``, which no caller catches, and a scope coalesced on
+    ``router=None`` would match some unrelated row. So an absent parent short-
+    circuits to ``None`` and the caller reports the row as a create.
+    """
     device = lookup_device_for_routing(
         runner, row, "netbox_routing.bgppeer", "BGP peer"
     )
 
-    vrf = bgp_vrf(runner, row)
+    vrf = bgp_vrf(runner, row, preview=preview)
+    if vrf is VRF_ABSENT:
+        # The peer's VRF does not exist yet, so neither can anything coalesced
+        # inside it. Resolving on `vrf=None` would match the global scope.
+        return None
     local_asn = runner._ensure_asn(row["local_asn"])
     remote_asn = runner._ensure_asn(row["peer_asn"])
-    peer_ip = ensure_bgp_peer_ip(runner, row, vrf)
+    peer_ip = ensure_bgp_peer_ip(runner, row, vrf, preview=preview)
+    if preview and (local_asn is None or remote_asn is None or peer_ip is None):
+        return None
     router = ensure_bgp_router(runner, row, device, local_asn)
+    if preview and router is None:
+        return None
     scope = ensure_bgp_scope(runner, row, router, vrf)
+    if preview and scope is None:
+        return None
     status = row.get("status") or ("active" if row.get("enabled") else "offline")
     if status not in {"active", "planned", "offline", "failed"}:
         status = "active" if row.get("enabled") else "offline"
@@ -371,11 +478,15 @@ def bgp_peer_values(runner, row):
     }
 
 
-def ensure_netbox_routing_bgppeer(runner, row):
+def ensure_netbox_routing_bgppeer(runner, row, *, preview=False):
     BGPPeer = runner._optional_model(
         "netbox_routing", "BGPPeer", "netbox_routing.bgppeer"
     )
-    values = runner._model_field_values(BGPPeer, bgp_peer_values(runner, row))
+    peer_values = bgp_peer_values(runner, row, preview=preview)
+    if peer_values is None:
+        # Preview only, and only when a parent is absent - see `bgp_peer_values`.
+        return None
+    values = runner._model_field_values(BGPPeer, peer_values)
     peer, _ = runner._upsert_values_from_defaults(
         "netbox_routing.bgppeer",
         BGPPeer,
@@ -395,21 +506,33 @@ def normalize_bgp_address_family(afi_safi, *, aliases):
     return aliases.get(value, value)
 
 
-def ensure_bgp_scope_for_row(runner, row, model_string):
+def ensure_bgp_scope_for_row(runner, row, model_string, *, preview=False):
     device = lookup_device_for_routing(runner, row, model_string, "BGP scope")
-    vrf = bgp_vrf(runner, row)
+    vrf = bgp_vrf(runner, row, preview=preview)
+    if vrf is VRF_ABSENT:
+        return None
     local_asn = runner._ensure_asn(row["local_asn"])
+    if preview and local_asn is None:
+        # The router name is built from `local_asn.asn`; an absent ASN means
+        # no router, so no scope, so the row is a create.
+        return None
     router = ensure_bgp_router(runner, row, device, local_asn)
+    if preview and router is None:
+        return None
     return ensure_bgp_scope(runner, row, router, vrf)
 
 
-def ensure_bgp_address_family(runner, row):
+def ensure_bgp_address_family(runner, row, *, preview=False):
     BGPAddressFamily = runner._optional_model(
         "netbox_routing",
         "BGPAddressFamily",
         "netbox_routing.bgpaddressfamily",
     )
-    scope = ensure_bgp_scope_for_row(runner, row, "netbox_routing.bgpaddressfamily")
+    scope = ensure_bgp_scope_for_row(
+        runner, row, "netbox_routing.bgpaddressfamily", preview=preview
+    )
+    if preview and scope is None:
+        return None
     address_family = normalize_bgp_address_family(
         row.get("afi_safi"), aliases=runner.FORWARD_BGP_ADDRESS_FAMILY_ALIASES
     )
@@ -462,14 +585,18 @@ def resolve_bgp_address_family_for_delete(runner, row):
     )
 
 
-def ensure_bgp_peer_address_family(runner, row):
+def ensure_bgp_peer_address_family(runner, row, *, preview=False):
     BGPPeerAddressFamily = runner._optional_model(
         "netbox_routing",
         "BGPPeerAddressFamily",
         "netbox_routing.bgppeeraddressfamily",
     )
-    bgp_peer = ensure_netbox_routing_bgppeer(runner, row)
-    address_family = ensure_bgp_address_family(runner, row)
+    bgp_peer = ensure_netbox_routing_bgppeer(runner, row, preview=preview)
+    if preview and bgp_peer is None:
+        return None
+    address_family = ensure_bgp_address_family(runner, row, preview=preview)
+    if preview and address_family is None:
+        return None
     values = runner._model_field_values(
         BGPPeerAddressFamily,
         {

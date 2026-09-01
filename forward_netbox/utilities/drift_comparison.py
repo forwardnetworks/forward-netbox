@@ -123,6 +123,24 @@ class PreviewRunner:
         # having run reports "no change" instead of raising - the adapter
         # comparison only reads it after an upsert it made itself.
         self.last_upsert_would_change = False
+        # Every upsert outcome recorded since `begin_row`, for the paths where
+        # one Forward row means several persisted objects and the last one is
+        # not the whole answer. The routing models need it: a `BGPRouter` or
+        # `BGPScope` this run would rewrite has no Forward query of its own, so
+        # if the peer's verdict ignored it, nothing would ever report it.
+        # `last_upsert_would_change` stays exactly as it was for the flat rows
+        # that only ever upsert one object.
+        self.upsert_outcomes = []
+
+    def begin_row(self):
+        """Start recording a new row's upserts. Called once per row."""
+        self.upsert_outcomes = []
+        self.last_upsert_would_change = False
+
+    def _record_upsert_outcome(self, *, created, changed):
+        self.upsert_outcomes.append(
+            "creates" if created else ("updates" if changed else "unchanged")
+        )
 
     def _record_issue(self, *args, **kwargs):
         # Deliberately signature-agnostic. Callers pass different keyword sets
@@ -400,6 +418,7 @@ class PreviewRunner:
             # caller; `would_change` is not the question for a row that is not
             # there at all.
             self.last_upsert_would_change = False
+            self._record_upsert_outcome(created=True, changed=False)
             return None, True
         self.last_upsert_would_change = any(
             not _model_field_value_matches(model, obj, field, value)
@@ -407,6 +426,9 @@ class PreviewRunner:
                 model._meta.label_lower,
                 values,
             ).items()
+        )
+        self._record_upsert_outcome(
+            created=False, changed=self.last_upsert_would_change
         )
         return obj, False
 
@@ -448,6 +470,7 @@ class PreviewRunner:
                 break
         if obj is None:
             self.last_upsert_would_change = False
+            self._record_upsert_outcome(created=True, changed=False)
             if return_change:
                 return None, True, True
             return None, True
@@ -460,9 +483,118 @@ class PreviewRunner:
             ).items()
         )
         self.last_upsert_would_change = changed
+        self._record_upsert_outcome(created=False, changed=changed)
         if return_change:
             return obj, False, changed
         return obj, False
+
+    @property
+    def FORWARD_BGP_ADDRESS_FAMILY_ALIASES(self):
+        """The apply's own alias table, not a copy.
+
+        `normalize_bgp_address_family` reads it off the runner to fold Forward's
+        AFI/SAFI spellings onto NetBox's choices. A second copy here would drift
+        from the real one and classify a peer address family as a create under a
+        name the apply never writes.
+        """
+        from .sync import ForwardSyncRunner
+
+        return ForwardSyncRunner.FORWARD_BGP_ADDRESS_FAMILY_ALIASES
+
+    def _ensure_asn(self, asn_value):
+        """Find the ASN, never create it - nor the RIR beneath it.
+
+        The real one saves an `ASN` and calls `_ensure_forward_observed_rir`,
+        which upserts a `RIR`. Both are reached from inside the BGP peer
+        classification, so inheriting either would write while measuring - the
+        same trap as `_ensure_vrf` and `_ensure_platform`.
+
+        The validation is kept because the apply rejects those rows too: an
+        unparseable or sub-1 ASN raises there, is recorded per row and skipped,
+        so a preview that quietly returned `None` would classify a row the apply
+        refuses as a create.
+        """
+        from ipam.models import ASN
+
+        from ..exceptions import ForwardQueryError
+
+        try:
+            asn_number = int(asn_value)
+        except (TypeError, ValueError) as exc:
+            raise ForwardQueryError(f"Invalid BGP ASN value `{asn_value}`.") from exc
+        if asn_number < 1:
+            raise ForwardQueryError(
+                f"Invalid BGP ASN value `{asn_value}`; ASNs must be greater "
+                "than or equal to 1."
+            )
+        existing = self._get_unique_or_raise(ASN, {"asn": asn_number})
+        if existing is not None:
+            self._asn_by_number_cache[existing.asn] = existing
+        return existing
+
+    def _coalesce_upsert(
+        self,
+        model_string,
+        model,
+        *,
+        coalesce_lookups,
+        create_values,
+        update_values=None,
+        return_change=False,
+        create_instance_attrs=None,
+    ):
+        """The third upsert primitive, read-only.
+
+        `ensure_bgp_scope` calls this one - the model-string-carrying wrapper
+        that resolves the conflict policy before delegating to
+        `coalesce_update_or_create`. The preview overrides the delegate, but
+        the real `coalesce_upsert` would still have been inherited and written,
+        because it is defined on the runner rather than reached through one of
+        the two methods already shimmed. A hole exactly where a caller was
+        explicit about the model it was writing.
+        """
+        return self._coalesce_update_or_create(
+            model,
+            coalesce_lookups=coalesce_lookups,
+            create_values=create_values,
+            update_values=update_values,
+            conflict_policy=self._conflict_policy(model_string),
+            return_change=return_change,
+            create_instance_attrs=create_instance_attrs,
+        )
+
+    # --- routing chains, resolved with preview threaded through -------------
+    #
+    # Each delegates to the same impl function the real runner does, with
+    # `preview=True`. The threading exists for the writes that are NOT behind a
+    # `runner.` call and so cannot be shimmed: `ensure_bgp_peer_ip` saves an
+    # `IPAddress` directly, the same shape as the FHRP virtual IP.
+
+    def _ensure_netbox_routing_bgppeer(self, row):
+        from .sync_routing_impl import ensure_netbox_routing_bgppeer
+
+        return ensure_netbox_routing_bgppeer(self, row, preview=True)
+
+    def _ensure_bgp_address_family(self, row):
+        from .sync_routing_impl import ensure_bgp_address_family
+
+        return ensure_bgp_address_family(self, row, preview=True)
+
+    def _ensure_bgp_peer_address_family(self, row):
+        from .sync_routing_impl import ensure_bgp_peer_address_family
+
+        return ensure_bgp_peer_address_family(self, row, preview=True)
+
+    def _ensure_peering_relationship(self, row):
+        """No `preview` argument, and that is the audit result, not an omission.
+
+        Every write in this chain is the one `_upsert_values_from_defaults`
+        below it, which is already shimmed, so the impl function is read-only
+        under this runner as written.
+        """
+        from .sync_routing_impl import ensure_peering_relationship
+
+        return ensure_peering_relationship(self, row)
 
     def _lookup_module_bay(self, device, module_bay_name):
         from .sync_primitives import lookup_module_bay
@@ -575,21 +707,36 @@ def _compare_adapter_rows(runner, rows, apply_row, *, uncomparable_outcomes=()):
     next run would resolve.
     """
     from ..exceptions import ForwardDependencySkipError
+    from ..exceptions import ForwardQueryError
     from ..exceptions import ForwardSearchError
     from ..exceptions import ForwardSyncDataError
 
     counts = {"creates": 0, "updates": 0, "unchanged": 0, "rejected": 0}
     for row in rows:
+        # One row, one record of what it would write. The paths where a row
+        # means several objects read the whole record back; the flat ones do
+        # not, and are unaffected.
+        runner.begin_row()
         try:
             outcome = apply_row(runner, row, preview=True)
         except (
             ForwardDependencySkipError,
+            ForwardQueryError,
             ForwardSearchError,
             ForwardSyncDataError,
         ):
             # An unusable row is a defect in the row, not a difference between
             # the two systems, so it is counted apart from drift rather than
             # inflating it.
+            #
+            # `ForwardQueryError` joined this list with the routing models,
+            # which are the first to raise it during classification - an
+            # unparseable ASN, an empty `afi_safi`, an unsupported address
+            # family. It is NOT a subclass of `ForwardDataError`, so it was
+            # escaping this loop and would have killed the whole comparison
+            # rather than the row. `apply_model_rows` catches it per row
+            # alongside the other three and continues, so counting it rejected
+            # is what the apply does with the same row.
             counts["rejected"] += 1
             continue
         except (KeyError, ValueError):
@@ -668,6 +815,45 @@ def _dlm_comparisons():
     }
 
 
+def _compare_netbox_routing_peering(model_string, apply_function):
+    """Build a comparison for one netbox-routing peering sub-model."""
+
+    def compare(runner, rows):
+        return _compare_adapter_rows(runner, rows, apply_function)
+
+    compare.__name__ = f"_compare_{model_string.replace('.', '_')}"
+    return compare
+
+
+def _peering_comparisons():
+    """The four peering models, which share one classification.
+
+    All four funnel into `ensure_netbox_routing_bgppeer` or the address-family
+    pair beneath it, and every write in those chains is either behind a
+    `runner.` call the preview overrides or behind the `preview` argument
+    threaded through `sync_routing_impl`. So they classify identically and
+    share one builder rather than four that could drift apart.
+
+    `netbox_peering_manager.peeringsession` belongs here rather than with its
+    own plugin: it has no chain of its own, only the BGP peer beneath it.
+    """
+    from .sync_routing_impl import apply_netbox_peering_manager_peeringsession
+    from .sync_routing_impl import apply_netbox_routing_bgpaddressfamily
+    from .sync_routing_impl import apply_netbox_routing_bgppeer
+    from .sync_routing_impl import apply_netbox_routing_bgppeeraddressfamily
+
+    return {
+        "netbox_routing.bgppeer": apply_netbox_routing_bgppeer,
+        "netbox_routing.bgpaddressfamily": apply_netbox_routing_bgpaddressfamily,
+        "netbox_routing.bgppeeraddressfamily": (
+            apply_netbox_routing_bgppeeraddressfamily
+        ),
+        "netbox_peering_manager.peeringsession": (
+            apply_netbox_peering_manager_peeringsession
+        ),
+    }
+
+
 def _compare_dcim_module(runner, rows):
     from .sync_inventory_module import apply_dcim_module
 
@@ -732,6 +918,15 @@ def _register_dlm_comparisons():
         )
 
 
+# netbox-routing is registered lazily for the same reason netbox-dlm is.
+def _register_peering_comparisons():
+    for model_string, apply_function in _peering_comparisons().items():
+        _ADAPTER_COMPARISONS.setdefault(
+            model_string,
+            _compare_netbox_routing_peering(model_string, apply_function),
+        )
+
+
 def compare_model_rows(sync, model_string, rows):
     """Return ``{"creates", "updates", "unchanged", "rejected"}`` or ``None``.
 
@@ -786,6 +981,11 @@ def compare_model_rows(sync, model_string, rows):
         _ADAPTER_COMPARISONS
     ):
         _register_dlm_comparisons()
+    if (
+        model_string.startswith("netbox_routing.")
+        or model_string.startswith("netbox_peering_manager.")
+    ) and model_string not in _ADAPTER_COMPARISONS:
+        _register_peering_comparisons()
     adapter_comparison = _ADAPTER_COMPARISONS.get(model_string)
     if adapter_comparison is not None:
         return adapter_comparison(runner, rows)
