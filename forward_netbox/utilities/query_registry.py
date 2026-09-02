@@ -610,6 +610,16 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "enabled": False,
     },
     {
+        # The same lifecycle treatment for the APIC servers' CIMC, sourced from
+        # the eqptCh custom command the APIC CIMC inventory map already reads
+        # rather than from SNMP. Opt-in like every lifecycle map, and full-only
+        # for the same reason the inventory map is.
+        "model_string": "netbox_dlm.inventoryitemsoftware",
+        "name": "Forward ACI APIC CIMC Inventory Item Software",
+        "filename": "forward_dlm_apic_cimc_inventory_item_software.nqe",
+        "enabled": False,
+    },
+    {
         "model_string": "netbox_dlm.cve",
         "name": "Forward DLM CVEs",
         "filename": "forward_dlm_cves.nqe",
@@ -1138,11 +1148,15 @@ def _query_diff_ownership_mode(filename: str) -> str:
         # Until exact collision and endpoint feature parity are live-proven,
         # neither the base nor aliases variant may enter the diff path.
         return "feature_state_full_only"
-    if filename == "forward_aci_apic_cimc_inventory.nqe":
+    if filename in (
+        "forward_aci_apic_cimc_inventory.nqe",
+        "forward_dlm_apic_cimc_inventory_item_software.nqe",
+    ):
         # The parameterless draft exposes contributor selectors before a
         # select-distinct reduction. A changed contributor delta cannot prove
         # that an unchanged alternate controller does not preserve the final
-        # inventory row, so this map must remain full-only.
+        # inventory row, so these maps must remain full-only. The software map
+        # reads the same contributors through the same reduction.
         return "unsafe_contributor_reduction"
     return "global"
 
@@ -1769,6 +1783,13 @@ ALIAS_VARIANT_EXEMPT_QUERY_FILENAMES = {
         'Emits the hardcoded Platform "CIMC", which its own apply adapter '
         "creates alongside the InventoryItemRolePlatform mapping. The value "
         "never comes from Forward's device model, so no alias mapping applies."
+    ),
+    "forward_dlm_apic_cimc_inventory_item_software.nqe": (
+        'Emits the hardcoded Platform "CIMC" for APIC servers, exactly as the '
+        "SNMP CIMC software map does; its apply adapter creates that platform "
+        "and the InventoryItemRolePlatform mapping itself. The device name is "
+        "the APIC node name, which the APIC CIMC inventory map also uses "
+        "unmapped, so no alias mapping applies to either."
     ),
 }
 

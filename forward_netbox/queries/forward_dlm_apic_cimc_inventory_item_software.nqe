@@ -1,0 +1,46 @@
+/**
+ * @intent Forward ACI APIC CIMC Inventory Item Software (netbox-dlm)
+ * @description The firmware running on each APIC server's CIMC management
+ * controller, for the optional netbox-dlm plugin's InventoryItemSoftware model.
+ * The version is the cimcVersion the APIC eqptCh custom command already
+ * reports - the same source, and the same regex, the Forward ACI APIC CIMC
+ * Inventory map reads its label and description from - so this map requests
+ * no additional collection. Rows attach to the inventory items that map
+ * creates, which must be enabled alongside this one. An APIC whose chassis
+ * output carries no cimcVersion yields no row: a controller is never reported
+ * as running a version that was not actually read.
+ */
+
+apicNodeRegex = re`(?:^|\R)\s*ID\s*:\s*(?<node_id:Integer>\d+)(?:\*)?\s*\R(?:\s*Role\s*:\s*(?<role>\S+)\s*\R)?\s*Name\s*:\s*(?<node_name>\S+)\s*\R\s*Pod I[Dd]\s*:\s*(?<pod_id:Integer>\d+)\s*\R\s*Address\s*:\s*(?<address>\S+)\s*\R\s*(?:In-Band V4 Address|In-Band IPv4 Address)\s*:\s*(?<inb_mgmt_addr>\S+)\s*\R\s*(?:In-Band V6 Address|In-Band IPv6 Address)\s*:\s*(?<inb_mgmt_addr6>\S+)\s*\R\s*(?:OOB V4 Address|OOB IPv4 Address)\s*:\s*(?<oob_mgmt_addr>\S+)\s*\R\s*(?:OOB V6 Address|OOB IPv6 Address)\s*:\s*(?<oob_mgmt_addr6>\S+)\s*\R\s*Serial Number\s*:\s*(?<serial_number>\S+)\s*\R\s*Version\s*:\s*(?<version>\S+)(?:\s*\R\s*Up Time\s*:\s*(?<up_time>\S+))?(?:\s*\R\s*Fabric State\s*:\s*(?<fabric_state>\S+))?(?:\s*\R\s*State\s*:\s*(?<state>\S+))?`;
+
+chassisRegex = re`(?:^|\R)#\s+eqpt\.Ch\s*\R\s*bootSource\s*:\s*\S+\s*\R\s*childAction\s*:\s*.*\R\s*cimcVersion\s*:\s*(?<cimc_version>\S+)\s*\R\s*configRole\s*:\s*.*\R\s*descr\s*:\s*(?<description>[^\r\n]*)\R\s*dn\s*:\s*topology/pod-(?<pod_id:Integer>\d+)/node-(?<node_id:Integer>\d+)/sys/ch\s*\R(?:\s*[^\r\n]*\R)*?\s*model\s*:\s*(?<model>\S+)\s*\R(?:\s*[^\r\n]*\R)*?\s*role\s*:\s*(?<role>\S+)\s*\R\s*ser\s*:\s*(?<serial>\S+)\s*\R(?:\s*[^\r\n]*\R)*?\s*vendor\s*:\s*(?<vendor>[^\r\n]+)`;
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach controller_command in device.outputs.commands
+where controller_command.commandType == CommandType.CISCO_APIC_CONTROLLER_DETAIL
+foreach node_match in regexMatches(controller_command.response, apicNodeRegex)
+let node = node_match.data
+foreach chassis_command in device.outputs.commands
+where chassis_command.commandType == CommandType.CUSTOM
+where matches(toLowerCase(chassis_command.commandText), "moquery -c eqptch*")
+foreach chassis_match in regexMatches(chassis_command.response, chassisRegex)
+let chassis = chassis_match.data
+where chassis.pod_id == node.pod_id
+where chassis.node_id == node.node_id
+where length(chassis.cimc_version) > 0
+where isEmpty(forward_netbox_shard_keys)
+  || device.name in forward_netbox_shard_keys
+  || node.node_name in forward_netbox_shard_keys
+select distinct {
+  device: node.node_name,
+  inventory_item: "CIMC",
+  role: "MANAGEMENT CONTROLLER",
+  role_slug: "management-controller",
+  platform: "CIMC",
+  platform_slug: "cimc",
+  version: if length(chassis.cimc_version) <= 50 then chassis.cimc_version else substring(chassis.cimc_version, 0, 50)
+};

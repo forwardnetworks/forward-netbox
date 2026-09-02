@@ -21,9 +21,17 @@ RESERVED_STATUS_TAG_SLUGS = frozenset(
 
 
 def normalized_managed_tag_slug(value):
-    """The slug a managed tag is CREATED with. One name, one slug."""
+    """The slug a managed tag is CREATED with. One name, one slug.
+
+    This used to fall back to `slugify(name.replace(".", "-"))`, which can
+    never differ from `slugify(name)`: `slugify` drops a dot rather than
+    replacing it, and a name with no ASCII word characters slugifies to the
+    empty string either way. The arm was dead at four call sites and read
+    as if it handled a case it did not; `candidate_managed_tag_slugs` is where
+    the dotted-name RESOLUTION actually happens.
+    """
     name = str(value or "").strip()
-    return slugify(name) or slugify(name.replace(".", "-"))
+    return slugify(name)
 
 
 def candidate_managed_tag_slugs(value):

@@ -197,6 +197,30 @@ class ForwardJobsTest(TestCase):
         self.assertEqual(self.sync.status, ForwardSyncStatusChoices.TIMEOUT)
         overlays.assert_not_called()
 
+    def test_an_unexpected_exception_registers_with_rq(self):
+        """A `KeyError` is re-raised, so RQ's failed-job registry records it.
+
+        A deployment's registry had recorded no plugin failure since June
+        despite three errored syncs, and `expected_failure` covers only the
+        three exception types the job anticipates - so anything else MUST
+        re-raise for the registry to see it. This pins that it does, and that
+        the job row is still errored with a redacted message first.
+        """
+        job = self._sync_job("sync-keyerror")
+        with (
+            patch.object(ForwardSync, "sync", side_effect=KeyError("secret-key")),
+            patch("forward_netbox.jobs._enqueue_post_sync_overlays") as overlays,
+            self.assertRaises(KeyError),
+        ):
+            sync_forwardsync(job, adhoc=True)
+        job.refresh_from_db()
+        self.sync.refresh_from_db()
+        self.assertEqual(job.status, JobStatusChoices.STATUS_ERRORED)
+        self.assertIn("KeyError", job.error)
+        self.assertNotIn("secret-key", job.error)
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.FAILED)
+        overlays.assert_not_called()
+
     def test_scope_tag_reconciliation_enqueues_after_completed_sync(self):
         from forward_netbox.jobs import _maybe_enqueue_backfilled_tag_refresh
 

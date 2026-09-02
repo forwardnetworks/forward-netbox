@@ -264,6 +264,86 @@ class ConfigBackupTest(TestCase):
         _text, entries = _read_config_blob(self.tmp.name, "router-1.cfg")
         self.assertEqual(entries, [b"router-1.cfg"])
 
+    def _read_root_tree(self):
+        from dulwich.repo import Repo
+
+        with Repo(self.tmp.name) as repo:
+            head = repo.refs[repo.refs.follow(b"HEAD")[0][1]]
+            commit = repo.object_store[head]
+            root = repo.object_store[commit.tree]
+            entries = {}
+            for name, _mode, sha in root.iteritems():
+                tree = repo.object_store[sha]
+                entries[name.decode()] = sorted(
+                    child.decode() for child, _m, _s in tree.iteritems()
+                )
+            return entries
+
+    def test_unmanaged_devices_are_not_transferred_by_default(self):
+        # The fetch is scoped to this sync's devices; the stray row here is
+        # what a real estate returns only when the scope is lifted.
+        result, client = self._run(
+            [
+                {"name": "fwd-router-1", "config": "hostname router-1"},
+                {"name": "fwd-unmanaged", "config": "hostname unmanaged"},
+            ]
+        )
+        self.assertEqual(
+            client.calls[0]["parameters"]["forward_netbox_shard_keys"],
+            ["fwd-router-1", "fwd-router-2"],
+        )
+        self.assertEqual(result.unmapped, 1)
+        self.assertEqual(result.unmanaged_written, 0)
+        self.assertNotIn("unmanaged", self._read_root_tree())
+
+    def test_opting_in_archives_unmanaged_devices_under_their_own_prefix(self):
+        """The product question the 2.9.0 plan left open, answered as an opt-in.
+
+        Off is the default because the fetch is otherwise scoped. On, the fetch
+        is the whole estate and the surplus lands under `unmanaged/`, named by
+        Forward name - apart from `configs/`, which Validity binds to NetBox
+        device names an unmanaged device does not have.
+        """
+        self.sync.source.parameters["config_backup_include_unmanaged"] = True
+        self.sync.source.save()
+        result, client = self._run(
+            [
+                {"name": "fwd-router-1", "config": "hostname router-1"},
+                {"name": "fwd-unmanaged", "config": "hostname unmanaged"},
+            ]
+        )
+        self.assertEqual(client.calls[0]["parameters"]["forward_netbox_shard_keys"], [])
+        self.assertEqual(result.written, 1)
+        self.assertEqual(result.unmanaged_written, 1)
+        self.assertEqual(result.unmapped, 0)
+        tree = self._read_root_tree()
+        self.assertEqual(tree["configs"], ["router-1.cfg"])
+        self.assertEqual(tree["unmanaged"], ["fwd-unmanaged.cfg"])
+        self.assertIn("unmanaged_written", result.as_dict())
+
+        # A second run with the same content commits nothing new.
+        again, _client = self._run(
+            [
+                {"name": "fwd-router-1", "config": "hostname router-1"},
+                {"name": "fwd-unmanaged", "config": "hostname unmanaged"},
+            ],
+            snapshot_id="snap-2",
+        )
+        self.assertEqual(again.unmanaged_unchanged, 1)
+        self.assertEqual(again.skipped_reason, "no configuration changed")
+
+    def test_an_unmanaged_name_never_becomes_repository_structure_either(self):
+        self.sync.source.parameters["config_backup_include_unmanaged"] = True
+        self.sync.source.save()
+        result, _client = self._run(
+            [
+                {"name": "fwd-router-1", "config": "hostname router-1"},
+                {"name": "../etc/passwd", "config": "x"},
+            ]
+        )
+        self.assertEqual(result.unmanaged_written, 0)
+        self.assertEqual(result.unmapped, 1)
+
     def test_the_result_payload_never_carries_configuration_text(self):
         marker = "SECRET-CONFIG-LINE-DO-NOT-EXPORT"
         result, _client = self._run(

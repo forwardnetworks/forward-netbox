@@ -1028,27 +1028,30 @@ class QueryRegistryTest(TestCase):
         )
 
     def test_platform_queries_normalize_aci_apic_and_cimc_platforms(self):
-        # Forward Devices queries delegate to normalizeDevicePlatformName; the
-        # platform query calls normalizePlatformName directly (more robust for
-        # unsupported vendor/OS combos that lack a full device context).
-        device_query_names = [
+        """Producer and consumers derive the platform name the same way.
+
+        This test used to require the opposite: that Forward Platforms call
+        `normalizePlatformName(os, version)` directly while every consumer
+        called `normalizeDevicePlatformName(device)`. The two disagree for
+        exactly the devices ACI is about - a fabric switch whose `platform.os`
+        is NXOS and whose ACI-ness is visible only in its command outputs got
+        an "NXOS" platform row from the producer and an "ACI" reference from
+        every consumer, so the consumers' rows skipped as missing a parent.
+        `2026-08-03-alias-variant-coverage-guard.md` recorded that mismatch as
+        the one code-verifiable lead behind a customer's softwareversion skips.
+        One derivation, on both sides.
+        """
+        for model_string, query_name in (
             ("dcim.device", "Forward Devices"),
             ("dcim.device", "Forward Devices with NetBox Device Type Aliases"),
-        ]
-        for model_string, query_name in device_query_names:
+            ("dcim.platform", "Forward Platforms"),
+        ):
             spec = get_seeded_builtin_query_spec(model_string, query_name)
-            if model_string == "dcim.platform":
-                self.assertIn(
-                    "normalizePlatformName(toString(device.platform.os), device.platform.osVersion)",
-                    spec.query,
-                    msg=f"{query_name} no longer normalizes forward platform OS values.",
-                )
-            else:
-                self.assertIn(
-                    "normalizeDevicePlatformName(device)",
-                    spec.query,
-                    msg=f"{query_name} no longer normalizes forward platform OS values.",
-                )
+            self.assertIn(
+                "normalizeDevicePlatformName(device)",
+                spec.query,
+                msg=f"{query_name} no longer normalizes forward platform OS values.",
+            )
             self.assertNotIn(
                 'replace(toString(device.platform.os), "OS.", "")',
                 spec.query,
@@ -1057,24 +1060,6 @@ class QueryRegistryTest(TestCase):
 
         platform_spec = get_seeded_builtin_query_spec(
             "dcim.platform", "Forward Platforms"
-        )
-        # Forward Platforms calls normalizePlatformName directly so it works for
-        # ACI/APIC/CIMC devices whose vendor enum may not resolve via device context.
-        self.assertIn(
-            "let platform_os_version = if isPresent(device.platform.osVersion) "
-            'then device.platform.osVersion else ""',
-            platform_spec.query,
-            msg="Forward Platforms must default an absent OS version before normalization.",
-        )
-        self.assertIn(
-            "normalizePlatformName(toString(device.platform.os), platform_os_version)",
-            platform_spec.query,
-            msg="Forward Platforms should not use normalizeDevicePlatformName — it must call normalizePlatformName directly.",
-        )
-        self.assertNotIn(
-            "normalizeDevicePlatformName(device)",
-            platform_spec.query,
-            msg="Forward Platforms should not use normalizeDevicePlatformName — it must call normalizePlatformName directly.",
         )
         utilities = read_builtin_query_source("netbox_utilities.nqe")
         self.assertIn(
@@ -2547,6 +2532,7 @@ select {name: "vendor", slug: "vendor"}
                 "Forward DLM Hardware Notices with NetBox Aliases",
                 "Forward DLM Device Software",
                 "Forward CIMC Inventory Item Software",
+                "Forward ACI APIC CIMC Inventory Item Software",
                 "Forward DLM CVEs",
                 "Forward DLM Vulnerabilities",
             },

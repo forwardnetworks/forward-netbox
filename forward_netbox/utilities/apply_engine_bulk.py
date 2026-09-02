@@ -2332,7 +2332,7 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]], *, preview=False):
         updated = []
         resolved = {}
         for name in sorted(scope_names):
-            slug = slugify(name) or slugify(name.replace(".", "-"))
+            slug = slugify(name)
             if not slug:
                 resolved[name] = None
                 continue
