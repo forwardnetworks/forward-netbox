@@ -2,7 +2,7 @@
 
 ## Goal
 
-Correct six defects found by reviewing the five-slice adapter-model drift stack
+Correct nine defects found by reviewing the five-slice adapter-model drift stack
 (#289-#293) as one cumulative diff, before any of it merges.
 
 ## Why
@@ -110,11 +110,16 @@ negative control. Nothing referenced it. Removed.
 
 ## Validation
 
-436 tests green across all five adapter suites, the bulk drift suite, the
+439 tests green across all five adapter suites, the bulk drift suite, the
 preview contract/priming/cost suites, `test_module_readiness` and all of
 `test_sync`.
 
-Two new tests pin the review findings directly:
+Each of the last three fixes has its own negative control, all confirmed
+failing without their fix: removing the `ValueError` raise, reverting the
+`.get()`, and disabling the claimed-name cache each broke exactly the test
+that names it.
+
+Tests pinning the review findings directly:
 `test_a_claimed_component_is_rejected_even_when_the_bay_is_absent` (which
 errored on the `None` dereference before that was fixed too) and
 `test_a_swapped_card_in_an_existing_bay_is_an_update_not_a_create`.
@@ -136,14 +141,36 @@ an individual model's dispatch entry.
   the adapter models ask, and a spec lookup per model on every preview
   construction would cost callers that never use it.
 
+### 8. An empty coalesce-lookup list read as "would create"
+
+Both shims skipped falsy lookups and fell through to `obj is None`, so a row
+yielding no usable lookup - a tag row with neither `tag` nor `tag_slug` -
+counted as drift. The real `coalesce_update_or_create` raises `ValueError`
+there, so the apply could never resolve it and the drift never cleared. Both
+shims now raise the same `ValueError`, and `_compare_adapter_rows` counts it
+rejected alongside `KeyError`: a row the apply cannot process is a defect in
+the row, not a difference between the systems.
+
+### 9. `.get()` where the apply indexes
+
+`_ensure_module_type` and `_ensure_inventory_item_role` read row keys with
+`.get()` while their real counterparts index them. A row missing
+`manufacturer` or `role_slug` raises `KeyError` in the apply and is counted
+rejected; the overrides returned `None` and classified the same row a create.
+They index now, so both paths agree the row is malformed.
+
+### 10. Eight uncached queries per module row
+
+`_unadoptable_component_names` scanned each of the eight component collections
+per row. It now takes an OPT-IN `claimed_cache`, and only the preview runner
+supplies one - deliberately, because an apply CREATES modules as it goes, so a
+device's claimed names change mid-run and a cache there would answer with
+stale state. A preview writes nothing, so they cannot change. The real apply's
+behaviour is byte-identical: it passes no cache.
+
 ## Open
 
-- The remaining review findings are lower severity and NOT fixed here: an empty
-  coalesce-lookup list classifies as "would create" where the apply raises
-  `ValueError` (a row with neither tag nor tag_slug); `.get()` versus indexing
-  makes preview and apply disagree about a malformed row (create versus
-  rejected); `_unadoptable_component_names` costs ~8 uncached queries per
-  module row. The first two are honest-but-wrong classifications of rows that
-  are already broken; the third is a cost question that wants a measurement
-  rather than a guess.
 - Three models still uncompared: lifecycle (netbox-dlm), peering, routing.
+- The delete question from the inventory slice is unchanged: the comparison
+  contract has no slot for a delete, and routing has cascading deletes, so it
+  will likely come due there.

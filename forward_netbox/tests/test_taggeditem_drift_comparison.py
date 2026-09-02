@@ -148,6 +148,24 @@ class TaggedItemPreviewTest(TestCase):
         self.assertEqual(result["rejected"], 1)
         self.assertEqual(result["unchanged"], 0)
 
+    def test_a_row_with_no_usable_coalesce_lookup_is_rejected(self):
+        """A row yielding no lookup is a bad row, not drift.
+
+        `coalesce_update_or_create` raises ValueError when handed no usable
+        lookup. The preview shim previously fell through to "would create", so
+        a tag row with neither `tag` nor `tag_slug` showed as drift that every
+        subsequent run also showed - the apply raised the same way each time
+        and never resolved it.
+        """
+        result = compare_model_rows(
+            None,
+            "extras.taggeditem",
+            [self._row(tag="", tag_slug="")],
+        )
+
+        self.assertEqual(result["rejected"], 1)
+        self.assertEqual(result["creates"], 0)
+
     def test_a_mixed_batch_is_not_all_or_nothing(self):
         tag = Tag.objects.create(name="Prot BGP", slug="prot-bgp", color="9e9e9e")
         self.device.tags.add(tag)

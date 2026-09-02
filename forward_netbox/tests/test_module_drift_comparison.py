@@ -181,6 +181,60 @@ class ModulePreviewTest(TestCase):
             result, {"creates": 0, "updates": 1, "unchanged": 0, "rejected": 0}
         )
 
+    def test_a_row_missing_its_manufacturer_key_is_rejected_not_a_create(self):
+        """Preview and apply must agree that a malformed row is malformed.
+
+        The real `_ensure_module_type` indexes `row["manufacturer"]` and raises
+        KeyError, which is counted as a rejected row. The override used
+        `.get()`, returned None, and classified the same row as a create.
+        """
+        row = self._row()
+        del row["manufacturer"]
+
+        result = compare_model_rows(None, "dcim.module", [row])
+
+        self.assertEqual(result["rejected"], 1)
+        self.assertEqual(result["creates"], 0)
+
+    def test_the_claimed_component_scan_is_not_repeated_per_row(self):
+        """Eight queries a row, for a scan whose answer cannot change.
+
+        A preview writes nothing, so a device's claimed component names are
+        fixed for the whole run. Without the cache this cost eight queries per
+        module row on top of the resolution ones.
+        """
+        module_type = self._module_type()
+        from dcim.models import InterfaceTemplate
+
+        InterfaceTemplate.objects.create(
+            module_type=module_type, name="Ethernet1/1", type="1000base-t"
+        )
+        other_bay = ModuleBay.objects.create(device=self.device, name="Slot 9")
+        other_module = Module.objects.create(
+            device=self.device,
+            module_bay=other_bay,
+            module_type=module_type,
+            status="active",
+        )
+        Interface.objects.filter(device=self.device, name="Ethernet1/1").update(
+            module=other_module
+        )
+        rows = [self._row(module_bay=f"Slot {index}") for index in range(2, 12)]
+
+        from django.test.utils import CaptureQueriesContext
+        from django.db import connection
+
+        with CaptureQueriesContext(connection) as captured:
+            compare_model_rows(None, "dcim.module", rows)
+        repeated = [
+            query
+            for query in captured.captured_queries
+            if "dcim_interface" in query["sql"] and "module_id" in query["sql"]
+        ]
+
+        # One scan for the device, not one per row.
+        self.assertLessEqual(len(repeated), 1, f"{len(repeated)} repeated scans")
+
     def test_an_unknown_device_is_rejected(self):
         result = compare_model_rows(
             None, "dcim.module", [self._row(device="no-such-device")]
