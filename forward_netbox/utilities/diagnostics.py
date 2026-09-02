@@ -480,6 +480,34 @@ def recovered_classifiers(text) -> list[str]:
     return parts
 
 
+# `Job.error` sentences the plugin composes with NO exception at all. They
+# interpolate a plugin-defined enum and nothing else, so every token in them is
+# vocabulary this repository wrote - but they carry no classifier, so the
+# recovery below could only redact them wholesale and a customer's job page
+# read `<redacted diagnostic>` for a sentence that was safe in full.
+#
+# An allowlist of SHAPES, not of sentences: each pattern pins its whole wording
+# and constrains the one interpolated value to the enum it comes from, so a
+# reworded message stops matching (and is redacted, the safe direction) rather
+# than admitting arbitrary text. Deliberately narrow - a different mechanism
+# from the classifier rules, as the plan that recorded this said.
+_SAFE_JOB_ERROR_SHAPES = (
+    re.compile(r"^Forward sync ended with status ([a-z_]+)\.$"),
+    re.compile(
+        r"^Forward merge cannot be retried after the interrupted job; "
+        r"the authoritative branch state is ([a-z_]+)\.$"
+    ),
+)
+
+
+def _safe_job_error_shape(error: str) -> str:
+    """The message itself when it matches a plugin-authored, value-free shape."""
+    for pattern in _SAFE_JOB_ERROR_SHAPES:
+        if pattern.fullmatch(error):
+            return error
+    return ""
+
+
 def safe_job_error_summary(error) -> str:
     """Expose only an exception classifier from a persisted core Job error.
 
@@ -522,7 +550,7 @@ def safe_job_error_summary(error) -> str:
         )
     parts = recovered_classifiers(error)
     if not parts:
-        return REDACTED_DIAGNOSTIC
+        return _safe_job_error_shape(error) or REDACTED_DIAGNOSTIC
     return f"Job failed ({'; '.join(parts)})."
 
 
