@@ -70,14 +70,13 @@ migrations, e.g. netbox-dlm `0.2.0+`; older builds need
 
 ## Release Compatibility
 
-The `2.9.2` release candidate requires NetBox `4.6.x` (>= `4.6.5`, tested on `4.6.8`) and `netbox-branching` `1.1.x` (tested on `1.1.2`). Expand for the published release history and candidate notes.
+The `2.9.1` release requires NetBox `4.6.x` (>= `4.6.5`, tested on `4.6.8`) and `netbox-branching` `1.1.x` (tested on `1.1.2`). Expand for the published release history and release notes.
 
 <details>
 <summary>Release compatibility history</summary>
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v2.9.2` | `4.6.x` (>= `4.6.5`) supported, tested on `4.6.8`; needs netbox-branching `1.1.x`, tested on `1.1.2` | Release candidate; Drift is measured exactly for every fetched model, the uncovered-device count says why it grows and warns when it does, and five delete and diagnostic defects are closed. |
 | `v2.9.1` | `4.6.x` (>= `4.6.5`) supported, tested on `4.6.8`; needs netbox-branching `1.1.x`, tested on `1.1.2` | Current release; Accepts netbox-branching 1.1.3 and records the validated runtime in the lockfile. |
 | `v2.9.0` | `4.6.x` (>= `4.6.5`) supported, tested on `4.6.8`; needs netbox-branching `1.1.x`, tested on `1.1.2` | Superseded by `v2.9.1`; Feature: back up device configurations from Forward into a git data source for Validity golden-config checks, plus the runtime-validation refactor and health check it required. |
 | `v2.8.9` | `4.6.x` (>= `4.6.5`) supported, tested on `4.6.8`; needs netbox-branching `1.1.x`, tested on `1.1.2` | Superseded by `v2.9.0`; Fix: a sync deletes a device only on the same quarantined evidence the operator prune requires, and never stages a delete the database will refuse. |
