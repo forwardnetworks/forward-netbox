@@ -249,7 +249,19 @@ def _find_fhrp_group_by_vip(runner, host_ip, vrf, protocol, group_id):
     ).first()
 
 
-def _ensure_fhrp_vip(runner, row, *, group, vrf, protocol):
+def _ensure_fhrp_vip(runner, row, *, group, vrf, protocol, preview=False):
+    """Attach the virtual IP, or - with ``preview`` - say what would happen.
+
+    Under ``preview`` returns ``"creates"``, ``"updates"``, ``"unchanged"`` or
+    ``False``, and performs neither of this function's two DIRECT saves. Both
+    are outside any ``runner.`` call, so the preview runner's firewall does not
+    reach them - the same shape as cables.
+
+    The two skip paths keep their meaning: a VIP already owned by ANOTHER FHRP
+    group is a legitimate shared VIP and still lets the group and assignment
+    proceed, and a VIP owned by some other kind of object is a conflict the
+    apply refuses.
+    """
     from ipam.models import FHRPGroup
     from ipam.models import IPAddress
 
@@ -262,6 +274,8 @@ def _ensure_fhrp_vip(runner, row, *, group, vrf, protocol):
         {"address__net_host": host_ip, "vrf": vrf},
     )
     if existing is None:
+        if preview:
+            return "creates"
         ip_address = IPAddress(
             address=row["address"],
             vrf=vrf,
@@ -304,7 +318,10 @@ def _ensure_fhrp_vip(runner, row, *, group, vrf, protocol):
                 ),
                 sample=f"{row.get('device')}/group {row['group_id']}",
             )
-            return True
+            # A shared VIP is not drift: the apply deliberately leaves it on the
+            # group that owns it and writes nothing here, while still letting
+            # the group and its assignment proceed.
+            return "unchanged" if preview else True
         runner._record_aggregated_skip_warning(
             model_string="ipam.fhrpgroup",
             reason="vip-conflict",
@@ -330,13 +347,32 @@ def _ensure_fhrp_vip(runner, row, *, group, vrf, protocol):
         existing.assigned_object_type = desired_assigned_object_type
         existing.assigned_object_id = desired_assigned_object_id
         update_fields.extend(["assigned_object_type", "assigned_object_id"])
+    if preview:
+        # Computed from the same field comparisons the apply just made, before
+        # the save rather than after it.
+        return "updates" if update_fields else "unchanged"
     if update_fields:
         existing.full_clean()
         existing.save(update_fields=update_fields)
     return True
 
 
-def apply_ipam_fhrpgroup(runner, row):
+def apply_ipam_fhrpgroup(runner, row, *, preview=False):
+    """Apply the FHRP group, or - with ``preview`` - classify and write nothing.
+
+    A single row means up to THREE persisted objects: the `FHRPGroup`, its
+    virtual-IP `IPAddress`, and the `FHRPGroupAssignment` binding it to an
+    interface. The row's verdict is the strongest of the three - a create if
+    any would be created, an update if any would be rewritten, unchanged only
+    when all three already match.
+
+    Writes come in both shapes here. The group and the assignment go through
+    `runner._coalesce_update_or_create`, which the preview runner overrides;
+    the VIP saves directly inside `_ensure_fhrp_vip`, and the canonical-name
+    migration is a direct `group.save()` right here. The rollback
+    `group.delete()` is unreachable under preview because nothing is ever
+    created to roll back.
+    """
     from dcim.models import Interface
     from ipam.models import FHRPGroup
     from ipam.models import FHRPGroupAssignment
@@ -397,11 +433,14 @@ def apply_ipam_fhrpgroup(runner, row):
         if host_ip
         else None
     )
+    group_would_change = False
     if group is not None:
         # Migrate name to canonical form if it changed (e.g. VRF appeared).
         if group.name != group_name:
-            group.name = group_name
-            group.save(update_fields=["name"])
+            group_would_change = True
+            if not preview:
+                group.name = group_name
+                group.save(update_fields=["name"])
     else:
         group, group_created = runner._coalesce_update_or_create(
             FHRPGroup,
@@ -424,14 +463,50 @@ def apply_ipam_fhrpgroup(runner, row):
                 "comments": "",
             },
         )
+        if preview:
+            if group is None:
+                # Preview only: the shim reports what WOULD be created and
+                # returns no object. Nothing downstream can be resolved against
+                # a group NetBox does not have - not its VIP, not its
+                # assignment - so the whole row is a create and there is
+                # nothing further to inspect.
+                return "creates"
+            # `last_upsert_would_change` exists only on the preview runner.
+            # Reading it unconditionally raised AttributeError on the real one
+            # and broke fourteen existing FHRP tests.
+            group_would_change = group_would_change or runner.last_upsert_would_change
 
-    vip_applied = _ensure_fhrp_vip(
+    vip_outcome = _ensure_fhrp_vip(
         runner,
         row,
         group=group,
         vrf=vrf,
         protocol=protocol,
+        preview=preview,
     )
+    if preview:
+        if vip_outcome is False:
+            # The VIP belongs to some other kind of object; the apply refuses
+            # the row and writes nothing.
+            return False
+        assignment_lookup = {
+            "interface_type": runner._content_type_for(Interface),
+            "interface_id": interface.pk,
+            "group": group,
+        }
+        assignment = runner._get_unique_or_raise(FHRPGroupAssignment, assignment_lookup)
+        if assignment is None:
+            return "creates"
+        assignment_would_change = int(getattr(assignment, "priority", 0) or 0) != int(
+            row.get("priority") or 100
+        )
+        if vip_outcome == "creates":
+            return "creates"
+        if vip_outcome == "updates" or group_would_change or assignment_would_change:
+            return "updates"
+        return "unchanged"
+
+    vip_applied = vip_outcome
     if not vip_applied:
         if (
             group_created

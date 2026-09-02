@@ -351,6 +351,58 @@ class PreviewRunner:
         )
         return obj, False
 
+    def _coalesce_update_or_create(
+        self,
+        model,
+        *,
+        coalesce_lookups,
+        create_values,
+        update_values=None,
+        conflict_policy="strict",
+        return_change=False,
+        create_instance_attrs=None,
+    ):
+        """The other upsert primitive, read-only.
+
+        `_upsert_values_from_defaults` funnels into this one, but several
+        adapter paths - FHRP groups and their assignments among them - call it
+        directly with explicit lookups rather than coalesce sets. Both have to
+        be overridden or the firewall has a hole exactly where the caller was
+        most explicit about what it was writing.
+
+        Returns the same shape the real one does, with ``created`` reporting
+        what WOULD happen, and records the field comparison on
+        ``last_upsert_would_change``.
+        """
+        from .sync_primitives import _authoritative_update_values
+        from .sync_primitives import _model_field_value_matches
+        from .sync_primitives import get_unique_or_raise
+
+        obj = None
+        for lookup in coalesce_lookups or []:
+            if not lookup:
+                continue
+            obj = get_unique_or_raise(self, model, lookup)
+            if obj is not None:
+                break
+        if obj is None:
+            self.last_upsert_would_change = False
+            if return_change:
+                return None, True, True
+            return None, True
+        values = create_values if update_values is None else update_values
+        changed = any(
+            not _model_field_value_matches(model, obj, field, value)
+            for field, value in _authoritative_update_values(
+                model._meta.label_lower,
+                values,
+            ).items()
+        )
+        self.last_upsert_would_change = changed
+        if return_change:
+            return obj, False, changed
+        return obj, False
+
     def _ensure_vrf(self, row, *, update_existing=True):
         """Find the VRF, never create or update it.
 
@@ -460,6 +512,12 @@ def _compare_dcim_cable(runner, rows):
     return _compare_adapter_rows(runner, rows, apply_dcim_cable)
 
 
+def _compare_ipam_fhrpgroup(runner, rows):
+    from .sync_ipam import apply_ipam_fhrpgroup
+
+    return _compare_adapter_rows(runner, rows, apply_ipam_fhrpgroup)
+
+
 def _compare_dcim_inventoryitem(runner, rows):
     """Compare inventory items, unless the batch contains a deletion.
 
@@ -497,6 +555,7 @@ _ADAPTER_COMPARISONS = {
     "extras.taggeditem": _compare_extras_taggeditem,
     "dcim.cable": _compare_dcim_cable,
     "dcim.inventoryitem": _compare_dcim_inventoryitem,
+    "ipam.fhrpgroup": _compare_ipam_fhrpgroup,
 }
 
 
