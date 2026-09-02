@@ -18,39 +18,6 @@ from .query_execution_contract import query_source_sha256
 from .sync_contracts import normalize_coalesce_fields
 
 
-def _resolve_head_commit_for_query_id(
-    client,
-    *,
-    query_id,
-    repository,
-    query_index,
-) -> str:
-    """Head commit for an ID-only binding, or "" when it cannot be resolved.
-
-    Never raises: an unresolvable head leaves the spec unchanged so the existing
-    contract reporting explains the refusal, rather than failing the whole fetch
-    on a repository lookup.
-    """
-    resolver = getattr(client, "resolve_nqe_query_head_commit", None)
-    if resolver is None:
-        return ""
-    try:
-        return str(
-            resolver(
-                query_id=query_id,
-                repository=repository,
-                query_index=query_index,
-            )
-            or ""
-        ).strip()
-    except JobTimeoutException:
-        # A worker timeout is not a resolution failure and must reach the job
-        # boundary rather than be degraded into an unresolved commit.
-        raise
-    except Exception:
-        return ""
-
-
 @dataclass(frozen=True)
 class QuerySpec:
     model_string: str
@@ -123,19 +90,17 @@ class QuerySpec:
         # skipped the model, which silently emptied a whole sync.
         lookup_query_path = self.query_path or self.resolved_query_path
         if not lookup_query_path:
-            # Bound by query ID with no path at all. Resolve head from the
-            # repository index instead, so an ID-only binding is still runnable.
-            if self.commit_id or not self.query_id:
-                return self
-            head_commit_id = _resolve_head_commit_for_query_id(
-                client,
-                query_id=self.query_id,
-                repository=self.query_repository or "org",
-                query_index=query_index,
-            )
-            if not head_commit_id:
-                return self
-            return replace(self, commit_id=head_commit_id)
+            # Bound by query ID with no path at all, and left as it is.
+            #
+            # This used to resolve a head commit from the repository index so
+            # such a binding was still runnable. `2026-08-04-execute-by-query-
+            # id-without-commit.md` removed the need for that - an ID-only
+            # binding executes by ID without a commit - and recorded the
+            # leftover: the branch survived with no production caller, so it
+            # encoded a superseded behaviour that only its own test exercised.
+            # Grafting a head commit onto an ID-only binding is also the shape
+            # that executes a revision the operator never pinned.
+            return self
         resolved = client.get_committed_nqe_query(
             repository=self.query_repository or "org",
             query_path=lookup_query_path,
