@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v2.9.2
 
-Release candidate; Drift is measured exactly for every fetched model, the uncovered-device count says why it grows and warns when it does, and five delete and diagnostic defects are closed.
+Drift is measured exactly for every fetched model, the uncovered-device count says why it grows and warns when it does, and five delete and diagnostic defects are closed.
 
 ## v2.9.1
 
