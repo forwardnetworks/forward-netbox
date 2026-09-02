@@ -7,8 +7,8 @@ comparison dispatcher, so it had no comparison and could not be measured. The
 badge came from a shortcut that returned a confident zero whenever the row list
 was empty, without ever asking whether the model was one this code can compare.
 
-`netbox_dlm.softwareversion` has since BEEN wired up, which is why these tests
-now use `netbox_cisco_aci.acitenant` as their uncomparable example. The rule
+`netbox_dlm.softwareversion` and then `netbox_cisco_aci.acitenant` have since BEEN
+wired up, which is why these tests now stand on a model string nothing registers. The rule
 under test never depended on which model stood in for it: an uncomparable model
 says `None` however many rows it is handed. Every substitution here needs to be
 a model the dispatcher genuinely declines - checking that is the point.
@@ -28,32 +28,36 @@ from forward_netbox.utilities.drift_comparison import compare_model_rows
 class AnUncomparableModelNeverReportsZeroTest(TestCase):
     """The failure that reached a customer: zero rows read as zero drift."""
 
+    # There is no longer a real adapter-only model the dispatcher declines:
+    # slice nine wired up netbox-cisco-aci, the last plugin family. The rule
+    # is pinned on a model string nothing registers, which is what "no
+    # comparison exists" has always meant here; the two earlier stand-ins,
+    # `netbox_dlm.softwareversion` and `netbox_cisco_aci.acitenant`, are now
+    # asserted MEASURED below so the substitution cannot rot a third time.
+    UNREGISTERED = "forward_netbox.nothing_registers_this"
+
     def test_adapter_only_model_with_no_rows_is_not_measured(self):
-        # `netbox_cisco_aci.acitenant` is applied by the ACI adapter, not by
-        # the bulk dispatcher, and no slice has wired it up, so there is
-        # nothing here that could compare it.
-        self.assertIsNone(compare_model_rows(None, "netbox_cisco_aci.acitenant", []))
+        self.assertIsNone(compare_model_rows(None, self.UNREGISTERED, []))
 
     def test_adapter_only_model_with_rows_is_not_measured_either(self):
         # Same answer with rows present. The emptiness was never what made it
         # uncomparable, which is why keying the shortcut off emptiness was wrong.
         self.assertIsNone(
-            compare_model_rows(
-                None, "netbox_cisco_aci.acitenant", [{"name": "TENANT-A"}]
-            )
+            compare_model_rows(None, self.UNREGISTERED, [{"name": "TENANT-A"}])
         )
 
-    def test_the_model_this_test_was_written_against_is_now_measured(self):
-        """Pins the substitution above, so it cannot silently rot again.
+    def test_the_models_this_test_was_written_against_are_now_measured(self):
+        """Pins the substitutions above, so they cannot silently rot again.
 
         `netbox_dlm.softwareversion` was the uncomparable example until slice
         six wired it up, and this file was not updated with it - so these tests
-        went red on the full suite while every targeted run stayed green. If a
-        later slice wires up `netbox_cisco_aci.acitenant` too, this assertion
-        fails and names the reason instead of leaving the next person to
-        rediscover it from two stale assertions.
+        went red on the full suite while every targeted run stayed green.
+        `netbox_cisco_aci.acitenant` replaced it and slice nine wired that up
+        too. Both are asserted measured here, and the rule above stands on a
+        model string that nothing can register by accident.
         """
         self.assertIsNotNone(compare_model_rows(None, "netbox_dlm.softwareversion", []))
+        self.assertIsNotNone(compare_model_rows(None, "netbox_cisco_aci.acitenant", []))
 
     def test_a_model_that_declines_on_purpose_still_declines_when_empty(self):
         # virtualchassis returns None deliberately; an empty list must not

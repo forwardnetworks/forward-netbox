@@ -69,6 +69,8 @@ def _ensure_aci_tenant(runner, row):
             "fabric_id": row.get("fabric_id") or 1,
         },
     )
+    if _parent_absent(fabric):
+        return None
     values = _aci_model_values(
         runner,
         ACITenant,
@@ -96,6 +98,8 @@ def _ensure_aci_vrf(runner, row):
             "name": row["tenant_name"],
         },
     )
+    if _parent_absent(tenant):
+        return None
     values = _aci_model_values(
         runner,
         ACIVRF,
@@ -144,6 +148,8 @@ def _ensure_aci_bridge_domain(runner, row):
             "name": row["vrf_name"],
         },
     )
+    if _parent_absent(tenant, vrf):
+        return None
     values = _aci_model_values(
         runner,
         ACIBridgeDomain,
@@ -186,6 +192,8 @@ def _ensure_aci_filter(runner, row):
         runner,
         {"fabric_name": row["fabric_name"], "name": row["tenant_name"]},
     )
+    if _parent_absent(tenant):
+        return None
     values = _aci_model_values(
         runner,
         ACIFilter,
@@ -218,6 +226,8 @@ def _ensure_aci_l3out(runner, row):
             "name": row["vrf_name"],
         },
     )
+    if _parent_absent(tenant, vrf):
+        return None
     values = _aci_model_values(
         runner,
         ACIL3Out,
@@ -251,6 +261,8 @@ def _ensure_aci_pod(runner, row):
             "fabric_id": row.get("fabric_id") or 1,
         },
     )
+    if _parent_absent(fabric):
+        return None
     values = _aci_model_values(
         runner,
         ACIPod,
@@ -333,6 +345,32 @@ def _resolve_aci_pod(runner, row):
     )
 
 
+def _preview_verdict(runner, obj):
+    """Classify one ACI row from its OWN upsert - the leaf rule.
+
+    Every ACI model has its own Forward query and its own row set, so a parent
+    a row would create is drift reported under the PARENT's model, and folding
+    it into the child's verdict would count one object twice. That is the OSPF
+    rule, not the peering one; see `preview_leaf_outcome` for the distinction.
+    """
+    from .sync_routing_impl import preview_leaf_outcome
+
+    return preview_leaf_outcome(runner, obj)
+
+
+# Under a preview the firewalled upsert returns `None` for a parent it would
+# CREATE, and `coalesce_lookup` drops `None` values. Left unguarded, a child
+# under such a parent would be looked up by its remaining keys - `name` alone -
+# and could match a sibling under a DIFFERENT parent, reading `unchanged` for
+# a row the apply would create. That is the absent-VRF defect slice seven found
+# in the routing chain, with the same confident-zero consequence. A parent the
+# apply would create means the child cannot exist yet, so the child is a create
+# and nothing below it needs resolving. The real apply never returns `None`
+# from an ensure, so these guards are inert outside a preview.
+def _parent_absent(*parents):
+    return any(parent is None for parent in parents)
+
+
 def _node_role(value):
     role = str(value or "").strip().lower()
     if role in {"spine", "leaf", "apic", "rleaf", "vleaf", "tier2"}:
@@ -386,35 +424,42 @@ def _resolve_existing_aci_node(runner, model, pod, node_id, name):
     )
 
 
-def apply_netbox_cisco_aci_acifabric(runner, row):
-    return _ensure_aci_fabric(runner, row)
+def apply_netbox_cisco_aci_acifabric(runner, row, *, preview=False):
+    fabric = _ensure_aci_fabric(runner, row)
+    return _preview_verdict(runner, fabric) if preview else fabric
 
 
-def apply_netbox_cisco_aci_acitenant(runner, row):
-    return _ensure_aci_tenant(runner, row)
+def apply_netbox_cisco_aci_acitenant(runner, row, *, preview=False):
+    tenant = _ensure_aci_tenant(runner, row)
+    return _preview_verdict(runner, tenant) if preview else tenant
 
 
-def apply_netbox_cisco_aci_acivrf(runner, row):
-    return _ensure_aci_vrf(runner, row)
+def apply_netbox_cisco_aci_acivrf(runner, row, *, preview=False):
+    vrf = _ensure_aci_vrf(runner, row)
+    return _preview_verdict(runner, vrf) if preview else vrf
 
 
-def apply_netbox_cisco_aci_acibridgedomain(runner, row):
-    return _ensure_aci_bridge_domain(runner, row)
+def apply_netbox_cisco_aci_acibridgedomain(runner, row, *, preview=False):
+    bd = _ensure_aci_bridge_domain(runner, row)
+    return _preview_verdict(runner, bd) if preview else bd
 
 
-def apply_netbox_cisco_aci_acifilter(runner, row):
-    return _ensure_aci_filter(runner, row)
+def apply_netbox_cisco_aci_acifilter(runner, row, *, preview=False):
+    aci_filter = _ensure_aci_filter(runner, row)
+    return _preview_verdict(runner, aci_filter) if preview else aci_filter
 
 
-def apply_netbox_cisco_aci_acil3out(runner, row):
-    return _ensure_aci_l3out(runner, row)
+def apply_netbox_cisco_aci_acil3out(runner, row, *, preview=False):
+    l3out = _ensure_aci_l3out(runner, row)
+    return _preview_verdict(runner, l3out) if preview else l3out
 
 
-def apply_netbox_cisco_aci_acipod(runner, row):
-    return _ensure_aci_pod(runner, row)
+def apply_netbox_cisco_aci_acipod(runner, row, *, preview=False):
+    pod = _ensure_aci_pod(runner, row)
+    return _preview_verdict(runner, pod) if preview else pod
 
 
-def apply_netbox_cisco_aci_acinode(runner, row):
+def apply_netbox_cisco_aci_acinode(runner, row, *, preview=False):
     ACINode = _aci_model(runner, "ACINode", "netbox_cisco_aci.acinode")
     pod = _ensure_aci_pod(
         runner,
@@ -424,6 +469,11 @@ def apply_netbox_cisco_aci_acinode(runner, row):
             "pod_id": row["pod_id"],
         },
     )
+    if _parent_absent(pod):
+        # Preview only: the pod would be created, so the node cannot exist.
+        # Reported under this model as a create; the pod's own create is the
+        # pod model's to report.
+        return "creates" if preview else None
     node_id = int(row["node_id"])
     name = row["name"]
     node_seen_keys = _aci_node_seen_keys(runner)
@@ -431,7 +481,9 @@ def apply_netbox_cisco_aci_acinode(runner, row):
     if node_key in node_seen_keys or name_key in node_seen_keys:
         existing_node = _resolve_existing_aci_node(runner, ACINode, pod, node_id, name)
         if existing_node is not None:
-            return existing_node
+            # A second observation of the same node in one run. The apply
+            # writes nothing for it, so a preview reports nothing for it.
+            return "unchanged" if preview else existing_node
 
     node_object_type, node_object_id = _lookup_aci_node_device(runner, row)
     values = _aci_model_values(
@@ -458,7 +510,7 @@ def apply_netbox_cisco_aci_acinode(runner, row):
         coalesce_sets=[("aci_pod", "node_id"), ("aci_pod", "name")],
     )
     node_seen_keys.update((node_key, name_key))
-    return node
+    return _preview_verdict(runner, node) if preview else node
 
 
 def delete_netbox_cisco_aci_acifabric(runner, row):
