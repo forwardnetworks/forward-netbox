@@ -17,7 +17,16 @@ read or reported; only key names, which are schema identifiers.
 
 # Keys NetBox's serializer adds to every snapshot regardless of model.
 _SERIALIZER_KEYS = frozenset(
-    {"id", "custom_fields", "custom_field_data", "tags", "display", "url", "created", "last_updated"}
+    {
+        "id",
+        "custom_fields",
+        "custom_field_data",
+        "tags",
+        "display",
+        "url",
+        "created",
+        "last_updated",
+    }
 )
 
 
@@ -31,7 +40,9 @@ def foreign_payload_keys(model_class, payload):
         for field in model_class._meta.get_fields()
         if getattr(field, "attname", "")
     }
-    return {key for key in payload if key not in field_names and key not in _SERIALIZER_KEYS}
+    return {
+        key for key in payload if key not in field_names and key not in _SERIALIZER_KEYS
+    }
 
 
 def classify_change_diff(object_type, payloads):
@@ -57,15 +68,25 @@ def audit_change_diffs(*, sample_limit=25):
     scanned = 0
     flagged = []
     by_object_type = {}
-    for diff in ChangeDiff.objects.select_related("object_type").iterator(chunk_size=500):
+    for diff in ChangeDiff.objects.select_related("object_type").iterator(
+        chunk_size=500
+    ):
         scanned += 1
         findings = classify_change_diff(
             diff.object_type,
-            {"original": diff.original, "modified": diff.modified, "current": diff.current},
+            {
+                "original": diff.original,
+                "modified": diff.modified,
+                "current": diff.current,
+            },
         )
         if not findings:
             continue
-        label = diff.object_type.model_class()._meta.label_lower if diff.object_type else "?"
+        label = (
+            diff.object_type.model_class()._meta.label_lower
+            if diff.object_type
+            else "?"
+        )
         by_object_type[label] = by_object_type.get(label, 0) + 1
         if len(flagged) < max(int(sample_limit or 0), 0):
             flagged.append(

@@ -128,7 +128,9 @@ class Command(BaseCommand):
             # question an operator runs this command to answer.
             payload["full"] = {
                 "out_of_scope": sorted(out_of_scope),
-                "tagged_but_backfilled": sorted(report.get("_present_backfilled") or ()),
+                "tagged_but_backfilled": sorted(
+                    report.get("_present_backfilled") or ()
+                ),
                 "owned_uncovered": sorted(report.get("_owned_untagged") or ()),
                 "in_scope_missing_from_netbox": sorted(
                     report.get("_missing_in_netbox") or ()
