@@ -130,28 +130,112 @@ def record_aggregated_skip_warning(
     runner._aggregated_skip_warning_counts[key] = count + 1
 
 
+def dependency_skip_direction(exception) -> str:
+    """``protecting`` when a surviving child refuses a delete, else ``missing``.
+
+    The two are opposite conditions with opposite remedies - "nothing to build
+    on" wants the parent synced first; "something still needs this" wants the
+    child gone first - and every rollup used to word both as the first.
+    """
+    if getattr(exception, "dependency_is_protecting", False):
+        return "protecting"
+    return "missing"
+
+
+def dependency_skip_reason(exception) -> str:
+    """The catalogued reason a skip persists with, derived from the exception.
+
+    The vocabulary (`missing-device`, `missing-interface`, ...) existed in
+    `record_aggregated_skip_warning`'s callers and never reached the database:
+    twenty-four raisers name their dependency model on the exception and one
+    marks it protecting, so the reason is derivable from what they already
+    say rather than something each raiser has to be taught separately. A
+    raiser that names nothing records `dependency-unnamed`, which is honest
+    about the gap rather than a guess.
+    """
+    dependency = str(getattr(exception, "dependency", "") or "")
+    if not dependency:
+        return "dependency-unnamed"
+    short = dependency.rsplit(".", 1)[-1]
+    if dependency_skip_direction(exception) == "protecting":
+        return f"still-referenced-by-{short}"
+    return f"missing-{short}"
+
+
+def _dependency_skip_directions(runner):
+    """Per-model, per-direction counts. Lazily created: not every runner-shaped
+    object that records issues declares the attribute."""
+    directions = getattr(runner, "_dependency_skip_issue_directions", None)
+    if directions is None:
+        directions = {}
+        try:
+            runner._dependency_skip_issue_directions = directions
+        except AttributeError:  # pragma: no cover - frozen runner stand-ins
+            pass
+    return directions
+
+
+def _record_dependency_skip_direction(runner, model_string, exception):
+    buckets = _dependency_skip_directions(runner).setdefault(
+        model_string, {"missing": 0, "protecting": 0, "dependencies": {}}
+    )
+    direction = dependency_skip_direction(exception)
+    buckets[direction] += 1
+    dependency = str(getattr(exception, "dependency", "") or "")
+    if dependency:
+        per_direction = buckets["dependencies"].setdefault(direction, [])
+        if dependency not in per_direction and len(per_direction) < 5:
+            per_direction.append(dependency)
+
+
 def emit_dependency_skip_issue_summary(runner, model_string):
     """One rolled-up issue when dependency skips for a model exceeded the
-    per-model detail cap (the individual rows past the cap were suppressed)."""
+    per-model detail cap (the individual rows past the cap were suppressed).
+
+    Worded per DIRECTION. The rollup used to say "their NetBox parent is not
+    synced yet" and recommend enabling the parent sync for every skip in the
+    model - including a protected-delete skip, where a surviving child is
+    refusing the prune and the remedy is the opposite. The per-row path had
+    already learned the difference (`dependency_phrase`); the rollup had not.
+    """
     total = runner._dependency_skip_issue_counts.get(model_string, 0)
     limit = runner.DEPENDENCY_SKIP_ISSUE_DETAIL_LIMIT
     if total <= limit:
         return
     remainder = total - limit
-    remedy = (
-        " Enable the parent sync (device types / devices) first. For DLM "
-        "hardware notices with the alias-aware device query, use the "
-        "'Forward DLM Hardware Notices with NetBox Aliases' map."
-    )
+    buckets = _dependency_skip_directions(runner).get(model_string) or {
+        "missing": total,
+        "protecting": 0,
+        "dependencies": {},
+    }
+    sentences = []
+    if buckets["missing"]:
+        named = ", ".join(buckets["dependencies"].get("missing", ())) or "a parent"
+        sentences.append(
+            f"{buckets['missing']} skipped because a NetBox parent is not synced "
+            f"yet (waiting on {named}). Enable the parent sync first; for DLM "
+            "hardware notices with the alias-aware device query, use the "
+            "'Forward DLM Hardware Notices with NetBox Aliases' map."
+        )
+    if buckets["protecting"]:
+        named = ", ".join(buckets["dependencies"].get("protecting", ())) or "a child"
+        sentences.append(
+            f"{buckets['protecting']} skipped because a surviving NetBox child "
+            f"still references a row this run would delete (still referenced by "
+            f"{named}). These are refused deletes, not missing parents: the row "
+            "is kept until the referencing rows are removed by their own "
+            "model's reconciliation."
+        )
     message = (
-        f"{total} {model_string} row(s) skipped because their NetBox parent "
-        f"is not synced yet ({remainder} beyond the first {limit} shown "
-        f"individually).{remedy}"
+        f"{total} {model_string} row(s) skipped ({remainder} beyond the first "
+        f"{limit} shown individually). " + " ".join(sentences)
     )
     context = {
         "dependency_skip_summary": True,
         "dependency_skip_count": total,
         "detail_limit": limit,
+        "missing_parent_count": buckets["missing"],
+        "protected_delete_count": buckets["protecting"],
     }
     from ..models import ForwardIngestionIssue
 
@@ -344,6 +428,7 @@ def record_issue(
     ):
         seen = runner._dependency_skip_issue_counts.get(model_string, 0) + 1
         runner._dependency_skip_issue_counts[model_string] = seen
+        _record_dependency_skip_direction(runner, model_string, exception)
         if seen > runner.DEPENDENCY_SKIP_ISSUE_DETAIL_LIMIT:
             samples = runner._dependency_skip_issue_samples.setdefault(model_string, [])
             example = str(
@@ -448,16 +533,40 @@ def record_issue(
     # exactly the message it recorded before, byte for byte.
     netbox_pk = getattr(exception, "netbox_pk", None) if exception is not None else None
     identity_sentence = f" Affected NetBox row: pk {netbox_pk}." if netbox_pk else ""
+    # The last per-row issue before the cap says the cap is here. A panel
+    # showing exactly ten rows used to be indistinguishable from one showing
+    # ten of many: the rollup issue that carries the rest is a separate row an
+    # operator has to know to look for.
+    cap_sentence = (
+        " Further rows for this model are rolled up into one summary issue."
+        if dependency_skip_detail_number is not None
+        and dependency_skip_detail_number == runner.DEPENDENCY_SKIP_ISSUE_DETAIL_LIMIT
+        else ""
+    )
     message = (
         message
         if is_dependency_skip_summary
-        else f"{model_string} row processing {outcome_word} ({detail}).{identity_sentence}"
+        else (
+            f"{model_string} row processing {outcome_word} ({detail})."
+            f"{identity_sentence}{cap_sentence}"
+        )
     )
     context_data = (
         json_safe_value(context or {})
         if is_dependency_skip_summary
         else diagnostic_shape(dict(context or {}))
     )
+    if (
+        exception_name == "ForwardDependencySkipError"
+        and not is_dependency_skip_summary
+    ):
+        # The catalogued reason, persisted where the per-row vocabulary never
+        # reached before. A schema-derived token, never a value.
+        context_data = {
+            **context_data,
+            "skip_reason": dependency_skip_reason(exception),
+            "skip_direction": dependency_skip_direction(exception),
+        }
     defaults_data = diagnostic_shape(dict(defaults or {}))
     # Row shape plus the schema-level diagnosis. The keys are disjoint
     # (`type`/`fields` vs `exception_type`/`constraint_name`/...), so this stays
