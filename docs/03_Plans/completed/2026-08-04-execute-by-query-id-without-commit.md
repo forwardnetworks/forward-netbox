@@ -238,21 +238,34 @@ than running the query the operator bound.
 
 ## Open
 
-- The silently-narrowed-head case above has no detection. If it is judged worth
-  covering, the cheap version is a row-count floor per model against the last
-  successful ingestion, which needs no Forward call at all and would also catch
-  the unrelated case of a collection gap. Not built here, and it should be a
-  decision rather than something smuggled into this change.
+- ~~The silently-narrowed-head case above has no detection.~~ **Closed by
+  `row_shrink_findings`** (`utilities/validation.py`), which is exactly the
+  cheap version this described: a per-model row count compared against the
+  last baseline, no Forward call, wired into validation. A narrowed head is
+  not a scope-configuration change, so it is not skipped by that guard's
+  exemption. Confirmed 2026-09-02.
 - `forward_netbox/utilities/health.py` still lists a map with no stored commit
   as an `unresolved_full_commit` preflight issue. It is already classified
   non-blocking and its message already says an empty commit is normal, so it is
   not misleading - but with this change it is describing the intended state, and
   `fix/contract-preflight-severity` (PR #138) already rewrites exactly that
   block. Left to #138 rather than changed twice.
-- `QuerySpec.resolve()` still resolves a head commit for an ID-only binding. It
-  is referenced only by tests, not by the sync path, so it was left alone rather
-  than changed without a caller to validate against. It should either be removed
-  or brought in line.
+- ~~`QuerySpec.resolve()` still resolves a head commit for an ID-only
+  binding.~~ **Brought in line 2026-09-02.** The ID-only BRANCH is retired -
+  it returns the spec unchanged - along with `_resolve_head_commit_for_query_id`
+  and `test_query_spec_head_resolution.py`. It had no production caller and
+  encoded the behaviour this plan removed the need for; grafting a head commit
+  onto an ID-only binding is also the shape that runs a revision the operator
+  never pinned.
+
+  The METHOD stays. A first pass removed it wholesale on the grounds that only
+  tests called it, which was true and incomplete: a second test in
+  `test_query_registry.py` covers its path-resolution branch, which is
+  useful behaviour and not what this item objected to. Recorded because the
+  first assessment was wrong in the direction that deletes working code.
+
+  The client's `resolve_nqe_query_head_commit` is left in place: it mirrors a
+  Forward API endpoint and is part of that surface, not internal plumbing.
 - `fix/contract-preflight-severity` (PR #138) is not on `main` and is not
   included here. It made the commit-less case *eligible* as a fallback and
   changed Health reporting. This branch removes the need for that fallback, so

@@ -64,12 +64,15 @@ Revert. Messages return to naming the exception class alone.
 
 ## Open
 
-- Ingestions that will not delete: four models PROTECT an ingestion through
-  `ForwardIngestionProvenanceMixin` - `ForwardDeviceIdentity`,
-  `ForwardDeviceTagClaim`, `ForwardVirtualParentClaim`,
-  `ForwardOwnershipReconciliation`. Two undeletable ingestions is consistent
-  with expected protection, but the refusal banner names the holding records and
-  counts, and that text is what distinguishes expected protection from leaked
-  ownership rows. Not diagnosed.
+- ~~Ingestions that will not delete: four models PROTECT an ingestion through
+  `ForwardIngestionProvenanceMixin`.~~ **Overtaken by the fix, 2026-09-02.**
+  None of those four PROTECT an ingestion any more - the provenance stamp is
+  `SET_NULL` and the bookkeeping models CASCADE - so the refusal banner has no
+  holding records to name for them and the "expected protection vs leaked
+  ownership rows" question does not arise. Verified and pinned by
+  `test_ingestion_is_deletable.py` (#325): no PROTECT relation targets
+  `ForwardIngestion` at all, and the two refusals an operator can still meet
+  (live baseline, current ownership evidence) are the only two, both clearing
+  on the next sync.
 - SNMP endpoints not covered by an import Forward tag. Not investigated.
 - The `primary-ip-reassignment-blocked` root cause remains deferred.
