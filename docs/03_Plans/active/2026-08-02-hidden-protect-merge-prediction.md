@@ -85,6 +85,21 @@ Revert the predictor, caller, test, and this plan together. Hidden protection
 would again reach apply as `ProtectedError`; no schema or persisted data cleanup
 is required.
 
+## Status
+
+Shipped and wired. `protecting_relations()` enumerates hidden relations via
+`_get_fields(..., include_hidden=True)` (`bulk_merge.py:1480`);
+`protecting_reference_blocked_deletes(..., merge_sync_id=None)` is at `:1515`;
+`_skip_protecting_reference_blocked_deletes` (`:1318`) is called from the main
+merge at `:2187`, and `merge.py:651` supplies `merge_sync_id=ingestion.sync_id`
+(`2484d33`, #122). The call site is pinned by an `inspect.getsource` assertion
+in `test_protecting_reference_deletes.py` precisely because this predictor once
+shipped with no caller at all.
+
+The 2.9.2 release plan carried this as deferred after it had shipped. Verified
+in the 2.9.2 tree before recording. Note the exemption is now largely moot: the
+three plugin FKs became `SET_NULL` in migration 0051.
+
 ## Decision Log
 
 - 2026-08-02: Rejected exempting every plugin provenance model. Claims and

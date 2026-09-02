@@ -71,11 +71,19 @@ path behaviour.
   deleting rows during a sync is the failure mode that orphan prune already
   taught us to be careful about.
 
+## Closed
+
+- **The root fix shipped** (`691f67a`, #182):
+  `forward_netbox/utilities/full_removal_reconciliation.py`, consumed by
+  `query_fetch_execution.py:51-56` via `_full_run_removals`. The narrowing
+  hazard is gated exactly where this plan said it had to be - by
+  `prune_removals_allowed` and `network_complete_removals`, which raise
+  `RemovalReconciliationRefused` rather than removing anything. Its own design
+  is `2026-08-11-full-run-removal-reconciliation.md`.
+
 ## Open
 
-- **The general defect stands**: re-pointing any map at a different query
-  orphans that map's previous rows forever, for every model, not just DLM. A
-  full run computing removals would fix it at the root, and that is exactly the
-  change that can delete live objects when a query narrows - the orphan-prune
-  hazard one layer down. Needs its own design, with the narrowing guard applied
-  before anything is removed.
+- Diff-only models still do not reconcile removals until their next full
+  execution. That is the accepted order rather than a defect, but it is the
+  residue of this item and the reason a re-pointed diff-only map can stay
+  stale for one cycle.
