@@ -173,30 +173,92 @@ class AdapterComparisonCostTest(TestCase):
         """
         from dcim.models import MACAddress
 
+        # ESTATE size, not row count. The reporting deployment carries 357,274
+        # interfaces against 121,900 MACs - roughly 3 interfaces per MAC - and
+        # `prime_dependency_lookup_caches` primes interface identity for this
+        # model. If priming scales with the estate rather than the batch, a
+        # fixture with one interface per device cannot see it.
+        per_device = int(os.environ.get("FORWARD_ADAPTER_IFACES_PER_DEVICE", "1"))
         interfaces = [
-            Interface(device=device, name="Ethernet1", type="1000base-t")
+            Interface(device=device, name=f"Ethernet{n}", type="1000base-t")
             for device in self.devices
+            for n in range(1, per_device + 1)
         ]
         Interface.objects.bulk_create(interfaces)
 
+        # Rows whose interface the prefetch cannot resolve fall back to a
+        # PER-ROW `runner._lookup_interface`, which does canonical-name
+        # matching - several queries each. A deployment whose MAC rows name
+        # interfaces NetBox does not carry would pay that on every row, and no
+        # amount of the batch being converged would avoid it.
+        miss_ratio = float(os.environ.get("FORWARD_ADAPTER_IFACE_MISS", "0"))
         rows = []
         for index in range(ROWS):
             device = self.devices[index % len(self.devices)]
+            missing = (index % 100) < int(miss_ratio * 100)
             rows.append(
                 {
                     "device": device.name,
-                    "interface": "Ethernet1",
+                    "interface": "NoSuchIface%d" % index if missing else "Ethernet1",
                     "mac": "00:11:22:%02x:%02x:%02x"
                     % (index // 65536 % 256, index // 256 % 256, index % 256),
                 }
             )
-        # Half present, so both classification branches are exercised.
-        MACAddress.objects.bulk_create(
-            [
-                MACAddress(mac_address=rows[index]["mac"])
-                for index in range(0, len(rows), 2)
-            ]
-        )
+        # Same ratio knob as the interface case, and for the same reason.
+        #
+        # ASSIGNED matters as much as present. A MAC that exists but is not
+        # attached to the incoming interface takes the UPDATE branch; one
+        # already attached takes the unchanged branch. The reporting deployment
+        # shows this model at drift 0 / In sync, so its rows are the second
+        # kind, and only that shape models it.
+        seed_ratio = float(os.environ.get("FORWARD_ADAPTER_SEEDED", "0.5"))
+        seed_assigned = os.environ.get("FORWARD_ADAPTER_ASSIGNED") == "1"
+        from django.contrib.contenttypes.models import ContentType
+
+        interface_ct = ContentType.objects.get_for_model(Interface)
+
+        # Custom fields configured on MACAddress: the one suspect left on the
+        # remaining list that a fixture can actually reach. Not a reproduction
+        # - we do not know how many that deployment has - but a SENSITIVITY
+        # sweep, which does not need to. If 30 fields barely move ms/row, the
+        # hypothesis dies whatever their configuration is; if 30 fields move it
+        # a lot, the number to ask them for is finally worth asking.
+        custom_field_count = int(os.environ.get("FORWARD_ADAPTER_CUSTOM_FIELDS", "0"))
+        custom_field_data = {}
+        if custom_field_count:
+            from extras.models import CustomField
+
+            mac_ct = ContentType.objects.get_for_model(MACAddress)
+            for index in range(custom_field_count):
+                field = CustomField.objects.create(
+                    name=f"scale_cf_{index}",
+                    type="text",
+                    label=f"Scale CF {index}",
+                )
+                field.object_types.set([mac_ct])
+                # A populated value, not an empty one: the converged path never
+                # constructs a MACAddress, so if custom fields cost anything
+                # here it is deserializing the JSONB that comes back with the
+                # existing rows - and an empty dict would not carry any.
+                custom_field_data[f"scale_cf_{index}"] = f"scale-value-{index}" * 3
+
+        by_device = {
+            interface.device_id: interface
+            for interface in Interface.objects.filter(name="Ethernet1")
+        }
+        seeded = []
+        for index in range(int(len(rows) * seed_ratio)):
+            mac = MACAddress(mac_address=rows[index]["mac"])
+            if custom_field_data:
+                mac.custom_field_data = dict(custom_field_data)
+            if seed_assigned:
+                device = self.devices[index % len(self.devices)]
+                target = by_device.get(device.pk)
+                if target is not None:
+                    mac.assigned_object_type = interface_ct
+                    mac.assigned_object_id = target.pk
+            seeded.append(mac)
+        MACAddress.objects.bulk_create(seeded)
 
         if os.environ.get("FORWARD_ADAPTER_PROFILE") == "1":
             import cProfile
@@ -218,7 +280,9 @@ class AdapterComparisonCostTest(TestCase):
 
         self.assertIsNotNone(result)
         self._report(
-            "dcim.macaddress (BULK)",
+            f"dcim.macaddress (BULK, {seed_ratio:.0%} present"
+            f"{', assigned' if seed_assigned else ''}"
+            f"{f', {custom_field_count} custom fields' if custom_field_count else ''})",
             len(rows),
             elapsed,
             len(captured.captured_queries),
@@ -239,6 +303,64 @@ class AdapterComparisonCostTest(TestCase):
                 f"[adapter-scale]   x{count} ({spent[shape] * 1000:.0f} ms total): "
                 f"{shape}"
             )
+
+    def test_interface_comparison_cost(self):
+        """The deployment's largest compared model: 357,274 rows.
+
+        Also a BULK path. Measured after `dcim.macaddress` turned out to be
+        spending its time constructing and validating objects a preview never
+        saves - the question is whether this one does the same.
+        """
+        rows = []
+        for index in range(ROWS):
+            device = self.devices[index % len(self.devices)]
+            rows.append(
+                {
+                    "device": device.name,
+                    "name": f"Ethernet{index}",
+                    "type": "1000base-t",
+                    "enabled": True,
+                }
+            )
+        # The create RATIO is the variable that matters here, so it is a knob.
+        # A converged estate (the reporting deployment shows interface drift 0)
+        # is almost all unchanged rows; a first sync is almost all creates. An
+        # optimisation targeting object construction is worth everything in one
+        # case and nothing in the other.
+        seed_ratio = float(os.environ.get("FORWARD_ADAPTER_SEEDED", "0.5"))
+        seeded = int(ROWS * seed_ratio)
+        Interface.objects.bulk_create(
+            [
+                Interface(
+                    device=self.devices[index % len(self.devices)],
+                    name=f"Ethernet{index}",
+                    type="1000base-t",
+                    enabled=True,
+                )
+                for index in range(seeded)
+            ]
+        )
+
+        started = time.perf_counter()
+        with CaptureQueriesContext(connection) as captured:
+            result = compare_model_rows(None, "dcim.interface", rows)
+        elapsed = time.perf_counter() - started
+
+        self.assertIsNotNone(result)
+        self._report(
+            f"dcim.interface (BULK, {seed_ratio:.0%} already present)",
+            len(rows),
+            elapsed,
+            len(captured.captured_queries),
+        )
+        import re
+        from collections import Counter
+
+        shapes = Counter()
+        for query in captured.captured_queries:
+            shapes[re.sub(r"\d+", "N", query["sql"])[:110]] += 1
+        for shape, count in shapes.most_common(4):
+            print(f"[adapter-scale]   x{count}: {shape}")
 
     def test_cable_comparison_cost(self):
         """Cables resolve two devices and two interfaces per row."""

@@ -2,9 +2,12 @@
 
 ## Goal
 
-Cut the cost of the `dcim.macaddress` drift comparison, which one deployment
-measured at 270,640 ms for 121,900 rows - 42% of its entire 10.6-minute
-report - without moving a single count.
+Stop the `dcim.macaddress` drift comparison constructing and validating model
+objects it never saves, without moving a single count.
+
+Note the goal has been narrowed since this plan was written. It began as "cut
+the 270,640 ms this model cost one deployment"; measurement showed the change
+does not touch that deployment's case at all. See Validation.
 
 ## Why
 
@@ -80,8 +83,24 @@ Measured on the same box as the earlier numbers, 4,000 rows, half existing:
 | before | 3.117 | 9,000 | 12,470 ms |
 | after | 0.052 | 13 | 207 ms |
 
-60x. Extrapolated to the deployment's 121,900 rows: ~270 s becomes ~6 s,
-returning ~4.4 minutes of its 10.6-minute report.
+**That measurement was incomplete, and the conclusion drawn from it was
+wrong.** Seeding MACs that existed but were UNASSIGNED makes every seeded row
+take the update branch - a drifted shape. Re-measured across the shapes that
+actually occur:
+
+| estate shape | before | after |
+| --- | --- | --- |
+| converged (present AND correctly assigned) | 0.063 ms/row | 0.063 - no change |
+| present, needs reassignment | 2.786 ms/row | 0.066 |
+| all creates (first sync) | 3.481 ms/row | 0.041 |
+
+So the win is ~70x on a first sync (121,900 MACs, ~7 min -> ~5 s) and on
+drifted estates, and NOTHING on a converged one, because the unchanged branch
+never constructed anything to begin with.
+
+The reporting deployment's macaddress is converged (drift 0, In sync), so this
+change does not speed up its next run. The earlier claim that it returns ~4.4
+minutes of that report is retracted.
 
 Contract tests: create/update/unchanged classification unchanged; duplicate
 incoming rows collapse to one create (negative control: breaking the
@@ -93,7 +112,8 @@ apply path this file also implements.
 ## Rollback
 
 Revert. The comparison returns to constructing and validating per row, which
-is correct and 60x slower.
+is correct and ~70x slower on create-heavy runs, and identical on converged
+ones.
 
 ## Decision Log
 
@@ -101,16 +121,70 @@ is correct and 60x slower.
   loops looked expensive and measured cheap; the bulk path looked done and
   measured dominant. Both conclusions came from the same harness.
 - **Take the divergence, pinned.** The alternative - keeping `full_clean` for
-  classification fidelity on rows that are already broken - costs 42% of the
-  report for a distinction the drift numbers barely express.
+  classification fidelity on rows that are already broken - costs ~70x on a
+  first sync for a distinction the drift numbers barely express.
+- **Re-measure when the fixture shape is a guess.** The first numbers here
+  were taken at "50% already present", chosen for branch coverage rather than
+  because it modelled anything. It modelled a drifted estate, and the
+  deployment in question is converged - so a real 70x improvement was written
+  up as a saving that deployment will not see. The create/assignment ratio was
+  the whole story and was not a knob until it had already misled a conclusion.
 - **A sentinel over a model instance.** Constructing even an unvalidated
   `MACAddress` pays the custom-field cost; the downstream code reads exactly
   two attributes and a pk, so that is what the sentinel carries.
 
 ## Open
 
-- `dcim.interface` at 357,274 rows is the deployment's next-largest compared
-  model; whether its bulk preview carries similar dead weight has not been
-  measured.
+- **That deployment's 270 s for this model is still unexplained, and the local
+  hypotheses are now exhausted.** Converged macaddress measures ~0.065 ms/row
+  and is LINEAR to 64,000 rows (0.071 / 0.065 / 0.091 at 4k / 16k / 64k), so
+  its 121,900 rows should cost ~11 s. Ruled out by measurement, each with a
+  knob left in the harness so the next person does not repeat it:
+
+  | hypothesis | knob | result |
+  | --- | --- | --- |
+  | non-linear at scale | `FORWARD_ADAPTER_SCALE_ROWS` | linear to 64k |
+  | priming scales with estate, not batch | `FORWARD_ADAPTER_IFACES_PER_DEVICE` | 30x the interfaces, 1025 -> 1081 ms |
+  | per-row interface-lookup fallback | `FORWARD_ADAPTER_IFACE_MISS` | 3.8x, so ~30 s at its scale - not 270 |
+  | per-row construct/clean | (this change) | irrelevant when converged |
+  | branch-rewritten queries | read `_dependency_preview_work` | the preview job activates no branch |
+  | custom fields on `MACAddress` | `FORWARD_ADAPTER_CUSTOM_FIELDS` | 100 fields cost 0.077 ms/row - 2,850 would be needed |
+
+  **Custom fields are now off that list.** They were written up as unreachable
+  without knowing the deployment's configuration, which was true of a
+  REPRODUCTION and not of a SENSITIVITY sweep - the sweep does not need their
+  number, only the slope. Converged, 16,000 rows, populated `custom_field_data`
+  on every seeded row:
+
+  | custom fields | ms/row | of which the MAC fetch |
+  | --- | --- | --- |
+  | 0 | 0.065 | 98 ms |
+  | 10 | 0.071 | 134 ms |
+  | 30 | 0.089 | 334 ms |
+  | 100 | 0.142 | 818 ms |
+
+  0.00077 ms/row per field across that range, so explaining 2.26 ms/row takes
+  ~2,850 custom fields on `MACAddress`. Two further things the sweep says: the
+  count stays FLAT at 40 queries for 16,000 rows at every setting, and most of
+  what custom fields DO cost lands in the fetch SQL rather than in Python -
+  wider JSONB coming back, not slower object handling.
+
+  What remains is environmental or a data shape this fixture does not model:
+  its hardware and concurrent load, table bloat or a query plan that flips at
+  122,478 rows, a Postgres a network hop away, or rows taking a branch the
+  fixture does not produce. Closing it needs per-model instrumentation from
+  that deployment - a query count, the share of the runtime spent in SQL, and a
+  breakdown by classification outcome - not another local fixture. The first
+  two now ship; see
+  `docs/03_Plans/active/2026-08-28-preview-reports-its-query-count.md`. The
+  flat 40 queries measured here is exactly why the SQL time had to ship WITH
+  the count: that deployment will report a low count, and a low count on its
+  own reads as Python when this fixture cannot rule out a slow query at its
+  scale. The fixture only models what it is told to, which is how the retracted
+  claim above happened in the first place.
+- `dcim.interface` at 357,274 rows was measured and is NOT a problem for that
+  deployment: 0.060 ms/row converged (~21 s). On a first sync it is 1.799
+  ms/row (~10.7 min), so the exposure there is first-sync, and it carries the
+  same construct-per-create shape this change removed for macaddress.
 - Three adapter models remain uncompared: lifecycle (netbox-dlm), peering,
   routing.
