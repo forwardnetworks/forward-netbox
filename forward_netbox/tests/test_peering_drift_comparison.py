@@ -1,3 +1,20 @@
+import unittest
+
+from dcim.models import Device
+from dcim.models import DeviceRole
+from dcim.models import DeviceType
+from dcim.models import Manufacturer
+from dcim.models import Site
+from django.apps import apps
+from django.test import TestCase
+from ipam.models import ASN
+from ipam.models import IPAddress
+from ipam.models import RIR
+
+from forward_netbox.utilities.drift_comparison import compare_model_rows
+from forward_netbox.utilities.sync_routing_impl import bgp_peer_comments
+from forward_netbox.utilities.sync_routing_impl import bgp_peer_name
+
 # Slice seven of the adapter-only drift comparison: the peering models -
 # `netbox_routing.bgppeer`, `bgpaddressfamily`, `bgppeeraddressfamily`, and
 # `netbox_peering_manager.peeringsession`.
@@ -18,19 +35,13 @@
 # so a router this run would rewrite is drift that no model would report if the
 # peer's verdict looked only at the leaf row. That is what
 # `preview_routing_outcome` is for, and what the parent tests below pin.
-from dcim.models import Device
-from dcim.models import DeviceRole
-from dcim.models import DeviceType
-from dcim.models import Manufacturer
-from dcim.models import Site
-from django.test import TestCase
-from ipam.models import ASN
-from ipam.models import IPAddress
-from ipam.models import RIR
 
-from forward_netbox.utilities.drift_comparison import compare_model_rows
-from forward_netbox.utilities.sync_routing_impl import bgp_peer_comments
-from forward_netbox.utilities.sync_routing_impl import bgp_peer_name
+# These models only exist when the optional plugin is installed, and on
+# NetBox 4.7 it cannot be: netbox-peering-manager declares a max_version in the 4.6
+# series, so NetBox refuses to start with it. The suite skips rather than
+# fails - but this IS lost coverage, not a clean pass, and the 4.6 lane on
+# 2.9.x is where these adapters stay exercised until that ceiling moves.
+NETBOX_PEERING_MANAGER_INSTALLED = apps.is_installed("netbox_peering_manager")
 
 BGP_PEER = "netbox_routing.bgppeer"
 
@@ -45,6 +56,9 @@ def _routing_models():
     )
 
 
+@unittest.skipUnless(
+    NETBOX_PEERING_MANAGER_INSTALLED, "netbox-peering-manager is not installed"
+)
 class PeeringPreviewTest(TestCase):
     def setUp(self):
         site = Site.objects.create(name="P Site", slug="p-site")

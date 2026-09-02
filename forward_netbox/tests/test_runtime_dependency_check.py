@@ -29,17 +29,28 @@ class RuntimeDependencyCheckTest(SimpleTestCase):
         _check_runtime_dependencies()
 
     def test_rejects_version_that_is_not_exact(self):
-        with patch("forward_netbox._resolved_branching_version", return_value="1.0.4"):
-            with self.assertRaises(ImproperlyConfigured):
-                _check_runtime_dependencies()
+        # 1.2 is the supported series now, so the versions either side of it are
+        # what must be refused. 1.1.x is the branching line for NetBox 4.6 and
+        # cannot run on 4.7 at all; loading against it would be the worst kind
+        # of failure, since the plugin would start and the merge internals it
+        # reaches into would differ underneath.
+        for version in ("1.0.4", "1.1.3", "1.3.0", None):
+            with self.subTest(branching=version):
+                with patch(
+                    "forward_netbox._resolved_branching_version", return_value=version
+                ):
+                    with self.assertRaises(ImproperlyConfigured):
+                        _check_runtime_dependencies()
 
-        with patch("forward_netbox._resolved_branching_version", return_value="1.2.0"):
-            with self.assertRaises(ImproperlyConfigured):
-                _check_runtime_dependencies()
-
-        with patch("forward_netbox._resolved_branching_version", return_value=None):
-            with self.assertRaises(ImproperlyConfigured):
-                _check_runtime_dependencies()
+    def test_accepts_the_supported_series_including_a_prerelease(self):
+        # 1.2.0b1 is what 3.0 ships against: 1.2.0 final is not released, and
+        # `series_matches` accepts it by prefix without special-casing betas.
+        for version in ("1.2.0b1", "1.2.0", "1.2.4"):
+            with self.subTest(branching=version):
+                with patch(
+                    "forward_netbox._resolved_branching_version", return_value=version
+                ):
+                    _check_runtime_dependencies()
 
     def test_rejects_when_not_importable(self):
         real_import = (

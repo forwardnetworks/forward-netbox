@@ -117,7 +117,8 @@ def _runtime_preflight(*, branch, content_type):
     for model_name, configured in getattr(protection_rules, "items", lambda: ())():
         if str(model_name).lower() == COPY_SQL_MODEL_STRING and configured:
             return False, "dynamic_protection_rule_present"
-    if CustomField.objects.get_for_model(content_type.model_class()).exists():
+    # NetBox 4.7 returns a list here, not a queryset: no `.exists()`.
+    if CustomField.objects.get_for_model(content_type.model_class()):
         return False, "custom_field_definition_present"
     object_change_type = ContentType.objects.get_for_model(ObjectChange)
     if EventRule.objects.filter(

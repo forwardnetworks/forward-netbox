@@ -1,3 +1,17 @@
+import unittest
+
+from dcim.models import Device
+from dcim.models import DeviceRole
+from dcim.models import DeviceType
+from dcim.models import Interface
+from dcim.models import Manufacturer
+from dcim.models import Site
+from django.apps import apps
+from django.test import TestCase
+from ipam.models import VRF
+
+from forward_netbox.utilities.drift_comparison import compare_model_rows
+
 # Slice eight of the adapter-only drift comparison, and the last one:
 # `netbox_routing.ospfinstance`, `ospfarea` and `ospfinterface`.
 #
@@ -12,16 +26,13 @@
 # model with its own query and its own rows, so folding a parent's create into
 # the interface's verdict would count one object twice. `preview_leaf_outcome`
 # is that distinction, and the double-count test below is what pins it.
-from dcim.models import Device
-from dcim.models import DeviceRole
-from dcim.models import DeviceType
-from dcim.models import Interface
-from dcim.models import Manufacturer
-from dcim.models import Site
-from django.test import TestCase
-from ipam.models import VRF
 
-from forward_netbox.utilities.drift_comparison import compare_model_rows
+# These models only exist when the optional plugin is installed, and on
+# NetBox 4.7 it cannot be: netbox-routing declares a max_version in the 4.6
+# series, so NetBox refuses to start with it. The suite skips rather than
+# fails - but this IS lost coverage, not a clean pass, and the 4.6 lane on
+# 2.9.x is where these adapters stay exercised until that ceiling moves.
+NETBOX_ROUTING_INSTALLED = apps.is_installed("netbox_routing")
 
 INSTANCE = "netbox_routing.ospfinstance"
 AREA = "netbox_routing.ospfarea"
@@ -38,6 +49,7 @@ def _ospf_models():
     )
 
 
+@unittest.skipUnless(NETBOX_ROUTING_INSTALLED, "netbox-routing is not installed")
 class OspfPreviewTest(TestCase):
     def setUp(self):
         site = Site.objects.create(name="O Site", slug="o-site")

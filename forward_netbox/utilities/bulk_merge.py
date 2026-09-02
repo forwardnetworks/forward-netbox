@@ -39,7 +39,17 @@ from django.db import transaction
 from django.db.models import prefetch_related_objects
 from django.db.models import Q
 from django.db.models.deletion import ProtectedError
-from mptt.models import MPTTModel
+from netbox.models.ltree import LtreeField
+from netbox.models.ltree import LtreeModel
+
+try:  # pragma: no cover - exercised by whichever runtime is installed
+    # Legacy on NetBox 4.7: ltree replaced django-mptt, but mptt is still
+    # installed as a transitive dependency and a plugin model may still use it.
+    # Tolerated rather than required, so this module keeps importing the day
+    # nothing depends on mptt any more.
+    from mptt.models import MPTTModel
+except ImportError:  # pragma: no cover
+    MPTTModel = None
 from netbox_branching.merge_strategies.squash import ActionType
 from netbox_branching.merge_strategies.squash import CollapsedChange
 from netbox_branching.merge_strategies.squash import SquashMergeStrategy
@@ -563,7 +573,7 @@ def _split_bidirectional_create_cycles(collapsed_changes, change_logger):
             break
 
 
-# The bookkeeping columns django-mptt adds to every tree model. Checked as a
+# The bookkeeping columns django-mptt added to every tree model. Checked as a
 # SIGNATURE rather than only by base class, because the base class is the part
 # upstream can change without telling us.
 _MPTT_FIELD_SIGNATURE = frozenset({"lft", "rght", "tree_id", "level"})
@@ -572,25 +582,30 @@ _MPTT_FIELD_SIGNATURE = frozenset({"lft", "rght", "tree_id", "level"})
 def _is_tree_model(model_class) -> bool:
     """Whether this model maintains hierarchy state that a bulk insert skips.
 
-    Two independent tests, and either one is enough. `issubclass(MPTTModel)` is
-    exact while django-mptt is what NetBox uses; the field signature keeps
-    working if the base class moves but the columns stay.
+    Four independent tests, any one of which is enough, in two pairs: a base
+    class and a column signature for each of the two mechanisms NetBox has
+    used. The base class is exact; the signature keeps working if the base
+    class moves but the columns stay.
 
-    Why both: NetBox 4.7 replaces the deprecated `NestedGroupModel` with an
-    ltree implementation. If django-mptt is uninstalled with it, the import at
-    the top of this module fails loudly and someone fixes it. The dangerous
-    case is the quiet one - mptt still installed as somebody's transitive
-    dependency while NetBox models no longer inherit from it. Then
-    `issubclass` simply answers False for every former tree model, they all
-    become "bulk safe", and `bulk_create` skips the per-object save that keeps
-    the hierarchy coherent. No error, corrupted tree.
+    The prediction written here for 4.6 came true exactly as stated. NetBox 4.7
+    replaced django-mptt with ltree, and the hoped-for loud failure did not
+    happen: **django-mptt is still installed on 4.7** as a transitive
+    dependency, so the import succeeded and `issubclass(MPTTModel)` simply
+    answered False for Region, SiteGroup and Location. All three became "bulk
+    safe", and `bulk_create` skips the per-object save that keeps the hierarchy
+    coherent - no error, corrupted tree. `test_tree_model_detection.py` is what
+    caught it.
 
-    `test_tree_model_detection.py` guards the residual gap: it asserts this
-    function still recognises a real nested-group model in the installed
-    NetBox, so a detector that has stopped detecting fails the suite instead of
-    silently reporting everything flat.
+    So the ltree pair leads now and the mptt pair is retained as legacy: a
+    plugin model may still use mptt, and answering True for a real tree costs
+    only a slower path, while answering False corrupts data. This asymmetry is
+    why every test here is additive and none is an `elif`.
     """
-    if issubclass(model_class, MPTTModel):
+    if issubclass(model_class, LtreeModel):
+        return True
+    if any(isinstance(field, LtreeField) for field in model_class._meta.fields):
+        return True
+    if MPTTModel is not None and issubclass(model_class, MPTTModel):
         return True
     field_names = {field.name for field in model_class._meta.fields}
     return _MPTT_FIELD_SIGNATURE <= field_names

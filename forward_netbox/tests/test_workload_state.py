@@ -1,7 +1,9 @@
 import hashlib
 import json
+import unittest
 from unittest.mock import patch
 
+from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 
@@ -25,6 +27,12 @@ from forward_netbox.utilities.workload_state import decode_state_entries
 from forward_netbox.utilities.workload_state import encode_state_entries
 from forward_netbox.utilities.workload_state import promote_workload_states_locked
 from forward_netbox.utilities.workload_state import stage_workload_states
+
+# netbox-dlm cannot be installed on NetBox 4.7: it declares a max_version in
+# the 4.6 series and NetBox refuses to start with a plugin outside its range.
+# These skip rather than fail, which IS lost coverage - the 4.6 lane on 2.9.x
+# is where the DLM paths stay exercised until that ceiling moves.
+DLM_INSTALLED = apps.is_installed("netbox_dlm")
 
 
 def _workload(
@@ -482,6 +490,7 @@ class DurableWorkloadStateTest(TestCase):
 
         self.assertEqual(workloads[0].delete_rows, [row])
 
+    @unittest.skipUnless(DLM_INSTALLED, "netbox-dlm is not installed")
     def test_enrichment_only_software_version_state_never_derives_delete(self):
         row = {"platform_slug": "ios-xe", "version": "17.12.7"}
         _, pending, _ = apply_durable_workload_deltas(
@@ -539,6 +548,7 @@ class DurableWorkloadStateTest(TestCase):
             device=device,
         )
 
+    @unittest.skipUnless(DLM_INSTALLED, "netbox-dlm is not installed")
     def test_software_catalog_sweep_is_scoped_to_versions_this_sync_can_attribute(
         self,
     ):
@@ -568,6 +578,7 @@ class DurableWorkloadStateTest(TestCase):
         self.assertEqual(workloads[0].delete_rows, [])
         self.assertEqual(summaries[0]["protected_delete_rows"], 1)
 
+    @unittest.skipUnless(DLM_INSTALLED, "netbox-dlm is not installed")
     def test_an_operator_created_version_is_not_a_sweep_candidate(self):
         # No device of this sync references `1.0`. Before this change it was
         # deleted on every full run because it was in the table and not in
@@ -584,6 +595,7 @@ class DurableWorkloadStateTest(TestCase):
         self.assertEqual(workloads[0].delete_rows, [])
         self.assertEqual(summaries[0]["catalog_delete_rows"], 0)
 
+    @unittest.skipUnless(DLM_INSTALLED, "netbox-dlm is not installed")
     def test_a_version_referenced_only_by_another_syncs_device_is_not_swept(self):
         from django.apps import apps
 
@@ -620,6 +632,7 @@ class DurableWorkloadStateTest(TestCase):
             CATALOG_SWEEP_MODELS, frozenset({"netbox_dlm.softwareversion"})
         )
 
+    @unittest.skipUnless(DLM_INSTALLED, "netbox-dlm is not installed")
     def test_catalog_deletes_follow_authoritative_association_deletes_same_run(self):
         from django.apps import apps
         from dcim.models import Device
@@ -747,6 +760,7 @@ class DurableWorkloadStateTest(TestCase):
             0,
         )
 
+    @unittest.skipUnless(DLM_INSTALLED, "netbox-dlm is not installed")
     def test_peer_association_state_protects_catalog_transition_deletes(self):
         from django.apps import apps
         from dcim.models import Platform
@@ -1136,6 +1150,7 @@ class DurableWorkloadStateTest(TestCase):
         self.assertEqual(workloads[0].delete_rows, [])
         self.assertEqual(summaries[0]["mode"], "contract_reset")
 
+    @unittest.skipUnless(DLM_INSTALLED, "netbox-dlm is not installed")
     def test_first_dlm_baseline_deletes_legacy_rows_absent_from_target(self):
         current = [{"cve_id": "CVE-2026-0001"}]
         legacy = [

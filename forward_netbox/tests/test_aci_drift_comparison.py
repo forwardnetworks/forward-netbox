@@ -1,3 +1,15 @@
+import unittest
+
+from dcim.models import Device
+from dcim.models import DeviceRole
+from dcim.models import DeviceType
+from dcim.models import Manufacturer
+from dcim.models import Site
+from django.apps import apps
+from django.test import TestCase
+
+from forward_netbox.utilities.drift_comparison import compare_model_rows
+
 # Slice nine of the adapter-only drift comparison: the eight netbox-cisco-aci
 # models. The one #206 never named, because the ACI maps postdate it - and the
 # largest block left after slice eight, so `in_sync` was unanswerable for any
@@ -14,14 +26,13 @@
 #
 # The verdict rule is the leaf rule. Every ACI model has its own query and its
 # own rows, so a parent create is the parent model's drift.
-from dcim.models import Device
-from dcim.models import DeviceRole
-from dcim.models import DeviceType
-from dcim.models import Manufacturer
-from dcim.models import Site
-from django.test import TestCase
 
-from forward_netbox.utilities.drift_comparison import compare_model_rows
+# These models only exist when the optional plugin is installed, and on
+# NetBox 4.7 it cannot be: netbox-cisco-aci declares a max_version in the 4.6
+# series, so NetBox refuses to start with it. The suite skips rather than
+# fails - but this IS lost coverage, not a clean pass, and the 4.6 lane on
+# 2.9.x is where these adapters stay exercised until that ceiling moves.
+NETBOX_CISCO_ACI_INSTALLED = apps.is_installed("netbox_cisco_aci")
 
 FABRIC = "netbox_cisco_aci.acifabric"
 POD = "netbox_cisco_aci.acipod"
@@ -46,6 +57,7 @@ def _counts(model_string, rows):
     return compare_model_rows(None, model_string, rows)
 
 
+@unittest.skipUnless(NETBOX_CISCO_ACI_INSTALLED, "netbox-cisco-aci is not installed")
 class AciPreviewTest(TestCase):
     """Real plugin models, one existing object per level, then a preview."""
 
