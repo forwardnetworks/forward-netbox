@@ -1,0 +1,40 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+{% load i18n %}
+{% load render_table from django_tables2 %}
+
+{% block title %}{{ object }} - {{ title }}{% endblock %}
+
+{% block extra_controls %}
+  <a class="btn btn-outline-secondary" href="{{ scope_reconciliation_url }}">
+    <i class="mdi mdi-arrow-left" aria-hidden="true"></i>&nbsp;{% trans "Scope Reconciliation" %}
+  </a>
+{% endblock extra_controls %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col col-12">
+    <div class="card">
+      <h5 class="card-header">{{ title }}</h5>
+      <div class="card-body">
+        {% if report_error %}
+          <span class="badge text-bg-danger">{% trans "Failed" %}</span>
+          <span class="ms-2">{{ report_error }}</span>
+        {% elif report_pending %}
+          <p class="text-muted mb-0">{% trans "No scope reconciliation report has run yet. Run one from Scope Reconciliation; this page lists devices from the stored report." %}</p>
+        {% else %}
+          <p class="text-muted mt-0">
+            {% if half == "owned_untagged" %}
+              {% trans "Devices this sync created that the current Forward tag-scope result no longer covers, as of the stored report. The same set carries the forward-uncovered tag." %}
+            {% else %}
+              {% trans "Devices carrying neither include tag that this sync never created: another source, an operator, or an old SNMP endpoint import. This sync makes no claim about them, tags none of them, and never prunes them. Listed so the count can be accounted for." %}
+            {% endif %}
+            {% blocktrans with count=device_count generated=report_generated_at %}{{ count }} device(s) from the report generated {{ generated }}.{% endblocktrans %}
+          </p>
+          {% render_table table 'inc/table.html' %}
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock content %}

@@ -430,12 +430,21 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
 
     unmanaged, owned_untagged_names = _unmanaged_device_summary(sync, tagged_names)
 
-    absence = _classify_out_of_scope_absence(
-        out_of_scope,
+    # One census query classifies BOTH absent sets. The orphans have carried
+    # this split since 2.7.x; the owned-uncovered devices never had it, and
+    # "why is this device uncovered" - disabled in Forward, untagged in Forward,
+    # or a custom-command source - is the question a customer actually asks
+    # when that count grows. The query carries no predicate, so widening the
+    # set it classifies costs no extra NQE execution; `forward_api_usage` reads
+    # the same after this change as before it.
+    kinds = _absence_kinds(
+        out_of_scope | owned_untagged_names,
         client=client,
         network_id=network_id,
         snapshot_id=snapshot_id,
     )
+    absence = _absence_summary(out_of_scope, kinds)
+    unmanaged["owned_absence"] = _absence_summary(owned_untagged_names, kinds)
 
     # Why are the in-scope devices backfilled? Group by the Forward collection
     # error so operators can act (rotate creds for AUTHENTICATION_FAILED, check
@@ -569,6 +578,8 @@ def _unmanaged_device_summary(sync, tagged_names):
             "unclaimed": 0,
             "owned_untagged_sample": [],
             "unclaimed_sample": [],
+            "owned_untagged_device_ids": [],
+            "unclaimed_device_ids": [],
         }, set()
     owned_ids = set(
         ForwardDeviceIdentity.objects.filter(
@@ -580,12 +591,25 @@ def _unmanaged_device_summary(sync, tagged_names):
     unclaimed = sorted(
         name for device_id, name in untagged if device_id not in owned_ids
     )
+    # The primary keys, so the page can LIST either half in full. Names stay
+    # capped at the sample size because they are customer data in a persisted
+    # job payload; keys are not, and NetBox's own device table renders them.
+    # The unclaimed half is the one nothing else can list: it is not this
+    # sync's data, so no tag is maintained for it, and until these keys were
+    # kept an operator whose count was mostly unclaimed could see 25 names of
+    # it and nothing more.
     return {
         "untagged_total": len(untagged),
         "owned_untagged": len(owned),
         "unclaimed": len(unclaimed),
         "owned_untagged_sample": owned[:SAMPLE_LIMIT],
         "unclaimed_sample": unclaimed[:SAMPLE_LIMIT],
+        "owned_untagged_device_ids": sorted(
+            device_id for device_id, _ in untagged if device_id in owned_ids
+        ),
+        "unclaimed_device_ids": sorted(
+            device_id for device_id, _ in untagged if device_id not in owned_ids
+        ),
     }, set(owned)
 
 
@@ -621,16 +645,28 @@ def _classify_out_of_scope_absence(
     no calls at all. The query carries no tag predicate and no vendor guard on
     purpose: it must see the devices the scope query filtered OUT.
     """
-    if not out_of_scope:
-        return {
-            "available": True,
-            "absent_from_snapshot": 0,
-            "present_untagged": 0,
-            "vendor_excluded": 0,
-            "absent_from_snapshot_sample": [],
-            "present_untagged_sample": [],
-            "vendor_excluded_sample": [],
-        }
+    return _absence_summary(
+        out_of_scope,
+        _absence_kinds(
+            out_of_scope,
+            client=client,
+            network_id=network_id,
+            snapshot_id=snapshot_id,
+        ),
+    )
+
+
+def _absence_kinds(names, *, client, network_id, snapshot_id):
+    """Which kind of absence each name is: ``absent``, ``untagged`` or
+    ``vendor_excluded``. ``None`` when the census could not run, so every
+    caller renders "unavailable" rather than a zero.
+
+    One query for however many names are asked about. It carries no tag
+    predicate and no vendor guard on purpose: it must see the devices the
+    scope query filtered OUT.
+    """
+    if not names:
+        return {}
 
     query = "\n".join(
         [
@@ -656,7 +692,7 @@ def _classify_out_of_scope_absence(
         # Advisory only. This must never fail the report that operators use to
         # decide whether a prune is safe - a missing classification is far
         # better than no scope report at all.
-        return {"available": False}
+        return None
 
     vendor_by_name = {}
     for row in rows:
@@ -664,17 +700,37 @@ def _classify_out_of_scope_absence(
         if name:
             vendor_by_name[name] = str(row.get("vendor") or "")
 
-    absent = []
-    untagged = []
-    vendor_excluded = []
-    for name in sorted(out_of_scope):
+    kinds = {}
+    for name in names:
         vendor = vendor_by_name.get(name)
         if vendor is None:
-            absent.append(name)
+            kinds[name] = "absent"
         elif vendor.endswith("FORWARD_CUSTOM"):
-            vendor_excluded.append(name)
+            kinds[name] = "vendor_excluded"
         else:
-            untagged.append(name)
+            kinds[name] = "untagged"
+    return kinds
+
+
+def _absence_summary(names, kinds):
+    """The panel's three counts and samples for one absent set."""
+    if not names:
+        return {
+            "available": True,
+            "absent_from_snapshot": 0,
+            "present_untagged": 0,
+            "vendor_excluded": 0,
+            "absent_from_snapshot_sample": [],
+            "present_untagged_sample": [],
+            "vendor_excluded_sample": [],
+        }
+    if kinds is None:
+        return {"available": False}
+    absent = sorted(name for name in names if kinds.get(name) == "absent")
+    untagged = sorted(name for name in names if kinds.get(name) == "untagged")
+    vendor_excluded = sorted(
+        name for name in names if kinds.get(name) == "vendor_excluded"
+    )
     return {
         "available": True,
         "absent_from_snapshot": len(absent),

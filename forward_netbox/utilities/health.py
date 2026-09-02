@@ -523,6 +523,7 @@ def sync_health_summary(sync):
     density_learning = _density_learning_summary(sync)
     collection_gap = _collection_gap_summary(sync)
     out_of_scope = _out_of_scope_summary(sync)
+    uncovered = _uncovered_summary(sync)
     latest_ingestion_summary = _ingestion_summary(latest_ingestion) or {}
     dependency_lookup_cache = latest_ingestion_summary.get(
         "dependency_lookup_cache", {}
@@ -619,6 +620,7 @@ def sync_health_summary(sync):
         "density_learning": density_learning,
         "collection_gap": collection_gap,
         "out_of_scope": out_of_scope,
+        "uncovered": uncovered,
         "ownership_finalization": ownership_finalization,
         "dependency_lookup_cache": dependency_lookup_cache,
         "dependency_parent_coverage": dependency_parent_coverage,
@@ -1209,7 +1211,10 @@ def _out_of_scope_summary(sync):
         )
     return {
         "available": True,
-        "status": "warn",
+        # Escalate on growth, as the collection-gap signal does. This was a
+        # fixed `warn`, which made a steadily growing orphan set look no
+        # different from a stable one.
+        "status": "danger" if trend and trend["delta"] > 0 else "warn",
         "out_of_scope_count": count,
         "trend_delta": trend["delta"] if trend else None,
         "tag_slug": OUT_OF_SCOPE_TAG_SLUG,
@@ -1218,6 +1223,66 @@ def _out_of_scope_summary(sync):
             "none of the sync's included Forward tags. Review and remove them via "
             "Scope Reconciliation -> Prune orphans, or filter the device list by "
             f"the forward-out-of-scope tag.{trend_note}"
+        ),
+    }
+
+
+def _uncovered_summary(sync):
+    """Uncovered-device signal from the persisted ``forward-uncovered`` tag.
+
+    Devices this sync created that the current Forward tag-scope result no
+    longer covers. This is the count that GROWS: a device disabled in Forward
+    drops out of the result and, since the absence quarantine, is kept rather
+    than pruned, so it accumulates here by design. "It keeps growing" was a
+    customer's actual complaint, and until this signal existed nothing warned
+    when it did - the bucket had a count on one page and no trend anywhere.
+
+    Cheap DB count of the stored tag, no live Forward query, like its two
+    siblings. Escalates on growth like the collection-gap signal does.
+    """
+    from dcim.models import Device
+
+    from .scope_reconciliation import UNCOVERED_TAG_SLUG
+
+    count = Device.objects.filter(tags__slug=UNCOVERED_TAG_SLUG).count()
+    if count == 0:
+        return {
+            "available": True,
+            "status": "info",
+            "uncovered_count": 0,
+            "trend_delta": None,
+            "tag_slug": UNCOVERED_TAG_SLUG,
+            "message": (
+                "No devices flagged forward-uncovered. Run Tag backfilled devices "
+                "from Scope Reconciliation to refresh this signal."
+            ),
+        }
+    trend = _job_data_count_trend(sync, "total_uncovered")
+    growing = bool(trend and trend["delta"] > 0)
+    trend_note = ""
+    if growing:
+        trend_note = (
+            f" Up {trend['delta']} since the previous reconciliation "
+            f"({trend['previous']} -> {trend['latest']}) — more of this sync's "
+            "devices are leaving the Forward result than returning to it."
+        )
+    elif trend and trend["delta"] < 0:
+        trend_note = (
+            f" Down {abs(trend['delta'])} since the previous reconciliation "
+            f"({trend['previous']} -> {trend['latest']})."
+        )
+    return {
+        "available": True,
+        "status": "danger" if growing else "warn",
+        "uncovered_count": count,
+        "trend_delta": trend["delta"] if trend else None,
+        "tag_slug": UNCOVERED_TAG_SLUG,
+        "message": (
+            f"{count} device(s) tagged forward-uncovered — created by this sync "
+            "but absent from the current Forward tag-scope result. Open Scope "
+            "Reconciliation for the split by cause (gone from Forward, in "
+            "Forward but untagged, or a custom-command source), or filter the "
+            f"device list by the forward-uncovered tag.{trend_note}"
         ),
     }
 

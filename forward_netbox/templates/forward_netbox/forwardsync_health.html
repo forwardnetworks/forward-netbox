@@ -571,6 +571,32 @@
       </div>
     </div>
     <div class="card">
+      <h5 class="card-header">{% trans "Uncovered" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Uncovered devices" %}</th>
+            <td>
+              {% if health.uncovered.status == "danger" %}
+                <span class="badge text-bg-danger">{{ health.uncovered.uncovered_count }}</span>
+              {% elif health.uncovered.status == "warn" %}
+                <span class="badge text-bg-warning">{{ health.uncovered.uncovered_count }}</span>
+              {% else %}
+                <span class="badge text-bg-success">{{ health.uncovered.uncovered_count }}</span>
+              {% endif %}
+              {% if health.uncovered.trend_delta is not None %}
+                <span class="text-muted small ms-2">{% blocktrans with delta=health.uncovered.trend_delta %}trend {{ delta }}{% endblocktrans %}</span>
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Status" %}</th>
+            <td>{{ health.uncovered.message }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    <div class="card">
       <h5 class="card-header">{% trans "Density Learning" %}</h5>
       <div class="card-body">
         <table class="table table-hover attr-table">
