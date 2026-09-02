@@ -152,6 +152,12 @@ class PreviewRunner:
     def _record_aggregated_conflict_warning(self, **kwargs):
         return None
 
+    def _model_field_values(self, model, values):
+        """Pure: drops values for fields the model does not carry. No queries."""
+        from .sync_primitives import model_field_values
+
+        return model_field_values(model, values)
+
     def _coalesce_sets_for(self, model_string, default_sets):
         """The coalesce sets the APPLY would use, not this call site's defaults.
 
@@ -627,6 +633,41 @@ def _compare_dcim_cable(runner, rows):
     return _compare_adapter_rows(runner, rows, apply_dcim_cable)
 
 
+def _compare_netbox_dlm(model_string, apply_function):
+    """Build a comparison for one netbox-dlm sub-model."""
+
+    def compare(runner, rows):
+        return _compare_adapter_rows(runner, rows, apply_function)
+
+    compare.__name__ = f"_compare_{model_string.replace('.', '_')}"
+    return compare
+
+
+def _dlm_comparisons():
+    """The netbox-dlm sub-models that can be compared, and those that cannot.
+
+    Five of the seven are wired. `inventoryitemsoftware` and
+    `inventoryitemroleplatform` are NOT: they resolve through
+    `_lookup_inventory_item` and `ensure_dlm_inventory_item_role_platform`,
+    which have their own dependency chains that have not been audited for the
+    writes-behind-a-runner-call trap. Absence from the mapping is the
+    documented "no comparison" answer, so they keep their upper bound.
+    """
+    from .sync_dlm import apply_netbox_dlm_cve
+    from .sync_dlm import apply_netbox_dlm_devicesoftware
+    from .sync_dlm import apply_netbox_dlm_hardwarenotice
+    from .sync_dlm import apply_netbox_dlm_softwareversion
+    from .sync_dlm import apply_netbox_dlm_vulnerability
+
+    return {
+        "netbox_dlm.softwareversion": apply_netbox_dlm_softwareversion,
+        "netbox_dlm.hardwarenotice": apply_netbox_dlm_hardwarenotice,
+        "netbox_dlm.devicesoftware": apply_netbox_dlm_devicesoftware,
+        "netbox_dlm.cve": apply_netbox_dlm_cve,
+        "netbox_dlm.vulnerability": apply_netbox_dlm_vulnerability,
+    }
+
+
 def _compare_dcim_module(runner, rows):
     from .sync_inventory_module import apply_dcim_module
 
@@ -681,6 +722,16 @@ _ADAPTER_COMPARISONS = {
 }
 
 
+# netbox-dlm is registered lazily: its apply functions import the optional
+# plugin's models, so importing them at module scope would break every
+# deployment that does not have it installed.
+def _register_dlm_comparisons():
+    for model_string, apply_function in _dlm_comparisons().items():
+        _ADAPTER_COMPARISONS.setdefault(
+            model_string, _compare_netbox_dlm(model_string, apply_function)
+        )
+
+
 def compare_model_rows(sync, model_string, rows):
     """Return ``{"creates", "updates", "unchanged", "rejected"}`` or ``None``.
 
@@ -731,6 +782,10 @@ def compare_model_rows(sync, model_string, rows):
     # against a cold one must return the same counts; `test_preview_primes_its_
     # lookup_caches` pins that they do, so this stays a cost change only.
     prime_dependency_lookup_caches(runner, model_string, rows)
+    if model_string.startswith("netbox_dlm.") and model_string not in (
+        _ADAPTER_COMPARISONS
+    ):
+        _register_dlm_comparisons()
     adapter_comparison = _ADAPTER_COMPARISONS.get(model_string)
     if adapter_comparison is not None:
         return adapter_comparison(runner, rows)

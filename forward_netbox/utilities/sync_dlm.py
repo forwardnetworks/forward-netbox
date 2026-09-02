@@ -157,17 +157,37 @@ def ensure_dlm_software_version(runner, row, *, with_dates=True, create=True):
     return software_version
 
 
-def apply_netbox_dlm_softwareversion(runner, row):
+def _preview_outcome(runner, created):
+    """Classify one upserted DLM row from what the shimmed upsert reported.
+
+    Every DLM write goes through `_upsert_values_from_defaults` or
+    `_coalesce_update_or_create`, both of which the preview runner overrides
+    with a lookup that records whether the apply would have written. So all
+    five of these functions classify identically and share this rather than
+    hand-rolling it five times and drifting apart.
+    """
+    if created:
+        return "creates"
+    return "updates" if runner.last_upsert_would_change else "unchanged"
+
+
+def apply_netbox_dlm_softwareversion(runner, row, *, preview=False):
     # DeviceSoftware is authoritative for which versions belong in NetBox. The
     # catalog map only enriches versions that already have a device-scoped
     # basis, preventing versions from out-of-scope Forward devices appearing as
     # zero-device DLM rows.
-    return (
-        ensure_dlm_software_version(runner, row, with_dates=True, create=False) or False
-    )
+    existing = ensure_dlm_software_version(runner, row, with_dates=True, create=False)
+    if preview:
+        # `create=False` means the apply never creates this row: the catalogue
+        # map only enriches versions that already have a device-scoped basis.
+        # So an absent one is a row the apply declines, not a create.
+        if existing is None:
+            return False
+        return _preview_outcome(runner, False)
+    return existing or False
 
 
-def apply_netbox_dlm_hardwarenotice(runner, row):
+def apply_netbox_dlm_hardwarenotice(runner, row, *, preview=False):
     HardwareNotice = _dlm_model(runner, "HardwareNotice", "netbox_dlm.hardwarenotice")
     device_type = _lookup_device_type(
         runner, row, "netbox_dlm.hardwarenotice", "DLM hardware notice"
@@ -180,12 +200,14 @@ def apply_netbox_dlm_hardwarenotice(runner, row):
     if row.get("documentation_url"):
         values["documentation_url"] = row["documentation_url"]
     values = runner._model_field_values(HardwareNotice, values)
-    notice, _ = runner._upsert_values_from_defaults(
+    notice, created = runner._upsert_values_from_defaults(
         "netbox_dlm.hardwarenotice",
         HardwareNotice,
         values=values,
         coalesce_sets=[("device_type",)],
     )
+    if preview:
+        return _preview_outcome(runner, created)
     return notice
 
 
@@ -223,8 +245,17 @@ def ensure_dlm_device_software(runner, row):
     return cache[cache_key]
 
 
-def apply_netbox_dlm_devicesoftware(runner, row):
-    _, _, device_software = ensure_dlm_device_software(runner, row)
+def apply_netbox_dlm_devicesoftware(runner, row, *, preview=False):
+    _, software_version, device_software = ensure_dlm_device_software(runner, row)
+    if preview:
+        # The preview runner resolves where the apply creates, so a `None`
+        # anywhere in the chain means NetBox does not have it and the row is a
+        # create. `ensure_dlm_device_software` memoises its result per
+        # (device, platform, version), so a repeated row is answered from the
+        # cache exactly as it is in the apply.
+        if software_version is None or device_software is None:
+            return "creates"
+        return _preview_outcome(runner, False)
     return device_software
 
 
@@ -350,7 +381,7 @@ def ensure_dlm_cve(runner, row):
     return cve
 
 
-def apply_netbox_dlm_cve(runner, row):
+def apply_netbox_dlm_cve(runner, row, *, preview=False):
     CVE = _dlm_model(runner, "CVE", "netbox_dlm.cve")
     values = {
         "cve_id": str(row.get("cve_id") or "").strip(),
@@ -369,32 +400,60 @@ def apply_netbox_dlm_cve(runner, row):
         if score is not None:
             values[field_name] = score
     values = runner._model_field_values(CVE, values)
-    cve, _ = runner._upsert_values_from_defaults(
+    cve, created = runner._upsert_values_from_defaults(
         "netbox_dlm.cve",
         CVE,
         values=values,
         coalesce_sets=[("cve_id",)],
     )
+    if preview:
+        return _preview_outcome(runner, created)
     return cve
 
 
-def apply_netbox_dlm_vulnerability(runner, row):
+def apply_netbox_dlm_vulnerability(runner, row, *, preview=False):
+    """Record the finding, or - with ``preview`` - classify and write nothing.
+
+    The deepest DLM chain: it ensures a DeviceSoftware (which itself ensures a
+    SoftwareVersion), a CVE, then the Vulnerability, then adds the catalogue
+    M2M. Every one of those writes goes through a ``runner.`` call the preview
+    runner overrides - except the last.
+
+    ``cve.affected_software.add`` is an M2M write reached directly, not through
+    the runner, so the firewall neither sees nor stops it. Same shape as
+    ``device.tags.add`` in the tagged-item path, and the same reason this
+    function takes a flag: that write is skipped here, by name.
+    """
     Vulnerability = _dlm_model(runner, "Vulnerability", "netbox_dlm.vulnerability")
     # Ensure both required FK targets exist even when the cve / software-version
     # maps are not enabled for this sync. DeviceSoftware is ensured as well, so
     # a vulnerability-only import cannot leave a zero-device SoftwareVersion.
     device, software_version, _ = ensure_dlm_device_software(runner, row)
     cve = ensure_dlm_cve(runner, row)
+    if preview and (cve is None or software_version is None):
+        # A finding cannot already exist against a CVE or a software version
+        # NetBox does not have, so it is unambiguously a create - and
+        # short-circuiting avoids a coalesce lookup on null FKs matching an
+        # unrelated row.
+        return "creates"
     values = runner._model_field_values(
         Vulnerability,
         {"cve": cve, "software_version": software_version, "device": device},
     )
-    vulnerability, _ = runner._upsert_values_from_defaults(
+    vulnerability, created = runner._upsert_values_from_defaults(
         "netbox_dlm.vulnerability",
         Vulnerability,
         values=values,
         coalesce_sets=[("cve", "software_version", "device")],
     )
+    if preview:
+        # The M2M below is NOT reflected in this verdict, deliberately. It is a
+        # catalogue-level relation between CVE and SoftwareVersion, not part of
+        # this row's identity, and `.add()` on an existing link is a no-op - so
+        # counting a row as drifted because the link is missing would report
+        # drift that the Vulnerability row itself does not have. The link is
+        # repaired by the apply either way.
+        return _preview_outcome(runner, created)
     # netbox-dlm exposes the catalog-level CVE <-> SoftwareVersion relation
     # separately from device-scoped Vulnerability instances. Forward's finding
     # supplies direct evidence for both; authoritative full workloads remove the
