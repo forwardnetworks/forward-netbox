@@ -84,7 +84,29 @@ def delete_dcim_module(runner, row):
     )
 
 
-def apply_dcim_inventoryitem(runner, row):
+MODULE_NATIVE_ROW_NOT_COMPARABLE = "module-native-row-not-comparable"
+
+
+def apply_dcim_inventoryitem(runner, row, *, preview=False):
+    """Upsert the inventory item, or - with ``preview`` - classify and write.
+
+    ``preview`` returns ``"creates"``, ``"updates"``, ``"unchanged"``, ``False``
+    for a row this declines, or ``MODULE_NATIVE_ROW_NOT_COMPARABLE``.
+
+    The writes are all behind ``runner.`` calls - ``_ensure_manufacturer``,
+    ``_ensure_inventory_item_role`` and ``_upsert_values_from_defaults`` - so
+    unlike cables the preview runner's firewall covers them and this flag only
+    has to handle the one branch that is not an upsert at all.
+
+    That branch is why the sentinel exists. When ``dcim.module`` is enabled a
+    module-native row is DELETED rather than upserted, and the comparison
+    contract has no slot for a delete: the report computes drift as
+    ``creates + updates`` and counts deletes separately. Calling it an update
+    would double-count it against that separate accounting; calling it
+    unchanged would be a confident zero; calling it rejected would report a
+    perfectly good row as unusable. So the row says it cannot be compared and
+    the caller declines the whole model, which keeps its upper bound.
+    """
     from dcim.models import InventoryItem
 
     try:
@@ -108,6 +130,8 @@ def apply_dcim_inventoryitem(runner, row):
     if runner.sync.is_model_enabled(
         "dcim.module"
     ) and runner._is_module_native_inventory_row(row):
+        if preview:
+            return MODULE_NATIVE_ROW_NOT_COMPARABLE
         return None if delete_dcim_inventoryitem(runner, row) else False
     manufacturer = None
     if row.get("manufacturer"):
@@ -115,7 +139,7 @@ def apply_dcim_inventoryitem(runner, row):
             {"name": row["manufacturer"], "slug": row["manufacturer_slug"]}
         )
     role = runner._ensure_inventory_item_role(row)
-    runner._upsert_values_from_defaults(
+    _, created = runner._upsert_values_from_defaults(
         "dcim.inventoryitem",
         InventoryItem,
         values={
@@ -140,6 +164,10 @@ def apply_dcim_inventoryitem(runner, row):
             ],
         ),
     )
+    if preview:
+        if created:
+            return "creates"
+        return "updates" if runner.last_upsert_would_change else "unchanged"
 
 
 def apply_dcim_module(runner, row):

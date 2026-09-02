@@ -55,6 +55,16 @@ class _NullSync:
     pk = None
     name = ""
 
+    def is_model_enabled(self, model_string):
+        """No model is enabled when there is no sync to ask.
+
+        `apply_dcim_inventoryitem` asks this to decide whether a module-native
+        row should be deleted instead of upserted. Production always passes the
+        real sync; this only affects callers with none, and it degrades to the
+        plain upsert classification rather than guessing that a delete applies.
+        """
+        return False
+
 
 class PreviewRunner:
     """A runner that records nothing and writes nothing.
@@ -134,6 +144,61 @@ class PreviewRunner:
 
     def _record_aggregated_conflict_warning(self, **kwargs):
         return None
+
+    def _coalesce_sets_for(self, model_string, default_sets):
+        from .sync_primitives import coalesce_sets_for
+
+        return coalesce_sets_for(self, model_string, default_sets)
+
+    def _is_module_native_inventory_row(self, row):
+        """Read-only, and read from the apply's own table.
+
+        It decides whether `apply_dcim_inventoryitem` deletes the row instead
+        of upserting it, so a preview that answered differently would classify
+        a deletion as a create.
+        """
+        from .sync import ForwardSyncRunner
+
+        if row.get("module_component") is True:
+            return True
+        return (
+            row.get("part_type") in ForwardSyncRunner.MODULE_NATIVE_INVENTORY_PART_TYPES
+        )
+
+    def _ensure_inventory_item_role(self, row):
+        """Find the role, never create it.
+
+        The real one upserts an `InventoryItemRole` through
+        `_upsert_row_from_defaults`, reached during classification - the same
+        trap as `_ensure_vrf` and `_ensure_platform`, and likewise invisible to
+        a grep for ORM calls. Returning `None` for an absent role matches how
+        every other absent dependency is treated: the item cannot already exist
+        under a role NetBox does not have.
+        """
+        from dcim.models import InventoryItemRole
+
+        role_name = row.get("role")
+        if not role_name:
+            return None
+        slug = str(row.get("role_slug") or "").strip()
+        if slug:
+            match = InventoryItemRole.objects.filter(slug=slug).order_by("pk").first()
+            if match is not None:
+                return match
+        return (
+            InventoryItemRole.objects.filter(name=str(role_name)).order_by("pk").first()
+        )
+
+    def _delete_by_coalesce(self, model, lookups):
+        """Never delete while measuring.
+
+        Reached from `apply_dcim_inventoryitem`, which deletes a module-native
+        row rather than upserting it when `dcim.module` is enabled. Raising
+        would be the firewall's usual answer, but this method is a legitimate
+        part of that path, so it returns "nothing was deleted" and the
+        comparison refuses the model instead - see `_compare_dcim_inventoryitem`.
+        """
+        return False
 
     def _lookup_device_by_name(self, device_name):
         from .sync_primitives import lookup_device_by_name
@@ -325,7 +390,7 @@ class PreviewRunner:
         return None
 
 
-def _compare_adapter_rows(runner, rows, apply_row):
+def _compare_adapter_rows(runner, rows, apply_row, *, uncomparable_outcomes=()):
     """Classify adapter-only rows one at a time.
 
     The bulk models hand a whole batch to a classifier that returns counts. The
@@ -364,6 +429,13 @@ def _compare_adapter_rows(runner, rows, apply_row):
             # confident-zero failure this feature exists to prevent.
             counts["rejected"] += 1
             continue
+        if outcome in uncomparable_outcomes:
+            # This row is a change the count keys cannot express - a delete,
+            # for the one path that has them. Declining the whole model keeps
+            # its upper bound, which is honest; folding it into creates or
+            # updates would be counted twice against the separate delete
+            # accounting, and unchanged would be a confident zero.
+            return None
         if outcome is False or outcome is None:
             counts["rejected"] += 1
             continue
@@ -388,6 +460,31 @@ def _compare_dcim_cable(runner, rows):
     return _compare_adapter_rows(runner, rows, apply_dcim_cable)
 
 
+def _compare_dcim_inventoryitem(runner, rows):
+    """Compare inventory items, unless the batch contains a deletion.
+
+    A module-native row on a deployment with `dcim.module` enabled is DELETED
+    by the apply, not upserted, and this comparison's contract has no slot for
+    a delete - the report reads drift as `creates + updates` and accounts for
+    deletes separately. Rather than fold it into either bucket, one such row
+    declines the whole model, which keeps its honest upper bound.
+
+    The refusal is scoped to batches that actually contain one, so deployments
+    without module-native inventory still get a real measurement. That is the
+    whole reason it is detected per row rather than per deployment.
+    """
+    from .sync_inventory_module import MODULE_NATIVE_ROW_NOT_COMPARABLE
+    from .sync_inventory_module import apply_dcim_inventoryitem
+
+    counts = _compare_adapter_rows(
+        runner,
+        rows,
+        apply_dcim_inventoryitem,
+        uncomparable_outcomes=(MODULE_NATIVE_ROW_NOT_COMPARABLE,),
+    )
+    return counts
+
+
 # Adapter-only models that can be compared, and the function that does it.
 #
 # Absence from this mapping is the "no comparison" answer for a model, which is
@@ -399,6 +496,7 @@ def _compare_dcim_cable(runner, rows):
 _ADAPTER_COMPARISONS = {
     "extras.taggeditem": _compare_extras_taggeditem,
     "dcim.cable": _compare_dcim_cable,
+    "dcim.inventoryitem": _compare_dcim_inventoryitem,
 }
 
 
