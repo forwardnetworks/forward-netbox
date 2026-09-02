@@ -148,9 +148,25 @@
                     {% blocktrans with rows=report.comparison_rows_compared %}for {{ rows }} rows{% endblocktrans %}
                   </span>
                 {% endif %}
+                {% if report.comparison_queries is not None %}
+                  <span class="text-muted">
+                    {% blocktrans with queries=report.comparison_queries %}in {{ queries }} queries{% endblocktrans %}
+                  </span>
+                {% endif %}
+                {% if report.comparison_sql_ms is not None %}
+                  <span class="text-muted">
+                    {% blocktrans with sql_ms=report.comparison_sql_ms|floatformat:0 %}({{ sql_ms }} ms in SQL){% endblocktrans %}
+                  </span>
+                {% endif %}
                 {% if report.slowest_compared_model %}
                   <div class="text-muted small mt-1">
-                    {% blocktrans with model=report.slowest_compared_model.model ms=report.slowest_compared_model.runtime_ms|floatformat:0 %}Slowest: {{ model }} at {{ ms }} ms{% endblocktrans %}
+                    {% if report.slowest_compared_model.queries is not None and report.slowest_compared_model.sql_ms is not None %}
+                      {% blocktrans with model=report.slowest_compared_model.model ms=report.slowest_compared_model.runtime_ms|floatformat:0 queries=report.slowest_compared_model.queries sql_ms=report.slowest_compared_model.sql_ms|floatformat:0 %}Slowest: {{ model }} at {{ ms }} ms in {{ queries }} queries, {{ sql_ms }} ms of it in SQL{% endblocktrans %}
+                    {% elif report.slowest_compared_model.queries is not None %}
+                      {% blocktrans with model=report.slowest_compared_model.model ms=report.slowest_compared_model.runtime_ms|floatformat:0 queries=report.slowest_compared_model.queries %}Slowest: {{ model }} at {{ ms }} ms in {{ queries }} queries{% endblocktrans %}
+                    {% else %}
+                      {% blocktrans with model=report.slowest_compared_model.model ms=report.slowest_compared_model.runtime_ms|floatformat:0 %}Slowest: {{ model }} at {{ ms }} ms{% endblocktrans %}
+                    {% endif %}
                   </div>
                 {% endif %}
               </td>

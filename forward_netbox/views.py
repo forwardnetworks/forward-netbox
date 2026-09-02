@@ -7,6 +7,7 @@ from core.models import ObjectChange
 from django.apps import apps
 from django.contrib import messages
 from django.core.exceptions import ValidationError
+from django.db import connection
 from django.db import models
 from django.db.models.functions import Greatest
 from django.http import HttpResponseBadRequest
@@ -475,7 +476,11 @@ def _dependency_plan_item_summary(item):
 
 
 def _dependency_model_result_summary(
-    result, comparison=None, comparison_runtime_ms=None
+    result,
+    comparison=None,
+    comparison_runtime_ms=None,
+    comparison_queries=None,
+    comparison_sql_ms=None,
 ):
     # ``fetcher.model_results`` are ForwardModelResult dataclasses, not dicts —
     # calling result.get(...) on them raised AttributeError and errored the whole
@@ -529,11 +534,56 @@ def _dependency_model_result_summary(
         "comparison_runtime_ms": (
             comparison_runtime_ms if comparison is not None else None
         ),
+        # Paired with the runtime so a slow model says WHY it is slow. `None`
+        # for a model with no comparison, exactly as the runtime is: reporting
+        # zero queries for work that never ran would read as "free".
+        "comparison_queries": (comparison_queries if comparison is not None else None),
+        # The share of this model's runtime spent inside the database. Read
+        # WITH the count: a low count and a high SQL share is a slow query to
+        # index; a low count and a low SQL share is Python. `None` where there
+        # was no comparison, for the same reason the others are.
+        "comparison_sql_ms": (comparison_sql_ms if comparison is not None else None),
         "runtime_ms": float(data.get("runtime_ms") or 0.0),
         # Preserve aggregate state evidence without copying diagnostic samples or
         # source identifiers into the preview job payload.
         "durable_workload_state": durable_state,
     }
+
+
+class _QueryMeter:
+    """Count queries AND time them, through Django's execute wrapper.
+
+    `connection.queries` is only populated under DEBUG, which a release
+    deployment never runs with - so the numbers that matter most are exactly
+    the ones that are absent in production. The wrapper is always active and
+    costs an integer increment and one clock read per query.
+
+    The count alone is ambiguous in the direction that matters. A converged
+    `dcim.macaddress` comparison issues a FLAT handful of queries locally - 13
+    for 4,000 rows, not one per row - so a deployment reporting 276,377 ms will
+    very likely report a low count too, and "low count, high runtime" reads as
+    work inside Python. It has a second reading the count cannot exclude: few
+    queries, each slow. A sequential scan over 122,478 rows, or a Postgres on
+    another host where every round trip costs milliseconds, produces the same
+    low count and wants a database fix, not a Python one. The share of the
+    runtime spent inside `execute` is what separates them.
+
+    The elapsed time is recorded in a `finally` so a query that RAISES still
+    reports what it spent. Dropping it would lose the slowest query in exactly
+    the case where something went wrong.
+    """
+
+    def __init__(self):
+        self.count = 0
+        self.seconds = 0.0
+
+    def __call__(self, execute, sql, params, many, context):
+        self.count += 1
+        started = time.perf_counter()
+        try:
+            return execute(sql, params, many, context)
+        finally:
+            self.seconds += time.perf_counter() - started
 
 
 def _dependency_dry_run_payload(sync, *, client=None):
@@ -603,15 +653,36 @@ def _dependency_dry_run_payload(sync, *, client=None):
     #
     # So the preview reports its own cost instead of anyone estimating it. The
     # numbers arrive with the payload, from the estate that has the scale.
+    # Count queries as well as milliseconds.
+    #
+    # A runtime alone cannot tell the two failure shapes apart, and they want
+    # opposite fixes. A deployment reported `dcim.macaddress` at 276,377 ms for
+    # 122,478 fully converged rows - 2.26 ms/row against 0.065 ms/row measured
+    # locally for the same converged shape. Time says "slow"; only a query count
+    # says whether it is slow because it issued a hundred thousand queries or
+    # slow inside Python. Every hypothesis tested locally against that number
+    # was eliminated, and the next one needs this to be worth testing.
+    #
+    # `connection.queries` is only populated when DEBUG is on, so the count is
+    # taken from the cursor-execution wrapper instead, which is always active
+    # and adds one integer increment per query.
     comparison_by_model = {}
     comparison_runtime_ms_by_model = {}
+    comparison_queries_by_model = {}
+    comparison_sql_ms_by_model = {}
     comparison_rows_by_model_count = {}
     for model_string, rows in rows_by_model.items():
+        meter = _QueryMeter()
         started = time.perf_counter()
-        comparison_by_model[model_string] = compare_model_rows(sync, model_string, rows)
+        with connection.execute_wrapper(meter):
+            comparison_by_model[model_string] = compare_model_rows(
+                sync, model_string, rows
+            )
         comparison_runtime_ms_by_model[model_string] = round(
             (time.perf_counter() - started) * 1000, 1
         )
+        comparison_queries_by_model[model_string] = meter.count
+        comparison_sql_ms_by_model[model_string] = round(meter.seconds * 1000, 1)
         comparison_rows_by_model_count[model_string] = len(rows)
     measured_models = sum(
         1 for value in comparison_by_model.values() if value is not None
@@ -628,6 +699,23 @@ def _dependency_dry_run_payload(sync, *, client=None):
         sum(
             runtime
             for model_string, runtime in comparison_runtime_ms_by_model.items()
+            if comparison_by_model.get(model_string) is not None
+        ),
+        1,
+    )
+    # Summed over the same models as the runtime, so cost per row and queries
+    # per row are read from the same denominator.
+    comparison_queries = sum(
+        queries
+        for model_string, queries in comparison_queries_by_model.items()
+        if comparison_by_model.get(model_string) is not None
+    )
+    # Same denominator again, so the SQL share of the runtime is read against
+    # the runtime it is a share OF.
+    comparison_sql_ms = round(
+        sum(
+            sql_ms
+            for model_string, sql_ms in comparison_sql_ms_by_model.items()
             if comparison_by_model.get(model_string) is not None
         ),
         1,
@@ -660,6 +748,15 @@ def _dependency_dry_run_payload(sync, *, client=None):
             "total_models": len(comparison_by_model),
             # What the measurement cost, reported rather than estimated.
             "runtime_ms": comparison_runtime_ms,
+            # Queries alongside milliseconds, because the two distinguish the
+            # only fix directions that differ: a high count is chatter to
+            # batch, a low count with a high runtime is work inside Python.
+            "queries": comparison_queries,
+            # How much of that runtime was spent inside the database. A low
+            # count says nothing about whether those few queries were slow;
+            # this does, and it is the difference between an index and a
+            # rewrite.
+            "sql_ms": comparison_sql_ms,
             "rows_compared": compared_rows,
         },
         "model_results": [
@@ -669,6 +766,12 @@ def _dependency_dry_run_payload(sync, *, client=None):
                     (result.as_dict().get("model") or "")
                 ),
                 comparison_runtime_ms=comparison_runtime_ms_by_model.get(
+                    (result.as_dict().get("model") or "")
+                ),
+                comparison_queries=comparison_queries_by_model.get(
+                    (result.as_dict().get("model") or "")
+                ),
+                comparison_sql_ms=comparison_sql_ms_by_model.get(
                     (result.as_dict().get("model") or "")
                 ),
             )

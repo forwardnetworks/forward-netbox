@@ -133,6 +133,13 @@ def _slowest_compared_model(rows):
     return {
         "model": slowest.get("label") or slowest.get("model"),
         "runtime_ms": slowest["comparison_runtime_ms"],
+        # Carried with the runtime because naming the slowest model is only
+        # half an answer: the query count says which KIND of slow it is, and
+        # the two want opposite fixes.
+        "queries": slowest.get("comparison_queries"),
+        # And the count on its own cannot tell a slow query from slow Python,
+        # because both report a low count. This can.
+        "sql_ms": slowest.get("comparison_sql_ms"),
     }
 
 
@@ -248,6 +255,8 @@ def compute_drift_report(payload):
                 "drift": drift,
                 "in_sync": in_sync,
                 "comparison_runtime_ms": result.get("comparison_runtime_ms"),
+                "comparison_queries": result.get("comparison_queries"),
+                "comparison_sql_ms": result.get("comparison_sql_ms"),
             }
         )
     _label_rows(rows)
@@ -300,6 +309,8 @@ def compute_drift_report(payload):
         # which is why these are None rather than zero - a zero would read as
         # "instant" for a preview that never reported.
         "comparison_runtime_ms": _coverage_value(payload, "runtime_ms"),
+        "comparison_queries": _coverage_value(payload, "queries"),
+        "comparison_sql_ms": _coverage_value(payload, "sql_ms"),
         "comparison_rows_compared": _coverage_value(payload, "rows_compared"),
         "slowest_compared_model": _slowest_compared_model(rows),
         "unmeasured_model_count": len(unmeasured_rows),
