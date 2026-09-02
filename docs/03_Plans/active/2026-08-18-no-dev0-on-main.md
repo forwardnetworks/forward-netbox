@@ -68,8 +68,11 @@ Revert. `main` returns to advertising a version that does not exist.
 
 ## Open
 
-- The `.dev0` contradiction itself. Either `--open-next` goes, or the rule
-  does, and neither should be decided as a side effect of a release.
+- ~~The `.dev0` contradiction itself.~~ **Decided 2026-09-02, in
+  `2026-09-02-release-tooling.md`:** the rule stays and `--open-next` is gone.
+  `main` carries the released version; a dev marker offered source installs a
+  version that was never gated, tagged or published, and the window it
+  described is minutes wide and now crossed by `--auto-finish` in one run.
 - The bridge commit that carried these edits is no longer documentation-only,
   which makes it unusable as `PRIOR_POST_RELEASE_DOC_COMMIT`. Reverting the
   content here does not fix that: the verifier diffs the release tag against

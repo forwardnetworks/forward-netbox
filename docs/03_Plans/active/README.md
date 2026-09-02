@@ -6,7 +6,8 @@ Use `../plan-template.md` as the starting point.
 
 Roadmap work belongs here as explicit plans. Keep each plan decision-complete enough that another engineer can continue it without recovering session history.
 
-For the 2.6 handoff, this directory contains only the current release plan. All
-pre-2.6 plans were closed into `../completed/` as implemented or superseded
-history; old deferral language in those records is not a current roadmap or an
-accepted 2.6 defect.
+Plans stay here after they ship: they are the record of what was decided and
+why, and their `## Open` sections are the technical-debt tracker (see
+`../technical-debt.md`). Everything before 2.6 was closed into `../completed/`
+as implemented or superseded history; deferral language in those records is
+not a current roadmap.

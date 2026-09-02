@@ -13,8 +13,17 @@
 #   verify   - the full local CI mirror (pre-commit x2, harness, harness tests,
 #              py_compile, mkdocs --strict, build)
 #   publish  - branch, push, and wait for the exact GitHub workflows
-#   finish   - promote metadata, open the check-gated production/evidence PRs,
-#              or tag the validated evidence-only main commit
+#   finish   - open the check-gated production PR, then the evidence PR, then
+#              tag the validated evidence-only main commit
+#   authorize - append the Release Authorization section the evidence PR needs,
+#              rendered from what `verify` actually ran
+#   post-release - open the documentation-only bridge that must follow the tag
+#   anchor   - advance the provenance anchor onto the bridge AND promote the
+#              release in the compatibility tables, as one commit
+#
+# `--publish --auto-finish` runs every stage in order and waits for each pull
+# request to merge, so a release is one invocation. Each stage is also a flag
+# of its own, for resuming after a failure: the driver prints which one.
 #
 # Default run is prepare + verify. Rollout never happens without --publish, so
 # this is safe to run for a dry build.
@@ -27,6 +36,8 @@ import re
 import socket
 import subprocess
 import sys
+from datetime import datetime
+from datetime import timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -42,6 +53,19 @@ FAST_BASELINE = REPO_ROOT / "forward_netbox/utilities/fast_baseline.py"
 RUNTIME_VERSION_TEST = (
     REPO_ROOT / "forward_netbox/tests/test_runtime_dependency_check.py"
 )
+PROVENANCE = REPO_ROOT / "scripts/verify_release_provenance.py"
+TESTED_RUNTIME = REPO_ROOT / "scripts/tested_runtime.py"
+CONSTRAINTS = REPO_ROOT / "constraints.txt"
+# What `verify` ran and how it came out, so `authorize` can render the
+# Release Authorization section from evidence rather than from memory. Local
+# and gitignored: it names the host's port and log paths.
+EVIDENCE_RECORD = REPO_ROOT / ".release-evidence.json"
+EVIDENCE_LOG_DIR = REPO_ROOT / ".release-evidence-logs"
+# Waiting for a pull request to merge. Nothing gates merges but the branch
+# ruleset, so this is normally seconds; the bound exists so an unattended run
+# ends with an instruction instead of a hang.
+PULL_REQUEST_MERGE_POLL_SECONDS = 30
+PULL_REQUEST_MERGE_MAX_POLLS = 120
 # The compatibility cell shared by every table row, so a new row reuses the
 # previous row's NetBox-support text verbatim.
 CURRENT_RELEASE_RE = re.compile(
@@ -197,33 +221,6 @@ def version_surface_edits(old: str, new: str) -> dict[Path, str]:
     return edits
 
 
-def stage_open_next(version: str, *, write: bool) -> None:
-    """Move `main` onto a `.dev0` marker so an install from it is self-describing.
-
-    `main` carries the release from the moment the release PR merges — before
-    the tag exists and before anything reaches PyPI. A customer installed from
-    `main` inside that window and reported running a version PyPI did not yet
-    have. Marking `main` as `X.Y.Z.dev0` makes that visible at the install
-    rather than leaving it indistinguishable from the published release.
-
-    The tag-only publish trigger is deliberately untouched: reordering it would
-    require a `workflow_dispatch` bypass of the control that exists to prevent
-    exactly that.
-    """
-    old = read_current_version()
-    if old.endswith(".dev0"):
-        raise ReleaseError(f"already on a dev marker ({old}); nothing to open")
-    marker = f"{version}.dev0"
-    print(f"[open-next] {old} -> {marker}")
-    edits = version_surface_edits(old, marker)
-    if not write:
-        print("[open-next] dry-run: not writing files")
-        return
-    for path, text in edits.items():
-        path.write_text(text, encoding="utf-8")
-    print(f"[open-next] wrote {len(edits)} version surfaces")
-
-
 def stage_prepare(version: str, summary: str, *, write: bool) -> None:
     old = read_current_version()
     print(f"[prepare] bump {old} -> {version}")
@@ -275,31 +272,200 @@ def release_distribution_artifacts(version: str) -> list[Path]:
     return [wheels[0], sdists[0]]
 
 
-def stage_verify() -> None:
-    print("[verify] mandatory isolated local release gate")
-    release_project = "forward-netbox-release-gate"
+# The environment variables the authorization checker requires an evidence
+# command to name, in the order they are rendered. `NETBOX_VER` is included
+# explicitly because the checker requires it even though the compose default
+# would supply the same value.
+RELEASE_GATE_ENVIRONMENT = (
+    "FORWARD_NETBOX_DOCKER_PROJECT",
+    "FORWARD_NETBOX_POSTGRES_DATA_PATH",
+    "FORWARD_NETBOX_WORKER_AUTORELOAD",
+    "NETBOX_VER",
+    "FORWARD_NETBOX_UPGRADE_FROM_VERSION",
+    "FORWARD_NETBOX_PATTERN_PARITY_UNVERIFIED",
+    "FORWARD_NETBOX_HOST_PORT",
+    "NETBOX_URL",
+)
+TEST_SUMMARY_RE = re.compile(r"^Ran (?P<count>\d+) tests? in ", re.MULTILINE)
+TEST_VERDICT_RE = re.compile(
+    r"^(?P<verdict>OK|FAILED)\b(?P<detail>[^\n]*)", re.MULTILINE
+)
+
+
+def run_logged(cmd: list[str], *, env: dict[str, str], log_path: Path) -> int:
+    """Run a gate command, streaming its output and keeping a copy.
+
+    `run` streams and keeps nothing, which is right for git and wrong for a
+    forty-minute gate whose summary lines are the evidence a release needs.
+    The copy is what `authorize` reads; the stream is what the operator reads.
+    """
+    print("  $ [redacted release command]")
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("w", encoding="utf-8") as log:
+        process = subprocess.Popen(
+            cmd,
+            cwd=REPO_ROOT,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        assert process.stdout is not None
+        for line in process.stdout:
+            sys.stdout.write(line)
+            log.write(line)
+        return process.wait()
+
+
+def _gate_summary(log_text: str) -> dict:
+    """The test-count lines from a gate log, as numbers.
+
+    The authorization checker requires a digit and a retrospective outcome in
+    every evidence line; the counts are both, and they are the part an operator
+    used to transcribe by hand.
+    """
+    counts = [int(match.group("count")) for match in TEST_SUMMARY_RE.finditer(log_text)]
+    verdicts = [match.group("verdict") for match in TEST_VERDICT_RE.finditer(log_text)]
+    sbom = re.search(r"\b(?P<count>\d+) components?\b", log_text)
+    routes = re.search(
+        r"\b(?P<count>\d+) (?:authenticated )?(?:menu |detail )?routes?\b", log_text
+    )
+    return {
+        "test_runs": counts,
+        "tests_total": sum(counts),
+        "verdicts": verdicts,
+        "failed": any(verdict == "FAILED" for verdict in verdicts),
+        "sbom_components": int(sbom.group("count")) if sbom else None,
+        "routes": int(routes.group("count")) if routes else None,
+    }
+
+
+def _release_gate_environment() -> dict[str, str]:
     release_env = {
         **os.environ,
-        "FORWARD_NETBOX_DOCKER_PROJECT": release_project,
+        "FORWARD_NETBOX_DOCKER_PROJECT": "forward-netbox-release-gate",
         "FORWARD_NETBOX_HOST_PORT": _available_loopback_port(),
         "FORWARD_NETBOX_POSTGRES_DATA_PATH": "netbox-postgres-data",
         "FORWARD_NETBOX_WORKER_AUTORELOAD": "0",
+        "NETBOX_VER": f"v{_tested_netbox_version()}",
     }
     release_env["NETBOX_URL"] = (
         f"http://127.0.0.1:{release_env['FORWARD_NETBOX_HOST_PORT']}"
     )
+    return release_env
+
+
+def _tested_netbox_version() -> str:
+    match = re.search(
+        r'^TESTED_NETBOX_VERSION = "(?P<version>[^"]+)"$',
+        TESTED_RUNTIME.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    if match is None:
+        raise ReleaseError(
+            "scripts/tested_runtime.py declares no TESTED_NETBOX_VERSION"
+        )
+    return match.group("version")
+
+
+def _pinned_branching_version() -> str:
+    match = re.search(
+        r"^netboxlabs-netbox-branching==(?P<version>[0-9][^\s]*)$",
+        CONSTRAINTS.read_text(encoding="utf-8"),
+        re.MULTILINE,
+    )
+    if match is None:
+        raise ReleaseError("constraints.txt pins no netboxlabs-netbox-branching")
+    return match.group("version")
+
+
+def _evidence_command(task: str, environment: dict[str, str], *, with_url: bool) -> str:
+    """The exact `rtk env ... invoke <task>` form the authorization checker parses."""
+    assignments = []
+    for name in RELEASE_GATE_ENVIRONMENT:
+        if name in ("FORWARD_NETBOX_HOST_PORT", "NETBOX_URL") and not with_url:
+            continue
+        value = environment.get(name)
+        if value:
+            assignments.append(f"{name}={value}")
+    return f"rtk env {' '.join(assignments)} invoke {task}"
+
+
+def write_evidence_record(record: dict) -> None:
+    EVIDENCE_RECORD.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n")
+
+
+def read_evidence_record(version: str) -> dict:
+    if not EVIDENCE_RECORD.exists():
+        raise ReleaseError(
+            f"{EVIDENCE_RECORD.name} is missing: run `release.py {version} --write` "
+            "(verify) first, so the authorization can be rendered from what ran"
+        )
+    record = json.loads(EVIDENCE_RECORD.read_text(encoding="utf-8"))
+    if record.get("version") != version:
+        raise ReleaseError(
+            f"{EVIDENCE_RECORD.name} records v{record.get('version')}, not v{version}"
+        )
+    return record
+
+
+def stage_verify(version: str) -> None:
+    print("[verify] mandatory isolated local release gate")
+    release_project = "forward-netbox-release-gate"
+    release_env = _release_gate_environment()
+    logs = EVIDENCE_LOG_DIR / version
+    record = {
+        "version": version,
+        "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "environment": {
+            name: release_env[name]
+            for name in RELEASE_GATE_ENVIRONMENT
+            if release_env.get(name)
+        },
+        "netbox_version": _tested_netbox_version(),
+        "branching_version": _pinned_branching_version(),
+        "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
+        "gate": None,
+        "artifact": None,
+    }
     try:
-        run([sys.executable, "-m", "invoke", "ci"], env=release_env)
+        gate_log = logs / "invoke-ci.log"
+        status = run_logged(
+            [sys.executable, "-m", "invoke", "ci"], env=release_env, log_path=gate_log
+        )
+        record["gate"] = {
+            "command": _evidence_command("ci", release_env, with_url=False),
+            "exit_status": status,
+            "log": str(gate_log.relative_to(REPO_ROOT)),
+            **_gate_summary(gate_log.read_text(encoding="utf-8")),
+        }
+        if status != 0:
+            raise ReleaseError(f"release command failed with exit code {status}")
         artifacts = release_distribution_artifacts(read_current_version())
+        record["wheel"] = next(
+            artifact.name for artifact in artifacts if artifact.suffix == ".whl"
+        )
         run(
             [sys.executable, "-m", "twine", "check", *(str(p) for p in artifacts)],
             env=release_env,
         )
-        run(
+        artifact_log = logs / "invoke-artifact-test.log"
+        status = run_logged(
             [sys.executable, "-m", "invoke", "artifact-test"],
             env=release_env,
+            log_path=artifact_log,
         )
+        record["artifact"] = {
+            "command": _evidence_command("artifact-test", release_env, with_url=True),
+            "exit_status": status,
+            "log": str(artifact_log.relative_to(REPO_ROOT)),
+            **_gate_summary(artifact_log.read_text(encoding="utf-8")),
+        }
+        if status != 0:
+            raise ReleaseError(f"release command failed with exit code {status}")
+        record["finished_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
     finally:
+        write_evidence_record(record)
         run(
             [
                 "docker",
@@ -489,12 +655,22 @@ def stage_publish(version: str, *, auto_finish: bool = False) -> None:
         raise ReleaseError("Exact required GitHub workflows did not all succeed")
     _assert_release_head(version, published_head)
     if auto_finish:
-        stage_finish(version)
+        stage_finish_unattended(version)
     else:
         print("[publish] workflows green; re-run with --finish for release PRs.")
 
 
-def _promote_release_candidate(version: str) -> bool:
+def promote_release_tables(version: str) -> bool:
+    """Flip the compatibility tables from candidate to current. Files only.
+
+    This used to commit, push and wait, on the release branch, BEFORE the tag
+    existed. `check_harness.py` requires the provenance anchor to name the
+    release the table calls current, and the anchor cannot advance until the
+    bridge exists, which cannot exist until the tag does - so the commit it made
+    was refused by construction on every release since 2.8.6, and a second copy
+    of it was left stranded on local `main` by the tag step. Promotion belongs
+    in the anchor commit, where the two move together; see `stage_anchor`.
+    """
     originals = {path: path.read_text(encoding="utf-8") for path in README_TABLES}
     edits = {
         path: set_release_intro_text(
@@ -505,30 +681,47 @@ def _promote_release_candidate(version: str) -> bool:
         for path, text in originals.items()
     }
     if edits == originals:
-        print(f"[finish] v{version} metadata is already promoted")
+        print(f"[anchor] v{version} metadata is already promoted")
         return False
     for path, text in edits.items():
         path.write_text(text, encoding="utf-8")
     run([sys.executable, "scripts/gen_changelog.py"])
-    run(
-        [
-            "git",
-            "add",
-            *(str(path.relative_to(REPO_ROOT)) for path in README_TABLES),
-            "CHANGELOG.md",
-        ]
-    )
-    run(["git", "commit", "-m", f"release: promote v{version}"])
-    run([sys.executable, "scripts/check_harness.py", "--base", "origin/main"])
-    run(["git", "push", "--no-verify", "origin", f"release/{version}"])
-    promoted_head = _capture(["git", "rev-parse", "HEAD"])
-    if not wait_for_required_workflows(
-        promoted_head,
-        expected_branch=f"release/{version}",
-    ):
-        raise ReleaseError("Promoted release exact workflows did not all succeed")
-    _assert_release_head(version, promoted_head)
     return True
+
+
+def _wait_for_pull_request_merge(
+    branch: str,
+    *,
+    poll_seconds: int = PULL_REQUEST_MERGE_POLL_SECONDS,
+    max_polls: int = PULL_REQUEST_MERGE_MAX_POLLS,
+) -> dict:
+    """Block until the pull request for ``branch`` is merged, or say why not."""
+    import time
+
+    for _ in range(max_polls):
+        pull = _pull_request_for_branch(branch)
+        if pull is None:
+            raise ReleaseError(f"no pull request exists for {branch}")
+        state = pull.get("state")
+        if state == "MERGED":
+            print(f"[merge] {pull['url']} merged")
+            return pull
+        if state == "CLOSED":
+            raise ReleaseError(f"pull request for {branch} was closed without merging")
+        print(f"[merge] waiting for {pull['url']} ({state})")
+        time.sleep(poll_seconds)
+    raise ReleaseError(
+        f"pull request for {branch} did not merge within "
+        f"{poll_seconds * max_polls} seconds; merge it, then resume"
+    )
+
+
+def _checkout_merged_main() -> str:
+    """Put the checkout on `main` at exactly `origin/main` and return that SHA."""
+    run(["git", "fetch", "origin", "main"])
+    run(["git", "checkout", "--force", "main"])
+    run(["git", "reset", "--hard", "origin/main"])
+    return _capture(["git", "rev-parse", "HEAD"])
 
 
 def _pull_request_for_branch(branch: str) -> dict | None:
@@ -735,12 +928,9 @@ def stage_finish(version: str) -> None:
     current_branch = _capture(["git", "branch", "--show-current"])
 
     if current_branch == production_branch:
-        if _promote_release_candidate(version):
-            print(
-                "[finish] metadata promotion is green. Re-run --finish to open "
-                "the production PR."
-            )
-            return
+        # No promotion here. The tables flip in the anchor commit, after the
+        # tag, because the harness ties the anchor to the current release and
+        # refuses either one moving alone - see `promote_release_tables`.
         head_commit = _capture(["git", "rev-parse", "HEAD"])
         run([sys.executable, "scripts/check_harness.py", "--base", "origin/main"])
         run(["git", "push", "--no-verify", "origin", production_branch])
@@ -924,14 +1114,16 @@ def stage_post_release(version: str, tag: str) -> None:
     the bridge - documentation-only, parented to the release commit - and that
     slot is taken by whatever lands first.
 
-    The `.dev0` question is narrowed rather than settled. `stage_open_next`
-    documents a real incident: a customer installed from `main` between the
-    release PR merging and the tag, and reported a version PyPI did not have.
-    The operating rule that `main` carries the RELEASED version is about a
-    different window - after the tag, when `main` IS that release. Both hold, so
-    a `.dev0` belongs with the first substantive change after a release rather
-    than as an automatic step that runs when nothing has changed yet.
-    `--open-next` remains available for that; it is simply no longer automatic.
+    The `.dev0` question is settled: `main` carries the RELEASED version, and
+    nothing writes a dev marker to it. `--open-next` documented a real incident
+    - a customer installed from `main` between the release PR merging and the
+    tag, and reported a version PyPI did not have - but the marker was the
+    wrong remedy for it. Customers install this plugin from source, so a
+    `2.9.2.dev0` on `main` offered a version that was never gated, tagged or
+    published; and the window it described is minutes wide, covered by the
+    tag-only publish trigger and by `--auto-finish` running straight through
+    it. Six release plans recorded the contradiction as undecided; this is the
+    decision, and the machinery is gone rather than left as a trap.
     """
     branch = f"docs/post-release-{version}"
     print(f"[post-release] opening {branch} for {tag}")
@@ -949,21 +1141,377 @@ def stage_post_release(version: str, tag: str) -> None:
         run(["git", "commit", "-m", f"docs: record the {version} post-release bridge"])
         run([sys.executable, "scripts/check_harness.py", "--base", "origin/main"])
         run(["git", "push", "--no-verify", "-u", "origin", branch])
+        _open_pull_request(
+            branch,
+            title=f"docs: record the {version} post-release bridge",
+            body=(
+                f"Documentation-only bridge for {tag}. It must be the first "
+                "commit on main after the tag; merge it before anything else."
+            ),
+        )
+    except Exception:
+        # A failed stage leaves nothing behind. The branch was created by this
+        # function and holds at most the one commit it made; deleting it means
+        # the next attempt starts from origin/main rather than inheriting a
+        # half-made bridge - which is how v2.8.3's slot was lost.
+        run(["git", "checkout", "--force", starting_branch], check=False)
+        run(["git", "branch", "-D", branch], check=False)
+        raise
     finally:
         run(["git", "checkout", "--force", starting_branch], check=False)
 
     print(
-        "\n[post-release] merge that pull request, then advance the anchor:\n"
+        "\n[post-release] once that pull request merges, advance the anchor:\n"
         "\n"
-        f"    git fetch origin main\n"
-        f"    BRIDGE=$(git rev-list --first-parent {tag}..origin/main | tail -1)\n"
-        f"    # in scripts/verify_release_provenance.py set:\n"
-        f'    #   PRIOR_RELEASE_TAG = "{tag}"\n'
-        f'    #   PRIOR_POST_RELEASE_DOC_COMMIT = "$BRIDGE"\n'
+        f"    python3 scripts/release.py {version} --anchor\n"
         "\n"
-        "The harness fails until that lands, so this cannot be forgotten "
-        "quietly - only deferred.\n"
+        "It derives the bridge commit from the tag, advances "
+        "PRIOR_RELEASE_TAG and PRIOR_POST_RELEASE_DOC_COMMIT, and promotes the "
+        "release in the compatibility tables, as one commit. The harness fails "
+        "until that lands, so this cannot be forgotten quietly - only deferred.\n"
     )
+
+
+def _open_pull_request(branch: str, *, title: str, body: str) -> dict:
+    """Open a squash-merging pull request for ``branch`` if none exists."""
+    pull = _pull_request_for_branch(branch)
+    if pull is None:
+        run(
+            [
+                "gh",
+                "pr",
+                "create",
+                "--repo",
+                GITHUB_REPOSITORY,
+                "--base",
+                "main",
+                "--head",
+                branch,
+                "--title",
+                title,
+                "--body",
+                body,
+            ]
+        )
+        pull = _pull_request_for_branch(branch)
+    if pull is None:
+        raise ReleaseError(f"failed to resolve pull request for {branch}")
+    if pull.get("state") == "OPEN":
+        run(
+            [
+                "gh",
+                "pr",
+                "merge",
+                str(pull["number"]),
+                "--repo",
+                GITHUB_REPOSITORY,
+                "--auto",
+                "--squash",
+            ]
+        )
+    print(f"[pr] {pull['url']}")
+    return pull
+
+
+def _bridge_commit_for(tag: str) -> str:
+    """The first first-parent commit after ``tag`` on origin/main: the bridge."""
+    run(["git", "fetch", "origin", "main"])
+    lineage = _capture(
+        ["git", "rev-list", "--first-parent", "--reverse", f"{tag}..origin/main"]
+    ).splitlines()
+    if not lineage:
+        raise ReleaseError(f"nothing has landed on origin/main after {tag} yet")
+    bridge = lineage[0]
+    tag_commit = _capture(["git", "rev-list", "-n", "1", tag])
+    changed = [
+        line
+        for line in _capture(
+            ["git", "diff", "--name-only", tag_commit, bridge]
+        ).splitlines()
+        if line
+    ]
+    if not changed or not all(_is_bridge_path(path) for path in changed):
+        raise ReleaseError(
+            f"the first commit after {tag} ({bridge[:12]}) is not "
+            f"documentation-only ({changed}); the bridge slot is taken and the "
+            "anchor cannot advance onto it"
+        )
+    return bridge
+
+
+def _is_bridge_path(path: str) -> bool:
+    # Mirrors `verify_release_provenance._is_documentation_path` without
+    # importing it: the verifier is the trusted scanner and stays untouched.
+    return (path.startswith("docs/") and path.endswith(".md")) or path in {
+        "CHANGELOG.md",
+        "README.md",
+        "docs/README.md",
+        "docs/01_User_Guide/README.md",
+    }
+
+
+def _anchor_plan_path(version: str) -> Path:
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    return REPO_ROOT / "docs" / "03_Plans" / "active" / f"{stamp}-anchor-{version}.md"
+
+
+def _anchor_plan_text(version: str, tag: str, bridge: str) -> str:
+    return f"""# Advance the release provenance anchor to {version}
+
+## Goal
+
+Move the provenance anchor onto the shipped {version} release and promote it to
+current in the compatibility tables, as one commit.
+
+## Constraints
+
+- The bridge must be the first commit after the tag on the first-parent lineage
+  and documentation-only. `{bridge[:12]}` was checked for both by
+  `scripts/release.py --anchor` before this file was written.
+- The table promotion belongs here, not on the release branch: the harness
+  requires the anchor to name the release the table calls current, so the two
+  can only move together.
+
+## Touched Surfaces
+
+- `scripts/verify_release_provenance.py`
+- `README.md`, `docs/README.md`, `docs/01_User_Guide/README.md`, `CHANGELOG.md`
+- this plan
+
+## Approach
+
+Anchor to `{tag}` / bridge `{bridge}`; promote {version} to current and demote
+the previous release to superseded.
+
+## Validation
+
+`check_harness.py --base origin/main` passes with the anchor advanced.
+
+## Rollback
+
+Revert; the harness fails again, which blocks the next release rather than
+permitting an unverified one - the safe direction.
+
+## Decision Log
+
+- **Generated by `scripts/release.py --anchor`.** The anchor and the promotion
+  were hand-edited for every release through 2.9.1, and skipping either was
+  silent at the time and expensive later.
+"""
+
+
+def _capture_constant(text: str, key: str) -> str:
+    match = re.search(rf'^{re.escape(key)} = "(?P<value>[^"]+)"$', text, re.MULTILINE)
+    if match is None:
+        raise ReleaseError(f"scripts/verify_release_provenance.py declares no {key}")
+    return match.group("value")
+
+
+def stage_anchor(version: str, tag: str) -> None:
+    """Advance the provenance anchor onto the bridge and promote the release.
+
+    One commit, because the harness ties the two together: the anchor must name
+    the release the compatibility table calls current. Promoting on the release
+    branch was refused for exactly that reason on every release since 2.8.6.
+    """
+    bridge = _bridge_commit_for(tag)
+    branch = f"chore/anchor-{version}"
+    print(f"[anchor] {tag} -> bridge {bridge[:12]} on {branch}")
+    starting_branch = _capture(["git", "branch", "--show-current"]) or "main"
+    plan_path = _anchor_plan_path(version)
+    try:
+        run(["git", "checkout", "-B", branch, "origin/main"])
+        text = PROVENANCE.read_text(encoding="utf-8")
+        text = bump_version_text(
+            text,
+            _capture_constant(text, "PRIOR_RELEASE_TAG"),
+            tag,
+            key="PRIOR_RELEASE_TAG",
+        )
+        text = bump_version_text(
+            text,
+            _capture_constant(text, "PRIOR_POST_RELEASE_DOC_COMMIT"),
+            bridge,
+            key="PRIOR_POST_RELEASE_DOC_COMMIT",
+        )
+        PROVENANCE.write_text(text, encoding="utf-8")
+        promote_release_tables(version)
+        plan_path.write_text(_anchor_plan_text(version, tag, bridge), encoding="utf-8")
+        run(
+            [
+                "git",
+                "add",
+                str(PROVENANCE.relative_to(REPO_ROOT)),
+                *(str(path.relative_to(REPO_ROOT)) for path in README_TABLES),
+                "CHANGELOG.md",
+                str(plan_path.relative_to(REPO_ROOT)),
+            ]
+        )
+        run(
+            [
+                "git",
+                "commit",
+                "-m",
+                f"chore: advance the release provenance anchor to {version}",
+            ]
+        )
+        run([sys.executable, "scripts/check_harness.py", "--base", "origin/main"])
+        run(["git", "push", "--no-verify", "-u", "origin", branch])
+        _open_pull_request(
+            branch,
+            title=f"chore: advance the release provenance anchor to {version}",
+            body=(
+                f"Anchor to `{tag}` / bridge `{bridge}`, and promote {version} to "
+                "current in the compatibility tables. Generated by "
+                "`scripts/release.py --anchor`."
+            ),
+        )
+    except Exception:
+        run(["git", "checkout", "--force", starting_branch], check=False)
+        run(["git", "branch", "-D", branch], check=False)
+        raise
+    finally:
+        run(["git", "checkout", "--force", starting_branch], check=False)
+
+
+def _release_plan_path(version: str) -> Path:
+    plans = sorted(
+        (REPO_ROOT / "docs" / "03_Plans" / "active").glob(f"*release-{version}*.md")
+    )
+    if len(plans) != 1:
+        raise ReleaseError(
+            f"expected exactly one active release-{version} plan, found {len(plans)}"
+        )
+    return plans[0]
+
+
+def render_release_authorization(record: dict, evidence_base: str) -> str:
+    """The Release Authorization section, from what `verify` recorded.
+
+    Every claim here is something the record holds: the exact command form the
+    checker parses, the exit status, the test counts from the gate's own
+    summary lines, and the runtime versions the tree declares. Nothing is
+    typed from memory, which is where the 2.9.x sections got their numbers.
+    """
+    gate = record.get("gate") or {}
+    artifact = record.get("artifact") or {}
+    if gate.get("exit_status") != 0 or artifact.get("exit_status") != 0:
+        raise ReleaseError(
+            "the evidence record does not show both gate commands passing; "
+            "re-run verify before authorizing"
+        )
+    version = record["version"]
+    runs = gate.get("test_runs") or []
+    counts = ", ".join(f"{count} tests OK" for count in runs) or "every suite OK"
+    sbom = artifact.get("sbom_components")
+    sbom_text = f"a validated SBOM of {sbom} components" if sbom else "a validated SBOM"
+    routes = artifact.get("routes")
+    routes_text = (
+        f"{routes} authenticated routes returning 200"
+        if routes
+        else "every installed route returning 200"
+    )
+    wheel = record.get("wheel", f"forward_netbox-{version}-py3-none-any.whl")
+    lines = [
+        "## Release Authorization",
+        "",
+        f"- Evidence base commit: `{evidence_base}`",
+        "",
+        f"- [x] `final-tree-full-gate` - `{gate['command']}` passed on the final "
+        f"{version} tree with exit status 0: {counts} across "
+        f"{gate.get('tests_total', 0)} tests in total, and the upgrade leg "
+        "seeded under the previous release and upgraded onto the tested "
+        "runtime with its rows surviving.",
+        "",
+        "  The gated tree is the release tree apart from this authorization record,",
+        "  which is Markdown in a single plan file and is appended after the gate by",
+        "  construction.",
+        "",
+        f"- [x] `exact-runtime-artifact` - `{artifact['command']}` passed with exit "
+        f"status 0 against the installed `{wheel}` on NetBox "
+        f"{record['netbox_version']}, Branching {record['branching_version']}, "
+        f"Python {record['python_version']}, with {routes_text}, all plugin "
+        f"migrations applying cleanly with no drift, and {sbom_text}.",
+        "",
+        "The optional evidence ids are not recorded. The release owner's 2026-07-27",
+        "proportionality decision applies; see",
+        "`docs/03_Plans/completed/2026-07-27-release-authorization-proportionality.md`.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+def stage_authorize(version: str) -> None:
+    """Append the Release Authorization section on the evidence branch.
+
+    Runs after the production pull request has merged, because the evidence
+    base commit is the commit the tag's parent will be - `origin/main` at that
+    moment - and nothing else.
+    """
+    record = read_evidence_record(version)
+    evidence_branch = f"release/{version}-evidence"
+    evidence_base = _checkout_merged_main()
+    plan_path = _release_plan_path(version)
+    text = plan_path.read_text(encoding="utf-8")
+    if "## Release Authorization" in text:
+        raise ReleaseError(f"{plan_path.name} already carries a Release Authorization")
+    run(["git", "checkout", "-B", evidence_branch, "origin/main"])
+    section = render_release_authorization(record, evidence_base)
+    plan_path.write_text(text.rstrip("\n") + "\n\n" + section, encoding="utf-8")
+    run(["git", "add", str(plan_path.relative_to(REPO_ROOT))])
+    run(["git", "commit", "-m", f"release: authorize v{version}"])
+    run(
+        [
+            sys.executable,
+            "scripts/check_release_authorization.py",
+            "--version",
+            version,
+        ]
+    )
+    print(f"[authorize] {evidence_branch} carries the rendered authorization")
+
+
+def stage_finish_unattended(version: str) -> None:
+    """Drive the release from the pushed production branch to the anchor.
+
+    Each step is the same function the matching flag runs by hand, so a
+    failure names the flag to resume with rather than leaving the operator to
+    reconstruct where the sequence stopped.
+    """
+    production_branch = f"release/{version}"
+    evidence_branch = f"{production_branch}-evidence"
+    tag = f"v{version}"
+    steps = (
+        ("--finish (production)", lambda: stage_finish(version)),
+        (
+            "merge (production)",
+            lambda: _wait_for_pull_request_merge(production_branch),
+        ),
+        ("--authorize", lambda: stage_authorize(version)),
+        ("--finish (evidence)", lambda: stage_finish(version)),
+        ("merge (evidence)", lambda: _wait_for_pull_request_merge(evidence_branch)),
+        ("checkout main", _checkout_merged_main),
+        ("--finish (tag)", lambda: stage_finish(version)),
+        (
+            "merge (bridge)",
+            lambda: _wait_for_pull_request_merge(f"docs/post-release-{version}"),
+        ),
+        ("--anchor", lambda: stage_anchor(version, tag)),
+        (
+            "merge (anchor)",
+            lambda: _wait_for_pull_request_merge(f"chore/anchor-{version}"),
+        ),
+    )
+    for label, step in steps:
+        print(f"[auto-finish] {label}")
+        try:
+            step()
+        except ReleaseError as exc:
+            raise ReleaseError(
+                f"stopped at {label}: {exc}. Fix that, then resume with the "
+                "matching flag; every later step is a flag of its own."
+            ) from exc
+    print(f"[auto-finish] v{version} released, bridged and anchored.")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -991,12 +1539,19 @@ def main(argv: list[str] | None = None) -> int:
         help="promote, open release PRs, or tag validated main (rollout)",
     )
     parser.add_argument(
-        "--open-next",
+        "--authorize",
         action="store_true",
-        help=(
-            "after a release ships, move main to <version>.dev0 so an install "
-            "from main is visibly not the published release"
-        ),
+        help="after the production PR merges: render and commit the authorization",
+    )
+    parser.add_argument(
+        "--post-release",
+        action="store_true",
+        help="after the tag publishes: open the documentation-only bridge PR",
+    )
+    parser.add_argument(
+        "--anchor",
+        action="store_true",
+        help="after the bridge merges: advance the anchor and promote the tables",
     )
     args = parser.parse_args(argv)
 
@@ -1004,15 +1559,24 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"version must be X.Y.Z, got {args.version!r}")
 
     try:
-        if args.open_next:
-            stage_open_next(args.version, write=args.write)
+        if args.anchor:
+            stage_anchor(args.version, f"v{args.version}")
+            return 0
+        if args.post_release:
+            stage_post_release(args.version, f"v{args.version}")
+            return 0
+        if args.authorize:
+            stage_authorize(args.version)
             return 0
         if args.finish:
-            stage_finish(args.version)
+            if args.auto_finish:
+                stage_finish_unattended(args.version)
+            else:
+                stage_finish(args.version)
             return 0
         stage_prepare(args.version, args.summary, write=args.write)
         if args.write:
-            stage_verify()
+            stage_verify(args.version)
         if args.publish:
             stage_publish(args.version, auto_finish=args.auto_finish)
     except ReleaseError as exc:

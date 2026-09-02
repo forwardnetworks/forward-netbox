@@ -15,6 +15,14 @@ and that its workflows succeeded - are deliberately NOT reimplemented; a second
 implementation of a security check is a second thing to get wrong. This narrows
 the window to those, rather than pretending to close it.
 
+The sensitive-content gate is also run here, over every surface it reads at
+publish time: the tree, the protected history, and every ref and tag NAME. The
+first two were already being checked by hand before a tag; the names were not,
+and a stale remote-tracking ref carrying an old branch name refused a tag after
+the tree had been reviewed clean twice. A review that reports "clean" while
+never looking at a category is worth distrusting, so this looks at all four and
+says which it looked at.
+
 Run against the merge commit you are about to tag:
 
     python3 scripts/check_release_lineage.py --version 2.7.11
@@ -22,13 +30,52 @@ Run against the merge commit you are about to tag:
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
+from pathlib import Path
 
 import verify_release_provenance as provenance
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SENSITIVE_SURFACES = ("tracked files", "protected history", "ref names", "tag names")
 
 
 class LineageError(Exception):
     """A structural rule the publish workflow would refuse."""
+
+
+def _ref_names() -> list[str]:
+    """Every local branch, remote-tracking branch and tag name in the clone."""
+    raw = provenance._git_capture(
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "refs/heads",
+        "refs/remotes",
+        "refs/tags",
+    )
+    return [line.strip() for line in raw.splitlines() if line.strip()]
+
+
+def check_sensitive_surfaces() -> dict[str, object]:
+    """Run the release-time sensitive scan over all four surfaces it covers."""
+    command = [
+        sys.executable,
+        str(REPO_ROOT / "scripts" / "check_sensitive_content.py"),
+        "--git-files",
+        "--protected-history",
+    ]
+    names = _ref_names()
+    for name in names:
+        command += ["--ref-name", name]
+    completed = subprocess.run(command, cwd=REPO_ROOT, capture_output=True, text=True)
+    if completed.returncode != 0:
+        detail = (completed.stdout + completed.stderr).strip().splitlines()
+        raise LineageError(
+            "the sensitive-content gate refused this clone: "
+            + (detail[-1] if detail else "no output")
+            + f" (surfaces scanned: {', '.join(SENSITIVE_SURFACES)})"
+        )
+    return {"surfaces": list(SENSITIVE_SURFACES), "ref_names_scanned": len(names)}
 
 
 def check_release_lineage(release_commit: str, version: str) -> dict[str, object]:
@@ -84,12 +131,15 @@ def check_release_lineage(release_commit: str, version: str) -> dict[str, object
     except Exception as exc:  # noqa: BLE001 - surfaced verbatim below
         raise LineageError(f"security bootstrap check failed: {exc}") from exc
 
+    sensitive = check_sensitive_surfaces()
+
     return {
         "release_commit": resolved,
         "production_commit": production_commit,
         "lineage_length": len(lineage),
         "reviewed_commits": reviewed,
         "release_plan": plan,
+        "sensitive_surfaces": sensitive,
         "not_checked_here": [
             "each commit arrived through a merged pull request",
             "required workflows succeeded",

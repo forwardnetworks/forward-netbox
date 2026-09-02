@@ -223,18 +223,42 @@ class FinishReleaseTest(unittest.TestCase):
         self.assertIn("--controls-only", command)
         self.assertEqual(run.call_args.kwargs["env"]["GH_TOKEN"], "secret-token")
 
+    @patch.object(release, "_open_release_pull_request")
+    @patch.object(release, "_assert_branch_head")
     @patch.object(release, "run")
-    @patch.object(release, "_promote_release_candidate", return_value=True)
-    def test_first_finish_stops_after_metadata_promotion(self, promote, run):
-        with patch.object(
-            release,
-            "_capture",
-            return_value="release/2.6.0",
-        ):
+    def test_finish_on_the_production_branch_does_not_promote(
+        self, run, _assert_head, open_pull_request
+    ):
+        """The tables flip in the anchor commit, after the tag - never here.
+
+        `--finish` used to commit `release: promote` on the release branch and
+        run the harness against it, which refused it by construction on every
+        release since 2.8.6: the harness ties the anchor to the release the
+        table calls current, and the anchor cannot move until the bridge
+        exists, which cannot exist until the tag does.
+        """
+        with patch.object(release, "_capture", return_value="release/2.6.0"):
             release.stage_finish("2.6.0")
 
-        promote.assert_called_once_with("2.6.0")
-        run.assert_not_called()
+        commands = [" ".join(call.args[0]) for call in run.call_args_list]
+        self.assertFalse(
+            any("commit" in command for command in commands),
+            commands,
+        )
+        self.assertFalse(
+            any("gen_changelog" in command for command in commands),
+            commands,
+        )
+        self.assertTrue(any("check_harness.py" in command for command in commands))
+        self.assertTrue(any(command.startswith("git push") for command in commands))
+        open_pull_request.assert_called_once_with(
+            "2.6.0", "release/2.6.0", evidence=False
+        )
+
+    def test_the_promotion_helper_no_longer_exists(self):
+        # Its commit-push-wait body is what stranded a `release: promote` on
+        # local main and on the release branch; only the file edit survives.
+        self.assertFalse(hasattr(release, "_promote_release_candidate"))
 
     def test_release_head_requires_exact_local_and_remote_commit(self):
         expected = "a" * 40
@@ -450,51 +474,483 @@ class VersionSurfaceEditTest(unittest.TestCase):
                     item.stop()
 
 
-class OpenNextDevCycleTest(unittest.TestCase):
-    """`main` must be self-describing as not-the-release.
+class NoDevMarkerOnMainTest(unittest.TestCase):
+    """`main` carries the released version. Decided, and the machinery gone.
 
-    It carries the release from the moment the release PR merges — before the
-    tag and before PyPI. A customer installed from `main` in that window and
-    reported running a version PyPI did not have.
+    `--open-next` put `X.Y.Z.dev0` on `main`; the operating rule since 2.7.13
+    said it must never be there; six release plans recorded the contradiction
+    as undecided, and the post-release step failed on it every release. A
+    customer installs this plugin from source, so a dev marker on `main`
+    offered a version that was never gated, tagged or published. The window it
+    described - between the release PR merging and the tag - is minutes wide
+    and `--auto-finish` runs straight through it.
     """
 
-    def test_the_marker_is_the_next_version_with_dev0(self):
-        # `version_surface_edits` is patched too: without it the test reads the
-        # repository's real pyproject and fails on every version bump, which is
-        # exactly how it broke when this tranche moved the tree to 2.6.6.
+    def test_the_stage_and_its_flag_are_gone(self):
+        self.assertFalse(hasattr(release, "stage_open_next"))
+        with patch.object(release, "stage_finish"):
+            with self.assertRaises(SystemExit):
+                release.main(["2.9.2", "--open-next"])
+
+    def test_nothing_in_the_tool_writes_a_dev_marker(self):
+        # Prose may still say `.dev0` when recording the decision; no string
+        # literal may build one.
+        source = Path(release.__file__).read_text(encoding="utf-8")
+        body = source[source.index("def bump_version_text") :]
+        self.assertNotIn('.dev0"', body)
+        self.assertNotIn(".dev0'", body)
+
+
+class PromoteReleaseTablesTest(unittest.TestCase):
+    """Promotion is a file edit. The commit belongs to the anchor."""
+
+    def _tables(self):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        paths = tuple(Path(scratch.name) / f"table-{index}.md" for index in range(3))
+        for path in paths:
+            path.write_text("candidate table\n", encoding="utf-8")
+        return paths
+
+    def test_it_rewrites_the_tables_and_regenerates_the_changelog_only(self):
+        paths = self._tables()
         with (
-            patch.object(release, "read_current_version", return_value="2.6.5"),
-            patch.object(release, "version_surface_edits", return_value={}),
+            patch.object(release, "README_TABLES", paths),
+            patch.object(
+                release,
+                "promote_release_candidate_text",
+                side_effect=lambda text, version: text.replace("candidate", "current"),
+            ),
+            patch.object(
+                release,
+                "set_release_intro_text",
+                side_effect=lambda text, v, candidate: text,
+            ),
+            patch.object(release, "run") as run,
         ):
-            output = StringIO()
-            with redirect_stdout(output):
-                release.stage_open_next("2.6.6", write=False)
-        self.assertIn("2.6.5 -> 2.6.6.dev0", output.getvalue())
+            self.assertTrue(release.promote_release_tables("2.9.2"))
 
-    def test_it_does_not_depend_on_the_repository_version(self):
-        # Guards the coupling directly: any current version must work.
-        for current, target in (("1.0.0", "1.0.1"), ("9.9.9", "10.0.0")):
-            with (
-                patch.object(release, "read_current_version", return_value=current),
-                patch.object(release, "version_surface_edits", return_value={}),
-            ):
-                output = StringIO()
-                with redirect_stdout(output):
-                    release.stage_open_next(target, write=False)
-            self.assertIn(f"{current} -> {target}.dev0", output.getvalue())
+        for path in paths:
+            self.assertEqual(path.read_text(encoding="utf-8"), "current table\n")
+        commands = [" ".join(call.args[0]) for call in run.call_args_list]
+        self.assertEqual(len(commands), 1, commands)
+        self.assertIn("gen_changelog.py", commands[0])
 
-    def test_a_dry_run_writes_nothing(self):
-        with patch.object(release, "read_current_version", return_value="2.6.5"):
-            with patch.object(release, "version_surface_edits") as edits:
-                output = StringIO()
-                with redirect_stdout(output):
-                    release.stage_open_next("2.6.6", write=False)
-                edits.assert_called_once_with("2.6.5", "2.6.6.dev0")
-        self.assertIn("not writing files", output.getvalue())
+    def test_an_already_promoted_table_is_reported_not_rewritten(self):
+        paths = self._tables()
+        with (
+            patch.object(release, "README_TABLES", paths),
+            patch.object(
+                release, "promote_release_candidate_text", side_effect=lambda t, v: t
+            ),
+            patch.object(
+                release, "set_release_intro_text", side_effect=lambda t, v, candidate: t
+            ),
+            patch.object(release, "run") as run,
+        ):
+            self.assertFalse(release.promote_release_tables("2.9.2"))
+        run.assert_not_called()
 
-    def test_refuses_to_open_a_cycle_twice(self):
-        with patch.object(release, "read_current_version", return_value="2.6.6.dev0"):
-            with self.assertRaisesRegex(
-                release.ReleaseError, "already on a dev marker"
-            ):
-                release.stage_open_next("2.6.7", write=False)
+
+class GateSummaryTest(unittest.TestCase):
+    def test_it_reads_every_suite_summary_from_the_log(self):
+        log = (
+            "Ran 334 tests in 81.300s\nOK\n...\n"
+            "Ran 2324 tests in 906.639s\nOK (skipped=4)\n"
+            "validated SBOM of 178 components\n"
+            "7 authenticated menu routes returned 200\n"
+        )
+        summary = release._gate_summary(log)
+        self.assertEqual(summary["test_runs"], [334, 2324])
+        self.assertEqual(summary["tests_total"], 2658)
+        self.assertFalse(summary["failed"])
+        self.assertEqual(summary["sbom_components"], 178)
+        self.assertEqual(summary["routes"], 7)
+
+    def test_a_failed_suite_is_visible(self):
+        summary = release._gate_summary("Ran 5 tests in 1s\nFAILED (failures=2)\n")
+        self.assertTrue(summary["failed"])
+        self.assertEqual(summary["verdicts"], ["FAILED"])
+
+
+class EvidenceCommandTest(unittest.TestCase):
+    ENVIRONMENT = {
+        "FORWARD_NETBOX_DOCKER_PROJECT": "forward-netbox-release-gate",
+        "FORWARD_NETBOX_POSTGRES_DATA_PATH": "netbox-postgres-data",
+        "FORWARD_NETBOX_WORKER_AUTORELOAD": "0",
+        "NETBOX_VER": "v4.6.8",
+        "FORWARD_NETBOX_HOST_PORT": "18080",
+        "NETBOX_URL": "http://127.0.0.1:18080",
+        "HOME": "/nowhere",
+    }
+
+    def test_the_gate_command_omits_the_host_port_pair(self):
+        command = release._evidence_command("ci", self.ENVIRONMENT, with_url=False)
+        self.assertEqual(
+            command,
+            "rtk env FORWARD_NETBOX_DOCKER_PROJECT=forward-netbox-release-gate "
+            "FORWARD_NETBOX_POSTGRES_DATA_PATH=netbox-postgres-data "
+            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.6.8 invoke ci",
+        )
+
+    def test_the_artifact_command_carries_the_pair_and_nothing_foreign(self):
+        command = release._evidence_command(
+            "artifact-test", self.ENVIRONMENT, with_url=True
+        )
+        self.assertIn(
+            "FORWARD_NETBOX_HOST_PORT=18080 NETBOX_URL=http://127.0.0.1:18080", command
+        )
+        self.assertNotIn("HOME", command)
+        self.assertTrue(command.endswith("invoke artifact-test"))
+
+
+class RenderReleaseAuthorizationTest(unittest.TestCase):
+    """The rendered section must satisfy the checker that gates the tag.
+
+    Asked of the checker's own predicate, not of a restated rule, so the
+    renderer cannot drift from what `check_release_authorization.py` accepts.
+    """
+
+    def _record(self, **overrides):
+        environment = EvidenceCommandTest.ENVIRONMENT
+        record = {
+            "version": "2.9.2",
+            "netbox_version": "4.6.8",
+            "branching_version": "1.1.3",
+            "python_version": "3.14",
+            "wheel": "forward_netbox-2.9.2-py3-none-any.whl",
+            "gate": {
+                "command": release._evidence_command("ci", environment, with_url=False),
+                "exit_status": 0,
+                "test_runs": [334, 70, 2324],
+                "tests_total": 2728,
+            },
+            "artifact": {
+                "command": release._evidence_command(
+                    "artifact-test", environment, with_url=True
+                ),
+                "exit_status": 0,
+                "sbom_components": 178,
+                "routes": 7,
+            },
+        }
+        record.update(overrides)
+        return record
+
+    def _checker(self):
+        import sys
+
+        scripts = str(Path(release.__file__).resolve().parent)
+        if scripts not in sys.path:
+            sys.path.insert(0, scripts)
+        import check_release_authorization
+
+        return check_release_authorization
+
+    def test_every_required_evidence_line_is_concrete_to_the_checker(self):
+        checker = self._checker()
+        section = release.render_release_authorization(self._record(), "e" * 40)
+
+        self.assertIn("- Evidence base commit: `" + "e" * 40 + "`", section)
+        for evidence_id in checker.REQUIRED_EVIDENCE_IDS:
+            line = next(
+                line for line in section.splitlines() if f"`{evidence_id}`" in line
+            )
+            evidence = line.split(" - ", 1)[1]
+            self.assertTrue(
+                checker._evidence_is_concrete(evidence_id, evidence),
+                f"{evidence_id}: {evidence}",
+            )
+
+    def test_a_failed_gate_cannot_be_rendered_as_passing(self):
+        record = self._record()
+        record["gate"]["exit_status"] = 1
+        with self.assertRaisesRegex(release.ReleaseError, "re-run verify"):
+            release.render_release_authorization(record, "e" * 40)
+
+
+class WaitForPullRequestMergeTest(unittest.TestCase):
+    def _pull(self, state):
+        return {"state": state, "url": "https://example.invalid/pull/1", "number": 1}
+
+    def test_it_returns_once_the_pull_request_is_merged(self):
+        states = iter([self._pull("OPEN"), self._pull("MERGED")])
+        with (
+            patch.object(
+                release, "_pull_request_for_branch", side_effect=lambda b: next(states)
+            ),
+            patch("time.sleep") as sleep,
+        ):
+            pull = release._wait_for_pull_request_merge("release/2.9.2", poll_seconds=1)
+        self.assertEqual(pull["state"], "MERGED")
+        sleep.assert_called_once_with(1)
+
+    def test_a_closed_pull_request_is_a_refusal_not_a_wait(self):
+        with patch.object(
+            release, "_pull_request_for_branch", return_value=self._pull("CLOSED")
+        ):
+            with self.assertRaisesRegex(release.ReleaseError, "closed without merging"):
+                release._wait_for_pull_request_merge("release/2.9.2")
+
+    def test_a_missing_pull_request_is_named(self):
+        with patch.object(release, "_pull_request_for_branch", return_value=None):
+            with self.assertRaisesRegex(release.ReleaseError, "no pull request"):
+                release._wait_for_pull_request_merge("release/2.9.2")
+
+    def test_the_wait_is_bounded_and_says_how_to_resume(self):
+        with (
+            patch.object(
+                release, "_pull_request_for_branch", return_value=self._pull("OPEN")
+            ),
+            patch("time.sleep"),
+        ):
+            with self.assertRaisesRegex(release.ReleaseError, "resume"):
+                release._wait_for_pull_request_merge(
+                    "release/2.9.2", poll_seconds=1, max_polls=2
+                )
+
+
+class UnattendedFinishTest(unittest.TestCase):
+    """One invocation from the pushed production branch to the anchor."""
+
+    STEP_FUNCTIONS = (
+        "stage_finish",
+        "_wait_for_pull_request_merge",
+        "stage_authorize",
+        "_checkout_merged_main",
+        "stage_anchor",
+    )
+
+    def _patched(self):
+        calls = []
+        patches = {
+            name: patch.object(
+                release,
+                name,
+                side_effect=lambda *a, _n=name, **k: calls.append((_n, a)),
+            )
+            for name in self.STEP_FUNCTIONS
+        }
+        return calls, patches
+
+    def test_the_steps_run_in_release_order(self):
+        calls, patches = self._patched()
+        for patcher in patches.values():
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        release.stage_finish_unattended("2.9.2")
+
+        self.assertEqual(
+            [name for name, _args in calls],
+            [
+                "stage_finish",
+                "_wait_for_pull_request_merge",
+                "stage_authorize",
+                "stage_finish",
+                "_wait_for_pull_request_merge",
+                "_checkout_merged_main",
+                "stage_finish",
+                "_wait_for_pull_request_merge",
+                "stage_anchor",
+                "_wait_for_pull_request_merge",
+            ],
+        )
+        waited_for = [
+            args[0] for name, args in calls if name == "_wait_for_pull_request_merge"
+        ]
+        self.assertEqual(
+            waited_for,
+            [
+                "release/2.9.2",
+                "release/2.9.2-evidence",
+                "docs/post-release-2.9.2",
+                "chore/anchor-2.9.2",
+            ],
+        )
+
+    def test_a_failure_names_the_step_and_how_to_resume(self):
+        _calls, patches = self._patched()
+        for patcher in patches.values():
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        with patch.object(
+            release, "stage_authorize", side_effect=release.ReleaseError("no record")
+        ):
+            with self.assertRaises(release.ReleaseError) as caught:
+                release.stage_finish_unattended("2.9.2")
+        message = str(caught.exception)
+        self.assertIn("stopped at --authorize", message)
+        self.assertIn("no record", message)
+        self.assertIn("resume", message)
+
+
+class BridgeCommitForTest(unittest.TestCase):
+    def _capture(self, changed):
+        def capture(cmd):
+            if cmd[:2] == ["git", "rev-list"] and "--first-parent" in cmd:
+                return "b" * 40 + "\n" + "c" * 40
+            if cmd[:2] == ["git", "rev-list"]:
+                return "t" * 40
+            if cmd[:2] == ["git", "diff"]:
+                return "\n".join(changed)
+            raise AssertionError(cmd)
+
+        return capture
+
+    def test_the_first_documentation_only_commit_after_the_tag_is_the_bridge(self):
+        with (
+            patch.object(release, "run"),
+            patch.object(
+                release,
+                "_capture",
+                side_effect=self._capture(
+                    ["docs/03_Plans/active/post-release-2.9.2.md"]
+                ),
+            ),
+        ):
+            self.assertEqual(release._bridge_commit_for("v2.9.2"), "b" * 40)
+
+    def test_a_code_commit_in_the_slot_is_refused_by_name(self):
+        with (
+            patch.object(release, "run"),
+            patch.object(
+                release, "_capture", side_effect=self._capture(["scripts/release.py"])
+            ),
+        ):
+            with self.assertRaisesRegex(release.ReleaseError, "documentation-only"):
+                release._bridge_commit_for("v2.9.2")
+
+    def test_nothing_after_the_tag_is_reported_not_guessed(self):
+        def capture(cmd):
+            return ""
+
+        with patch.object(release, "run"), patch.object(release, "_capture", capture):
+            with self.assertRaisesRegex(release.ReleaseError, "nothing has landed"):
+                release._bridge_commit_for("v2.9.2")
+
+
+class StageAnchorTest(unittest.TestCase):
+    """The anchor and the promotion move together, as one reviewed commit."""
+
+    def _run(self, *, failing=None):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        root = Path(scratch.name)
+        provenance = root / "verify_release_provenance.py"
+        provenance.write_text(
+            'PRIOR_RELEASE_TAG = "v2.9.1"\n'
+            'PRIOR_POST_RELEASE_DOC_COMMIT = "' + "a" * 40 + '"\n',
+            encoding="utf-8",
+        )
+        plan = root / "anchor-2.9.2.md"
+        calls = []
+
+        def run(cmd, **kwargs):
+            calls.append(cmd)
+            if failing and failing in " ".join(cmd):
+                raise release.ReleaseError("release command failed with exit code 1")
+
+        with (
+            patch.object(release, "PROVENANCE", provenance),
+            patch.object(release, "REPO_ROOT", root),
+            patch.object(release, "README_TABLES", ()),
+            patch.object(release, "_bridge_commit_for", return_value="b" * 40),
+            patch.object(release, "_anchor_plan_path", return_value=plan),
+            patch.object(release, "promote_release_tables") as promote,
+            patch.object(release, "_open_pull_request") as open_pull_request,
+            patch.object(release, "_capture", return_value="main"),
+            patch.object(release, "run", side_effect=run),
+        ):
+            try:
+                release.stage_anchor("2.9.2", "v2.9.2")
+            except release.ReleaseError:
+                if not failing:
+                    raise
+        return (
+            provenance.read_text(encoding="utf-8"),
+            plan,
+            calls,
+            promote,
+            open_pull_request,
+        )
+
+    def test_it_advances_both_constants_and_promotes(self):
+        text, plan, calls, promote, open_pull_request = self._run()
+        self.assertIn('PRIOR_RELEASE_TAG = "v2.9.2"', text)
+        self.assertIn('PRIOR_POST_RELEASE_DOC_COMMIT = "' + "b" * 40 + '"', text)
+        promote.assert_called_once_with("2.9.2")
+        open_pull_request.assert_called_once()
+        joined = [" ".join(call) for call in calls]
+        self.assertIn("git checkout -B chore/anchor-2.9.2 origin/main", joined)
+        commit = next(i for i, c in enumerate(joined) if "git commit" in c)
+        harness = next(i for i, c in enumerate(joined) if "check_harness.py" in c)
+        push = next(i for i, c in enumerate(joined) if c.startswith("git push"))
+        self.assertLess(commit, harness)
+        self.assertLess(harness, push)
+        self.assertEqual(joined[-1], "git checkout --force main")
+
+    def test_the_generated_plan_carries_the_harness_headings(self):
+        _text, plan, _calls, _promote, _open = self._run()
+        text = plan.read_text(encoding="utf-8")
+        for heading in (
+            "## Goal",
+            "## Constraints",
+            "## Touched Surfaces",
+            "## Approach",
+            "## Validation",
+            "## Rollback",
+            "## Decision Log",
+        ):
+            self.assertIn(heading, text)
+        self.assertIn("b" * 40, text)
+
+    def test_a_failed_stage_deletes_the_branch_it_made(self):
+        _text, _plan, calls, _promote, open_pull_request = self._run(
+            failing="check_harness.py"
+        )
+        joined = [" ".join(call) for call in calls]
+        self.assertIn("git branch -D chore/anchor-2.9.2", joined)
+        open_pull_request.assert_not_called()
+
+
+class StageAuthorizeTest(unittest.TestCase):
+    def _run(self, *, existing_section=False):
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        root = Path(scratch.name)
+        plan = root / "2026-09-02-release-2.9.2.md"
+        plan.write_text(
+            "# Release 2.9.2\n\n## Goal\n\nShip.\n"
+            + ("\n## Release Authorization\n" if existing_section else ""),
+            encoding="utf-8",
+        )
+        calls = []
+        with (
+            patch.object(release, "REPO_ROOT", root),
+            patch.object(
+                release,
+                "read_evidence_record",
+                return_value=RenderReleaseAuthorizationTest()._record(),
+            ),
+            patch.object(release, "_checkout_merged_main", return_value="e" * 40),
+            patch.object(release, "_release_plan_path", return_value=plan),
+            patch.object(
+                release, "run", side_effect=lambda cmd, **k: calls.append(cmd)
+            ),
+        ):
+            release.stage_authorize("2.9.2")
+        return plan.read_text(encoding="utf-8"), calls
+
+    def test_it_appends_the_rendered_section_on_the_evidence_branch(self):
+        text, calls = self._run()
+        self.assertIn("## Release Authorization", text)
+        self.assertIn("- Evidence base commit: `" + "e" * 40 + "`", text)
+        joined = [" ".join(call) for call in calls]
+        self.assertIn("git checkout -B release/2.9.2-evidence origin/main", joined)
+        self.assertTrue(any("release: authorize v2.9.2" in c for c in joined))
+        self.assertTrue(any("check_release_authorization.py" in c for c in joined))
+
+    def test_it_refuses_to_authorize_twice(self):
+        with self.assertRaisesRegex(release.ReleaseError, "already carries"):
+            self._run(existing_section=True)

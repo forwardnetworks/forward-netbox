@@ -25,19 +25,46 @@ class NextPatchVersionTest(unittest.TestCase):
 
 
 class StagePostReleaseTest(unittest.TestCase):
-    def _run(self):
+    def _run(self, *, failing=None):
         calls = []
+
+        def run(cmd, **kwargs):
+            calls.append(cmd)
+            if failing and failing in " ".join(cmd):
+                raise release.ReleaseError("release command failed with exit code 1")
+
         with tempfile.TemporaryDirectory() as scratch:
             plan_path = pathlib.Path(scratch) / "post-release-2.7.0.md"
             with (
-                patch.object(
-                    release, "run", side_effect=lambda cmd, **kw: calls.append(cmd)
-                ),
+                patch.object(release, "run", side_effect=run),
                 patch.object(release, "_bridge_plan_path", return_value=plan_path),
+                patch.object(release, "_open_pull_request") as open_pull_request,
             ):
-                release.stage_post_release("2.7.0", "v2.7.0")
+                try:
+                    release.stage_post_release("2.7.0", "v2.7.0")
+                except release.ReleaseError:
+                    if not failing:
+                        raise
             written = plan_path.read_text(encoding="utf-8")
+        self.open_pull_request = open_pull_request
         return calls, written
+
+    def test_it_opens_the_bridge_pull_request_itself(self):
+        # The old version pushed and printed "merge that pull request" without
+        # opening one, so an unattended run could never get past this step.
+        self._run()
+        self.open_pull_request.assert_called_once()
+        self.assertEqual(
+            self.open_pull_request.call_args.args[0], "docs/post-release-2.7.0"
+        )
+
+    def test_a_failed_stage_deletes_the_branch_it_made(self):
+        # Leaving the branch behind is how v2.8.3's bridge slot was lost: the
+        # next `git checkout -b` inherited a commit nobody meant to keep.
+        calls, _written = self._run(failing="check_harness.py")
+        joined = [" ".join(call) for call in calls]
+        self.assertIn("git branch -D docs/post-release-2.7.0", joined)
+        self.open_pull_request.assert_not_called()
 
     def test_it_writes_the_bridge_plan(self):
         _calls, written = self._run()
@@ -72,6 +99,7 @@ class StagePostReleaseTest(unittest.TestCase):
             with (
                 patch.object(release, "run"),
                 patch.object(release, "_bridge_plan_path", return_value=plan_path),
+                patch.object(release, "_open_pull_request"),
                 patch("builtins.print") as printed,
             ):
                 release.stage_post_release("2.7.0", "v2.7.0")
@@ -80,7 +108,7 @@ class StagePostReleaseTest(unittest.TestCase):
         )
         self.assertIn("PRIOR_RELEASE_TAG", text)
         self.assertIn("PRIOR_POST_RELEASE_DOC_COMMIT", text)
-        self.assertIn("v2.7.0..origin/main", text)
+        self.assertIn("release.py 2.7.0 --anchor", text)
 
 
 class PostReleaseOpensTheBridgeTest(unittest.TestCase):
@@ -107,10 +135,11 @@ class PostReleaseOpensTheBridgeTest(unittest.TestCase):
             "released version, and the bump used to poison the bridge slot",
         )
 
-    def test_open_next_still_exists_for_a_deliberate_caller(self):
-        # Narrowed, not removed: it documents a real incident about the window
-        # between the release PR merging and the tag existing.
-        self.assertTrue(callable(release.stage_open_next))
+    def test_open_next_is_gone(self):
+        # It documented a real incident and was the wrong remedy for it: a dev
+        # marker on `main` offered source installs a version that was never
+        # gated, tagged or published. The decision is recorded on the stage.
+        self.assertFalse(hasattr(release, "stage_open_next"))
 
     def test_the_commit_carries_exactly_one_plan_file(self):
         source = inspect.getsource(release.stage_post_release)
