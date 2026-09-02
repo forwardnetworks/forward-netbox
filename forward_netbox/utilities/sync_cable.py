@@ -99,7 +99,23 @@ def delete_dcim_cable(runner, row):
     return True
 
 
-def apply_dcim_cable(runner, row):
+def apply_dcim_cable(runner, row, *, preview=False):
+    """Cable the two interfaces, or - with ``preview`` - classify and write.
+
+    ``preview`` returns ``"creates"``, ``"updates"``, ``"unchanged"`` or
+    ``"rejected"`` for the one row and performs neither write.
+
+    Unlike the bulk paths, both writes here are DIRECT - ``cable.save()`` for a
+    status change and ``Cable(...).save()`` for a new one - so the preview
+    runner's firewall does not cover either, and ``Cable.save()`` additionally
+    makes NetBox core persist the ``CableTermination`` rows. A flag is the only
+    way to stop them.
+
+    The refusals matter as much as the writes. A LAG endpoint and an
+    already-cabled interface are both rows the apply declines to write, so a
+    preview must not count either as a create - that would report drift no
+    apply would ever resolve, and it would never converge.
+    """
     from dcim.models import Cable
 
     try:
@@ -206,7 +222,11 @@ def apply_dcim_cable(runner, row):
     cable = lookup_cable_between(runner, interface, remote_interface)
     if cable is not None:
         if str(getattr(cable, "status", "") or "") == str(row["status"]):
-            return cable
+            return "unchanged" if preview else cable
+        if preview:
+            # The cable exists and its status differs, so the apply would
+            # rewrite it. Classified before the save, not after.
+            return "updates"
         cable.status = row["status"]
         cable.full_clean()
         cable.save()
@@ -244,6 +264,12 @@ def apply_dcim_cable(runner, row):
             },
             data=row,
         )
+
+    if preview:
+        # Both interfaces are free and neither is a LAG, so the apply would
+        # create the cable. Returned before `Cable.save()`, which would also
+        # make NetBox core write the two CableTermination rows.
+        return "creates"
 
     cable = Cable(
         a_terminations=[interface],

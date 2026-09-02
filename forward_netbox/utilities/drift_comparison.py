@@ -96,8 +96,8 @@ class PreviewRunner:
         self._unique_lookup_cache = {}
         self._primed_missing_unique_lookup_keys = set()
         self._model_coalesce_fields = {}
-        self._conflict_policy = {}
         self._device_tag_ids_cache = {}
+        self._cable_between_cache = {}
         self._scope_matched_tags = {}
         self._scope_tag_objs = {}
         self.rejected_rows = 0
@@ -112,6 +112,33 @@ class PreviewRunner:
         # (`context`, `exception`, and more as paths are added), and a preview
         # cares only that a row was unusable - not why, since it files nothing.
         self.rejected_rows += 1
+
+    def _conflict_policy(self, model_string):
+        """The same policy the apply would use for this model.
+
+        This was seeded as an empty DICT, which is what the real runner is not:
+        `sync_runner_contracts` defines it as a method and every caller invokes
+        it. Nothing read the dict form, so the mistake was invisible - the bulk
+        paths write through `bulk_create` and never ask. The adapter models all
+        write through `coalesce_upsert`, which asks on every row, so the first
+        one wired up would have hit `TypeError: 'dict' object is not callable`.
+
+        Read from the real table rather than defaulted here, because the policy
+        decides whether a conflicting row is skipped or raises - and a preview
+        that disagreed with the apply about that would classify a row the apply
+        refuses as one it would write.
+        """
+        from .sync import ForwardSyncRunner
+
+        return ForwardSyncRunner.MODEL_CONFLICT_POLICIES.get(model_string, "strict")
+
+    def _record_aggregated_conflict_warning(self, **kwargs):
+        return None
+
+    def _lookup_device_by_name(self, device_name):
+        from .sync_primitives import lookup_device_by_name
+
+        return lookup_device_by_name(self, device_name)
 
     def _content_type_for(self, model):
         # Read-only: a cached ContentType lookup, which the macaddress path
@@ -298,42 +325,67 @@ class PreviewRunner:
         return None
 
 
-def _compare_extras_taggeditem(runner, rows):
-    """Classify feature-tag assignments one row at a time.
+def _compare_adapter_rows(runner, rows, apply_row):
+    """Classify adapter-only rows one at a time.
 
-    The adapter-only models have no bulk path, so there is nothing to call with
-    ``preview=True`` and return counts from; each row is applied on its own.
-    That makes the loop the caller's job rather than the apply function's, and
-    it is the shape every remaining adapter model will use.
+    The bulk models hand a whole batch to a classifier that returns counts. The
+    adapter models have no batch - each row is applied on its own - so the loop
+    belongs here rather than to any one apply function, and every adapter model
+    shares it.
+
+    ``apply_row`` is called with ``preview=True`` and must return one of the
+    count keys. The apply functions' own "I declined this row" answers -
+    ``False`` for the skip paths, ``None`` where a function falls off its end -
+    are counted as rejected, because a row the apply refuses is not a
+    difference between the two systems and must never be reported as drift the
+    next run would resolve.
     """
     from ..exceptions import ForwardDependencySkipError
     from ..exceptions import ForwardSearchError
-    from .sync_interface import apply_extras_taggeditem
+    from ..exceptions import ForwardSyncDataError
 
     counts = {"creates": 0, "updates": 0, "unchanged": 0, "rejected": 0}
     for row in rows:
         try:
-            outcome = apply_extras_taggeditem(runner, row, preview=True)
-        except (ForwardDependencySkipError, ForwardSearchError):
+            outcome = apply_row(runner, row, preview=True)
+        except (
+            ForwardDependencySkipError,
+            ForwardSearchError,
+            ForwardSyncDataError,
+        ):
             # An unusable row is a defect in the row, not a difference between
             # the two systems, so it is counted apart from drift rather than
-            # inflating it. The apply raises the same pair for a device it
-            # cannot resolve.
+            # inflating it.
             counts["rejected"] += 1
             continue
         except KeyError:
-            # `row["device"]` / `row["tag"]` absent. Same class as above: the
-            # row cannot be applied, and calling that zero drift would be the
+            # A row missing a key the apply indexes directly (`row["device"]`).
+            # Same class as above; calling it zero drift would be the
             # confident-zero failure this feature exists to prevent.
             counts["rejected"] += 1
             continue
+        if outcome is False or outcome is None:
+            counts["rejected"] += 1
+            continue
         if outcome not in counts:
-            # An outcome this function does not recognise must not be silently
+            # An outcome this loop does not recognise must not be silently
             # dropped into "unchanged". Refusing the whole model is the honest
             # answer, and the caller falls back to the upper bound for it.
             return None
         counts[outcome] += 1
     return counts
+
+
+def _compare_extras_taggeditem(runner, rows):
+    from .sync_interface import apply_extras_taggeditem
+
+    return _compare_adapter_rows(runner, rows, apply_extras_taggeditem)
+
+
+def _compare_dcim_cable(runner, rows):
+    from .sync_cable import apply_dcim_cable
+
+    return _compare_adapter_rows(runner, rows, apply_dcim_cable)
 
 
 # Adapter-only models that can be compared, and the function that does it.
@@ -342,9 +394,11 @@ def _compare_extras_taggeditem(runner, rows):
 # what every adapter model gave before this: the caller keeps its upper-bound
 # estimate rather than reporting a zero nothing measured. Adding a model here
 # means auditing its `runner.` calls, not just grepping it for ORM writes - the
-# writes that matter in these paths hide behind `_ensure_*` and `_upsert_*`.
+# writes that matter in these paths hide behind `_ensure_*` and `_upsert_*`,
+# and in `dcim.cable`'s case inside NetBox core's own `Cable.save()`.
 _ADAPTER_COMPARISONS = {
     "extras.taggeditem": _compare_extras_taggeditem,
+    "dcim.cable": _compare_dcim_cable,
 }
 
 
