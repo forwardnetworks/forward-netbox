@@ -1,0 +1,87 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+{% load i18n %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Device Analysis" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Device" %}</th>
+            <td>{{ object.device|linkify }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Sync" %}</th>
+            <td>{{ object.sync|linkify }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Snapshot" %}</th>
+            <td>{{ object.snapshot_id|placeholder }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h5 class="card-header">{% trans "Collection" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Reachable" %}</th>
+            <td>{{ object.reachable|yesno:"Yes,No" }}</td>
+          </tr>
+          <tr>
+            {# The token says WHY an unreachable device failed, which a Yes/No cannot. #}
+            <th scope="row">{% trans "Collection Result" %}</th>
+            <td>{{ object.collection_result|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Detail" %}</th>
+            <td>{{ object.detail|placeholder }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Operational" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Blast Radius" %}</th>
+            <td>{{ object.blast_radius }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Up Interfaces" %}</th>
+            <td>{{ object.up_interfaces }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "CVE Count" %}</th>
+            <td>{{ object.cve_count }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    <div class="card">
+      <h5 class="card-header">{% trans "Confirmed Vulnerable CVEs" %}</h5>
+      <div class="card-body">
+        {% if object.cve_ids %}
+          {# The IDs behind the count, so the number is auditable rather than asserted. #}
+          <ul class="list-unstyled mb-0">
+            {% for cve_id in object.cve_ids %}
+              <li><code>{{ cve_id }}</code></li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="text-muted mb-0">
+            {% trans "No confirmed-vulnerable CVEs were recorded for this device." %}
+          </p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock content %}
