@@ -318,7 +318,14 @@ def ensure_dlm_inventory_item_role_platform(runner, inventory_item, row):
         "InventoryItemRolePlatform",
         "netbox_dlm.inventoryitemroleplatform",
     )
-    mapping, _ = runner._upsert_values_from_defaults(
+    if platform is None:
+        # Preview only: the real `_ensure_platform` upserts and never returns
+        # None. An absent platform means the mapping cannot exist yet, and
+        # looking it up by role alone would match the role's mapping to some
+        # OTHER platform - the absent-parent trap the ACI and routing slices
+        # both hit. Cache nothing: the answer is "create", per row.
+        return None, None
+    mapping, created = runner._upsert_values_from_defaults(
         "netbox_dlm.inventoryitemroleplatform",
         InventoryItemRolePlatform,
         values=runner._model_field_values(
@@ -328,10 +335,38 @@ def ensure_dlm_inventory_item_role_platform(runner, inventory_item, row):
         coalesce_sets=[("role",)],
     )
     cache[cache_key] = (platform, mapping)
+    # The mapping's own verdict, for a preview of `inventoryitemroleplatform`.
+    # Kept beside the cache rather than in it, because two callers unpack the
+    # cached pair. A cache hit on a later row means the apply writes nothing
+    # for that row, which is what "unchanged" says.
+    outcomes = getattr(runner, "_dlm_inventory_item_role_platform_outcomes", None)
+    if not isinstance(outcomes, dict):
+        outcomes = runner._dlm_inventory_item_role_platform_outcomes = {}
+    outcomes[cache_key] = (
+        "creates"
+        if mapping is None
+        else (
+            "updates"
+            if getattr(runner, "last_upsert_would_change", False)
+            else "unchanged"
+        )
+    )
     return cache[cache_key]
 
 
-def apply_netbox_dlm_inventoryitemsoftware(runner, row):
+def apply_netbox_dlm_inventoryitemsoftware(runner, row, *, preview=False):
+    """Record which firmware an inventory item runs, or classify it.
+
+    The chain the DLM slice left unaudited: `_lookup_inventory_item` is two
+    reads (`_get_device_by_name`, `_get_unique_or_raise`) that raise a
+    dependency skip when absent; `ensure_dlm_inventory_item_role_platform` is
+    a platform ensure and one upsert, both behind runner calls the preview
+    overrides; `ensure_dlm_software_version` is the same upsert the
+    `softwareversion` slice already previews. The leaf is one upsert keyed on
+    the inventory item, so the leaf rule applies: a software version the row
+    would create is `softwareversion`'s drift, and this row is an update if it
+    exists (its version pointer changes) and a create if it does not.
+    """
     InventoryItemSoftware = _dlm_model(
         runner, "InventoryItemSoftware", "netbox_dlm.inventoryitemsoftware"
     )
@@ -339,12 +374,19 @@ def apply_netbox_dlm_inventoryitemsoftware(runner, row):
     # count as a dependency skip, not create an unattached DLM catalogue row.
     inventory_item = _lookup_inventory_item(runner, row)
     platform, _ = ensure_dlm_inventory_item_role_platform(runner, inventory_item, row)
+    if platform is None:
+        # Preview only, see the ensure. The platform - and so the version - is
+        # a create; this row is whatever it is without them.
+        existing = runner._get_unique_or_raise(
+            InventoryItemSoftware, {"inventory_item": inventory_item}
+        )
+        return "updates" if existing is not None else "creates"
     software_version = ensure_dlm_software_version(
         runner,
         {**row, "platform": platform.name, "platform_slug": platform.slug},
         with_dates=False,
     )
-    inventory_item_software, _ = runner._upsert_values_from_defaults(
+    inventory_item_software, created = runner._upsert_values_from_defaults(
         "netbox_dlm.inventoryitemsoftware",
         InventoryItemSoftware,
         values=runner._model_field_values(
@@ -356,13 +398,31 @@ def apply_netbox_dlm_inventoryitemsoftware(runner, row):
         ),
         coalesce_sets=[("inventory_item",)],
     )
+    if preview:
+        return _preview_outcome(runner, created)
     return inventory_item_software
 
 
-def apply_netbox_dlm_inventoryitemroleplatform(runner, row):
+def apply_netbox_dlm_inventoryitemroleplatform(runner, row, *, preview=False):
     """The mapping is an atomic side effect of InventoryItemSoftware rows."""
     inventory_item = _lookup_inventory_item(runner, row)
     _, mapping = ensure_dlm_inventory_item_role_platform(runner, inventory_item, row)
+    if preview:
+        role = inventory_item.role
+        cache_key = (role.pk, str(row.get("platform_slug") or "").strip())
+        # The apply writes each (role, platform) mapping ONCE per run and
+        # answers every later row for the same key from its cache. The preview
+        # reports the verdict once, on the first row, and "unchanged" for the
+        # rest - whatever the first verdict was, including the absent-platform
+        # case where the ensure never reaches its upsert or its cache.
+        seen = getattr(runner, "_dlm_role_platform_preview_seen", None)
+        if not isinstance(seen, set):
+            seen = runner._dlm_role_platform_preview_seen = set()
+        if cache_key in seen:
+            return "unchanged"
+        seen.add(cache_key)
+        outcomes = getattr(runner, "_dlm_inventory_item_role_platform_outcomes", {})
+        return outcomes.get(cache_key, "creates")
     return mapping
 
 

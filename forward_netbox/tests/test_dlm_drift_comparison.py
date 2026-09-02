@@ -193,14 +193,15 @@ class DlmPreviewTest(TestCase):
 
     # --- the two that decline ------------------------------------------------
 
-    def test_the_unaudited_dlm_models_report_no_comparison(self):
-        # Absence from `_ADAPTER_COMPARISONS` is the documented answer, and it
-        # must stay that until their dependency chains are audited.
+    def test_the_once_unaudited_dlm_models_are_now_measured(self):
+        # Their chains were audited after this slice and wired up; see
+        # `test_dlm_inventoryitem_drift_comparison`. Pinned here so the
+        # stand-in cannot rot the way `softwareversion` did for slice six.
         for model_string in (
             "netbox_dlm.inventoryitemsoftware",
             "netbox_dlm.inventoryitemroleplatform",
         ):
-            self.assertIsNone(
-                compare_model_rows(None, model_string, [self._row()]),
+            self.assertIsNotNone(
+                compare_model_rows(None, model_string, []),
                 model_string,
             )
