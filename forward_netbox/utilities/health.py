@@ -524,6 +524,7 @@ def sync_health_summary(sync):
     collection_gap = _collection_gap_summary(sync)
     out_of_scope = _out_of_scope_summary(sync)
     uncovered = _uncovered_summary(sync)
+    quarantine_cadence = _quarantine_cadence_summary(sync)
     latest_ingestion_summary = _ingestion_summary(latest_ingestion) or {}
     dependency_lookup_cache = latest_ingestion_summary.get(
         "dependency_lookup_cache", {}
@@ -621,6 +622,7 @@ def sync_health_summary(sync):
         "collection_gap": collection_gap,
         "out_of_scope": out_of_scope,
         "uncovered": uncovered,
+        "quarantine_cadence": quarantine_cadence,
         "ownership_finalization": ownership_finalization,
         "dependency_lookup_cache": dependency_lookup_cache,
         "dependency_parent_coverage": dependency_parent_coverage,
@@ -1223,6 +1225,62 @@ def _out_of_scope_summary(sync):
             "none of the sync's included Forward tags. Review and remove them via "
             "Scope Reconciliation -> Prune orphans, or filter the device list by "
             f"the forward-out-of-scope tag.{trend_note}"
+        ),
+    }
+
+
+def _quarantine_cadence_summary(sync):
+    """What the absence quarantine actually means on THIS sync's schedule.
+
+    The defaults - three runs AND 72 hours - were a guess at one deployment's
+    cadence, recorded as such in three release plans. They are tunable per
+    source without a release, but nothing showed an operator what they add up
+    to on their own interval: on an hourly sync the runs threshold is met in
+    three hours and the 72-hour one binds; on a weekly sync three runs is three
+    weeks and the runs threshold binds. This says which, and how long a
+    disabled device is actually protected before the prune will believe it is
+    gone. Informational: nothing here is a defect, and a schedule with no
+    interval (manual runs only) says so rather than guessing.
+    """
+    from .scope_reconciliation import absence_quarantine_thresholds
+
+    runs, hours = absence_quarantine_thresholds(sync)
+    interval_minutes = getattr(sync, "interval", None)
+    if not interval_minutes:
+        return {
+            "available": True,
+            "status": "info",
+            "required_runs": runs,
+            "required_hours": hours,
+            "interval_minutes": None,
+            "effective_hours": None,
+            "binding": None,
+            "message": (
+                f"The prune believes an absence after {runs} consecutive runs "
+                f"AND {hours} hours. This sync has no recurrence interval, so "
+                "the runs half depends on when syncs are started by hand; the "
+                f"{hours}-hour half always applies."
+            ),
+        }
+    runs_hours = round(runs * int(interval_minutes) / 60, 1)
+    effective = max(float(hours), runs_hours)
+    binding = "hours" if float(hours) >= runs_hours else "runs"
+    return {
+        "available": True,
+        "status": "info",
+        "required_runs": runs,
+        "required_hours": hours,
+        "interval_minutes": int(interval_minutes),
+        "effective_hours": effective,
+        "binding": binding,
+        "message": (
+            f"The prune believes an absence after {runs} consecutive runs AND "
+            f"{hours} hours. At this sync's {int(interval_minutes)}-minute "
+            f"interval, {runs} runs is {runs_hours} hours, so the "
+            f"{'hours' if binding == 'hours' else 'runs'} threshold binds and a "
+            f"device disabled in Forward is protected for about {effective} "
+            "hours before it becomes prune-eligible. Both thresholds are source "
+            "parameters (device_tag_prune_absence_runs / _hours)."
         ),
     }
 

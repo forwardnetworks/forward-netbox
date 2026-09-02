@@ -511,6 +511,17 @@ class ForwardSourceForm(NetBoxModelForm):
                 "secrets, so treat the repository as access-controlled."
             ),
         )
+        self.fields["config_backup_include_unmanaged"] = forms.BooleanField(
+            required=False,
+            label="Config Backup Includes Unmanaged Devices",
+            help_text=(
+                "Also archive configurations for devices Forward collected "
+                "that this sync does not manage, under a separate "
+                "`unmanaged/` prefix named by their Forward device name. Off, "
+                "the fetch is scoped to this sync's devices and nothing else "
+                "is transferred. On, the fetch is the whole collected estate."
+            ),
+        )
         self.fields["sync_device_tags"] = FlexibleMultipleChoiceField(
             required=False,
             choices=(),
@@ -637,6 +648,9 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["config_backup_data_source"].initial = (
             parameters.get("config_backup_data_source") or None
         )
+        self.fields["config_backup_include_unmanaged"].initial = bool(
+            parameters.get("config_backup_include_unmanaged")
+        )
         self.fields["sync_generic_endpoints"].initial = bool(
             parameters.get("sync_generic_endpoints")
         )
@@ -714,6 +728,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "sync_generic_endpoints",
                     "scope_endpoints_by_include_tags",
                     "config_backup_data_source",
+                    "config_backup_include_unmanaged",
                     name="Parameters",
                 )
             )
@@ -749,6 +764,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "sync_generic_endpoints",
                     "scope_endpoints_by_include_tags",
                     "config_backup_data_source",
+                    "config_backup_include_unmanaged",
                     name="Parameters",
                 )
             )
@@ -905,6 +921,9 @@ class ForwardSourceForm(NetBoxModelForm):
                 cleaned["config_backup_data_source"].pk
                 if cleaned.get("config_backup_data_source")
                 else None
+            ),
+            "config_backup_include_unmanaged": bool(
+                cleaned.get("config_backup_include_unmanaged")
             ),
             "sync_generic_endpoints": bool(cleaned.get("sync_generic_endpoints")),
             "scope_endpoints_by_include_tags": bool(

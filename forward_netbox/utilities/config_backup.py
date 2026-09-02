@@ -50,6 +50,12 @@ CONFIG_BACKUP_QUERY_FILENAME = "forward_config_backup.nqe"
 # one measured outlier (20 MB) cannot repeat often enough per page to matter.
 CONFIG_BACKUP_PAGE_SIZE = 100
 CONFIG_BACKUP_REPO_PREFIX = "configs"
+# Where configurations for devices this sync does NOT manage go, when the
+# operator opts in. Kept apart from `configs/` on purpose: Validity's golden-
+# config checks read `configs/<netbox device name>.cfg`, and an unmanaged
+# device has no NetBox row for such a check to bind to. These files are named
+# by their Forward name, because that is the only name they have.
+UNMANAGED_BACKUP_REPO_PREFIX = "unmanaged"
 _COMMIT_AUTHOR = b"Forward NetBox Plugin <forward-netbox-plugin@localhost>"
 _COMMIT_MESSAGE_PREFIX = "Forward config backup: snapshot "
 
@@ -62,6 +68,8 @@ class ConfigBackupResult:
     written: int = 0
     unchanged: int = 0
     unmapped: int = 0
+    unmanaged_written: int = 0
+    unmanaged_unchanged: int = 0
     skipped_reason: str = ""
     commit: str = ""
     pushed: bool = False
@@ -77,6 +85,8 @@ class ConfigBackupResult:
             "written": self.written,
             "unchanged": self.unchanged,
             "unmapped": self.unmapped,
+            "unmanaged_written": self.unmanaged_written,
+            "unmanaged_unchanged": self.unmanaged_unchanged,
             "skipped_reason": self.skipped_reason,
             "commit": self.commit,
             "pushed": self.pushed,
@@ -288,6 +298,21 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
                 config_entries = _tree_entries(repo, root_entries[prefix][1])
             else:
                 config_entries = {}
+            unmanaged_prefix = UNMANAGED_BACKUP_REPO_PREFIX.encode("ascii")
+            if unmanaged_prefix in root_entries:
+                unmanaged_entries = _tree_entries(repo, root_entries[unmanaged_prefix][1])
+            else:
+                unmanaged_entries = {}
+            # The product question the 2.9.0 plan left open - whether devices
+            # Forward collected but this sync does not manage should be
+            # archived too - is answered as an opt-in. Off, the fetch stays
+            # scoped to this sync's devices and the surplus is never
+            # transferred. On, the fetch is the whole collected estate and the
+            # surplus lands under its own prefix, apart from the files
+            # Validity binds to NetBox devices.
+            include_unmanaged = bool(
+                (sync.source.parameters or {}).get("config_backup_include_unmanaged")
+            )
 
             offset = 0
             # Scope the FETCH, not just the write. The identity table is this
@@ -296,7 +321,7 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
             # returns configurations only for devices that have somewhere to
             # go. Unscoped, the query returns the whole collected estate and
             # the surplus is transferred only to be discarded.
-            shard_keys = sorted(name_map)
+            shard_keys = [] if include_unmanaged else sorted(name_map)
             while True:
                 rows = client.run_nqe_query(
                     query=query,
@@ -314,6 +339,22 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
                     netbox_name = name_map.get(forward_name)
                     file_name = _safe_file_name(netbox_name)
                     if not netbox_name or not file_name or text is None:
+                        if (
+                            include_unmanaged
+                            and text is not None
+                            and not netbox_name
+                            and _safe_file_name(forward_name)
+                        ):
+                            unmanaged_blob = Blob.from_string(str(text).encode("utf-8"))
+                            unmanaged_name = _safe_file_name(forward_name).encode("utf-8")
+                            existing = unmanaged_entries.get(unmanaged_name)
+                            if existing is not None and existing[1] == unmanaged_blob.id:
+                                result.unmanaged_unchanged += 1
+                                continue
+                            repo.object_store.add_object(unmanaged_blob)
+                            unmanaged_entries[unmanaged_name] = (0o100644, unmanaged_blob.id)
+                            result.unmanaged_written += 1
+                            continue
                         result.unmapped += 1
                         continue
                     blob = Blob.from_string(str(text).encode("utf-8"))
@@ -348,7 +389,7 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
                     "config backup fetched no configurations; refusing to "
                     "commit an empty snapshot."
                 )
-            if result.written == 0:
+            if result.written == 0 and result.unmanaged_written == 0:
                 result.skipped_reason = "no configuration changed"
                 return result
 
@@ -359,6 +400,13 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
             repo.object_store.add_object(config_tree)
             root_tree = Tree()
             root_entries[prefix] = (0o040000, config_tree.id)
+            if unmanaged_entries:
+                unmanaged_tree = Tree()
+                for entry_name in sorted(unmanaged_entries):
+                    mode, sha = unmanaged_entries[entry_name]
+                    unmanaged_tree.add(entry_name, mode, sha)
+                repo.object_store.add_object(unmanaged_tree)
+                root_entries[unmanaged_prefix] = (0o040000, unmanaged_tree.id)
             for entry_name in sorted(root_entries):
                 mode, sha = root_entries[entry_name]
                 root_tree.add(entry_name, mode, sha)
@@ -405,9 +453,15 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
 
     result.duration_seconds = time.monotonic() - started
     if logger is not None:
+        unmanaged_note = (
+            f", {result.unmanaged_written} unmanaged written, "
+            f"{result.unmanaged_unchanged} unmanaged unchanged"
+            if result.unmanaged_written or result.unmanaged_unchanged
+            else ""
+        )
         logger.log_info(
             f"Config backup: {result.written} written, {result.unchanged} "
-            f"unchanged, {result.unmapped} unmapped across {result.rows} "
-            f"Forward rows ({result.pages} pages)."
+            f"unchanged, {result.unmapped} unmapped{unmanaged_note} across "
+            f"{result.rows} Forward rows ({result.pages} pages)."
         )
     return result

@@ -219,7 +219,7 @@ def _ensure_scope_tag(runner, name):
     from django.utils.text import slugify
     from extras.models import Tag
 
-    slug = slugify(name) or slugify(name.replace(".", "-"))
+    slug = slugify(name)
     if not slug:
         cache[name] = None
         return None

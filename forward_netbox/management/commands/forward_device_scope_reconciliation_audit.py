@@ -59,6 +59,16 @@ class Command(BaseCommand):
             ),
         )
 
+        parser.add_argument(
+            "--full",
+            action="store_true",
+            help=(
+                "Print every device name in each bucket, not the 25-name sample "
+                "the panel shows. Names are customer data: they go to this "
+                "console and nowhere else."
+            ),
+        )
+
     def handle(self, *args, **options):
         if options["sync_id"] and options["sync_name"]:
             raise CommandError("Use either --sync-id or --sync-name, not both.")
@@ -111,6 +121,19 @@ class Command(BaseCommand):
             )
         )
 
+        if options["full"]:
+            # The whole sets, straight from the report's internal keys. The
+            # persisted payload keeps names capped at the sample size because
+            # it is a diagnostic; a console is not, and "which ones" is the
+            # question an operator runs this command to answer.
+            payload["full"] = {
+                "out_of_scope": sorted(out_of_scope),
+                "tagged_but_backfilled": sorted(report.get("_present_backfilled") or ()),
+                "owned_uncovered": sorted(report.get("_owned_untagged") or ()),
+                "in_scope_missing_from_netbox": sorted(
+                    report.get("_missing_in_netbox") or ()
+                ),
+            }
         if options["prune_orphans"]:
             payload["prune_requested"] = True
             payload["prune_applied"] = False

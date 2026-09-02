@@ -10,8 +10,14 @@ f(forward_netbox_shard_keys: List<String>) =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
-let platform_os_version = if isPresent(device.platform.osVersion) then device.platform.osVersion else ""
-let platform_name = normalizePlatformName(toString(device.platform.os), platform_os_version)
+/* Every CONSUMER of a platform name - devices, software versions, the DLM
+ * maps - derives it with normalizeDevicePlatformName(device), which also
+ * resolves APIC controllers and ACI switches from their command outputs. This
+ * PRODUCER used the OS-and-version form, so a fabric whose platform.os did not
+ * say "aci" produced a platform row under one name while every consumer looked
+ * for it under "ACI", and the consumers' rows skipped as missing a parent. One
+ * derivation, on both sides. */
+let platform_name = normalizeDevicePlatformName(device)
 let platform_slug = slugify(platform_name)
 let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
 group manufacturer_name as manufacturers by {

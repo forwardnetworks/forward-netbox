@@ -531,6 +531,7 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         "_forward_site_slugs": forward_site_slugs,
         "_out_of_scope": out_of_scope,
         "_owned_untagged": owned_untagged_names,
+        "_missing_in_netbox": missing_in_netbox,
         "_out_of_scope_pks": out_of_scope_pks,
         "_present_backfilled": present_backfilled,
         "_matched_include_tags_by_name": present_scope_tags_by_name,
