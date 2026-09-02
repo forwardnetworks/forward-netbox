@@ -25,6 +25,7 @@ from forward_netbox.choices import ForwardSyncStatusChoices  # noqa: E402
 from forward_netbox.models import ForwardDeviceAnalysis  # noqa: E402
 from forward_netbox.models import ForwardDriftPolicy  # noqa: E402
 from forward_netbox.models import ForwardIngestion  # noqa: E402
+from forward_netbox.models import ForwardIngestionIssue  # noqa: E402
 from forward_netbox.models import ForwardNQEMap  # noqa: E402
 from forward_netbox.models import ForwardSource  # noqa: E402
 from forward_netbox.models import ForwardSync  # noqa: E402
@@ -127,6 +128,11 @@ def main():
         device=device,
         snapshot_id="artifact-route-smoke",
     )
+    ingestion_issue = ForwardIngestionIssue.objects.create(
+        ingestion=ingestion,
+        message="artifact route smoke issue",
+        exception="ArtifactRouteSmoke",
+    )
 
     client = Client()
     client.force_login(user)
@@ -156,6 +162,7 @@ def main():
         "forwardsource": source.pk,
         "forwardsync": sync.pk,
         "forwardingestion": ingestion.pk,
+        "forwardingestionissue": ingestion_issue.pk,
         "forwardvalidationrun": validation_run.pk,
         "forwarddeviceanalysis": analysis.pk,
         "forwardnqemap": nqe_map.pk,
@@ -180,6 +187,21 @@ def main():
     )
 
 
+def fixture_model_for(route_short_name, fixtures):
+    """The fixture a route name belongs to: the LONGEST matching model prefix.
+
+    `forwardingestionissue` also starts with `forwardingestion`, so a
+    first-match rule binds the issue's routes to the ingestion's pk and asks
+    for an issue that does not exist. The probe then reports HTTP 404 and it
+    reads as a broken route rather than a mis-addressed request.
+    """
+    return max(
+        (candidate for candidate in fixtures if route_short_name.startswith(candidate)),
+        key=len,
+        default=None,
+    )
+
+
 def _detail_routes(fixtures):
     """Every `plugins:forward_netbox:<model>*` route that takes exactly a pk.
 
@@ -194,9 +216,7 @@ def _detail_routes(fixtures):
     for short in plugin.reverse_dict:
         if not isinstance(short, str):
             continue
-        model = next(
-            (candidate for candidate in fixtures if short.startswith(candidate)), None
-        )
+        model = fixture_model_for(short, fixtures)
         if model is None:
             continue
         for (

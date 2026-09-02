@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.9.2
+
+Release candidate; Drift is measured exactly for every fetched model, the uncovered-device count says why it grows and warns when it does, and five delete and diagnostic defects are closed.
+
 ## v2.9.1
 
 Accepts netbox-branching 1.1.3 and records the validated runtime in the lockfile.
