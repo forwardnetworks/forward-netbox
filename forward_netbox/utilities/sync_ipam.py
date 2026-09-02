@@ -333,24 +333,30 @@ def _ensure_fhrp_vip(runner, row, *, group, vrf, protocol, preview=False):
         )
         return False
 
-    update_fields = []
+    # Decide what differs BEFORE changing anything on the instance.
+    #
+    # `get_unique_or_raise` caches the resolved object, so this instance is
+    # shared with every later row that resolves the same VIP. Mutating it while
+    # merely computing a preview handed the next row an already-corrected
+    # object, which then compared clean - two routers in one HSRP group, and
+    # the second one's drift silently disappeared. Ordinary topology, and
+    # exactly the confident-zero failure this feature exists to prevent.
+    desired = []
     if str(existing.address) != str(row["address"]):
-        existing.address = row["address"]
-        update_fields.append("address")
+        desired.append(("address", row["address"]))
     if existing.status != row["status"]:
-        existing.status = row["status"]
-        update_fields.append("status")
+        desired.append(("status", row["status"]))
     if existing.role != desired_role:
-        existing.role = desired_role
-        update_fields.append("role")
+        desired.append(("role", desired_role))
     if is_unassigned:
-        existing.assigned_object_type = desired_assigned_object_type
-        existing.assigned_object_id = desired_assigned_object_id
-        update_fields.extend(["assigned_object_type", "assigned_object_id"])
+        desired.append(("assigned_object_type", desired_assigned_object_type))
+        desired.append(("assigned_object_id", desired_assigned_object_id))
     if preview:
-        # Computed from the same field comparisons the apply just made, before
-        # the save rather than after it.
-        return "updates" if update_fields else "unchanged"
+        return "updates" if desired else "unchanged"
+    update_fields = []
+    for field, value in desired:
+        setattr(existing, field, value)
+        update_fields.append(field)
     if update_fields:
         existing.full_clean()
         existing.save(update_fields=update_fields)

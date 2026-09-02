@@ -170,7 +170,27 @@ def apply_dcim_inventoryitem(runner, row, *, preview=False):
         return "updates" if runner.last_upsert_would_change else "unchanged"
 
 
-def apply_dcim_module(runner, row):
+def apply_dcim_module(runner, row, *, preview=False):
+    """Apply the module, or - with ``preview`` - classify and write nothing.
+
+    Every write on this path is behind a ``runner.`` call, so the firewall
+    covers them: ``_ensure_module_bay`` (upserts a ModuleBay),
+    ``_ensure_module_type`` (upserts a ModuleType and a Manufacturer beneath
+    it) and ``_upsert_values_from_defaults``.
+
+    That last one is the dangerous one, and the reason a returned-early preview
+    would not have been enough on its own. It passes
+    ``create_instance_attrs={"_adopt_components": True}``, and NetBox core's
+    ``Module.save()`` then instantiates the module type's component templates -
+    console ports, interfaces, power ports and the rest - as real rows on the
+    device. The preview override never saves, so none of that happens, and
+    ``create_instance_attrs`` is accepted and ignored precisely because it only
+    matters to a save.
+
+    An absent bay or module type classifies the row as a create rather than
+    being resolved: a module cannot already exist in a bay NetBox does not
+    have, or with a type it does not have.
+    """
     from dcim.models import Module
 
     try:
@@ -211,6 +231,15 @@ def apply_dcim_module(runner, row):
         return False
     module_bay = runner._ensure_module_bay(device, row)
     module_type = runner._ensure_module_type(row)
+    # The unadoptable-component check comes FIRST, before any absent-dependency
+    # short-circuit.
+    #
+    # It decides whether the apply will EVER write this row, and that verdict
+    # does not depend on whether the bay exists yet: the apply creates the bay,
+    # then hits this and skips permanently. Short-circuiting on a missing bay
+    # ahead of it reported a create for a row no run will ever apply - drift
+    # that never clears, which is the non-convergence the `rejected`
+    # classification exists to prevent.
     blocking = _unadoptable_component_names(device, module_type)
     if blocking:
         # `_adopt_components` cannot cover this. NetBox builds its adoption
@@ -226,7 +255,13 @@ def apply_dcim_module(runner, row):
             model_string="dcim.module",
             reason="component-claimed-by-another-module",
             warning_message=(
-                f"Skipping module in bay `{module_bay.name}` on `{device.name}`: "
+                # The bay name comes from the ROW, not from `module_bay`. The
+                # apply always has a bay here because `_ensure_module_bay`
+                # creates one; a preview resolves instead, so an absent bay is
+                # `None` and dereferencing it raised. The row's name is what
+                # that bay would be called either way.
+                f"Skipping module in bay `{row.get('module_bay')}` on "
+                f"`{device.name}`: "
                 f"its module type would create {len(blocking)} component(s) whose "
                 "names are already used on the device by a different module, "
                 "which NetBox cannot adopt."
@@ -234,7 +269,18 @@ def apply_dcim_module(runner, row):
             sample=device.name,
         )
         return False
-    runner._upsert_values_from_defaults(
+    if preview and module_bay is None:
+        # The bay is the module's IDENTITY - the coalesce set is
+        # ("device", "module_bay") - so with no bay in NetBox there is no
+        # module row to resolve against and this is a create.
+        #
+        # An absent module_type deliberately does NOT short-circuit here.
+        # `module_type` is not part of that identity, so a bay that already
+        # holds a module gets an UPDATE when the card is swapped for a type
+        # NetBox has not seen; calling it a create would split creates and
+        # updates wrongly for every hardware replacement.
+        return "creates"
+    _, created = runner._upsert_values_from_defaults(
         "dcim.module",
         Module,
         values={
@@ -256,3 +302,7 @@ def apply_dcim_module(runner, row):
         # IntegrityError (dcim_interface_unique_device_name, etc.).
         create_instance_attrs={"_adopt_components": True},
     )
+    if preview:
+        if created:
+            return "creates"
+        return "updates" if runner.last_upsert_would_change else "unchanged"

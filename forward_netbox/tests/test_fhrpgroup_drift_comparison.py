@@ -182,6 +182,59 @@ class FhrpGroupPreviewTest(TestCase):
         self.assertEqual(IPAddress.objects.count(), addresses)
         self.assertEqual(result["creates"], 1)
 
+    def test_two_devices_in_one_group_both_report_the_drifted_vip(self):
+        """Two rows sharing a VIP must not launder each other's drift.
+
+        `get_unique_or_raise` caches the resolved object INSTANCE. If the
+        preview mutates that instance while computing what would change, the
+        next row to resolve the same VIP gets the already-corrected object and
+        compares clean - so a real difference is reported as unchanged. Two
+        routers in one HSRP group is the ordinary case, not an exotic one.
+        """
+        from django.contrib.contenttypes.models import ContentType
+
+        second = Device.objects.create(
+            name="fhrp-dev-b",
+            site=self.device.site,
+            device_type=self.device.device_type,
+            role=self.device.role,
+            status="active",
+        )
+        second_interface = Interface.objects.create(
+            device=second, name="Vlan100", type="virtual"
+        )
+        group = FHRPGroup.objects.create(
+            protocol="hsrp",
+            group_id=100,
+            name="hsrp-100-10.0.0.1",
+            description="Forward FHRP group",
+            comments="",
+        )
+        # The VIP is drifted: both rows want "active".
+        IPAddress.objects.create(
+            address="10.0.0.1/24",
+            status="deprecated",
+            role="hsrp",
+            assigned_object_type=ContentType.objects.get_for_model(FHRPGroup),
+            assigned_object_id=group.pk,
+        )
+        for interface in (self.interface, second_interface):
+            FHRPGroupAssignment.objects.create(
+                interface_type=ContentType.objects.get_for_model(Interface),
+                interface_id=interface.pk,
+                group=group,
+                priority=100,
+            )
+
+        result = compare_model_rows(
+            None,
+            "ipam.fhrpgroup",
+            [self._row(), self._row(device="fhrp-dev-b")],
+        )
+
+        self.assertEqual(result["updates"], 2)
+        self.assertEqual(result["unchanged"], 0)
+
     def test_an_unknown_device_is_rejected(self):
         result = compare_model_rows(
             None, "ipam.fhrpgroup", [self._row(device="no-such-device")]
