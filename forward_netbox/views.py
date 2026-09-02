@@ -1435,6 +1435,75 @@ class ForwardSyncRefreshScopeReconciliationView(BaseObjectView):
         )
 
 
+class _ForwardSyncUncoveredDevicesView(BaseObjectView):
+    """List one half of "carry no include tag" in full, from the stored report.
+
+    The panel shows a count and a 25-name sample per half, and the OWNED half
+    has a tag to filter the device list by. The UNCLAIMED half has neither: it
+    is not this sync's data, so no tag is maintained for it, and an operator
+    whose count was mostly unclaimed could see 25 names of it and nothing
+    more. The reconciliation job now persists the primary keys of both halves
+    (keys, not names - names are customer data in a job payload), and this
+    renders NetBox's own device table over them. Read-only, no Forward call.
+    """
+
+    queryset = ForwardSync.objects.all()
+    template_name = "forward_netbox/forwardsync_uncovered_devices.html"
+    half = ""
+    title = ""
+
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardsync"
+
+    def get(self, request, pk):
+        from dcim.models import Device
+        from dcim.tables import DeviceTable
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        report_job = _latest_scope_reconciliation_job(sync)
+        payload, generated_at, report_error = _scope_reconciliation_payload(report_job)
+        unmanaged = payload.get("unmanaged") or {}
+        device_ids = [
+            device_id
+            for device_id in unmanaged.get(f"{self.half}_device_ids") or []
+            if isinstance(device_id, int)
+        ]
+        table = DeviceTable(
+            Device.objects.filter(pk__in=device_ids).restrict(request.user, "view")
+        )
+        table.configure(request)
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": sync,
+                "table": table,
+                "title": self.title,
+                "half": self.half,
+                "device_count": len(device_ids),
+                "report_generated_at": generated_at,
+                "report_error": report_error,
+                "report_pending": report_job is None,
+                "scope_reconciliation_url": reverse(
+                    "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                    kwargs={"pk": sync.pk},
+                ),
+            },
+        )
+
+
+@register_model_view(ForwardSync, "uncovered_devices", path="uncovered-devices")
+class ForwardSyncUncoveredDevicesView(_ForwardSyncUncoveredDevicesView):
+    half = "owned_untagged"
+    title = "Uncovered devices created by this sync"
+
+
+@register_model_view(ForwardSync, "unclaimed_devices", path="unclaimed-devices")
+class ForwardSyncUnclaimedDevicesView(_ForwardSyncUncoveredDevicesView):
+    half = "unclaimed"
+    title = "Uncovered devices not claimed by this sync"
+
+
 @register_model_view(ForwardSync, "scope_reconciliation", path="scope-reconciliation")
 class ForwardSyncScopeReconciliationView(BaseObjectView):
     queryset = ForwardSync.objects.all()
@@ -1480,6 +1549,14 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
                 ),
                 "backfilled_tag_url": backfilled_tag_url,
                 "uncovered_tag_url": uncovered_tag_url,
+                "uncovered_devices_url": reverse(
+                    "plugins:forward_netbox:forwardsync_uncovered_devices",
+                    kwargs={"pk": sync.pk},
+                ),
+                "unclaimed_devices_url": reverse(
+                    "plugins:forward_netbox:forwardsync_unclaimed_devices",
+                    kwargs={"pk": sync.pk},
+                ),
                 "tag_backfilled_url": reverse(
                     "plugins:forward_netbox:forwardsync_tag_backfilled",
                     kwargs={"pk": sync.pk},
