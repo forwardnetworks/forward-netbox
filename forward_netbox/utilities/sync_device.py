@@ -264,7 +264,7 @@ def apply_dcim_device(runner, row):
             ),
         )
 
-    device, _ = runner._upsert_values_from_defaults(
+    device, created = runner._upsert_values_from_defaults(
         "dcim.device",
         Device,
         values=defaults,
@@ -274,6 +274,14 @@ def apply_dcim_device(runner, row):
         ),
     )
     record_device_identity_candidate(runner, device)
+    if not created and getattr(device, "pk", None) is not None:
+        # This path CAN move a device between sites: an operator-configured
+        # name-only coalesce matches by name and the upsert saves the new
+        # site, and `save()` revalidates nothing below the device. Revalidate
+        # its interfaces here, at the point the state is made.
+        from .interface_vlan_audit import clear_cross_site_untagged_vlans
+
+        clear_cross_site_untagged_vlans(runner, [device.pk])
 
     if _scope_tags_enabled(runner):
         from .sync_interface import _device_add_tag
