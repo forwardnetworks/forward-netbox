@@ -1236,6 +1236,40 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]], *, preview=Fal
         if mac is None:
             mac = create_objects.get(mac_key)
         if mac is None:
+            if preview:
+                # A preview needs the COUNT of creates, not the objects. On the
+                # deployment that measured this, constructing the MACAddress and
+                # running `full_clean` on rows that are never saved was 55% of
+                # this model's comparison time - and this model was 42% of the
+                # whole report's. NetBox model construction is what costs: the
+                # custom-field machinery queries `extras_customfield` and the
+                # clean queries content types, per row.
+                #
+                # The DELIBERATE trade, decided rather than drifted into: a row
+                # `full_clean` would reject is counted here as a create, where
+                # the apply counts it failed. That overstates drift for invalid
+                # rows - the safe direction, an operator investigates a number
+                # that will not converge - and it is the one place preview and
+                # apply are ALLOWED to disagree about a row. Pinned by
+                # `test_an_invalid_row_counts_as_a_create_under_preview`, so
+                # removing the divergence later is a decision, not an accident.
+                #
+                # The sentinel carries the two attributes a later duplicate row
+                # in this batch reads for its unchanged-comparison, and pk=None
+                # so the update branch treats it exactly as it treats an
+                # unsaved in-memory create.
+                from types import SimpleNamespace
+
+                sentinel = SimpleNamespace(
+                    pk=None,
+                    assigned_object_type_id=interface_content_type.pk,
+                    assigned_object_id=interface.pk,
+                )
+                create_objects[mac_key] = sentinel
+                macs_by_address[mac_key] = sentinel
+                runner.logger.increment_statistics("dcim.macaddress", outcome="applied")
+                runner.events_clearer.increment()
+                continue
             mac = MACAddress(
                 mac_address=mac_address,
                 assigned_object_type=interface_content_type,
@@ -1271,6 +1305,26 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]], *, preview=Fal
             and mac.assigned_object_id == interface.pk
         ):
             runner.logger.increment_statistics("dcim.macaddress", outcome="unchanged")
+            continue
+        if preview:
+            # Same reasoning as the create branch: the count, not the object.
+            # The apply's work here - snapshot, mutation, a FULL `full_clean`
+            # including the uniqueness query - exists to perform the
+            # reassignment, and a preview performs nothing. Same deliberate
+            # trade too: a reassignment NetBox would refuse (the MAC is an
+            # object's primary) counts as an update here where the apply counts
+            # it failed. Overstates drift, never understates it.
+            #
+            # `update_objects` is keyed by pk exactly as the apply keys it, so
+            # duplicate incoming rows for one persisted MAC collapse to one
+            # update either way, and a pk-less `mac` (an in-memory create from
+            # an earlier duplicate row, or this preview's own sentinel) is
+            # skipped here exactly as the apply's `if getattr(mac, "pk", ...)`
+            # skips it below.
+            if getattr(mac, "pk", None):
+                update_objects[mac.pk] = mac
+            runner.logger.increment_statistics("dcim.macaddress", outcome="applied")
+            runner.events_clearer.increment()
             continue
         # `mac` may be a not-yet-saved in-memory create from an earlier row with
         # the same canonical MAC (duplicate MAC across interfaces/devices — only
