@@ -73,12 +73,23 @@ rejection to `failed`.
 - **The bulk path lost its inline copy rather than keeping a fast local one.**
   Two implementations of this question is exactly what produced the divergence.
 
+## Closed
+
+- **Task #39 is done** (`bb0ac0d`, #146). `_is_destination_rule_rejection`
+  (`merge.py:68`) now reads `exc.forward_written_fields` and defers to
+  `is_caused_rule_rejection` (`diagnostics.py:901`). The written set is
+  attached at `bulk_merge.py:627` and, on the row-oriented adapter path, at
+  `sync_primitives.py:145` (create) and `:180` (update); the adapter's own
+  disposition reads it at `sync_reporting.py:723`, so both engines reach the
+  same verdict on the same row.
+
+  This was carried as open in three later release plans after it had already
+  shipped. Verified in the 2.9.2 tree before closing.
+
 ## Open
 
-- `_is_destination_rule_rejection` at merge is still
-  `isinstance(exc, ValidationError)`. It now has a predicate to narrow to, but
-  the merge path has no notion of "fields this change writes" — it would have to
-  derive one from the change diff. Task #39.
 - The catalogue is seven rules, so most rejections still cannot be skipped even
   when they are genuinely pre-existing. Growing it is a per-rule decision, made
   when a rule actually shows up in the field, not speculatively.
+- Batched status-only and relationship-fallback sites swallow into a row-by-row
+  retry, so their disposition is decided on the retry rather than at the batch.
