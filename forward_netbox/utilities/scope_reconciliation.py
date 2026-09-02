@@ -90,6 +90,29 @@ OUT_OF_SCOPE_TAG_DESCRIPTION = (
     "Forward sync scope reconciliation."
 )
 
+# NetBox tag applied to devices this sync CREATED that the current Forward
+# result no longer covers - the `owned_untagged` half of "carry no include tag".
+#
+# It exists because that bucket is the only one an operator could not enumerate.
+# The panel showed a count and a 25-name sample, and the count is the one that
+# grows: a device disabled in Forward drops out of the tag-scope result, and
+# since the absence quarantine it is deliberately kept rather than pruned, so it
+# lands here and stays. A customer reading 552 had no way, in the UI or on a
+# shell, to list them - the CLI audit prints the same truncated sample.
+#
+# Deliberately NOT applied to the `unclaimed` half. A device this sync never
+# created is not this sync's to label, and the claim machinery enforces that on
+# its own: an unclaimed device has no `ForwardDeviceIdentity`, so it resolves as
+# `missing` and is skipped.
+UNCOVERED_TAG_SLUG = "forward-uncovered"
+UNCOVERED_TAG_NAME = "Forward Uncovered"
+UNCOVERED_TAG_COLOR = "ff9800"
+UNCOVERED_TAG_DESCRIPTION = (
+    "Created by this sync but absent from the current Forward tag-scope "
+    "result. Not an orphan, and never pruned on this tag alone. Maintained by "
+    "the Forward sync scope reconciliation."
+)
+
 
 # How long an absence must persist before the prune is allowed to believe it.
 #
@@ -405,7 +428,7 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         device_id for device_id, name in previously_managed if name in out_of_scope
     ]
 
-    unmanaged = _unmanaged_device_summary(sync, tagged_names)
+    unmanaged, owned_untagged_names = _unmanaged_device_summary(sync, tagged_names)
 
     absence = _classify_out_of_scope_absence(
         out_of_scope,
@@ -498,6 +521,7 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         "_device_tagged_names": device_tagged_names,
         "_forward_site_slugs": forward_site_slugs,
         "_out_of_scope": out_of_scope,
+        "_owned_untagged": owned_untagged_names,
         "_out_of_scope_pks": out_of_scope_pks,
         "_present_backfilled": present_backfilled,
         "_matched_include_tags_by_name": present_scope_tags_by_name,
@@ -525,6 +549,11 @@ def _unmanaged_device_summary(sync, tagged_names):
     Deliberately read-only, local, and free: no Forward call, no deletion, and
     no inference about which of the two an operator should care about. The
     counts and the filters are the product; the judgement stays with them.
+
+    Returns ``(summary, owned_names)``. The summary is JSON-safe and carries
+    only counts and truncated samples; the full owned name set is handed back
+    separately because it is what the ``forward-uncovered`` tag is maintained
+    from, and it must not reach a persisted diagnostic.
     """
     from ..models import ForwardDeviceIdentity
 
@@ -540,7 +569,7 @@ def _unmanaged_device_summary(sync, tagged_names):
             "unclaimed": 0,
             "owned_untagged_sample": [],
             "unclaimed_sample": [],
-        }
+        }, set()
     owned_ids = set(
         ForwardDeviceIdentity.objects.filter(
             sync=sync,
@@ -557,7 +586,7 @@ def _unmanaged_device_summary(sync, tagged_names):
         "unclaimed": len(unclaimed),
         "owned_untagged_sample": owned[:SAMPLE_LIMIT],
         "unclaimed_sample": unclaimed[:SAMPLE_LIMIT],
-    }
+    }, set(owned)
 
 
 def _classify_out_of_scope_absence(
@@ -1107,15 +1136,21 @@ def tag_backfilled_devices(
     snapshot_id=None,
     ingestion_id=None,
 ) -> dict:
-    """Maintain the ``forward-backfilled`` and ``forward-out-of-scope`` device tags.
+    """Maintain the three maintained device status tags.
 
     ``forward-backfilled`` marks devices that are tagged-in-scope but were not
     freshly collected in the latest snapshot (kept on purpose).
     ``forward-out-of-scope`` marks NetBox devices that match none of the sync's
-    included Forward tags (the removable orphans). Both are idempotent — after
-    running, each tag's device set exactly matches the current bucket, so operators
-    can filter ``/dcim/devices/?tag=forward-backfilled`` or
-    ``?tag=forward-out-of-scope``.
+    included Forward tags AND were previously claimed by it (the removable
+    orphans). ``forward-uncovered`` marks devices this sync created that the
+    current result no longer covers, whether or not a claim survives - the
+    bucket the panel counts as "created by this sync" under "carry no include
+    tag", and the one that grows.
+
+    All three are idempotent — after running, each tag's device set exactly
+    matches the current bucket, so operators can filter
+    ``/dcim/devices/?tag=forward-backfilled``, ``?tag=forward-out-of-scope`` or
+    ``?tag=forward-uncovered``.
     """
     if report is None:
         report = compute_scope_reconciliation(sync, snapshot_id=snapshot_id)
@@ -1155,6 +1190,24 @@ def tag_backfilled_devices(
             color=OUT_OF_SCOPE_TAG_COLOR,
             description=OUT_OF_SCOPE_TAG_DESCRIPTION,
             claim_type="out_of_scope",
+            generation=generation["generation"],
+            snapshot_id=generation["snapshot_id"],
+            mark_domain=False,
+            materialize=False,
+            live_source_keys=live_source_keys,
+        )
+        # `owned_untagged`, not the whole "carry no include tag" bucket: the
+        # unclaimed half is another source's or an operator's, and this sync has
+        # no standing to label it. That is enforced rather than trusted - an
+        # unclaimed device has no identity row, so it resolves as `missing`.
+        uncovered = _apply_maintained_device_tag(
+            sync,
+            report["_owned_untagged"],
+            slug=UNCOVERED_TAG_SLUG,
+            name=UNCOVERED_TAG_NAME,
+            color=UNCOVERED_TAG_COLOR,
+            description=UNCOVERED_TAG_DESCRIPTION,
+            claim_type="uncovered",
             generation=generation["generation"],
             snapshot_id=generation["snapshot_id"],
             mark_domain=False,
@@ -1233,6 +1286,16 @@ def tag_backfilled_devices(
         "out_of_scope_claims_added": out_of_scope["claims_added"],
         "out_of_scope_claims_released": out_of_scope["claims_released"],
         "total_out_of_scope": out_of_scope["total"],
+        "uncovered_tag_slug": UNCOVERED_TAG_SLUG,
+        "uncovered_tagged": status_materialized["by_claim_type"]
+        .get("uncovered", {})
+        .get("assignments_added", 0),
+        "uncovered_untagged": status_materialized["by_claim_type"]
+        .get("uncovered", {})
+        .get("assignments_removed", 0),
+        "uncovered_claims_added": uncovered["claims_added"],
+        "uncovered_claims_released": uncovered["claims_released"],
+        "total_uncovered": uncovered["total"],
         "scope_claims_released": managed_scope_cleanup["claims_released"],
         "out_of_scope_scope_tags_removed": managed_scope_cleanup["assignments_removed"],
         "scope_claims_added": managed_scope_cleanup["claims_added"],

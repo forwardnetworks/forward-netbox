@@ -1033,7 +1033,9 @@ def _run_forward_config_backup_work(job, *args, **kwargs):
 
 
 def _reconcile_forward_device_scope_tags_work(job, *args, **kwargs):
-    """Background sync of the ``forward-backfilled`` tag for a sync.
+    """Background sync of the maintained device status tags for a sync.
+
+    ``forward-backfilled``, ``forward-out-of-scope`` and ``forward-uncovered``.
 
     Runs as a job because it issues a live Forward scope query and may tag/untag
     many devices (with change-logging signals), which can exceed an HTTP gateway

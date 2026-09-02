@@ -18,6 +18,27 @@ from .tag_contracts import validate_scope_tag_names
 OWNERSHIP_ADVISORY_LOCK_ID = 0x4657444F574E
 DEVICE_IDENTITY_CANDIDATES_KEY = "device_identity_candidates"
 
+# Every claim type materialized under the STATUS_TAGS domain.
+#
+# This was spelled inline as a literal pair, which is why adding a third status
+# tag is a change to this module at all: a claim type absent from the list is
+# never materialized, so its claims accumulate correctly and its tag is simply
+# never applied to anything - a failure with no error and no symptom except the
+# tag being empty. One name, used everywhere the set is needed.
+#
+# Plain strings rather than the `ClaimType` members: this is module scope, and
+# importing models here would make `utilities.ownership` unimportable before the
+# app registry is ready. The values are pinned to the enum by a test.
+STATUS_CLAIM_TYPES = ("backfilled", "out_of_scope", "uncovered")
+
+# The status tags that assert a device is NOT covered, as opposed to
+# `backfilled`, which asserts a device IS in scope but was not freshly
+# collected. Only the negative ones are cross-sync claims: see
+# `_desired_tag_device_ids` for why they subtract every positive scope claim,
+# and `finalize_device_tag_domain` for why they need a second materialization
+# pass once both domains are ready.
+_NEGATIVE_STATUS_CLAIM_TYPES = ("out_of_scope", "uncovered")
+
 
 class OwnershipConflictError(RuntimeError):
     """Raised after durable claims expose incompatible desired relationships."""
@@ -724,7 +745,18 @@ def _desired_tag_device_ids(
         claim_type=claim_type,
     ).exclude(sync_id__in=excluded_sync_ids)
     desired_ids = set(claims.values_list("device_id", flat=True))
-    if claim_type == ForwardDeviceTagClaim.ClaimType.OUT_OF_SCOPE:
+    # Both negative status tags assert an ABSENCE, and an absence is only ever
+    # true of one sync's result. A device this sync does not cover may be
+    # squarely in another sync's scope, and tagging it there would publish a
+    # contradiction: `forward-out-of-scope` and `forward-uncovered` would sit on
+    # a device that some other source is actively managing. Subtracting every
+    # positive scope claim is what keeps a per-sync observation from reading as
+    # a deployment-wide verdict.
+    #
+    # `uncovered` is here for the same reason `out_of_scope` is, and it is
+    # listed explicitly rather than derived, because getting this wrong is
+    # silent: the tag simply appears on devices that are fine.
+    if claim_type in _NEGATIVE_STATUS_CLAIM_TYPES:
         positively_scoped_ids = set(
             ForwardDeviceTagClaim.objects.filter(claim_type="scope")
             .exclude(sync_id__in=excluded_sync_ids)
@@ -1133,7 +1165,7 @@ def finalize_device_tag_domain(
     claim_types = (
         ["scope"]
         if domain == ForwardOwnershipReconciliation.Domain.SCOPE_TAGS
-        else ["backfilled", "out_of_scope"]
+        else list(STATUS_CLAIM_TYPES)
     )
     managed_tags = ForwardManagedDeviceTag.objects.filter(claim_type__in=claim_types)
     if tag_ids is not None:
@@ -1194,7 +1226,7 @@ def finalize_device_tag_domain(
         and _domain_is_ready(ForwardOwnershipReconciliation.Domain.STATUS_TAGS)
     ):
         for managed_tag in ForwardManagedDeviceTag.objects.filter(
-            claim_type="out_of_scope"
+            claim_type__in=_NEGATIVE_STATUS_CLAIM_TYPES
         ).select_related("tag"):
             result = _materialize_managed_tag(managed_tag, force_current=True)
             added += result["assignments_added"]
