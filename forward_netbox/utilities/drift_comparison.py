@@ -959,6 +959,55 @@ def _register_peering_comparisons():
         )
 
 
+def _aci_comparisons():
+    """The eight netbox-cisco-aci models, which share one row loop.
+
+    Slice nine, and the one #206 never named: the ACI maps postdate it. Every
+    write in these chains is behind `runner._upsert_values_from_defaults`,
+    which the preview overrides, and every lookup is `_get_unique_or_raise` or
+    `_lookup_device_by_name`, which only read - the audit is
+    `grep -n "objects\\.\\(create\\|get_or_create\\|update_or_create\\)\\|\\.save()"
+    sync_aci.py` returning nothing. The verdict rule is the LEAF rule: each of
+    these models has its own query and its own rows, so a parent create is the
+    parent model's drift, not the child's.
+
+    What the chains needed was a guard, not a shim: a parent the preview
+    reports as absent must short-circuit the child to a create, because the
+    coalesce lookup drops the `None` parent and would otherwise match a sibling
+    under another tenant. See `_parent_absent` in `sync_aci`.
+    """
+    from .sync_aci import apply_netbox_cisco_aci_acibridgedomain
+    from .sync_aci import apply_netbox_cisco_aci_acifabric
+    from .sync_aci import apply_netbox_cisco_aci_acifilter
+    from .sync_aci import apply_netbox_cisco_aci_acil3out
+    from .sync_aci import apply_netbox_cisco_aci_acinode
+    from .sync_aci import apply_netbox_cisco_aci_acipod
+    from .sync_aci import apply_netbox_cisco_aci_acitenant
+    from .sync_aci import apply_netbox_cisco_aci_acivrf
+
+    return {
+        "netbox_cisco_aci.acifabric": apply_netbox_cisco_aci_acifabric,
+        "netbox_cisco_aci.acipod": apply_netbox_cisco_aci_acipod,
+        "netbox_cisco_aci.acinode": apply_netbox_cisco_aci_acinode,
+        "netbox_cisco_aci.acitenant": apply_netbox_cisco_aci_acitenant,
+        "netbox_cisco_aci.acivrf": apply_netbox_cisco_aci_acivrf,
+        "netbox_cisco_aci.acibridgedomain": apply_netbox_cisco_aci_acibridgedomain,
+        "netbox_cisco_aci.acifilter": apply_netbox_cisco_aci_acifilter,
+        "netbox_cisco_aci.acil3out": apply_netbox_cisco_aci_acil3out,
+    }
+
+
+# netbox-cisco-aci is registered lazily for the same reason the others are.
+# The builder is the peering one: it is a plain row loop with no verdict logic
+# of its own, and the ACI apply functions carry the leaf rule themselves.
+def _register_aci_comparisons():
+    for model_string, apply_function in _aci_comparisons().items():
+        _ADAPTER_COMPARISONS.setdefault(
+            model_string,
+            _compare_netbox_routing_peering(model_string, apply_function),
+        )
+
+
 def compare_model_rows(sync, model_string, rows):
     """Return ``{"creates", "updates", "unchanged", "rejected"}`` or ``None``.
 
@@ -1020,6 +1069,10 @@ def compare_model_rows(sync, model_string, rows):
         or model_string.startswith("netbox_peering_manager.")
     ) and model_string not in _ADAPTER_COMPARISONS:
         _register_peering_comparisons()
+    if model_string.startswith("netbox_cisco_aci.") and model_string not in (
+        _ADAPTER_COMPARISONS
+    ):
+        _register_aci_comparisons()
     adapter_comparison = _ADAPTER_COMPARISONS.get(model_string)
     if adapter_comparison is not None:
         return adapter_comparison(runner, rows)
