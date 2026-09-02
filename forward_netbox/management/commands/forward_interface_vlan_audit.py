@@ -23,8 +23,19 @@ class Command(BaseCommand):
             help="Rows listed per rule. Counts are always exact; 0 lists none.",
         )
 
+        parser.add_argument(
+            "--owned-only",
+            action="store_true",
+            help=(
+                "Only devices a Forward sync created. Without it the count is "
+                "every interface NetBox would refuse, which is not the same as "
+                "the rows a sync will refuse."
+            ),
+        )
+
     def handle(self, *args, **options):
         payload = audit_interface_untagged_vlans(
-            sample_limit=int(options.get("limit") or 0)
+            sample_limit=int(options.get("limit") or 0),
+            owned_only=bool(options.get("owned_only")),
         )
         self.stdout.write(json.dumps(payload, indent=2, default=str))

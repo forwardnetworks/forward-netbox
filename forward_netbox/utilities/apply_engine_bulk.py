@@ -2423,6 +2423,15 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]], *, preview=False):
                         fields=update_field_names,
                         batch_size=1000,
                     )
+                    # `bulk_update` runs neither `save()` nor `clean()`, so a
+                    # device written here is never revalidated - and its
+                    # interfaces keep an untagged VLAN from whatever site it
+                    # had before. One query for the batch; see the helper.
+                    from .interface_vlan_audit import clear_cross_site_untagged_vlans
+
+                    clear_cross_site_untagged_vlans(
+                        runner, list(update_objects), using=using
+                    )
 
                 if scope_tags_enabled and scope_tags_by_name:
                     device_content_type = runner._content_type_for(Device)
