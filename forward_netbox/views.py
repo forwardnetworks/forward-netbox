@@ -481,6 +481,7 @@ def _dependency_model_result_summary(
     comparison_runtime_ms=None,
     comparison_queries=None,
     comparison_sql_ms=None,
+    comparison_error="",
 ):
     # ``fetcher.model_results`` are ForwardModelResult dataclasses, not dicts —
     # calling result.get(...) on them raised AttributeError and errored the whole
@@ -523,6 +524,10 @@ def _dependency_model_result_summary(
         "change_estimate_kind": (
             "exact_comparison" if comparison else "workload_upper_bound"
         ),
+        # WHY this model is not measured, when a comparison exists for it and
+        # raised. Empty for a model with no comparison, and for one that was
+        # measured. An exception name, never a message: messages carry values.
+        "comparison_error": str(comparison_error or ""),
         # Rows the comparison could not classify because they carry no usable
         # identity. Reported rather than folded into drift, which would read as
         # a difference between the two systems when it is a defect in the row.
@@ -548,6 +553,60 @@ def _dependency_model_result_summary(
         # source identifiers into the preview job payload.
         "durable_workload_state": durable_state,
     }
+
+
+def _compare_rows_by_model(sync, rows_by_model):
+    """Compare every model, one at a time, and never let one kill the rest.
+
+    One missing attribute in one model's classification used to raise out of
+    this loop and fail the whole preview job - every model read "Not measured"
+    and the report showed nothing. That was 2.8.8's regression, and its plan
+    recorded per-model isolation as the fix that would have turned the outage
+    into a single cell. A model whose comparison raises is recorded as not
+    measured WITH the exception's name, so the cell says why, and the loop
+    moves on. A job timeout is the one thing not caught: the worker is being
+    torn down, and swallowing it would let the job look finished.
+    """
+    from rq.timeouts import JobTimeoutException
+
+    from .utilities.diagnostics import exception_type
+    from .utilities.drift_comparison import compare_model_rows
+
+    result = {
+        "comparison": {},
+        "runtime_ms": {},
+        "queries": {},
+        "sql_ms": {},
+        "rows": {},
+        "errors": {},
+    }
+    for model_string, rows in rows_by_model.items():
+        meter = _QueryMeter()
+        started = time.perf_counter()
+        try:
+            with connection.execute_wrapper(meter):
+                result["comparison"][model_string] = compare_model_rows(
+                    sync, model_string, rows
+                )
+        except JobTimeoutException:
+            raise
+        except Exception as exc:  # noqa: BLE001 - one model, not the preview
+            result["comparison"][model_string] = None
+            result["errors"][model_string] = exception_type(exc)
+            logger.warning(
+                "Dependency preview could not compare %s (%s); reported as not "
+                "measured.",
+                model_string,
+                exception_type(exc),
+                exc_info=True,
+            )
+        result["runtime_ms"][model_string] = round(
+            (time.perf_counter() - started) * 1000, 1
+        )
+        result["queries"][model_string] = meter.count
+        result["sql_ms"][model_string] = round(meter.seconds * 1000, 1)
+        result["rows"][model_string] = len(rows)
+    return result
 
 
 class _QueryMeter:
@@ -625,7 +684,6 @@ def _dependency_dry_run_payload(sync, *, client=None):
     # never did; it costs no Forward calls, because the Forward half is already
     # in `workloads`. Models with no comparison yet return None and keep their
     # upper-bound estimate rather than reporting a confident zero.
-    from .utilities.drift_comparison import compare_model_rows
 
     # Measure against the rows the fetch produced, NOT against `workloads`.
     #
@@ -666,24 +724,13 @@ def _dependency_dry_run_payload(sync, *, client=None):
     # `connection.queries` is only populated when DEBUG is on, so the count is
     # taken from the cursor-execution wrapper instead, which is always active
     # and adds one integer increment per query.
-    comparison_by_model = {}
-    comparison_runtime_ms_by_model = {}
-    comparison_queries_by_model = {}
-    comparison_sql_ms_by_model = {}
-    comparison_rows_by_model_count = {}
-    for model_string, rows in rows_by_model.items():
-        meter = _QueryMeter()
-        started = time.perf_counter()
-        with connection.execute_wrapper(meter):
-            comparison_by_model[model_string] = compare_model_rows(
-                sync, model_string, rows
-            )
-        comparison_runtime_ms_by_model[model_string] = round(
-            (time.perf_counter() - started) * 1000, 1
-        )
-        comparison_queries_by_model[model_string] = meter.count
-        comparison_sql_ms_by_model[model_string] = round(meter.seconds * 1000, 1)
-        comparison_rows_by_model_count[model_string] = len(rows)
+    compared = _compare_rows_by_model(sync, rows_by_model)
+    comparison_by_model = compared["comparison"]
+    comparison_runtime_ms_by_model = compared["runtime_ms"]
+    comparison_queries_by_model = compared["queries"]
+    comparison_sql_ms_by_model = compared["sql_ms"]
+    comparison_rows_by_model_count = compared["rows"]
+    comparison_error_by_model = compared["errors"]
     measured_models = sum(
         1 for value in comparison_by_model.values() if value is not None
     )
@@ -773,6 +820,9 @@ def _dependency_dry_run_payload(sync, *, client=None):
                 ),
                 comparison_sql_ms=comparison_sql_ms_by_model.get(
                     (result.as_dict().get("model") or "")
+                ),
+                comparison_error=comparison_error_by_model.get(
+                    (result.as_dict().get("model") or ""), ""
                 ),
             )
             for result in fetcher.model_results

@@ -814,16 +814,20 @@ def _compare_netbox_dlm(model_string, apply_function):
 def _dlm_comparisons():
     """The netbox-dlm sub-models that can be compared, and those that cannot.
 
-    Five of the seven are wired. `inventoryitemsoftware` and
-    `inventoryitemroleplatform` are NOT: they resolve through
-    `_lookup_inventory_item` and `ensure_dlm_inventory_item_role_platform`,
-    which have their own dependency chains that have not been audited for the
-    writes-behind-a-runner-call trap. Absence from the mapping is the
-    documented "no comparison" answer, so they keep their upper bound.
+    All seven are wired. `inventoryitemsoftware` and `inventoryitemroleplatform`
+    were the last two, deferred in slice six because their chains had not been
+    audited for the writes-behind-a-runner-call trap. The audit: two reads that
+    raise a dependency skip, a platform ensure and an upsert the preview
+    overrides, and the same software-version upsert the `softwareversion` slice
+    already previews. One guard was needed - an absent platform must not let
+    the role-keyed mapping lookup match the role's mapping to some OTHER
+    platform - and it is in the ensure itself.
     """
     from .sync_dlm import apply_netbox_dlm_cve
     from .sync_dlm import apply_netbox_dlm_devicesoftware
     from .sync_dlm import apply_netbox_dlm_hardwarenotice
+    from .sync_dlm import apply_netbox_dlm_inventoryitemroleplatform
+    from .sync_dlm import apply_netbox_dlm_inventoryitemsoftware
     from .sync_dlm import apply_netbox_dlm_softwareversion
     from .sync_dlm import apply_netbox_dlm_vulnerability
 
@@ -833,6 +837,10 @@ def _dlm_comparisons():
         "netbox_dlm.devicesoftware": apply_netbox_dlm_devicesoftware,
         "netbox_dlm.cve": apply_netbox_dlm_cve,
         "netbox_dlm.vulnerability": apply_netbox_dlm_vulnerability,
+        "netbox_dlm.inventoryitemsoftware": apply_netbox_dlm_inventoryitemsoftware,
+        "netbox_dlm.inventoryitemroleplatform": (
+            apply_netbox_dlm_inventoryitemroleplatform
+        ),
     }
 
 
@@ -931,12 +939,29 @@ def _compare_dcim_inventoryitem(runner, rows):
 # means auditing its `runner.` calls, not just grepping it for ORM writes - the
 # writes that matter in these paths hide behind `_ensure_*` and `_upsert_*`,
 # and in `dcim.cable`'s case inside NetBox core's own `Cable.save()`.
+def _compare_dcim_virtualchassis(runner, rows):
+    """The last model that declined to answer, now measured through its adapter.
+
+    The bulk path returns `None` under preview because its second phase reads
+    the first phase's pk. That is the bulk path's problem, not the model's:
+    production syncs run in a branch, where the bulk path defers to
+    `apply_dcim_virtualchassis`, and that function's decisions are
+    classifiable row by row - an absent chassis is a create outright, a member
+    out of place is an update. So the comparison goes through the adapter,
+    exactly as the apply does in a branch.
+    """
+    from .sync_device import apply_dcim_virtualchassis
+
+    return _compare_adapter_rows(runner, rows, apply_dcim_virtualchassis)
+
+
 _ADAPTER_COMPARISONS = {
     "extras.taggeditem": _compare_extras_taggeditem,
     "dcim.cable": _compare_dcim_cable,
     "dcim.inventoryitem": _compare_dcim_inventoryitem,
     "ipam.fhrpgroup": _compare_ipam_fhrpgroup,
     "dcim.module": _compare_dcim_module,
+    "dcim.virtualchassis": _compare_dcim_virtualchassis,
 }
 
 

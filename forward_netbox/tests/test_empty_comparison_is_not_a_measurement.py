@@ -59,10 +59,10 @@ class AnUncomparableModelNeverReportsZeroTest(TestCase):
         self.assertIsNotNone(compare_model_rows(None, "netbox_dlm.softwareversion", []))
         self.assertIsNotNone(compare_model_rows(None, "netbox_cisco_aci.acitenant", []))
 
-    def test_a_model_that_declines_on_purpose_still_declines_when_empty(self):
-        # virtualchassis returns None deliberately; an empty list must not
-        # promote it to measured.
-        self.assertIsNone(compare_model_rows(None, "dcim.virtualchassis", []))
+    def test_the_model_that_declined_on_purpose_is_now_measured(self):
+        # virtualchassis returned None deliberately through the bulk path; it
+        # is now compared through its adapter, so an empty list is a real zero.
+        self.assertIsNotNone(compare_model_rows(None, "dcim.virtualchassis", []))
 
     def test_an_unknown_model_is_not_measured(self):
         self.assertIsNone(compare_model_rows(None, "nonexistent.model", []))

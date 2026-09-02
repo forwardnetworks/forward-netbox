@@ -131,18 +131,18 @@ class UncoveredModelsReportNoComparisonTest(TestCase):
     failure mode here that leads somewhere bad.
     """
 
-    def test_the_unaudited_bespoke_paths_return_none_under_preview(self):
-        """The one path still without a comparison.
+    def test_the_once_unaudited_bespoke_path_is_now_measured(self):
+        """`virtualchassis` no longer declines to answer.
 
-        `virtualchassis` creates VirtualChassis rows and then reads their pks
-        back to assign devices, so skipping the first phase leaves the second
-        unclassifiable - there is no verdict to shortcut to, the way there was
-        for `interface`. Until that is handled it must decline to answer rather
-        than answer wrongly.
+        The bulk path still cannot preview it - its second phase reads the
+        first phase's pk - but that is the bulk path's problem, not the
+        model's: production syncs run in a branch, where the bulk path defers
+        to `apply_dcim_virtualchassis`, and the comparison now goes through
+        that adapter. See `test_virtualchassis_drift_comparison`.
         """
-        self.assertIsNone(
+        self.assertIsNotNone(
             compare_model_rows(None, "dcim.virtualchassis", [{"name": "x"}]),
-            "virtualchassis has no comparison yet and must not claim one",
+            "virtualchassis is compared through its adapter",
         )
 
     def test_an_empty_row_set_is_zero_drift_rather_than_unmeasured(self):

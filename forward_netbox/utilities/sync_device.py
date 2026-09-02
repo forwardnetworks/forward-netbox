@@ -92,7 +92,19 @@ def delete_dcim_virtualchassis(runner, row):
     return runner._delete_by_coalesce(VirtualChassis, [{"name": name}])
 
 
-def apply_dcim_virtualchassis(runner, row):
+def apply_dcim_virtualchassis(runner, row, *, preview=False):
+    """Ensure the chassis, then the member device's position in it.
+
+    ``preview`` classifies without writing. This is the production path for
+    the model: syncs run in a branch, and the bulk engine defers to this
+    adapter whenever a branch is active, so the preview mirrors THIS function's
+    decisions rather than the bulk path's. A chassis the row would create is a
+    create; a member whose chassis or position differs is an update; a member
+    already in place takes the chassis's own upsert verdict. The two-phase
+    shape that made the bulk path decline to answer - the second phase reads
+    the first's pk - does not arise here, because an absent chassis means the
+    membership cannot exist yet and the row is a create outright.
+    """
     from dcim.models import Device
     from dcim.models import VirtualChassis
 
@@ -122,6 +134,10 @@ def apply_dcim_virtualchassis(runner, row):
             [("name",)],
         ),
     )
+    if preview and vc is None:
+        # Chassis absent, so the apply would create it - and any membership
+        # below it. One create under this model.
+        return "creates"
     if row.get("device"):
         try:
             device = runner._get_device_by_name(row["device"])
@@ -164,8 +180,17 @@ def apply_dcim_virtualchassis(runner, row):
             device.virtual_chassis_id == vc.pk
             and device.vc_position == row["vc_position"]
         ):
+            if preview:
+                return "updates" if runner.last_upsert_would_change else "unchanged"
             return vc
+        if preview:
+            # The membership write below is a direct ORM update - the one write
+            # in this function not behind a runner call - so the preview must
+            # answer before it.
+            return "updates"
         Device.objects.filter(pk=device.pk).update(**defaults)
+    if preview:
+        return "updates" if runner.last_upsert_would_change else "unchanged"
     return vc
 
 

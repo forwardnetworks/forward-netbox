@@ -543,6 +543,11 @@ def bulk_orm_apply_simple_models(
     # So it declines to answer. That is a worse report and a better number than
     # the alternative.
     if model_string == "dcim.virtualchassis":
+        # The bulk path cannot preview this model (its second phase reads the
+        # first's pk), and it no longer needs to: `drift_comparison` routes
+        # the comparison through `apply_dcim_virtualchassis`, the adapter that
+        # IS the production path whenever a branch is active. `None` here is
+        # reached only by a caller bypassing the dispatcher.
         return None if preview else bulk_orm_apply_virtualchassis(runner, rows)
     if model_string == "dcim.interface":
         return bulk_orm_apply_interface(runner, rows, preview=preview)

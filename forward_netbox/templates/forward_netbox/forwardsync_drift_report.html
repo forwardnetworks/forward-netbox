@@ -273,7 +273,7 @@
             <td>{{ row.pending_removes }}</td>
             <td>{{ row.estimated_apply_work }}</td>
             <td>{% if row.comparison_available %}{% if row.drift %}<strong class="text-warning">{{ row.drift }}</strong>{% else %}0{% endif %}{% else %}{% trans "Not measured" %}{% endif %}</td>
-            <td>{% if not row.comparison_available %}<span class="badge text-bg-secondary">{% trans "Not measured" %}</span>{% elif row.in_sync %}<span class="badge text-bg-success">{% trans "Yes" %}</span>{% else %}<span class="badge text-bg-warning">{% trans "No" %}</span>{% endif %}</td>
+            <td>{% if not row.comparison_available %}<span class="badge text-bg-secondary"{% if row.comparison_error %} title="{% blocktrans with error=row.comparison_error %}The comparison for this model raised {{ error }}; the other models were still measured.{% endblocktrans %}"{% endif %}>{% trans "Not measured" %}{% if row.comparison_error %} ({{ row.comparison_error }}){% endif %}</span>{% elif row.in_sync %}<span class="badge text-bg-success">{% trans "Yes" %}</span>{% else %}<span class="badge text-bg-warning">{% trans "No" %}</span>{% endif %}</td>
           </tr>
         {% empty %}
           <tr><td colspan="7" class="text-muted">{% trans "No model results in the preview." %}</td></tr>

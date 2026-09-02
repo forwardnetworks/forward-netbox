@@ -252,6 +252,7 @@ def compute_drift_report(payload):
                 "estimated_apply_work": apply_work,
                 "change_estimate_kind": estimate_kind,
                 "comparison_available": comparison_available,
+                "comparison_error": str(result.get("comparison_error") or ""),
                 "drift": drift,
                 "in_sync": in_sync,
                 "comparison_runtime_ms": result.get("comparison_runtime_ms"),
