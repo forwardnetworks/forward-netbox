@@ -503,14 +503,58 @@ class DurableWorkloadStateTest(TestCase):
         )
         self.assertEqual(summaries[0]["delete_rows"], 1)
 
-    def test_software_catalog_reconciliation_deletes_only_unreferenced_rows(self):
+    def _catalog_fixture(self):
+        """A platform, two versions, and a device of this sync on one of them."""
+        from dcim.models import Device
+        from dcim.models import DeviceRole
+        from dcim.models import DeviceType
+        from dcim.models import Manufacturer
         from dcim.models import Platform
+        from dcim.models import Site
         from django.apps import apps
 
         SoftwareVersion = apps.get_model("netbox_dlm", "SoftwareVersion")
         platform = Platform.objects.create(name="Catalog OS", slug="catalog-os")
-        SoftwareVersion.objects.create(platform=platform, version="1.0")
-        SoftwareVersion.objects.create(platform=platform, version="2.0")
+        old = SoftwareVersion.objects.create(platform=platform, version="1.0")
+        new = SoftwareVersion.objects.create(platform=platform, version="2.0")
+        manufacturer = Manufacturer.objects.create(name="Cat Vendor", slug="cat-vendor")
+        device_type = DeviceType.objects.create(
+            manufacturer=manufacturer, model="Cat Model", slug="cat-model"
+        )
+        role = DeviceRole.objects.create(name="Cat Role", slug="cat-role")
+        site = Site.objects.create(name="Cat Site", slug="cat-site")
+        device = Device.objects.create(
+            name="catalog-device", device_type=device_type, role=role, site=site
+        )
+        return platform, old, new, device
+
+    def _own(self, device, sync=None):
+        sync = sync or self.sync
+        ForwardDeviceIdentity.objects.create(
+            sync=sync,
+            ingestion=ForwardIngestion.objects.create(
+                sync=sync, snapshot_id=f"snapshot-{device.name}"
+            ),
+            source_device_key=device.name,
+            device=device,
+        )
+
+    def test_software_catalog_sweep_is_scoped_to_versions_this_sync_can_attribute(
+        self,
+    ):
+        """The sweep used to enumerate the WHOLE SoftwareVersion table.
+
+        Every row the current result did not name was a delete, operator-
+        created rows included. Now a version is a candidate only when a device
+        this sync alone manages references it - the same attribution the
+        association bootstrap uses - and everything else is left alone.
+        """
+        from django.apps import apps
+
+        DeviceSoftware = apps.get_model("netbox_dlm", "DeviceSoftware")
+        platform, old, _new, device = self._catalog_fixture()
+        self._own(device)
+        DeviceSoftware.objects.create(device=device, software_version=old)
         current = {"platform_slug": platform.slug, "version": "2.0"}
 
         workloads, _, summaries = apply_durable_workload_deltas(
@@ -518,11 +562,63 @@ class DurableWorkloadStateTest(TestCase):
             [_workload([current], model_string="netbox_dlm.softwareversion")],
         )
 
-        self.assertEqual(
-            workloads[0].delete_rows,
-            [{"platform_slug": platform.slug, "version": "1.0"}],
+        # Attributed and no longer in the result: a candidate. It survives this
+        # run only because the DeviceSoftware row still references it - the
+        # reference gate, which attribution does not bypass.
+        self.assertEqual(workloads[0].delete_rows, [])
+        self.assertEqual(summaries[0]["protected_delete_rows"], 1)
+
+    def test_an_operator_created_version_is_not_a_sweep_candidate(self):
+        # No device of this sync references `1.0`. Before this change it was
+        # deleted on every full run because it was in the table and not in
+        # the result. Now it is nobody's to sweep.
+        platform, _old, _new, device = self._catalog_fixture()
+        self._own(device)
+        current = {"platform_slug": platform.slug, "version": "2.0"}
+
+        workloads, _, summaries = apply_durable_workload_deltas(
+            self.sync,
+            [_workload([current], model_string="netbox_dlm.softwareversion")],
         )
-        self.assertEqual(summaries[0]["catalog_delete_rows"], 1)
+
+        self.assertEqual(workloads[0].delete_rows, [])
+        self.assertEqual(summaries[0]["catalog_delete_rows"], 0)
+
+    def test_a_version_referenced_only_by_another_syncs_device_is_not_swept(self):
+        from django.apps import apps
+
+        DeviceSoftware = apps.get_model("netbox_dlm", "DeviceSoftware")
+        platform, old, _new, device = self._catalog_fixture()
+        other_source = ForwardSource.objects.create(
+            name="other-catalog-source",
+            type="saas",
+            url="https://fwd.app",
+            status="ready",
+            parameters={},
+        )
+        other_sync = ForwardSync.objects.create(
+            name="other-catalog-sync", source=other_source
+        )
+        self._own(device, sync=other_sync)
+        DeviceSoftware.objects.create(device=device, software_version=old)
+        current = {"platform_slug": platform.slug, "version": "2.0"}
+
+        workloads, _, summaries = apply_durable_workload_deltas(
+            self.sync,
+            [_workload([current], model_string="netbox_dlm.softwareversion")],
+        )
+
+        self.assertEqual(workloads[0].delete_rows, [])
+        self.assertEqual(summaries[0]["catalog_delete_rows"], 0)
+
+    def test_only_the_allowlisted_model_gets_a_catalog_sweep(self):
+        # The negative space of the allowlist: a model outside it never has
+        # rows enumerated from its table, however the branch is keyed.
+        from forward_netbox.utilities.workload_state import CATALOG_SWEEP_MODELS
+
+        self.assertEqual(
+            CATALOG_SWEEP_MODELS, frozenset({"netbox_dlm.softwareversion"})
+        )
 
     def test_catalog_deletes_follow_authoritative_association_deletes_same_run(self):
         from django.apps import apps
@@ -703,6 +799,33 @@ class DurableWorkloadStateTest(TestCase):
         )
         stage_workload_states(peer_ingestion, peer_pending)
         promote_workload_states_locked(peer_ingestion)
+
+        # The version has to be a CANDIDATE for the peer protection to have
+        # anything to protect. The sweep is scoped to versions this sync can
+        # attribute, so a device of this sync references it; the empty,
+        # authoritative devicesoftware workload below then withdraws the local
+        # reference, leaving the peer's association state as the only thing
+        # holding the delete back - which is exactly the path under test.
+        DeviceSoftware = apps.get_model("netbox_dlm", "DeviceSoftware")
+        from dcim.models import Device
+        from dcim.models import DeviceRole
+        from dcim.models import DeviceType
+        from dcim.models import Manufacturer
+        from dcim.models import Site
+
+        manufacturer = Manufacturer.objects.create(
+            name="Peer Vendor", slug="peer-vendor"
+        )
+        device = Device.objects.create(
+            name="peer-owned-device",
+            device_type=DeviceType.objects.create(
+                manufacturer=manufacturer, model="Peer Model", slug="peer-model"
+            ),
+            role=DeviceRole.objects.create(name="Peer Role", slug="peer-role"),
+            site=Site.objects.create(name="Peer Site", slug="peer-site"),
+        )
+        self._own(device)
+        DeviceSoftware.objects.create(device=device, software_version=software_version)
 
         workloads, _, summaries = apply_durable_workload_deltas(
             self.sync,

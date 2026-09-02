@@ -722,13 +722,58 @@ def _owned_device_rows(sync, coalesce_fields):
     return rows, device_id_by_name
 
 
-def _software_version_catalog_rows():
+# The models whose durable-state delta may sweep a CATALOGUE - rows the sync
+# did not write in this run and may never have written at all - for deletes.
+# An explicit allowlist, because the sweep below deleted every row in the
+# `SoftwareVersion` table that the current result did not name, operator-
+# created rows included, and nothing named that as a policy: it was a branch
+# keyed on a model string. This is the last whole-table delete producer now
+# that the device sweep is quarantined, and it carries the rule its siblings
+# do: name the allowlist, state which gate is not bypassed, pin the negative
+# space with tests.
+#
+# The gate it does NOT bypass: `_locally_referenced_delete_identities` and the
+# peer protection below still hold every candidate back while something
+# references it. Attribution decides what is a CANDIDATE; reference protection
+# decides what is deleted.
+CATALOG_SWEEP_MODELS = frozenset({"netbox_dlm.softwareversion"})
+
+
+def _software_version_catalog_rows(sync):
+    """Software versions this sync can attribute to itself, as catalogue rows.
+
+    A version is attributable when a `DeviceSoftware` or `InventoryItemSoftware`
+    row on a device only this sync manages references it - the same
+    attribution `_bootstrap_dlm_rows` uses for the association models. A
+    version referenced by nothing, or only by another sync's devices, or only
+    by an operator's, is not this sync's to sweep: it stays whatever the
+    current result says.
+
+    The table-wide enumeration this replaces deleted operator-created versions
+    on every full run and was carried as open through three release plans.
+    """
+    device_ids = _sync_exclusive_device_ids(sync)
+    if not device_ids:
+        return []
     SoftwareVersion = apps.get_model("netbox_dlm", "SoftwareVersion")
-    return list(
-        SoftwareVersion.objects.order_by("platform__slug", "version").values(
-            "platform__slug",
-            "version",
+    DeviceSoftware = apps.get_model("netbox_dlm", "DeviceSoftware")
+    InventoryItemSoftware = apps.get_model("netbox_dlm", "InventoryItemSoftware")
+    version_ids = set(
+        DeviceSoftware.objects.filter(device_id__in=device_ids).values_list(
+            "software_version_id", flat=True
         )
+    )
+    version_ids.update(
+        InventoryItemSoftware.objects.filter(
+            inventory_item__device_id__in=device_ids
+        ).values_list("software_version_id", flat=True)
+    )
+    if not version_ids:
+        return []
+    return list(
+        SoftwareVersion.objects.filter(pk__in=version_ids)
+        .order_by("platform__slug", "version")
+        .values("platform__slug", "version")
     )
 
 
@@ -932,7 +977,7 @@ def apply_durable_workload_deltas(sync, workloads):
                 [*explicit_deletes, *ownership_deletes],
                 coalesce_fields,
             )
-        if model_string == "netbox_dlm.softwareversion" and (
+        if model_string in CATALOG_SWEEP_MODELS and (
             current_state is None or compatible
         ):
             catalog_rows = [
@@ -940,7 +985,7 @@ def apply_durable_workload_deltas(sync, workloads):
                     "platform_slug": row["platform__slug"],
                     "version": row["version"],
                 }
-                for row in _software_version_catalog_rows()
+                for row in _software_version_catalog_rows(sync)
             ]
             catalog_entries = build_state_entries(
                 model_string,
