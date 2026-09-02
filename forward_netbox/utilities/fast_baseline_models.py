@@ -13,7 +13,6 @@ from itertools import chain
 
 from core.models import ObjectType
 from django.db import transaction
-from django.db.models import Max
 
 _BATCH_SIZE = 5_000
 FAST_BASELINE_SET_BASED_MODELS = frozenset(
@@ -344,10 +343,11 @@ def bulk_load_inventory_items(runner, rows):
         role_by_slug = {**existing_roles, **{role.slug: role for role in roles}}
 
         objects = []
-        first_tree_id = (
-            InventoryItem.objects.aggregate(value=Max("tree_id"))["value"] or 0
-        ) + 1
-        for tree_id, row in enumerate(rows, first_tree_id):
+        # No tree bookkeeping is assembled here any more. NetBox 4.7 dropped
+        # `lft`/`rght`/`tree_id`/`level` from InventoryItem when ltree replaced
+        # django-mptt, and the `path` column that replaced them is maintained by
+        # a database trigger, which fires for these inserts like any other.
+        for row in rows:
             device = device_by_name[str(row["device"])]
             objects.append(
                 InventoryItem(
@@ -365,10 +365,6 @@ def bulk_load_inventory_items(runner, rows):
                     _site_id=device.site_id,
                     _location_id=device.location_id,
                     _rack_id=device.rack_id,
-                    lft=1,
-                    rght=2,
-                    tree_id=tree_id,
-                    level=0,
                 )
             )
         _bulk_create(InventoryItem, objects)
@@ -728,18 +724,33 @@ def _adapter_workload_contract(rows_by_model):
             return False, {"model": model_string, "reason": "invalid_routing_identity"}
 
     af_rows = rows_by_model.get("netbox_routing.bgpaddressfamily", [])
-    from netbox_routing.models import BGPAddressFamily
-
-    allowed_address_families = {
-        str(choice[0])
-        for choice in BGPAddressFamily._meta.get_field("address_family").choices
-    }
+    peer_af_rows = rows_by_model.get("netbox_routing.bgppeeraddressfamily", [])
+    # Unconditional before, which crashed the whole fast baseline with
+    # ModuleNotFoundError on NetBox 4.7 - netbox-routing caps at a max_version
+    # in the 4.6 series and cannot be installed there, so this import always
+    # failed and it failed LOUDLY in a contract function rather than declining.
+    #
+    # Nothing to validate is not the same as failing to validate: with no
+    # routing rows there is no address family to check and the contract has
+    # nothing to say. Rows for a model whose plugin is absent is a different
+    # thing entirely, and fails closed below.
+    if af_rows or peer_af_rows:
+        try:
+            from netbox_routing.models import BGPAddressFamily
+        except ImportError:
+            return False, {
+                "model": "netbox_routing.bgpaddressfamily",
+                "reason": "routing_plugin_not_installed",
+            }
+        allowed_address_families = {
+            str(choice[0])
+            for choice in BGPAddressFamily._meta.get_field("address_family").choices
+        }
+    else:
+        allowed_address_families = set()
     if allowed_address_families and any(
         _routing_af(row.get("afi_safi")) not in allowed_address_families
-        for row in [
-            *af_rows,
-            *rows_by_model.get("netbox_routing.bgppeeraddressfamily", []),
-        ]
+        for row in [*af_rows, *peer_af_rows]
     ):
         return False, {
             "model": "netbox_routing.bgpaddressfamily",
@@ -764,7 +775,16 @@ def bulk_load_vulnerabilities(runner, rows):
         return False
 
     from dcim.models import Device, Platform
-    from netbox_dlm.models import CVE, DeviceSoftware, SoftwareVersion, Vulnerability
+
+    try:
+        from netbox_dlm.models import CVE
+        from netbox_dlm.models import DeviceSoftware
+        from netbox_dlm.models import SoftwareVersion
+        from netbox_dlm.models import Vulnerability
+    except ImportError:
+        # Reachable only with rows for a model whose plugin is absent, which is
+        # a refusal rather than a crash - the same shape as the routing guard.
+        return False
 
     device_names = {str(row["name"]).strip() for row in rows}
     platform_slugs = {str(row["platform_slug"]).strip() for row in rows}

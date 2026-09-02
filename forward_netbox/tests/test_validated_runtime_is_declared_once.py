@@ -114,12 +114,16 @@ class AddingAnIntegrationTakesOneEditTest(SimpleTestCase):
     def test_helpers_name_what_differs(self):
         from forward_netbox.utilities import validated_runtime
 
-        installed = (VALIDATED_PLUGIN_APPS | {"stranger"}) - {"netbox_dlm"}
+        # Removes netbox_branching rather than an optional plugin: on NetBox 4.7
+        # no optional plugin is in the validated set, so dropping one would be a
+        # no-op and the assertion would pass without testing anything. Branching
+        # is always there, and its absence is the case that matters most.
+        installed = (VALIDATED_PLUGIN_APPS | {"stranger"}) - {"netbox_branching"}
 
         self.assertFalse(validated_runtime.validated_plugin_apps_match(installed))
         self.assertEqual(
             validated_runtime.unexpected_plugin_apps(installed), ["stranger"]
         )
         self.assertEqual(
-            validated_runtime.missing_plugin_apps(installed), ["netbox_dlm"]
+            validated_runtime.missing_plugin_apps(installed), ["netbox_branching"]
         )

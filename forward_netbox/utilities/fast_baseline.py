@@ -86,17 +86,23 @@ FAST_BASELINE_OMITTED_EVIDENCE = (
 # `bulk_create` without our help, which is why netbox-dlm 0.5.0 adding
 # `SoftwareVersion.release_designation` is fine. A new *required* column is one
 # the loader would leave unset, so it fails closed instead.
+# The three hierarchical models lost `level`/`lft`/`rght`/`tree_id` in NetBox
+# 4.7: ltree replaced django-mptt and the columns were dropped. Their `path`
+# replacement is NOT required - database triggers maintain it - so `bulk_create`
+# no longer has to fabricate tree bookkeeping at all. Read off the live runtime
+# rather than hand-edited, because this contract exists to fail closed when a
+# column appears, and a guess would defeat it.
 FAST_BASELINE_REQUIRED_FIELD_CONTRACT = {
     "dcim.cable": (),
     "dcim.device": ("device_type", "role", "site"),
-    "dcim.devicerole": ("level", "lft", "name", "rght", "slug", "tree_id"),
+    "dcim.devicerole": ("name", "slug"),
     "dcim.devicetype": ("manufacturer", "model", "slug"),
     "dcim.interface": ("device", "name", "type"),
-    "dcim.inventoryitem": ("device", "level", "lft", "name", "rght", "tree_id"),
+    "dcim.inventoryitem": ("device", "name"),
     "dcim.macaddress": ("mac_address",),
     "dcim.manufacturer": ("name", "slug"),
     "dcim.module": ("device", "module_bay", "module_type"),
-    "dcim.platform": ("level", "lft", "name", "rght", "slug", "tree_id"),
+    "dcim.platform": ("name", "slug"),
     "dcim.site": ("name", "slug"),
     "extras.taggeditem": ("content_type", "object_id", "tag"),
     "ipam.fhrpgroup": ("group_id", "protocol"),
@@ -510,7 +516,13 @@ def _dynamic_hook_decision(models):
 
     content_types = [ContentType.objects.get_for_model(model) for model in models]
     for model, content_type in zip(models, content_types, strict=True):
-        custom_fields = list(CustomField.objects.get_for_model(model).order_by("name"))
+        # NetBox 4.7 returns a list, so `.order_by()` is gone too; sort here.
+        # 4.7 also omits fields whose stored data a background job is still
+        # updating, which is the answer this gate wants: a field mid-rewrite
+        # is not one the fast path may assume is settled.
+        custom_fields = sorted(
+            CustomField.objects.get_for_model(model), key=lambda field: field.name
+        )
         model_string = f"{model._meta.app_label}.{model._meta.model_name}"
         # The exact supported plugin migration owns this optional Device object
         # field. It is populated only by the generation-guarded post-baseline

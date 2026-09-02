@@ -212,9 +212,15 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
         super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
+        from .signals import enforce_sync_job_safety
         from .utilities.ownership import release_source_ownership
 
         with transaction.atomic():
+            # Deleting a source cascades to its syncs WITHOUT calling their
+            # own delete(), so each one's job guard has to run from here or it
+            # never runs at all.
+            for sync in ForwardSync.objects.filter(source=self):
+                enforce_sync_job_safety(sync)
             release_source_ownership(self)
             return super().delete(*args, **kwargs)
 
@@ -517,9 +523,17 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
         return reverse("plugins:forward_netbox:forwardsync", args=[self.pk])
 
     def delete(self, *args, **kwargs):
+        from .signals import enforce_sync_job_safety
         from .utilities.ownership import release_sync_ownership
 
         with transaction.atomic():
+            # Before anything is collected. Django 6.1 deletes the `jobs`
+            # GenericRelation rows ahead of this model's `pre_delete`, so the
+            # signal that used to hold this guard now runs with nothing left to
+            # see - a running worker's Job row would be deleted out from under
+            # it, losing terminal diagnostics, and a standing RQ schedule would
+            # keep firing against a sync that no longer exists.
+            enforce_sync_job_safety(self)
             release_sync_ownership(self)
             return super().delete(*args, **kwargs)
 
