@@ -1,11 +1,7 @@
-# Integration tests for the production single-branch bulk merge.
-#
-# Provisions a real netbox_branching branch, stages changes into it, and merges
-# via bulk_merge_changes, proving batched writes, bounded framework fallbacks,
-# atomic audit evidence, relationship convergence, and idempotent retries.
 import logging
 import threading
 import time
+import unittest
 import uuid
 from unittest.mock import Mock
 from unittest.mock import patch
@@ -23,6 +19,7 @@ from dcim.models import ModuleType
 from dcim.models import Platform
 from dcim.models import Region
 from dcim.models import Site
+from django.apps import apps
 from django.db import connection
 from django.db import DEFAULT_DB_ALIAS
 from django.db import transaction
@@ -45,6 +42,18 @@ from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.bulk_merge import bulk_merge_changes
 from forward_netbox.utilities.merge import merge_branch
+
+# Integration tests for the production single-branch bulk merge.
+#
+# Provisions a real netbox_branching branch, stages changes into it, and merges
+# via bulk_merge_changes, proving batched writes, bounded framework fallbacks,
+# atomic audit evidence, relationship convergence, and idempotent retries.
+
+# netbox-dlm cannot be installed on NetBox 4.7: it declares a max_version in
+# the 4.6 series and NetBox refuses to start with a plugin outside its range.
+# These skip rather than fail, which IS lost coverage - the 4.6 lane on 2.9.x
+# is where the DLM paths stay exercised until that ceiling moves.
+DLM_INSTALLED = apps.is_installed("netbox_dlm")
 
 
 def provision_branch(*, user, name="Test Branch", **kwargs):
@@ -994,6 +1003,7 @@ class BulkMergeIntegrationTest(CleanTransactionTestCase):
         )
         self.assertFalse(ForwardVirtualParentClaim.objects.exists())
 
+    @unittest.skipUnless(DLM_INSTALLED, "netbox-dlm is not installed")
     def test_dlm_association_and_catalog_deletes_merge_in_one_branch(self):
         from django.apps import apps
 
@@ -1078,6 +1088,7 @@ class BulkMergeIntegrationTest(CleanTransactionTestCase):
             SoftwareVersion.objects.filter(pk=software_version.pk).exists()
         )
 
+    @unittest.skipUnless(DLM_INSTALLED, "netbox-dlm is not installed")
     def test_m2m_target_create_precedes_existing_source_update_on_first_merge(self):
         from django.apps import apps
 
@@ -1151,6 +1162,7 @@ class BulkMergeIntegrationTest(CleanTransactionTestCase):
 
         self.assertEqual(accepted, [])
 
+    @unittest.skipUnless(DLM_INSTALLED, "netbox-dlm is not installed")
     def test_dlm_protected_version_delete_follows_destination_fk_reassignment(self):
         from django.apps import apps
         from netbox_branching.merge_strategies.squash import SquashMergeStrategy
@@ -2887,7 +2899,20 @@ class BulkMergeIntegrationTest(CleanTransactionTestCase):
             staged_tag.object_types.add(ContentType.objects.get_for_model(Site))
 
         changes = branch.get_unmerged_changes().order_by("time")
-        apply_one = self._real_apply_one(branch)
+        # The fallback is disabled on purpose. Patching the relationship write
+        # proves the BULK batch rolls its create and m2m back together - and
+        # then the per-object fallback re-applies the row through
+        # netbox_branching, which for a non-MPTT create calls
+        # `deserialized.save()` and writes the m2m inside the library, out of
+        # reach of any patch here. With the fallback live the row lands
+        # complete and `applied` is 1, which reads as an atomicity failure when
+        # it is nothing of the kind: verified on 4.7 that the Tag exists WITH
+        # its object_types, not half-written.
+        #
+        # So this pins what it can actually speak to. If the bulk create and
+        # its m2m did not roll back together, the Tag would survive below even
+        # though the fallback refused it.
+        apply_one = Mock(side_effect=RuntimeError("fallback disabled for this test"))
         with patch.object(
             manager_class,
             "set",

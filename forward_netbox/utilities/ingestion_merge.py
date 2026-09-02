@@ -2,18 +2,13 @@ from contextlib import contextmanager
 
 from core.exceptions import SyncError
 from core.models import Job
-from core.signals import pre_sync
-from dcim.models import Site
 from dcim.models import VirtualChassis
-from dcim.signals import assign_virtualchassis_master
-from dcim.signals import sync_cached_scope_fields
 from django.db import DEFAULT_DB_ALIAS
 from django.db import transaction
 from django.db.models import signals
 from django.utils import timezone
 from django.utils.module_loading import import_string
-from django_pglocks import advisory_lock
-from extras.signals import notify_object_changed
+from django_pg_utils import advisory_lock
 from netbox.constants import ADVISORY_LOCK_KEYS
 from netbox_branching.choices import BranchStatusChoices
 from netbox_branching.models import AppliedChange
@@ -38,8 +33,6 @@ def suppress_ingest_side_effect_signals():
     - assign_virtualchassis_master (dcim): recalculates VC master on every
       VirtualChassis save; meaningless mid-ingest, so it is skipped until the
       final save.
-    - sync_cached_scope_fields (dcim): recalculates Site scope cache on every
-      Site save; batched naturally after ingest.
     - notify_object_changed (extras): creates Notification rows per save for
       subscribers; no operator subscribes to ingest-driven churn and the lookup
       fires a DB query per object even with no subscribers.
@@ -47,10 +40,28 @@ def suppress_ingest_side_effect_signals():
     Does NOT suppress core.signals.handle_changed_object (ObjectChange /
     Branching diff tracking) — that is intentional and required for Branching
     review.
+    
+    NOT suppressed on NetBox 4.7, and deliberately not replaced:
+    `sync_cached_scope_fields` no longer exists. 4.7 maintains the
+    CachedScopeMixin denormalized columns - Site's among them - with database
+    triggers rather than a Python post_save handler, so the per-save cost this
+    suppression avoided is gone rather than moved. What remains in Python is
+    the Location and Rack scope cascade (`handle_location_site_change` and its
+    Rack counterpart), and this sync writes neither model: `dcim.site` is the
+    only one of the three in the query registry. Suppressing a handler for a
+    model nothing here saves would be theatre.
     """
+    # Imported here, not at module scope. `forward_netbox.models` imports this
+    # module while Django is still loading models, and on NetBox 4.7
+    # `extras.signals` runs `_connect_object_save_handlers()` at import time,
+    # which calls `apps.get_model()` and raises `AppRegistryNotReady`. The
+    # sibling signal modules are deferred with it so the next one to grow an
+    # import-time side effect does not reintroduce the same failure.
+    from dcim.signals import assign_virtualchassis_master
+    from extras.signals import notify_object_changed
+
     disconnect_pairs = [
         (assign_virtualchassis_master, VirtualChassis),
-        (sync_cached_scope_fields, Site),
         (notify_object_changed, None),
     ]
 
@@ -388,6 +399,8 @@ def sync_merge_ingestion(
         claimed_job_id is None or ingestion.merge_job_id != claimed_job_id
     ):
         raise SyncError("Cannot initiate merge; merge already in progress.")
+
+    from core.signals import pre_sync
 
     pre_sync.send(sender=ingestion.__class__, instance=ingestion)
     context = _post_merge_context(ingestion, mark_baseline_ready)

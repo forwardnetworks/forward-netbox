@@ -60,13 +60,16 @@ class CopySQLSelectionTest(TestCase):
     def test_unsupported_version_tuple_fails_closed(self):
         cases = (
             # Out of series, not merely a later patch: the gate accepts any
-            # 4.6.x and any 1.1.x, so a rejection case has to leave the series.
-            (("4.7.0", "1.1.1", ()), "unsupported_netbox_version"),
-            (("4.6.5", "1.2.0", ()), "unsupported_branching_version"),
+            # 4.7.x and any 1.2.x, so a rejection case has to leave the series.
+            # 4.6/1.1 are the rejections that matter now - that pair is the
+            # previous lane, and it is the one somebody could plausibly still
+            # be running.
+            (("4.6.8", "1.2.0b1", ()), "unsupported_netbox_version"),
+            (("4.7.0", "1.1.3", ()), "unsupported_branching_version"),
             (
                 (
-                    "4.6.5",
-                    "1.1.1",
+                    "4.7.0",
+                    "1.2.0b1",
                     (("netbox-cisco-aci", "9.9.9"),),
                 ),
                 "unsupported_optional_plugin_version",

@@ -25,5 +25,5 @@ the harness rule rather than by being invisible to it.
 
 # The runtime every release gate runs on, and the version the compatibility
 # tables claim. Bump here first; the harness names every other site.
-TESTED_NETBOX_VERSION = "4.6.8"
+TESTED_NETBOX_VERSION = "4.7.0"
 TESTED_NETBOX_TAG = f"v{TESTED_NETBOX_VERSION}"

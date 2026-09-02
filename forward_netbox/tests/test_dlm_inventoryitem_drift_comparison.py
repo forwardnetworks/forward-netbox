@@ -1,9 +1,5 @@
-# The two netbox-dlm models slice six left unmeasured: `inventoryitemsoftware`
-# and `inventoryitemroleplatform`. Deferred because their chains had not been
-# audited for the writes-behind-a-runner-call trap; the audit found two reads
-# that raise a dependency skip, a platform ensure and an upsert the preview
-# overrides, and the same software-version upsert already previewed - and one
-# guard to add, in the ensure, for the absent-platform case.
+import unittest
+
 from dcim.models import Device
 from dcim.models import DeviceRole
 from dcim.models import DeviceType
@@ -17,6 +13,20 @@ from django.test import TestCase
 
 from forward_netbox.utilities.drift_comparison import compare_model_rows
 
+# The two netbox-dlm models slice six left unmeasured: `inventoryitemsoftware`
+# and `inventoryitemroleplatform`. Deferred because their chains had not been
+# audited for the writes-behind-a-runner-call trap; the audit found two reads
+# that raise a dependency skip, a platform ensure and an upsert the preview
+# overrides, and the same software-version upsert already previewed - and one
+# guard to add, in the ensure, for the absent-platform case.
+
+# These models only exist when the optional plugin is installed, and on
+# NetBox 4.7 it cannot be: netbox-dlm declares a max_version in the 4.6
+# series, so NetBox refuses to start with it. The suite skips rather than
+# fails - but this IS lost coverage, not a clean pass, and the 4.6 lane on
+# 2.9.x is where these adapters stay exercised until that ceiling moves.
+NETBOX_DLM_INSTALLED = apps.is_installed("netbox_dlm")
+
 SOFTWARE = "netbox_dlm.inventoryitemsoftware"
 MAPPING = "netbox_dlm.inventoryitemroleplatform"
 
@@ -25,6 +35,7 @@ def _dlm(name):
     return apps.get_model("netbox_dlm", name)
 
 
+@unittest.skipUnless(NETBOX_DLM_INSTALLED, "netbox-dlm is not installed")
 class InventoryItemSoftwarePreviewTest(TestCase):
     def setUp(self):
         site = Site.objects.create(name="IIS Site", slug="iis-site")

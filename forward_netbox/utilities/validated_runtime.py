@@ -26,39 +26,41 @@ codes. This module carries facts about the runtime, not policy about it.
 
 # NetBox and Branching are matched by series; a patch release inside a
 # validated series is not a different runtime.
-VALIDATED_NETBOX_SERIES = "4.6"
-VALIDATED_BRANCHING_SERIES = "1.1"
+VALIDATED_NETBOX_SERIES = "4.7"
+VALIDATED_BRANCHING_SERIES = "1.2"
 
 # Plugin apps as they appear in `settings.PLUGINS`.
+#
+# On NetBox 4.7 this is forward_netbox and Branching, and nothing else. Every
+# optional integration - netbox-dlm 0.9.1, netbox-cisco-aci 0.4.0,
+# netbox-peering-manager 0.3.0, netbox-routing, netbox-validity 3.5.2 -
+# declares `max_version = "4.6.99"`, and NetBox refuses to start with a plugin
+# outside its declared range. They cannot be installed here, so listing them
+# would be a claim about a runtime nobody can assemble.
+#
+# This set is an EXACT match that fails closed and silently: an app present in
+# PLUGINS but absent here disables COPY/SQL, the set-based merge and the fast
+# baseline with no error, turning a first sync from minutes into hours. So when
+# an optional plugin raises its ceiling past 4.6.99, its app label goes back in
+# here and its versions into VALIDATED_OPTIONAL_DISTRIBUTIONS below - a data
+# edit in one file, which is the whole point of this module.
 VALIDATED_PLUGIN_APPS = frozenset(
     {
         "forward_netbox",
         "netbox_branching",
-        "netbox_cisco_aci",
-        "netbox_dlm",
-        "netbox_peering_manager",
-        "netbox_routing",
-        # netbox-validity is a CONSUMER integration: it reads configuration
-        # files from a git data source and writes nothing the apply engines
-        # touch. It is listed here anyway, because this set is an exact match
-        # that fails closed - its mere presence in PLUGINS would otherwise
-        # disable the fast paths entirely. This entry is a claim that they
-        # were validated with it installed; the COPY/SQL paired-branch
-        # equivalence tests are that validation.
-        "validity",
     }
 )
 
 # Distribution name -> every version validated against these subsystems, not a
 # single pin. An exact pin meant a customer upgrading one optional plugin
 # silently lost the fast paths, because the whole tuple stopped matching.
-VALIDATED_OPTIONAL_DISTRIBUTIONS = {
-    "netbox-cisco-aci": frozenset({"0.4.0"}),
-    "netbox-dlm": frozenset({"0.4.1", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.9.1"}),
-    "netbox-peering-manager": frozenset({"0.3.0"}),
-    "netbox-routing": frozenset({"0.4.3"}),
-    "netbox-validity": frozenset({"3.5.2"}),
-}
+# Empty on 4.7 for the reason above, not because the integrations were
+# removed: their registry, models and sync paths are all still here and still
+# report an absent plugin honestly. The 4.6 versions this set held are kept in
+# the 2.9.x line, and the values to restore are recorded in
+# `docs/03_Plans/active/2026-09-02-netbox-4.7-runtime.md` so regaining one is a
+# lookup rather than an archaeology exercise.
+VALIDATED_OPTIONAL_DISTRIBUTIONS: dict[str, frozenset[str]] = {}
 
 # The distributions whose versions a runtime probe reports. Derived rather than
 # repeated: a name expected but never probed reads as ABSENT and fails the

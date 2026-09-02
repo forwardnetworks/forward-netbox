@@ -1324,9 +1324,16 @@ select {name: site.name, slug: site.name}
             "tag_color": "9e9e9e",
         }
 
+        # The FIRST apply is measured separately from the repeat. Creating a tag
+        # assignment legitimately invalidates the device's config-context cache
+        # on NetBox 4.7 - `_config_context_data = NULL` plus a generation bump -
+        # and that write is correct work, not churn. The property this test
+        # exists to defend is that applying the SAME row again does nothing, so
+        # the repeat is what gets the empty assertion.
+        runner._apply_extras_taggeditem(row)
+
         before_count = ObjectChange.objects.count()
         with CaptureQueriesContext(connection) as queries:
-            runner._apply_extras_taggeditem(row)
             runner._apply_extras_taggeditem(row)
 
         self.assertEqual(device.tags.filter(slug="feature").count(), 1)

@@ -1,3 +1,5 @@
+import unittest
+
 """A delete the database will refuse must never be staged.
 
 A deployment's sync reported sixteen protected-delete skips: ten `dcim.device`
@@ -38,6 +40,12 @@ from django.apps import apps
 from django.test import TestCase
 
 from forward_netbox.utilities.workload_state import _reference_protected_pks
+
+# netbox-dlm cannot be installed on NetBox 4.7: it declares a max_version in
+# the 4.6 series and NetBox refuses to start with a plugin outside its range.
+# These skip rather than fail, which IS lost coverage - the 4.6 lane on 2.9.x
+# is where the DLM paths stay exercised until that ceiling moves.
+DLM_INSTALLED = apps.is_installed("netbox_dlm")
 
 
 class TheCollectorSeesProtectionAScanCannotTest(TestCase):
@@ -94,6 +102,7 @@ class TheCollectorSeesProtectionAScanCannotTest(TestCase):
         )
 
 
+@unittest.skipUnless(DLM_INSTALLED, "netbox-dlm is not installed")
 class SoftwareVersionInventoryItemHoldTest(TestCase):
     """The six skips the hand-written list omitted."""
 

@@ -9,7 +9,7 @@
 
 - **Support model:** field integration reference — **not** an officially
   supported Forward Networks product.
-- **Requires:** NetBox `4.6.5`, `netbox-branching` `1.1.1`; Forward `26.6`
+- **Requires:** NetBox `4.7.x`, `netbox-branching` `1.2.x`; Forward `26.6`
   baseline for async NQE (full matrix in
   [Release Compatibility](#release-compatibility)).
 - **Distribution:** PyPI + GitHub releases. `pip install forward-netbox` is the

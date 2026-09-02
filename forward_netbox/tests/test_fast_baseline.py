@@ -1,4 +1,5 @@
 import json
+import unittest
 from dataclasses import replace
 from io import StringIO
 from types import SimpleNamespace
@@ -6,6 +7,7 @@ from unittest.mock import patch
 
 from core.models import ObjectChange
 from dcim.models import Site
+from django.apps import apps
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.db import connections
@@ -14,7 +16,6 @@ from netbox.context import current_request
 from netbox_branching.models import AppliedChange
 from netbox_branching.models import Branch
 from netbox_branching.models import ChangeDiff
-from netbox_dlm.models import CVE
 from rest_framework.test import APIRequestFactory
 
 from forward_netbox.api.serializers import ForwardIngestionSerializer
@@ -43,6 +44,18 @@ from forward_netbox.utilities.workload_state import build_state_entries
 from forward_netbox.utilities.workload_state import decode_state_entries
 from forward_netbox.utilities.workload_state import encode_state_entries
 from forward_netbox.utilities.workload_state import PendingWorkloadState
+
+
+# The fast-baseline contracts cover ten models, four of which belong to
+# optional plugins that cannot be installed on NetBox 4.7 - each caps at a
+# max_version in the 4.6 series. Tests that build rows for those models can
+# only run where the plugin exists. Skipping is honest here in a way it would
+# not be for the core models: the contract for netbox_routing rows is not
+# WEAKER on 4.7, it is unreachable, because rows for an absent plugin are
+# refused before any contract is consulted.
+OPTIONAL_ADAPTER_PLUGINS_INSTALLED = apps.is_installed(
+    "netbox_dlm"
+) and apps.is_installed("netbox_routing")
 
 
 class FastBaselineLoadTest(TransactionTestCase):
@@ -189,6 +202,10 @@ class FastBaselineLoadTest(TransactionTestCase):
         self.assertFalse(decision.enabled)
         self.assertEqual(decision.reason_code, "delete_rows_not_supported")
 
+    @unittest.skipUnless(
+        OPTIONAL_ADAPTER_PLUGINS_INSTALLED,
+        "netbox-dlm and netbox-routing are not installed",
+    )
     def test_relationship_adapter_contract_covers_all_ten_models(self):
         workloads = [
             BranchWorkload(
@@ -641,6 +658,7 @@ class FastBaselineLoadTest(TransactionTestCase):
         self.assertTrue(Manufacturer.objects.filter(slug="implicit-vendor").exists())
         self.assertIn(Manufacturer, _side_models({"dcim.inventoryitem"}))
 
+    @unittest.skipUnless(apps.is_installed("netbox_dlm"), "netbox-dlm is not installed")
     def test_locked_selection_rejects_nonempty_target_and_prior_ingestion(self):
         Site.objects.create(name="Existing Site", slug="existing-site")
         from django.db import transaction
@@ -663,6 +681,7 @@ class FastBaselineLoadTest(TransactionTestCase):
         self.assertFalse(decision.enabled)
         self.assertEqual(decision.reason_code, "prior_ingestion_present")
 
+    @unittest.skipUnless(apps.is_installed("netbox_dlm"), "netbox-dlm is not installed")
     def test_direct_baseline_preserves_durable_completion_without_branch_audit(self):
         logger = SyncLogging()
         executor = ForwardExecutorBase(
@@ -793,7 +812,13 @@ class FastBaselineLoadTest(TransactionTestCase):
             attestation,
         )
 
+    @unittest.skipUnless(apps.is_installed("netbox_dlm"), "netbox-dlm is not installed")
     def test_direct_baseline_omits_only_proven_cve_tombstones(self):
+        # Imported here, not at module scope: netbox-dlm cannot be installed
+        # on NetBox 4.7, and a module-level import made the WHOLE file fail
+        # to load, taking 30-odd unrelated fast-baseline tests with it.
+        from netbox_dlm.models import CVE
+
         self.sync.parameters["dcim.site"] = False
         self.sync.parameters["netbox_dlm.cve"] = True
         workload = BranchWorkload(
@@ -879,6 +904,7 @@ class FastBaselineLoadTest(TransactionTestCase):
         )
         self.assertEqual(ObjectChange.objects.count(), 0)
 
+    @unittest.skipUnless(apps.is_installed("netbox_dlm"), "netbox-dlm is not installed")
     def test_fault_rolls_back_target_and_ingestion(self):
         logger = SyncLogging()
         executor = ForwardExecutorBase(
