@@ -297,3 +297,73 @@ class SensitivePatternParityTest(unittest.TestCase):
         arguments = run.call_args.args[0]
         self.assertIn("--require-env-patterns", arguments)
         self.assertIn("--protected-history", arguments)
+
+
+def _dependabot_alert(*, ghsa, severity, package="sqlparse"):
+    return {
+        "security_advisory": {"ghsa_id": ghsa, "severity": severity},
+        "dependency": {"package": {"name": package}},
+    }
+
+
+class DependabotAlertsTest(unittest.TestCase):
+    """Pins the gap `constraints.txt`-only `pip-audit` cannot see: a
+    transitive dependency's advisory (the real sqlparse alerts Dependabot
+    caught after v2.9.0 shipped, unpinned in `constraints.txt`)."""
+
+    def setUp(self):
+        patcher = mock.patch.object(
+            preflight, "_dependabot_token", return_value="test-token"
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_no_open_alerts_passes_silently(self):
+        with mock.patch.object(preflight.provenance, "_github_json", return_value=[]):
+            result = preflight.check_dependabot_alerts()
+        self.assertIn("no open high/critical", result)
+
+    def test_a_medium_severity_alert_does_not_block(self):
+        alerts = [_dependabot_alert(ghsa="GHSA-medium", severity="medium")]
+        with mock.patch.object(
+            preflight.provenance, "_github_json", return_value=alerts
+        ):
+            result = preflight.check_dependabot_alerts()
+        self.assertIn("no open high/critical", result)
+
+    def test_an_unaccepted_high_severity_alert_blocks(self):
+        alerts = [_dependabot_alert(ghsa="GHSA-high-one", severity="high")]
+        with mock.patch.object(
+            preflight.provenance, "_github_json", return_value=alerts
+        ):
+            with self.assertRaises(preflight.PreflightError) as caught:
+                preflight.check_dependabot_alerts()
+        self.assertIn("sqlparse", str(caught.exception))
+        self.assertIn("GHSA-high-one", str(caught.exception))
+
+    def test_an_accepted_high_severity_alert_does_not_block(self):
+        alerts = [_dependabot_alert(ghsa="GHSA-high-one", severity="high")]
+        with mock.patch.object(
+            preflight, "ACCEPTED_DEPENDABOT_ALERTS", {"GHSA-high-one"}
+        ):
+            with mock.patch.object(
+                preflight.provenance, "_github_json", return_value=alerts
+            ):
+                result = preflight.check_dependabot_alerts()
+        self.assertIn("GHSA-high-one", result)
+
+    def test_no_token_available_fails_closed(self):
+        with mock.patch.object(preflight, "_dependabot_token") as token:
+            token.side_effect = preflight.PreflightError("no token")
+            with self.assertRaises(preflight.PreflightError):
+                preflight.check_dependabot_alerts()
+
+    def test_a_transport_failure_is_translated_and_does_not_pass_silently(self):
+        with mock.patch.object(
+            preflight.provenance,
+            "_github_json",
+            side_effect=preflight.provenance.ProvenanceError("boom"),
+        ):
+            with self.assertRaises(preflight.PreflightError) as caught:
+                preflight.check_dependabot_alerts()
+        self.assertIn("boom", str(caught.exception))

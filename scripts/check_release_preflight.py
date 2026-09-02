@@ -26,6 +26,8 @@ import sys
 import tomllib
 from pathlib import Path
 
+import verify_release_provenance as provenance
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 PYPROJECT = REPO_ROOT / "pyproject.toml"
@@ -204,6 +206,98 @@ def check_dependency_advisories() -> str:
     return "no known advisories in constraints.txt"
 
 
+# Dependabot alert ids (GHSA, not PYSEC - a different vocabulary from
+# `ACCEPTED_DEPENDENCY_ADVISORIES`, and the two lists do not overlap: paramiko
+# PYSEC-2026-2858 does not appear in this repo's Dependabot alerts at all, and
+# nothing here has yet needed a waiver) that are accepted rather than fixed.
+# Same rule as above: name why, here.
+ACCEPTED_DEPENDABOT_ALERTS: set[str] = set()
+
+_DEPENDABOT_BLOCKING_SEVERITIES = frozenset({"high", "critical"})
+
+
+def _dependabot_token() -> str:
+    token = os.environ.get("GH_TOKEN", "").strip()
+    if token:
+        return token
+    completed = subprocess.run(
+        ["gh", "auth", "token"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    token = completed.stdout.strip()
+    if completed.returncode != 0 or not token:
+        raise PreflightError(
+            "no GitHub token available (GH_TOKEN is unset and `gh auth token` "
+            "failed), so open Dependabot alerts cannot be checked before the "
+            "gate. Dependabot already scans the full dependency graph pip-audit "
+            "cannot see through constraints.txt alone - see the sqlparse "
+            "alerts caught after v2.9.0 shipped, which pip-audit never saw "
+            "because constraints.txt does not pin it."
+        )
+    return token
+
+
+def check_dependabot_alerts() -> str:
+    """No open high-or-critical Dependabot alert may be unaccepted.
+
+    `check_dependency_advisories` only audits `constraints.txt` - a small,
+    hand-curated pin set for packages this project pins deliberately
+    (cryptography, httpx, the optional NetBox plugins). It was never the full
+    dependency closure, so a transitive dependency's advisory (sqlparse,
+    pulled in by Django with only a floor pin) passed every local and CI
+    `pip-audit` run while GitHub's own Dependabot scan - which reads the whole
+    `poetry.lock` - already had it open. Nothing in the release process looked
+    at Dependabot before this. This closes that gap the same way the pip-audit
+    check closes its own: fail closed, before the forty-minute gate, not after
+    the tag.
+    """
+    try:
+        token = _dependabot_token()
+        # `dependabot/alerts` paginates by cursor (`Link` header), not the
+        # `page=N` query parameter every other endpoint `_github_pages` calls
+        # uses - it rejects `page` outright. A single 100-alert page is a
+        # deliberate, named limit rather than real pagination: this is a
+        # single plugin repository, nowhere near 100 open alerts, and cursor
+        # pagination would mean exposing response headers through
+        # `_github_json`, which nothing else needs.
+        alerts = provenance._github_json(
+            "dependabot/alerts?state=open&per_page=100", token
+        )
+        if not isinstance(alerts, list):
+            raise PreflightError("GitHub returned invalid Dependabot alert data")
+        if len(alerts) >= 100:
+            raise PreflightError(
+                "100+ open Dependabot alerts - this check only reads the first "
+                "page; extend it to follow the Link header before trusting it"
+            )
+    except provenance.ProvenanceError as exc:
+        raise PreflightError(f"could not read Dependabot alerts: {exc}")
+    unaccepted = [
+        alert
+        for alert in alerts
+        if alert.get("security_advisory", {}).get("severity")
+        in _DEPENDABOT_BLOCKING_SEVERITIES
+        and alert.get("security_advisory", {}).get("ghsa_id")
+        not in ACCEPTED_DEPENDABOT_ALERTS
+    ]
+    if unaccepted:
+        detail = "; ".join(
+            f"{alert.get('dependency', {}).get('package', {}).get('name')} "
+            f"({alert.get('security_advisory', {}).get('severity')}, "
+            f"{alert.get('security_advisory', {}).get('ghsa_id')})"
+            for alert in unaccepted
+        )
+        raise PreflightError(f"open Dependabot alerts are not accepted: {detail}")
+    if ACCEPTED_DEPENDABOT_ALERTS:
+        return (
+            "no unaccepted high/critical Dependabot alerts (ignoring: "
+            f"{', '.join(sorted(ACCEPTED_DEPENDABOT_ALERTS))})"
+        )
+    return "no open high/critical Dependabot alerts"
+
+
 def _git(*arguments: str) -> str:
     import subprocess
 
@@ -364,11 +458,14 @@ def _outcome(detail: str) -> str:
     return "skipped" if "skipped" in detail else "passed"
 
 
-def _report_lines(version, dependencies, advisories, evidence_base, pattern_parity):
+def _report_lines(
+    version, dependencies, advisories, dependabot_alerts, evidence_base, pattern_parity
+):
     checks = (
         (f"version {version} consistent across surfaces", "passed"),
         (f"UI harness dependencies present ({dependencies})", "passed"),
         (advisories, _outcome(advisories)),
+        (dependabot_alerts, _outcome(dependabot_alerts)),
         (f"evidence base commit {evidence_base}", _outcome(evidence_base)),
         (f"sensitive pattern parity {pattern_parity}", _outcome(pattern_parity)),
     )
@@ -391,6 +488,7 @@ def main() -> int:
         version = check_version_surfaces()
         dependencies = check_ui_harness_dependencies()
         advisories = check_dependency_advisories()
+        dependabot_alerts = check_dependabot_alerts()
         evidence_base = check_release_plan_evidence_base(version)
         pattern_parity = check_sensitive_pattern_parity()
     except PreflightError as exc:
@@ -401,6 +499,7 @@ def main() -> int:
         "version": version,
         "ui_harness_dependencies": dependencies,
         "dependency_advisories": advisories,
+        "dependabot_alerts": dependabot_alerts,
         "evidence_base_commit": evidence_base,
         "sensitive_pattern_parity": pattern_parity,
     }
@@ -408,7 +507,12 @@ def main() -> int:
         print(json.dumps(result, sort_keys=True))
     else:
         for line in _report_lines(
-            version, dependencies, advisories, evidence_base, pattern_parity
+            version,
+            dependencies,
+            advisories,
+            dependabot_alerts,
+            evidence_base,
+            pattern_parity,
         ):
             print(line)
     return 0

@@ -19,6 +19,7 @@ permissions:
   actions: read
   contents: read
   pull-requests: read
+  security-events: read
   statuses: read
 jobs:
   validate:
@@ -103,6 +104,28 @@ jobs:
           from check_release_preflight import PreflightError
           try:
               print(check_dependency_advisories())
+          except PreflightError as exc:
+              print(f'::error::{exc}')
+              sys.exit(1)
+          "
+      - name: Check for open Dependabot alerts
+        # Same reasoning as the pip-audit step above: calls the preflight's own
+        # check so ACCEPTED_DEPENDABOT_ALERTS lives in exactly one place.
+        # `constraints.txt` is a small, hand-curated pin set - pip-audit
+        # auditing it never sees a transitive dependency's advisory (sqlparse,
+        # pulled in by Django with only a floor pin); Dependabot already scans
+        # the full dependency graph, so this asks it instead of re-deriving
+        # the closure.
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python -c "
+          import sys
+          sys.path.insert(0, 'scripts')
+          from check_release_preflight import check_dependabot_alerts
+          from check_release_preflight import PreflightError
+          try:
+              print(check_dependabot_alerts())
           except PreflightError as exc:
               print(f'::error::{exc}')
               sys.exit(1)
