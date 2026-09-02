@@ -139,6 +139,11 @@ dmypy.json
 # Local-only sensitive content denylist
 .sensitive-patterns.local.txt
 
+# What `scripts/release.py` verify ran, and its gate logs: the source the
+# authorization is rendered from. Names this host's port and log paths.
+.release-evidence.json
+.release-evidence-logs/
+
 # Browser harness artifacts
 node_modules/
 playwright-report/

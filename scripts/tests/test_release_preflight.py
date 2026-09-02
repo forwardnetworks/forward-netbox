@@ -306,6 +306,111 @@ def _dependabot_alert(*, ghsa, severity, package="sqlparse"):
     }
 
 
+class DependencyAdvisoryAuditTest(unittest.TestCase):
+    """Both requirement files are audited, and the report names both.
+
+    `requirements-release.txt` is what the publish workflow installs with
+    `--require-hashes`, and nothing audited it: an advisory against the
+    controller's own toolchain would fail the job after the tag existed.
+    """
+
+    def _completed(self, returncode=0, stdout=""):
+        completed = mock.Mock()
+        completed.returncode = returncode
+        completed.stdout = stdout
+        completed.stderr = ""
+        return completed
+
+    def test_both_files_are_audited_with_the_same_waivers(self):
+        with (
+            mock.patch.object(
+                preflight.shutil, "which", return_value="/usr/bin/pip-audit"
+            ),
+            mock.patch.object(
+                preflight.subprocess, "run", return_value=self._completed()
+            ) as run,
+        ):
+            result = preflight.check_dependency_advisories()
+        audited = [
+            call.args[0][call.args[0].index("-r") + 1] for call in run.call_args_list
+        ]
+        self.assertEqual(
+            audited, [str(preflight.CONSTRAINTS), str(preflight.RELEASE_TOOLCHAIN)]
+        )
+        for call in run.call_args_list:
+            for vuln_id in preflight.ACCEPTED_DEPENDENCY_ADVISORIES:
+                self.assertIn(vuln_id, call.args[0])
+        self.assertIn("constraints.txt and requirements-release.txt", result)
+
+    def test_an_advisory_in_the_toolchain_names_the_file(self):
+        outcomes = iter([self._completed(), self._completed(1, "pip 26.1.2 GHSA-x")])
+        with (
+            mock.patch.object(
+                preflight.shutil, "which", return_value="/usr/bin/pip-audit"
+            ),
+            mock.patch.object(
+                preflight.subprocess, "run", side_effect=lambda *a, **k: next(outcomes)
+            ),
+        ):
+            with self.assertRaises(preflight.PreflightError) as caught:
+                preflight.check_dependency_advisories()
+        self.assertIn("requirements-release.txt", str(caught.exception))
+        self.assertIn("GHSA-x", str(caught.exception))
+
+
+class LockfileConsistencyTest(unittest.TestCase):
+    """`poetry.lock` described a runtime three releases stale and nothing read
+    it. This is the reader."""
+
+    def test_a_missing_poetry_fails_closed_with_the_remedy(self):
+        with mock.patch.object(preflight.shutil, "which", return_value=None):
+            with self.assertRaisesRegex(
+                preflight.PreflightError, "poetry is not installed"
+            ):
+                preflight.check_lockfile_consistency()
+
+    def test_a_stale_lockfile_is_refused_and_names_the_fix(self):
+        completed = mock.Mock(returncode=1, stdout="", stderr="pyproject.toml changed")
+        with (
+            mock.patch.object(
+                preflight.shutil, "which", return_value="/usr/bin/poetry"
+            ),
+            mock.patch.object(preflight.subprocess, "run", return_value=completed),
+        ):
+            with self.assertRaises(preflight.PreflightError) as caught:
+                preflight.check_lockfile_consistency()
+        self.assertIn("poetry lock", str(caught.exception))
+        self.assertIn("pyproject.toml changed", str(caught.exception))
+
+    def test_a_consistent_lockfile_passes(self):
+        completed = mock.Mock(returncode=0, stdout="", stderr="")
+        with (
+            mock.patch.object(
+                preflight.shutil, "which", return_value="/usr/bin/poetry"
+            ),
+            mock.patch.object(
+                preflight.subprocess, "run", return_value=completed
+            ) as run,
+        ):
+            result = preflight.check_lockfile_consistency()
+        self.assertEqual(result, "poetry.lock matches pyproject.toml")
+        self.assertEqual(run.call_args.args[0][1:], ["check", "--lock"])
+
+    def test_the_report_carries_the_lockfile_line(self):
+        lines = preflight._report_lines(
+            "2.9.2",
+            "deps",
+            "no advisories",
+            "no alerts",
+            "ok",
+            "verified",
+            "poetry.lock matches pyproject.toml",
+        )
+        self.assertIn(
+            "release preflight passed: poetry.lock matches pyproject.toml", lines
+        )
+
+
 class DependabotAlertsTest(unittest.TestCase):
     """Pins the gap `constraints.txt`-only `pip-audit` cannot see: a
     transitive dependency's advisory (the real sqlparse alerts Dependabot

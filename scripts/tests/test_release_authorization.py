@@ -318,11 +318,34 @@ class ReleaseAuthorizationTest(unittest.TestCase):
                 self._plan(evidence_overrides={"final-tree-full-gate": evidence})
             )
 
-    def test_still_requires_the_url_pair_for_ui_validation(self):
-        # Playwright has to be told where to connect, so an absent pair there
-        # means the cited run was not the run being described.
+    def test_ui_validation_no_longer_demands_the_url_pair(self):
+        # The rule required naming two variables `invoke playwright-test` never
+        # reads - it picks its own loopback port and sets NETBOX_URL itself -
+        # so a truthful evidence line could not satisfy it.
         evidence = self.VALID_EVIDENCE["ui-validation"].replace(
             "FORWARD_NETBOX_HOST_PORT=18081 NETBOX_URL=http://127.0.0.1:18081 ", ""
+        )
+        # Optional ids are validated when recorded and rejected with
+        # `placeholder_evidence`; acceptance is the absence of that refusal.
+        result = release_authorization.check_release_authorization(
+            self._plan(evidence_overrides={"ui-validation": evidence})
+        )
+        self.assertTrue(result["authorized_evidence_ids"])
+
+    def test_ui_validation_accepts_the_port_the_task_actually_reads(self):
+        evidence = self.VALID_EVIDENCE["ui-validation"].replace(
+            "FORWARD_NETBOX_HOST_PORT=18081 NETBOX_URL=http://127.0.0.1:18081 ",
+            "FORWARD_NETBOX_PLAYWRIGHT_HOST_PORT=18081 ",
+        )
+        result = release_authorization.check_release_authorization(
+            self._plan(evidence_overrides={"ui-validation": evidence})
+        )
+        self.assertTrue(result["authorized_evidence_ids"])
+
+    def test_ui_validation_still_bounds_the_playwright_port(self):
+        evidence = self.VALID_EVIDENCE["ui-validation"].replace(
+            "FORWARD_NETBOX_HOST_PORT=18081 NETBOX_URL=http://127.0.0.1:18081 ",
+            "FORWARD_NETBOX_PLAYWRIGHT_HOST_PORT=99999 ",
         )
         with self.assertRaisesRegex(ValueError, "placeholder_evidence"):
             release_authorization.check_release_authorization(

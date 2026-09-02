@@ -135,6 +135,11 @@ def check_ui_harness_dependencies() -> str:
 
 
 CONSTRAINTS = REPO_ROOT / "constraints.txt"
+# The release controller's own toolchain. `release.yml` installs it with
+# `--require-hashes` and nothing audited it: an advisory against `pip`,
+# `twine` or `build` would fail the publish job after the tag existed.
+RELEASE_TOOLCHAIN = REPO_ROOT / "requirements-release.txt"
+POETRY_LOCK = REPO_ROOT / "poetry.lock"
 
 # Advisories we accept rather than fix, because forward_netbox's own code never
 # exercises the vulnerable path. Each entry needs a comment naming why, and the
@@ -183,27 +188,71 @@ def check_dependency_advisories() -> str:
             "before the gate. Install it (`pip install pip-audit`) or the release "
             "workflow will be the first thing to notice an advisory."
         )
-    command = [executable, "--progress-spinner", "off", "-r", str(CONSTRAINTS)]
-    for vuln_id in sorted(ACCEPTED_DEPENDENCY_ADVISORIES):
-        command += ["--ignore-vuln", vuln_id]
+    audited = []
+    for requirements in (CONSTRAINTS, RELEASE_TOOLCHAIN):
+        if not requirements.exists():
+            raise PreflightError(
+                f"{requirements.name} is missing; dependencies cannot be audited"
+            )
+        command = [executable, "--progress-spinner", "off", "-r", str(requirements)]
+        for vuln_id in sorted(ACCEPTED_DEPENDENCY_ADVISORIES):
+            command += ["--ignore-vuln", vuln_id]
+        completed = subprocess.run(
+            command,
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            detail = (completed.stdout or completed.stderr or "").strip()
+            raise PreflightError(
+                f"{requirements.name} carries a known advisory, which will fail "
+                f"CI and the release workflow:\n{detail}"
+            )
+        audited.append(requirements.name)
+    files = " and ".join(audited)
+    if ACCEPTED_DEPENDENCY_ADVISORIES:
+        return (
+            f"no unaccepted advisories in {files} (ignoring: "
+            f"{', '.join(sorted(ACCEPTED_DEPENDENCY_ADVISORIES))})"
+        )
+    return f"no known advisories in {files}"
+
+
+def check_lockfile_consistency() -> str:
+    """`poetry.lock` must describe `pyproject.toml`, and the tree must say so.
+
+    The lockfile described a runtime from 2.6.7 for three releases and nothing
+    noticed, because nothing read it: it is not what ships (`constraints.txt`
+    is), so no install ever failed on it. 2.9.1 corrected it by hand and
+    recorded that "accurate today and unenforced only resets the clock". This
+    is the enforcement. `poetry check --lock` compares the lock's content hash
+    to the manifest; a dependency edit that skips `poetry lock` fails here,
+    ten seconds ahead of the gate, instead of drifting for another year.
+    """
+    if not POETRY_LOCK.exists():
+        raise PreflightError("poetry.lock is missing; the lockfile cannot be checked")
+    executable = shutil.which("poetry")
+    if executable is None:
+        raise PreflightError(
+            "poetry is not installed, so poetry.lock cannot be checked against "
+            "pyproject.toml before the gate. Install it, or the lockfile will "
+            "silently describe a runtime this release does not have."
+        )
     completed = subprocess.run(
-        command,
+        [executable, "check", "--lock"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
     )
     if completed.returncode != 0:
-        detail = (completed.stdout or completed.stderr or "").strip()
+        detail = (completed.stdout + completed.stderr).strip().splitlines()
         raise PreflightError(
-            "pinned dependencies carry a known advisory, which will fail CI and "
-            f"the release workflow:\n{detail}"
+            "poetry.lock does not match pyproject.toml: "
+            + (detail[-1] if detail else "no output")
+            + ". Run `poetry lock` and commit the result."
         )
-    if ACCEPTED_DEPENDENCY_ADVISORIES:
-        return (
-            "no unaccepted advisories in constraints.txt (ignoring: "
-            f"{', '.join(sorted(ACCEPTED_DEPENDENCY_ADVISORIES))})"
-        )
-    return "no known advisories in constraints.txt"
+    return "poetry.lock matches pyproject.toml"
 
 
 # Dependabot alert ids (GHSA, not PYSEC - a different vocabulary from
@@ -459,13 +508,20 @@ def _outcome(detail: str) -> str:
 
 
 def _report_lines(
-    version, dependencies, advisories, dependabot_alerts, evidence_base, pattern_parity
+    version,
+    dependencies,
+    advisories,
+    dependabot_alerts,
+    evidence_base,
+    pattern_parity,
+    lockfile="",
 ):
     checks = (
         (f"version {version} consistent across surfaces", "passed"),
         (f"UI harness dependencies present ({dependencies})", "passed"),
         (advisories, _outcome(advisories)),
         (dependabot_alerts, _outcome(dependabot_alerts)),
+        (lockfile, _outcome(lockfile)),
         (f"evidence base commit {evidence_base}", _outcome(evidence_base)),
         (f"sensitive pattern parity {pattern_parity}", _outcome(pattern_parity)),
     )
@@ -489,6 +545,7 @@ def main() -> int:
         dependencies = check_ui_harness_dependencies()
         advisories = check_dependency_advisories()
         dependabot_alerts = check_dependabot_alerts()
+        lockfile = check_lockfile_consistency()
         evidence_base = check_release_plan_evidence_base(version)
         pattern_parity = check_sensitive_pattern_parity()
     except PreflightError as exc:
@@ -500,6 +557,7 @@ def main() -> int:
         "ui_harness_dependencies": dependencies,
         "dependency_advisories": advisories,
         "dependabot_alerts": dependabot_alerts,
+        "lockfile": lockfile,
         "evidence_base_commit": evidence_base,
         "sensitive_pattern_parity": pattern_parity,
     }
@@ -513,6 +571,7 @@ def main() -> int:
             dependabot_alerts,
             evidence_base,
             pattern_parity,
+            lockfile,
         ):
             print(line)
     return 0

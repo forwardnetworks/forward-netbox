@@ -88,13 +88,13 @@ def main():
         policy=policy,
         snapshot_id="artifact-route-smoke",
     )
-    ForwardIngestion.objects.create(
+    ingestion = ForwardIngestion.objects.create(
         sync=sync,
         validation_run=validation_run,
         snapshot_id="artifact-route-smoke",
         baseline_ready=True,
     )
-    ForwardNQEMap.objects.create(
+    nqe_map = ForwardNQEMap.objects.create(
         name="Artifact route smoke map",
         netbox_model=ContentType.objects.get(app_label="dcim", model="device"),
         query_id="artifact-route-smoke-query",
@@ -122,7 +122,7 @@ def main():
         role=device_role,
         site=site,
     )
-    ForwardDeviceAnalysis.objects.create(
+    analysis = ForwardDeviceAnalysis.objects.create(
         sync=sync,
         device=device,
         snapshot_id="artifact-route-smoke",
@@ -144,7 +144,70 @@ def main():
             )
         rendered.append({"route": route_name, "status_code": response.status_code})
 
-    print(json.dumps({"installed_menu_routes": rendered}, sort_keys=True))
+    # Every registered detail-scoped view, not only the menu lists. The
+    # ingestion-issue list route was registered against a view that did not
+    # exist and no menu led to it, so the menu probe reported the artifact
+    # clean while a click from the ingestion page raised. Enumerating the URL
+    # resolver catches that class at the artifact rather than in a customer's
+    # browser. A GET refused with 405 is a POST-only action, and a 302 is an
+    # action view bouncing back to its object with a message; both count as
+    # registered. Anything else must render.
+    fixtures = {
+        "forwardsource": source.pk,
+        "forwardsync": sync.pk,
+        "forwardingestion": ingestion.pk,
+        "forwardvalidationrun": validation_run.pk,
+        "forwarddeviceanalysis": analysis.pk,
+        "forwardnqemap": nqe_map.pk,
+        "forwarddriftpolicy": policy.pk,
+    }
+    detail = []
+    for route_name, pk in _detail_routes(fixtures):
+        url = reverse(route_name, kwargs={"pk": pk})
+        response = client.get(url)
+        if response.status_code not in (200, 302, 405):
+            raise SystemExit(
+                f"installed detail route {route_name} returned HTTP "
+                f"{response.status_code}"
+            )
+        detail.append({"route": route_name, "status_code": response.status_code})
+
+    print(
+        json.dumps(
+            {"installed_menu_routes": rendered, "installed_detail_routes": detail},
+            sort_keys=True,
+        )
+    )
+
+
+def _detail_routes(fixtures):
+    """Every `plugins:forward_netbox:<model>*` route that takes exactly a pk.
+
+    Namespaced names are not in the root resolver's `reverse_dict`; they live
+    in the nested resolver two namespaces down, keyed by their short name.
+    """
+    from django.urls import get_resolver
+
+    _prefix, plugins = get_resolver().namespace_dict["plugins"]
+    _prefix, plugin = plugins.namespace_dict["forward_netbox"]
+    routes = set()
+    for short in plugin.reverse_dict:
+        if not isinstance(short, str):
+            continue
+        model = next(
+            (candidate for candidate in fixtures if short.startswith(candidate)), None
+        )
+        if model is None:
+            continue
+        for (
+            possibilities,
+            _pattern,
+            _defaults,
+            _converters,
+        ) in plugin.reverse_dict.getlist(short):
+            if any(set(params) == {"pk"} for _result, params in possibilities):
+                routes.add((f"plugins:forward_netbox:{short}", fixtures[model]))
+    return sorted(routes)
 
 
 if __name__ == "__main__":

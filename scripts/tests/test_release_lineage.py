@@ -6,7 +6,7 @@
 # a release author gets wrong by squashing the production content into the
 # release commit.
 import sys
-import unittest
+import unittest.mock
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -42,9 +42,18 @@ class ReleaseLineageTest(unittest.TestCase):
         self._patch(provenance, "_git_capture", lambda *args: self.release)
         self._patch(provenance, "_require_release_plan", lambda *a, **k: "plan.md")
         self._patch(provenance, "_require_security_bootstrap", lambda commit: None)
+        self._patch(
+            check_release_lineage,
+            "check_sensitive_surfaces",
+            lambda: {"surfaces": list(check_release_lineage.SENSITIVE_SURFACES)},
+        )
 
     def _patch(self, module, name, value):
-        self._patched[(module, name)] = getattr(module, name)
+        # The FIRST saved value is the original. Patching the same attribute
+        # twice in one test used to overwrite the saved original with the
+        # earlier stub, and tearDown then restored the stub - which leaked into
+        # every later test in the process.
+        self._patched.setdefault((module, name), getattr(module, name))
         setattr(module, name, value)
 
     def tearDown(self):
@@ -102,6 +111,74 @@ class ReleaseLineageTest(unittest.TestCase):
         self.assertTrue(
             any("pull request" in item for item in result["not_checked_here"])
         )
+
+    def test_it_reports_every_sensitive_surface_it_scanned(self):
+        # Four surfaces: tree, protected history, ref names, tag names. A
+        # review that reported "clean" while covering one of them let a stale
+        # remote-tracking ref refuse a tag after two clean tree reviews.
+        self._lineage([self.bridge, self.control, self.production, self.release])
+
+        result = check_release_lineage.check_release_lineage(self.release, "2.7.11")
+
+        self.assertEqual(
+            result["sensitive_surfaces"]["surfaces"],
+            ["tracked files", "protected history", "ref names", "tag names"],
+        )
+
+    def test_a_sensitive_refusal_stops_the_lineage_check(self):
+        self._lineage([self.bridge, self.control, self.production, self.release])
+
+        def refuse():
+            raise check_release_lineage.LineageError(
+                "the sensitive-content gate refused"
+            )
+
+        self._patch(check_release_lineage, "check_sensitive_surfaces", refuse)
+        with self.assertRaisesRegex(check_release_lineage.LineageError, "refused"):
+            check_release_lineage.check_release_lineage(self.release, "2.7.11")
+
+
+class SensitiveSurfacesTest(unittest.TestCase):
+    def test_every_ref_and_tag_name_is_handed_to_the_scanner(self):
+        names = ["main", "origin/main", "v2.9.1", "origin/feature/old-customer-name"]
+        with (
+            unittest.mock.patch.object(
+                check_release_lineage, "_ref_names", return_value=names
+            ),
+            unittest.mock.patch.object(
+                check_release_lineage.subprocess,
+                "run",
+                return_value=unittest.mock.Mock(returncode=0, stdout="", stderr=""),
+            ) as run,
+        ):
+            result = check_release_lineage.check_sensitive_surfaces()
+        command = run.call_args.args[0]
+        self.assertIn("--git-files", command)
+        self.assertIn("--protected-history", command)
+        for name in names:
+            self.assertIn(name, command)
+        self.assertEqual(command.count("--ref-name"), len(names))
+        self.assertEqual(result["ref_names_scanned"], len(names))
+
+    def test_a_refusal_names_the_surfaces_that_were_looked_at(self):
+        with (
+            unittest.mock.patch.object(
+                check_release_lineage, "_ref_names", return_value=[]
+            ),
+            unittest.mock.patch.object(
+                check_release_lineage.subprocess,
+                "run",
+                return_value=unittest.mock.Mock(
+                    returncode=1, stdout="", stderr="opaque match in ref name"
+                ),
+            ),
+        ):
+            with self.assertRaises(check_release_lineage.LineageError) as caught:
+                check_release_lineage.check_sensitive_surfaces()
+        message = str(caught.exception)
+        self.assertIn("opaque match in ref name", message)
+        for surface in check_release_lineage.SENSITIVE_SURFACES:
+            self.assertIn(surface, message)
 
 
 if __name__ == "__main__":
