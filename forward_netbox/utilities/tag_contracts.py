@@ -2,10 +2,20 @@ from django.core.exceptions import ValidationError
 from django.utils.text import slugify
 
 
+# Every slug the plugin maintains as a status tag. An include tag that
+# normalizes onto one of these is refused at configuration time, because the
+# managed-tag registry allows a slug exactly one claim type: the collision would
+# otherwise surface much later as an `OwnershipConflictError` on every run, with
+# no remedy short of renaming the Forward tag.
+#
+# Kept in lockstep with `scope_reconciliation`'s three `*_TAG_SLUG` constants;
+# a test pins them equal so a fourth status tag cannot be added without being
+# reserved here too.
 RESERVED_STATUS_TAG_SLUGS = frozenset(
     {
         "forward-backfilled",
         "forward-out-of-scope",
+        "forward-uncovered",
     }
 )
 

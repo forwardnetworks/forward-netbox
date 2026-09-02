@@ -104,7 +104,7 @@
             <td>
               {{ payload.unmanaged.untagged_total }}
               {% if payload.unmanaged.owned_untagged %}
-                <a href="{% url 'dcim:device_list' %}?tag_id__n=&amp;q=" class="badge text-bg-warning text-decoration-none">{% blocktrans with count=payload.unmanaged.owned_untagged %}{{ count }} created by this sync{% endblocktrans %}</a>
+                <a href="{{ uncovered_tag_url }}" class="badge text-bg-warning text-decoration-none">{% blocktrans with count=payload.unmanaged.owned_untagged %}{{ count }} created by this sync{% endblocktrans %}</a>
               {% endif %}
               {% if payload.unmanaged.unclaimed %}
                 <span class="badge text-bg-secondary">{% blocktrans with count=payload.unmanaged.unclaimed %}{{ count }} not claimed by this sync{% endblocktrans %}</span>
@@ -373,4 +373,45 @@
     </div>
   </div>
 </div>
+{% if payload.unmanaged.untagged_total %}
+<div class="row mt-3">
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Uncovered, Created by This Sync" %}</h5>
+      <div class="card-body">
+        {% if payload.unmanaged.owned_untagged_sample %}
+          <p class="text-muted mt-0">{% trans "This sync created these devices, and the current Forward result no longer covers them. A device disabled in Forward looks exactly like this, so they are kept, not pruned — which is why this count grows. Use the tag to list all of them, not just this sample." %}</p>
+          <p><a href="{{ uncovered_tag_url }}" class="btn btn-sm btn-outline-warning"><i class="mdi mdi-tag-outline" aria-hidden="true"></i>&nbsp;{% blocktrans with count=payload.unmanaged.owned_untagged %}List all {{ count }}{% endblocktrans %}</a></p>
+          <ul class="mb-0">
+            {% for name in payload.unmanaged.owned_untagged_sample %}<li><code>{{ name }}</code></li>{% endfor %}
+          </ul>
+          {% if payload.unmanaged.owned_untagged > payload.unmanaged.owned_untagged_sample|length %}
+            <p class="text-muted mt-2 mb-0">{% blocktrans with shown=payload.unmanaged.owned_untagged_sample|length total=payload.unmanaged.owned_untagged %}Showing {{ shown }} of {{ total }}.{% endblocktrans %}</p>
+          {% endif %}
+        {% else %}
+          <p class="text-muted mb-0">{% trans "Every device this sync created is covered by the current Forward result." %}</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Uncovered, Not Claimed by This Sync" %}</h5>
+      <div class="card-body">
+        {% if payload.unmanaged.unclaimed_sample %}
+          <p class="text-muted mt-0">{% trans "Devices this sync never created: another source, an operator, or an old SNMP endpoint import. Listed so the count above can be accounted for — this sync makes no claim about them, tags none of them, and never prunes them." %}</p>
+          <ul class="mb-0">
+            {% for name in payload.unmanaged.unclaimed_sample %}<li><code>{{ name }}</code></li>{% endfor %}
+          </ul>
+          {% if payload.unmanaged.unclaimed > payload.unmanaged.unclaimed_sample|length %}
+            <p class="text-muted mt-2 mb-0">{% blocktrans with shown=payload.unmanaged.unclaimed_sample|length total=payload.unmanaged.unclaimed %}Showing {{ shown }} of {{ total }}.{% endblocktrans %}</p>
+          {% endif %}
+        {% else %}
+          <p class="text-muted mb-0">{% trans "Every uncovered device was created by this sync." %}</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
 {% endblock content %}

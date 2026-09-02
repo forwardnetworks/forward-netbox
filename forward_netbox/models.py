@@ -1356,6 +1356,7 @@ class ForwardManagedDeviceTag(ForwardPluginModelDocsMixin, models.Model):
         SCOPE = "scope", _("Managed scope")
         BACKFILLED = "backfilled", _("Backfilled status")
         OUT_OF_SCOPE = "out_of_scope", _("Out-of-scope status")
+        UNCOVERED = "uncovered", _("Uncovered status")
 
     tag = models.ForeignKey(
         "extras.Tag",
@@ -1530,6 +1531,7 @@ class ForwardDeviceTagClaim(
         SCOPE = "scope", _("Managed scope")
         BACKFILLED = "backfilled", _("Backfilled status")
         OUT_OF_SCOPE = "out_of_scope", _("Out-of-scope status")
+        UNCOVERED = "uncovered", _("Uncovered status")
 
     sync = models.ForeignKey(
         ForwardSync,

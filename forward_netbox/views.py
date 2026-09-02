@@ -1354,8 +1354,11 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
         report_job = _latest_scope_reconciliation_job(sync)
         payload, generated_at, report_error = _scope_reconciliation_payload(report_job)
         from .utilities.scope_reconciliation import BACKFILLED_TAG_SLUG
+        from .utilities.scope_reconciliation import UNCOVERED_TAG_SLUG
 
-        backfilled_tag_url = f"{reverse('dcim:device_list')}?tag={BACKFILLED_TAG_SLUG}"
+        device_list_url = reverse("dcim:device_list")
+        backfilled_tag_url = f"{device_list_url}?tag={BACKFILLED_TAG_SLUG}"
+        uncovered_tag_url = f"{device_list_url}?tag={UNCOVERED_TAG_SLUG}"
         return render(
             request,
             self.template_name,
@@ -1373,6 +1376,7 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
                     include_samples=True
                 ),
                 "backfilled_tag_url": backfilled_tag_url,
+                "uncovered_tag_url": uncovered_tag_url,
                 "tag_backfilled_url": reverse(
                     "plugins:forward_netbox:forwardsync_tag_backfilled",
                     kwargs={"pk": sync.pk},
