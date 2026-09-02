@@ -48,6 +48,20 @@ class PreflightError(Exception):
     """A release preflight check failed."""
 
 
+class PreflightUnavailable(PreflightError):
+    """The check could not run because this credential cannot reach the API.
+
+    Distinct from PreflightError, which means the check RAN and said no. The
+    Dependabot alerts endpoint refuses a workflow's GITHUB_TOKEN outright -
+    `security-events: read` does not cover it, and no permission a workflow can
+    grant itself does - so the tag-time run of this check could never pass for
+    any input, and it failed the v2.9.2 publish after the tag was already
+    pushed. A caller that has no better credential may report this as skipped;
+    the local preflight, which uses the operator's own `gh` auth, still fails
+    closed on it.
+    """
+
+
 def _read(path: Path) -> str:
     try:
         return path.read_text(encoding="utf-8")
@@ -322,6 +336,12 @@ def check_dependabot_alerts() -> str:
                 "page; extend it to follow the Link header before trusting it"
             )
     except provenance.ProvenanceError as exc:
+        # Narrow on purpose: this exact pair means "this credential may not
+        # read Dependabot alerts", not "the alerts are bad". Anything else -
+        # a 404, a 5xx, malformed data - stays a hard failure.
+        message = str(exc)
+        if "HTTP 403" in message and "not accessible by integration" in message:
+            raise PreflightUnavailable(f"could not read Dependabot alerts: {exc}")
         raise PreflightError(f"could not read Dependabot alerts: {exc}")
     unaccepted = [
         alert
