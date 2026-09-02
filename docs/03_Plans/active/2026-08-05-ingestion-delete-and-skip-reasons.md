@@ -99,5 +99,7 @@ baseline with it — which is the point of applying it.
   now name those children, but they are still filed under a name that reads
   like the opposite. `health_summary_blocks` already calls them "protected
   dependency skips"; the issue list does not.
-- Device identities for departed source keys are the other reason an ingestion
-  will not delete, and are untouched (#46).
+- ~~Device identities for departed source keys are the other reason an
+  ingestion will not delete (#46).~~ **Closed**; the stamp is `SET_NULL`. See
+  `2026-08-05-superseded-baseline-refusal.md` and
+  `test_ingestion_is_deletable.py`.

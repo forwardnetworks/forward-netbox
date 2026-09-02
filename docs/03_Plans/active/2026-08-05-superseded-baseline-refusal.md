@@ -71,10 +71,17 @@ Revert. Wording only.
 
 ## Open
 
-- The underlying gap is untouched: every ingestion that ever promoted a baseline
-  is still permanently undeletable, and the backlog grows one row per successful
-  sync. Task #45 carries the CASCADE change and the four claims it has to prove
-  with tests rather than by reading.
-- `ForwardDeviceIdentity` rows for departed source keys are the other cause of an
-  undeletable ingestion and are unaffected by this (#46). An operator whose
-  ingestion is held by both now gets accurate text for the baseline half only.
+- ~~The underlying gap is untouched: every ingestion that ever promoted a
+  baseline is still permanently undeletable (#45).~~ **Closed.** The
+  contributor baseline CASCADEs with its ingestion; a spent one is collected
+  and a live one is held by the `pre_delete` receiver instead, which clears on
+  the next promotion.
+- ~~`ForwardDeviceIdentity` rows for departed source keys are the other cause
+  (#46).~~ **Closed.** The provenance stamp is `SET_NULL`: the ownership
+  survives, only the pointer to a spent run is dropped.
+
+**Verified and pinned 2026-09-02** by
+`forward_netbox/tests/test_ingestion_is_deletable.py`: no PROTECT relation
+targets `ForwardIngestion` at all, so neither cause can return silently, and
+the two refusals an operator can still meet - the live baseline and the
+current ownership evidence - are asserted to be the only two, both temporary.
