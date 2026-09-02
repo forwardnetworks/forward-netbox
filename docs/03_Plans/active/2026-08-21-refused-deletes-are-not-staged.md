@@ -87,17 +87,26 @@ from a delete set.
 
 ## Open
 
-- **The deeper defect is untouched.** Both sweeps still delete on "absent from
-  the current Forward result", with ownership claims as the only gate - and a
+- **The deeper defect is untouched for the CATALOGUE sweep only.** The device
+  sweep was quarantined and shrink-guarded in 2.8.9, and the software-version
+  catalogue sweep was scoped to attributable rows on 2026-09-02 (#318). What
+  follows described both when it was written. Both sweeps deleted on "absent
+  from the current Forward result", with ownership claims as the only gate - and a
   device absent from Forward LOSES its scope claim on the first run that
   observes the absence, so the guard evaporates exactly one run before the
   delete fires. A device with no protecting child is still removed unattended,
   without the prune gate or the 25% shrink guard that
   `full_removal_reconciliation.py` says device removal is supposed to sit
   behind. This change makes such a removal honest, not gated.
-- A delete that fails for a reason OTHER than protection is still tombstoned
-  optimistically.
-- `DEPENDENCY_SKIP_ISSUE_DETAIL_LIMIT = 10` means a report of exactly ten skips
-  may be the cap rather than the count.
-- `emit_dependency_skip_issue_summary`'s wording ("their NetBox parent is not
-  synced yet") describes the opposite of a protected-delete skip.
+- ~~A delete that fails for a reason OTHER than protection is still tombstoned
+  optimistically.~~ **Closed 2026-09-02** in
+  `2026-09-02-refused-deletes-are-retried.md`: every non-success path in
+  `delete_model_rows` records the identity, it travels on the ingestion, and
+  promotion drops the entry so the next delta recomputes the delete.
+- ~~`DEPENDENCY_SKIP_ISSUE_DETAIL_LIMIT = 10` means a report of exactly ten
+  skips may be the cap rather than the count.~~ **Closed 2026-09-02** (#319):
+  ten IS the count at the cap, and the tenth per-row issue now says further
+  rows are rolled up.
+- ~~`emit_dependency_skip_issue_summary`'s wording ("their NetBox parent is not
+  synced yet") describes the opposite of a protected-delete skip.~~ **Closed
+  2026-09-02** (#319): one sentence per direction, each with its own remedy.
