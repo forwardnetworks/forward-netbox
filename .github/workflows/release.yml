@@ -116,6 +116,16 @@ jobs:
         # pulled in by Django with only a floor pin); Dependabot already scans
         # the full dependency graph, so this asks it instead of re-deriving
         # the closure.
+        #
+        # A workflow's GITHUB_TOKEN may not read `dependabot/alerts`: the
+        # endpoint answers 403 "Resource not accessible by integration", and
+        # `security-events: read` above does not cover it. That is reported as
+        # skipped rather than failed, because the same check runs - and fails
+        # closed - in the local preflight before the tag is pushed, on the
+        # operator's own credential. Treating it as a failure here made the
+        # step unpassable for any input and stopped the v2.9.2 publish after
+        # the tag existed. Only that one inaccessible-credential case is
+        # skipped; a real alert, a 404, or bad data still fails.
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -124,8 +134,11 @@ jobs:
           sys.path.insert(0, 'scripts')
           from check_release_preflight import check_dependabot_alerts
           from check_release_preflight import PreflightError
+          from check_release_preflight import PreflightUnavailable
           try:
               print(check_dependabot_alerts())
+          except PreflightUnavailable as exc:
+              print(f'::notice::skipped: {exc}')
           except PreflightError as exc:
               print(f'::error::{exc}')
               sys.exit(1)

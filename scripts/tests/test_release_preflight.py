@@ -463,6 +463,50 @@ class DependabotAlertsTest(unittest.TestCase):
             with self.assertRaises(preflight.PreflightError):
                 preflight.check_dependabot_alerts()
 
+    def test_an_inaccessible_credential_is_unavailable_not_a_failure(self):
+        # A workflow's GITHUB_TOKEN gets exactly this from dependabot/alerts.
+        # It stopped the v2.9.2 publish AFTER the tag was pushed, and no
+        # permission a workflow can grant itself would have changed it.
+        with mock.patch.object(
+            preflight.provenance,
+            "_github_json",
+            side_effect=preflight.provenance.ProvenanceError(
+                "GitHub returned HTTP 403 for dependabot/alerts?state=open"
+                '&per_page=100: {"message":"Resource not accessible by '
+                'integration","status":"403"}'
+            ),
+        ):
+            with self.assertRaises(preflight.PreflightUnavailable):
+                preflight.check_dependabot_alerts()
+
+    def test_a_plain_forbidden_still_fails_closed(self):
+        # 403 alone is not enough: only the inaccessible-credential pair is
+        # skippable, so a repository that genuinely refuses the read is not
+        # quietly waved through.
+        with mock.patch.object(
+            preflight.provenance,
+            "_github_json",
+            side_effect=preflight.provenance.ProvenanceError(
+                "GitHub returned HTTP 403 for dependabot/alerts: forbidden"
+            ),
+        ):
+            with self.assertRaises(preflight.PreflightError) as caught:
+                preflight.check_dependabot_alerts()
+        self.assertNotIsInstance(caught.exception, preflight.PreflightUnavailable)
+
+    def test_a_not_found_still_fails_closed(self):
+        with mock.patch.object(
+            preflight.provenance,
+            "_github_json",
+            side_effect=preflight.provenance.ProvenanceError(
+                "GitHub returned HTTP 404 for dependabot/alerts: "
+                "not accessible by integration"
+            ),
+        ):
+            with self.assertRaises(preflight.PreflightError) as caught:
+                preflight.check_dependabot_alerts()
+        self.assertNotIsInstance(caught.exception, preflight.PreflightUnavailable)
+
     def test_a_transport_failure_is_translated_and_does_not_pass_silently(self):
         with mock.patch.object(
             preflight.provenance,
