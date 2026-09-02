@@ -16,6 +16,7 @@ from .executor_base import ForwardExecutorBase
 from .primary_ip import apply_primary_ip_from_mgmt_tags
 from .primary_ip import primary_ip_from_mgmt_tag_enabled
 from .query_fetch import ForwardQueryFetcher
+from .sync_reporting import persist_refused_delete_identities
 from .validation import ForwardValidationRunner
 from .workload_state import stage_and_promote_noop_workload_states
 from .workload_state import stage_workload_states
@@ -280,7 +281,12 @@ class ForwardSingleBranchExecutor(ForwardExecutorBase):
 
         ingestion.sync_mode = self._sync_mode()
         ingestion.model_results = self.last_model_results
-        ingestion.save(update_fields=["sync_mode", "model_results"])
+        # Which staged deletes this run did NOT perform. Promotion happens in a
+        # different transaction at merge, so the refusals have to travel with
+        # the ingestion; without them the state promotes a refused delete as
+        # done and nothing ever retries it.
+        persist_refused_delete_identities(self, ingestion)
+        ingestion.save(update_fields=["sync_mode", "model_results", "snapshot_info"])
 
         # Optional: set device primary_ip4/6 from Forward Mgmt_<iface> tags. Runs
         # in the branch after every workload is staged (interfaces + IPs exist),

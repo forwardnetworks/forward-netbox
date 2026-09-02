@@ -882,6 +882,67 @@ def _record_dependency_parent_coverage_issue(runner, model_string, summary):
     )
 
 
+REFUSED_DELETE_IDENTITIES_KEY = "refused_delete_identities"
+
+
+def record_refused_delete(runner, model_string, row):
+    """Remember a delete this run did NOT perform, so it is not tombstoned.
+
+    The durable workload state is staged before the branch applies and promoted
+    at merge, so it records every delete the DELTA computed - not every delete
+    that happened. A refused one was therefore written as `delete` in the
+    promoted state, `newly_explicit_deletes` skipped it on the next run
+    because the state already said `delete`, and nothing ever retried it: the
+    row stayed in NetBox, the plugin believed it was gone, and the report went
+    quiet. 2.8.9 closed the PROTECT half by never staging those; this closes
+    the rest, for a delete refused by any cause at all.
+
+    Identities only - the same canonical identity the state is keyed by, which
+    is derived from the model's coalesce fields and carries no free-text values
+    beyond them. Held on the runner and persisted with the ingestion, because
+    promotion happens in a different transaction at merge time.
+    """
+    identities = getattr(runner, "_refused_delete_identities", None)
+    if identities is None:
+        identities = runner._refused_delete_identities = {}
+    identities.setdefault(model_string, set()).add(
+        _row_identity(runner, model_string, row)
+    )
+
+
+def persist_refused_delete_identities(runner, ingestion):
+    """Carry this run's refused deletes on the ingestion, for promotion.
+
+    Sets `snapshot_info` on the instance; the caller saves it alongside its
+    own fields. Writes nothing when no delete was refused, so an ordinary run
+    leaves the payload untouched.
+    """
+    identities = getattr(runner, "_refused_delete_identities", None)
+    if not identities or ingestion is None:
+        return 0
+    snapshot_info = dict(getattr(ingestion, "snapshot_info", None) or {})
+    recorded = {
+        model_string: sorted(values)
+        for model_string, values in identities.items()
+        if values
+    }
+    if not recorded:
+        return 0
+    snapshot_info[REFUSED_DELETE_IDENTITIES_KEY] = recorded
+    ingestion.snapshot_info = snapshot_info
+    return sum(len(values) for values in recorded.values())
+
+
+def _row_identity(runner, model_string, row):
+    from .workload_state import canonical_row_identity
+
+    coalesce_fields = getattr(runner, "_model_coalesce_fields", {}).get(model_string)
+    try:
+        return canonical_row_identity(model_string, row, coalesce_fields or [])
+    except Exception:  # noqa: BLE001 - an unkeyable row cannot be tombstoned anyway
+        return ""
+
+
 def delete_model_rows(runner, model_string, rows):
     rows = list(rows)
     handler_name = f"_delete_{model_string.replace('.', '_')}"
@@ -918,10 +979,12 @@ def delete_model_rows(runner, model_string, rows):
                     pending_deleted = 0
             else:
                 runner.logger.increment_statistics(model_string, outcome="skipped")
+                record_refused_delete(runner, model_string, row)
         except ForwardDependencySkipError as exc:
             runner.events_clearer.restore(pre_row_events)
             logger.info("Skipped deleting %s row due to dependency", model_string)
             runner.logger.increment_statistics(model_string, outcome="skipped")
+            record_refused_delete(runner, model_string, row)
             record_issue(
                 runner,
                 model_string,
@@ -940,6 +1003,7 @@ def delete_model_rows(runner, model_string, rows):
                 exception_type(exc),
             )
             runner.logger.increment_statistics(model_string, outcome="failed")
+            record_refused_delete(runner, model_string, row)
             record_issue(
                 runner,
                 model_string,
@@ -957,6 +1021,7 @@ def delete_model_rows(runner, model_string, rows):
                 exception_type(exc),
             )
             runner.logger.increment_statistics(model_string, outcome="failed")
+            record_refused_delete(runner, model_string, row)
             record_issue(
                 runner,
                 model_string,
@@ -974,6 +1039,7 @@ def delete_model_rows(runner, model_string, rows):
                 exception_type(exc),
             )
             runner.logger.increment_statistics(model_string, outcome="failed")
+            record_refused_delete(runner, model_string, row)
             record_issue(
                 runner,
                 model_string,

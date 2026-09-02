@@ -1211,15 +1211,66 @@ def stage_workload_states(ingestion, pending_states):
     return len(pending_states)
 
 
+def refused_delete_identities(ingestion):
+    """The delete identities this ingestion staged but did not perform."""
+    from .sync_reporting import REFUSED_DELETE_IDENTITIES_KEY
+
+    recorded = (getattr(ingestion, "snapshot_info", None) or {}).get(
+        REFUSED_DELETE_IDENTITIES_KEY
+    ) or {}
+    return {
+        model_string: {identity for identity in identities if identity}
+        for model_string, identities in recorded.items()
+        if isinstance(identities, (list, tuple, set))
+    }
+
+
+def _without_refused_deletes(state, refused):
+    """Drop the delete entries this run did not actually perform.
+
+    The state is staged before the branch applies and promoted at merge, so it
+    records the deletes the DELTA computed rather than the ones that happened.
+    Promoting a refused delete as done is what made the next run skip it -
+    `newly_explicit_deletes` treats a previous `delete` entry as settled - so
+    the row stayed in NetBox, the plugin believed it was gone, and nothing
+    retried. Dropping the entry instead leaves the identity absent from the
+    promoted state, which is exactly the state the delta reads as "not yet
+    deleted": the next run recomputes the delete and tries again.
+
+    Returns the state unchanged when nothing was refused, so the ordinary path
+    does no decode/encode work.
+    """
+    if not refused:
+        return state
+    entries = decode_state_entries(state.payload, state.payload_checksum)
+    kept = {
+        identity: value
+        for identity, value in entries.items()
+        if not (value["action"] == "delete" and identity in refused)
+    }
+    if len(kept) == len(entries):
+        return state
+    payload, checksum = encode_state_entries(kept)
+    state.payload = payload
+    state.payload_checksum = checksum
+    state.row_count = len(kept)
+    state.save(update_fields=["payload", "payload_checksum", "row_count"])
+    return state
+
+
 def promote_workload_states_locked(ingestion):
     from ..models import ForwardWorkloadState
 
+    refused_by_model = refused_delete_identities(ingestion)
     pending = list(
         ForwardWorkloadState.objects.select_for_update()
         .filter(ingestion=ingestion)
         .order_by("model_string")
     )
     for state in pending:
+        state = _without_refused_deletes(
+            state, refused_by_model.get(state.model_string)
+        )
         old_states = (
             ForwardWorkloadState.objects.select_for_update()
             .filter(
