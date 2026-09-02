@@ -1812,6 +1812,18 @@ optional = ["typing-extensions (>=4)"]
 re2 = ["google-re2 (>=1.1)"]
 
 [[package]]
+name = "pip"
+version = "26.2"
+description = "The PyPA recommended tool for installing Python packages."
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "pip-26.2-py3-none-any.whl", hash = "sha256:931c303696af6fa3417112103b1cad26890e5a07eccb5b99783700e33f2b8aad"},
+    {file = "pip-26.2.tar.gz", hash = "sha256:2d8542afcc84cdd8e846c2b36b2861fad1da376dd98f8e7113e9108a3c331690"},
+]
+
+[[package]]
 name = "platformdirs"
 version = "4.10.1"
 description = "A small Python package for determining appropriate platform-specific dirs, e.g. a `user data dir`."
@@ -2511,14 +2523,14 @@ markers = {main = "python_version >= \"3.12\" and (extra == \"integrations\" or 
 name = "sqlparse"
 version = "0.6.0"
 description = "A non-validating SQL parser."
-optional = false
+optional = true
 python-versions = ">=3.10"
-groups = ["main", "dev"]
+groups = ["main"]
+markers = "python_version >= \"3.12\" and (extra == \"integrations\" or extra == \"peering\" or extra == \"routing\" or extra == \"validity\")"
 files = [
     {file = "sqlparse-0.6.0-py3-none-any.whl", hash = "sha256:b861c0288ce2fa56209a9a6412d2e066ac664b3873b89c26c9d8415e8e32996f"},
     {file = "sqlparse-0.6.0.tar.gz", hash = "sha256:113c35c75365ab9cc9c7231d68c6428fb11c085fc8e9eb1ad659b7ddbf6cd2b9"},
 ]
-markers = {main = "python_version >= \"3.12\" and (extra == \"integrations\" or extra == \"peering\" or extra == \"routing\" or extra == \"validity\")"}
 
 [package.extras]
 dev = ["build"]
