@@ -123,7 +123,7 @@ continues. The loop now does the same and counts the row rejected, which is
 what the apply does with that row. This was a latent defect in the earlier
 slices, not one this slice introduced; no shipped adapter path raises it yet.
 
-## Testing
+## Validation
 
 `forward_netbox/tests/test_peering_drift_comparison.py`, 16 tests: the firewall
 (no ASN, RIR, address, router, scope or peer created; a drifted peer not
@@ -134,6 +134,17 @@ rejection paths including one malformed row not taking the batch with it.
 The converged fixture is built from the apply's own `bgp_peer_name` and
 `bgp_peer_comments` rather than from literals, so it cannot quietly stop being
 converged when either format changes.
+
+## Rollback
+
+Revert. The models return to the workload upper bound; nothing else reads the
+preview paths this slice added.
+
+## Decision Log
+
+- The verdict rule is stated at the call site in `sync_routing_impl.py`,
+  because the two rules are opposite and getting it backwards is silent in
+  both directions. See the rule of thumb in the Approach.
 
 ## Limits
 

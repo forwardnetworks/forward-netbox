@@ -91,12 +91,23 @@ Fixed by giving `ForwardQueryError` the same structured keywords
 several `except ForwardDataError` sites would silently start catching query
 failures, and nothing here needs that.
 
-## Testing
+## Validation
 
 `forward_netbox/tests/test_ospf_drift_comparison.py`, 19 tests: the firewall,
 the classification for all three models, the absent-VRF collision, the two
 double-counting cases, the rejection paths, and three on the exception
 signature including one that drives the real OSPF raise site.
+
+## Rollback
+
+Revert. The models return to the workload upper bound; nothing else reads the
+preview paths this slice added.
+
+## Decision Log
+
+- The verdict rule is stated at the call site in `sync_routing_impl.py`,
+  because the two rules are opposite and getting it backwards is silent in
+  both directions. See the rule of thumb in the Approach.
 
 ## Limits
 
