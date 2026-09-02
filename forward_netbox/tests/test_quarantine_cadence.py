@@ -29,7 +29,9 @@ class QuarantineCadenceTest(TestCase):
         self.assertIn("hours threshold binds", cadence["message"])
 
     def test_a_weekly_sync_is_bound_by_the_runs_threshold(self):
-        cadence = sync_health_summary(self._sync(interval=7 * 24 * 60))["quarantine_cadence"]
+        cadence = sync_health_summary(self._sync(interval=7 * 24 * 60))[
+            "quarantine_cadence"
+        ]
         self.assertEqual(cadence["binding"], "runs")
         self.assertEqual(cadence["effective_hours"], 504.0)
         self.assertIn("runs threshold binds", cadence["message"])

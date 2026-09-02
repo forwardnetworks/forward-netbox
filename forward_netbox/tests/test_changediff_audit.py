@@ -48,7 +48,11 @@ class ChangeDiffClassificationTest(TestCase):
         self.assertEqual(
             classify_change_diff(
                 ContentType.objects.get_for_model(IPAddress),
-                {"original": ADDRESS_SNAPSHOT, "modified": ADDRESS_SNAPSHOT, "current": None},
+                {
+                    "original": ADDRESS_SNAPSHOT,
+                    "modified": ADDRESS_SNAPSHOT,
+                    "current": None,
+                },
             ),
             {},
         )
@@ -73,7 +77,9 @@ class ChangeDiffClassificationTest(TestCase):
 
     def test_serializer_keys_are_never_foreign(self):
         self.assertEqual(
-            foreign_payload_keys(IPAddress, {"id": 1, "display": "x", "url": "y", "tags": []}),
+            foreign_payload_keys(
+                IPAddress, {"id": 1, "display": "x", "url": "y", "tags": []}
+            ),
             set(),
         )
 

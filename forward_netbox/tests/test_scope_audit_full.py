@@ -64,5 +64,7 @@ class ScopeAuditFullTest(TestCase):
         payload = self._run("--full")
         self.assertEqual(payload["full"]["out_of_scope"], ["orphan-a", "orphan-b"])
         self.assertEqual(payload["full"]["tagged_but_backfilled"], ["backfilled-a"])
-        self.assertEqual(payload["full"]["owned_uncovered"], ["gone-a", "gone-b", "gone-c"])
+        self.assertEqual(
+            payload["full"]["owned_uncovered"], ["gone-a", "gone-b", "gone-c"]
+        )
         self.assertEqual(payload["full"]["in_scope_missing_from_netbox"], ["missing-a"])

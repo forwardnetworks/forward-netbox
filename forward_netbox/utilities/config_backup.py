@@ -300,7 +300,9 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
                 config_entries = {}
             unmanaged_prefix = UNMANAGED_BACKUP_REPO_PREFIX.encode("ascii")
             if unmanaged_prefix in root_entries:
-                unmanaged_entries = _tree_entries(repo, root_entries[unmanaged_prefix][1])
+                unmanaged_entries = _tree_entries(
+                    repo, root_entries[unmanaged_prefix][1]
+                )
             else:
                 unmanaged_entries = {}
             # The product question the 2.9.0 plan left open - whether devices
@@ -346,13 +348,21 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
                             and _safe_file_name(forward_name)
                         ):
                             unmanaged_blob = Blob.from_string(str(text).encode("utf-8"))
-                            unmanaged_name = _safe_file_name(forward_name).encode("utf-8")
+                            unmanaged_name = _safe_file_name(forward_name).encode(
+                                "utf-8"
+                            )
                             existing = unmanaged_entries.get(unmanaged_name)
-                            if existing is not None and existing[1] == unmanaged_blob.id:
+                            if (
+                                existing is not None
+                                and existing[1] == unmanaged_blob.id
+                            ):
                                 result.unmanaged_unchanged += 1
                                 continue
                             repo.object_store.add_object(unmanaged_blob)
-                            unmanaged_entries[unmanaged_name] = (0o100644, unmanaged_blob.id)
+                            unmanaged_entries[unmanaged_name] = (
+                                0o100644,
+                                unmanaged_blob.id,
+                            )
                             result.unmanaged_written += 1
                             continue
                         result.unmapped += 1
