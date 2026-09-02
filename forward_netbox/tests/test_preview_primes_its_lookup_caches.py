@@ -23,13 +23,28 @@ Two properties have to hold together, and only one is about speed:
     That is the shape of a converged estate, which is the shape every routine
     preview has.
 
-What is deliberately NOT claimed here is the create path. A row with no
-counterpart is instantiated, and NetBox charges two queries per instance for
-content type and custom field defaults. Those are its costs, not our lookups,
-and the only way to avoid them is to stop routing the preview through the real
-apply - which is exactly the divergence `drift_comparison` exists to prevent.
-So the create cost is measured and pinned as per-row rather than quietly
-described as fixed.
+What was deliberately NOT claimed here was the create path, on the reasoning
+that a row with no counterpart is instantiated, that NetBox charges two queries
+per instance for content type and custom field defaults, and that the only way
+to avoid them is to stop routing the preview through the real apply.
+
+**The middle step of that was wrong, and measurement says so.** The per-row
+charge came from `_validate_interface` - `full_clean` - not from
+`Interface(**defaults)`. The preview now skips the validation and still
+instantiates, still resolves, still classifies through the same code, and the
+query count went from 9,000 to 36 across 16,000 first-sync rows (29,139 ms to
+1,467 ms). Instantiation is cheap; validating is not.
+
+So the create path is no longer charged per row, and that is NOT the divergence
+this module warned about - the preview still routes through the real apply. One
+narrower divergence was bought knowingly: a row `full_clean` would reject counts
+as a create rather than failed, which overstates drift and never understates it,
+pinned by `test_an_invalid_interface_row_counts_as_a_create_under_preview` in
+`test_drift_comparison`.
+
+The canary below is kept, with its assertion moved off query count - which no
+longer varies - and onto the property it was really protecting: that each row
+is still classified individually.
 """
 
 from dcim.models import Device
@@ -147,22 +162,30 @@ class PreviewPrimesItsLookupCachesTest(TestCase):
             "cold one it replaces",
         )
 
-    def test_the_create_path_is_still_charged_per_row(self):
-        # Not a defect to fix here, and pinned so that it is not mistaken for
-        # one that already was. See the module docstring.
+    def test_the_create_path_still_classifies_every_row(self):
+        """The canary this module has always carried, re-aimed.
+
+        It used to assert that the create path costs MORE QUERIES for more
+        rows, as proof the preview was still going through the real apply. That
+        proxy died when the preview stopped validating: queries are flat now
+        (36 for 16,000 rows) while the classification is unchanged. Asserting
+        the dead proxy would have forced the cost back to keep a test happy.
+
+        What it was really protecting is that each row is still put through the
+        classification rather than short-circuited in bulk - so that is what it
+        asserts now, on the counts themselves, which is also the thing an
+        operator reads.
+        """
         few = self._absent(2)
         many = self._absent(8)
 
-        with CaptureQueriesContext(connection) as few_queries:
-            compare_model_rows(None, "dcim.interface", few)
-        with CaptureQueriesContext(connection) as many_queries:
-            compare_model_rows(None, "dcim.interface", many)
+        few_result = compare_model_rows(None, "dcim.interface", few)
+        many_result = compare_model_rows(None, "dcim.interface", many)
 
-        self.assertGreater(
-            len(many_queries),
-            len(few_queries),
-            "a row with no counterpart is instantiated, and NetBox charges for "
-            "that per instance; if this ever goes flat the preview has stopped "
-            "going through the real apply path and the counts can no longer be "
-            "trusted to match it",
-        )
+        # Counted against the row lists themselves rather than hard-coded, so
+        # the assertion survives `_absent` changing how many devices it spans.
+        self.assertEqual(few_result["creates"], len(few))
+        self.assertEqual(many_result["creates"], len(many))
+        self.assertEqual(few_result["unchanged"], 0)
+        self.assertEqual(many_result["unchanged"], 0)
+        self.assertGreater(len(many), len(few))
