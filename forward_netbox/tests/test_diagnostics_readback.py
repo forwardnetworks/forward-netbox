@@ -110,6 +110,26 @@ class ExceptionFreeJobErrorsReadBackTest(SimpleTestCase):
             message = f"Forward sync ended with status {status}."
             self.assertEqual(safe_job_error_summary(message), message, status)
 
+    def test_every_shape_compiled(self):
+        """Zero shapes redacts everything, silently and plausibly.
+
+        The allowlist drops any shape whose enum it cannot read, which is
+        right when a plugin is absent and indistinguishable from having got
+        the enum's API wrong - `ChoiceSet.values` is a method, and reading it
+        as a list dropped every pattern. Assert the count, not just that one
+        sentence survives.
+        """
+        from forward_netbox.utilities.diagnostics import safe_job_error_shape_count
+
+        self.assertEqual(safe_job_error_shape_count(), 3)
+
+    def test_an_enum_value_outside_the_choice_set_is_redacted(self):
+        # The distinction the character class could not make.
+        self.assertEqual(
+            safe_job_error_summary("Forward sync ended with status finished."),
+            REDACTED_DIAGNOSTIC,
+        )
+
     def test_the_interrupted_merge_sentence_survives_readback(self):
         message = (
             "Forward merge cannot be retried after the interrupted job; "
@@ -126,8 +146,11 @@ class ExceptionFreeJobErrorsReadBackTest(SimpleTestCase):
         )
 
     def test_the_interpolated_value_cannot_carry_customer_data(self):
-        # The shape constrains the one variable to the enum's own vocabulary.
-        for value in ("Mgmt_Vl211", "leaf-101", "10.0.0.1", "tenant name"):
+        # The shape is built from the enum's own members, so it admits exactly
+        # the sentences the plugin can compose. `x` is here because the first
+        # spelling used `[a-z_]+` and admitted it - a lowercase token this code
+        # did not write - which an existing harness test caught before the tag.
+        for value in ("Mgmt_Vl211", "leaf-101", "10.0.0.1", "tenant name", "x"):
             self.assertEqual(
                 safe_job_error_summary(f"Forward sync ended with status {value}."),
                 REDACTED_DIAGNOSTIC,

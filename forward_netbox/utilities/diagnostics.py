@@ -491,18 +491,98 @@ def recovered_classifiers(text) -> list[str]:
 # reworded message stops matching (and is redacted, the safe direction) rather
 # than admitting arbitrary text. Deliberately narrow - a different mechanism
 # from the classifier rules, as the plan that recorded this said.
-_SAFE_JOB_ERROR_SHAPES = (
-    re.compile(r"^Forward sync ended with status ([a-z_]+)\.$"),
-    re.compile(
-        r"^Forward merge cannot be retried after the interrupted job; "
-        r"the authoritative branch state is ([a-z_]+)\.$"
+# Built from the enum itself, not approximated by a character class. `[a-z_]+`
+# was the first spelling and it was wrong in the direction that matters: it
+# admitted `Forward sync ended with status x.` - any lowercase token, which is
+# a value this code did not write. An alternation of the enum's own members
+# admits exactly the sentences the plugin can compose and nothing else.
+_SAFE_JOB_ERROR_SHAPE_SOURCES = (
+    (
+        "Forward sync ended with status {value}.",
+        "forward_netbox.choices",
+        "ForwardSyncStatusChoices",
+    ),
+    (
+        "Forward merge cannot be retried after the interrupted job; "
+        "the authoritative branch state is {value}.",
+        "netbox_branching.choices",
+        "BranchStatusChoices",
     ),
 )
+_SAFE_JOB_ERROR_SHAPES = None
+
+
+def _safe_job_error_shapes():
+    """Compile the allowlist once, from each sentence's own enum.
+
+    Lazy because the enums live in Django apps: importing them at module scope
+    would make `diagnostics` unimportable before the registry is ready, and
+    this module is imported by nearly everything.
+
+    An enum that cannot be imported contributes NO pattern, so its sentence
+    stays redacted. Failing closed here costs a support question; failing open
+    would admit a sentence whose vocabulary this code could not verify.
+    """
+    global _SAFE_JOB_ERROR_SHAPES
+    if _SAFE_JOB_ERROR_SHAPES is not None:
+        return _SAFE_JOB_ERROR_SHAPES
+    import importlib
+
+    patterns = []
+    for template, module_name, enum_name in _SAFE_JOB_ERROR_SHAPE_SOURCES:
+        try:
+            enum = getattr(importlib.import_module(module_name), enum_name)
+            # NetBox's `ChoiceSet.values` is a METHOD; Django's `TextChoices`
+            # exposes a list under the same name. Reading it without calling
+            # it yielded a bound method, which is not iterable as strings - so
+            # every pattern was dropped and every sentence redacted. Silent,
+            # and caught only because a test asserts the sentences survive.
+            raw = enum.values
+            values = [str(value) for value in (raw() if callable(raw) else raw)]
+        except (ImportError, AttributeError, TypeError):
+            # Exactly the ways an enum can be unreadable: the module is absent
+            # (an optional plugin), the name moved, or `values` is not
+            # iterable. Named rather than caught broadly, so a worker teardown
+            # propagates instead of being absorbed into "admits nothing".
+            continue
+        if not values:
+            continue
+        alternation = "|".join(re.escape(value) for value in sorted(values))
+        patterns.append(
+            re.compile(
+                "^"
+                + re.escape(template).replace(
+                    re.escape("{value}"), f"(?:{alternation})"
+                )
+                + "$"
+            )
+        )
+    # `missing` is composed by the merge path itself when the branch has no
+    # status at all, so it is plugin vocabulary too and has no enum to come
+    # from.
+    patterns.append(
+        re.compile(
+            r"^Forward merge cannot be retried after the interrupted job; "
+            r"the authoritative branch state is missing\.$"
+        )
+    )
+    _SAFE_JOB_ERROR_SHAPES = tuple(patterns)
+    return _SAFE_JOB_ERROR_SHAPES
+
+
+def safe_job_error_shape_count() -> int:
+    """How many shapes compiled. For tests: zero means every one was dropped.
+
+    Failing closed is right when an enum is genuinely unavailable, and
+    indistinguishable from having got the enum's API wrong - which is exactly
+    what happened. A test asserts this is the full count.
+    """
+    return len(_safe_job_error_shapes())
 
 
 def _safe_job_error_shape(error: str) -> str:
     """The message itself when it matches a plugin-authored, value-free shape."""
-    for pattern in _SAFE_JOB_ERROR_SHAPES:
+    for pattern in _safe_job_error_shapes():
         if pattern.fullmatch(error):
             return error
     return ""

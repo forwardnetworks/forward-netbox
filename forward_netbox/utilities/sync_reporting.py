@@ -939,6 +939,12 @@ def _row_identity(runner, model_string, row):
     coalesce_fields = getattr(runner, "_model_coalesce_fields", {}).get(model_string)
     try:
         return canonical_row_identity(model_string, row, coalesce_fields or [])
+    except JobTimeoutException:
+        # The worker is being torn down. Swallowing this to record a refusal
+        # would let the job look like it finished - the boundary rule every
+        # broad `except` in this module observes, and the one a helper added
+        # for a diagnostic is most likely to forget.
+        raise
     except Exception:  # noqa: BLE001 - an unkeyable row cannot be tombstoned anyway
         return ""
 
