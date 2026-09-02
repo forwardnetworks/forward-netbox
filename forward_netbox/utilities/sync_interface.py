@@ -71,7 +71,24 @@ def delete_dcim_macaddress(runner, row):
     )
 
 
-def apply_extras_taggeditem(runner, row):
+def apply_extras_taggeditem(runner, row, *, preview=False):
+    """Assign the feature tag, or - with ``preview`` - classify and write nothing.
+
+    ``preview`` returns ``"creates"``, ``"updates"`` or ``"unchanged"`` for the
+    one row and performs neither write this function normally makes. There are
+    two, and only one of them is visible to a grep for ORM calls:
+
+    * ``runner._upsert_values_from_defaults`` writes the ``Tag`` row itself. The
+      preview runner overrides it with a lookup, the same treatment
+      ``_ensure_vrf`` and ``_ensure_platform`` already get.
+    * ``device.tags.add(tag)`` is an M2M write reached through a module-level
+      helper rather than a ``runner.`` call, so the preview runner's firewall
+      does NOT cover it. That is exactly why this function takes a flag instead
+      of relying on the shim: the write has to be skipped here, by name.
+
+    A tag NetBox does not have cannot already be assigned, so a row whose tag is
+    absent classifies as a create rather than as unmeasured.
+    """
     from extras.models import Tag
 
     try:
@@ -107,7 +124,21 @@ def apply_extras_taggeditem(runner, row):
         # unique-name constraint. Mirrors _ensure_scope_tag in sync_device.py.
         coalesce_sets=[("slug",), ("name",)],
     )
-    _device_add_tag(runner, device, tag)
+    if preview:
+        if tag is None:
+            # The preview runner's lookup found no such tag. NetBox cannot
+            # already carry an assignment to a tag it does not have, so this is
+            # a create - not an "unknown", and emphatically not an unchanged.
+            return "creates"
+        if not _device_has_tag(runner, device, tag):
+            return "creates"
+        # The assignment is already there. The apply would still rewrite the
+        # `Tag` row if its name, slug or colour had drifted, and that is a write
+        # this model's apply performs - so it is an update rather than a
+        # no-change, and the preview runner reports it from the same comparator
+        # the real upsert uses.
+        return "updates" if runner.last_upsert_would_change else "unchanged"
+    _device_add_tag(runner, device, tag)  # NEGATIVE-CONTROL-MARKER
 
 
 def apply_dcim_macaddress(runner, row):
