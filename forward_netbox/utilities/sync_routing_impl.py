@@ -175,16 +175,47 @@ def apply_netbox_routing_bgppeeraddressfamily(runner, row, *, preview=False):
     return peer_address_family
 
 
-def apply_netbox_routing_ospfinstance(runner, row):
-    return runner._ensure_ospf_instance(row)
+def preview_leaf_outcome(runner, obj):
+    """Classify one OSPF row from its OWN upsert, not from its parents'.
+
+    The deliberate difference from `preview_routing_outcome`. A BGP peer's
+    `BGPRouter` and `BGPScope` have no Forward query of their own, so the peer
+    is the only place their drift can be reported. Every OSPF parent is a
+    SEPARATELY measured model - `netbox_routing.ospfinstance` and `ospfarea`
+    each have their own query and their own row set - so folding a parent's
+    create into the interface's verdict would count the same object twice, once
+    under its own model and again under this one.
+
+    So this reads the leaf's own upsert, exactly as the flat DLM rows do.
+    """
+    if obj is None:
+        return "creates"
+    return "updates" if runner.last_upsert_would_change else "unchanged"
 
 
-def apply_netbox_routing_ospfarea(runner, row):
-    return runner._ensure_ospf_area(row)
+def apply_netbox_routing_ospfinstance(runner, row, *, preview=False):
+    instance = runner._ensure_ospf_instance(row)
+    if preview:
+        return preview_leaf_outcome(runner, instance)
+    return instance
 
 
-def apply_netbox_routing_ospfinterface(runner, row):
-    return runner._ensure_ospf_interface(row)
+def apply_netbox_routing_ospfarea(runner, row, *, preview=False):
+    area = runner._ensure_ospf_area(row)
+    if preview:
+        return preview_leaf_outcome(runner, area)
+    return area
+
+
+def apply_netbox_routing_ospfinterface(runner, row, *, preview=False):
+    ospf_interface = runner._ensure_ospf_interface(row)
+    if preview:
+        # `False` is this path's own answer for an interface Forward reports
+        # that NetBox never imported - a skip the apply records, not drift.
+        if ospf_interface is False:
+            return False
+        return preview_leaf_outcome(runner, ospf_interface)
+    return ospf_interface
 
 
 def apply_netbox_peering_manager_peeringsession(runner, row, *, preview=False):
@@ -678,14 +709,18 @@ def ospf_interface_comments(row):
     return "\n".join(lines)
 
 
-def ensure_ospf_instance(runner, row):
+def ensure_ospf_instance(runner, row, *, preview=False):
     OSPFInstance = runner._optional_model(
         "netbox_routing", "OSPFInstance", "netbox_routing.ospfinstance"
     )
     device = lookup_device_for_routing(
         runner, row, "netbox_routing.ospfinstance", "OSPF instance"
     )
-    vrf = routing_vrf(runner, row)
+    vrf = routing_vrf(runner, row, preview=preview)
+    if vrf is VRF_ABSENT:
+        # Coalesced on ("device", "vrf", "process_id"); resolving on `vrf=None`
+        # would match the device's GLOBAL instance instead. See `routing_vrf`.
+        return None
     process_id, process_label = ospf_process_values(row)
     router_id = str(row.get("router_id") or "").strip()
     if not router_id:
@@ -737,7 +772,7 @@ def ensure_ospf_area(runner, row):
     return area
 
 
-def ensure_ospf_interface(runner, row):
+def ensure_ospf_interface(runner, row, *, preview=False):
     OSPFInterface = runner._optional_model(
         "netbox_routing", "OSPFInterface", "netbox_routing.ospfinterface"
     )
@@ -757,7 +792,7 @@ def ensure_ospf_interface(runner, row):
             ),
         )
         return False
-    instance = ensure_ospf_instance(runner, row)
+    instance = ensure_ospf_instance(runner, row, preview=preview)
     area = ensure_ospf_area(runner, row)
     values = runner._model_field_values(
         OSPFInterface,

@@ -585,6 +585,27 @@ class PreviewRunner:
 
         return ensure_bgp_peer_address_family(self, row, preview=True)
 
+    def _ensure_ospf_instance(self, row):
+        from .sync_routing_impl import ensure_ospf_instance
+
+        return ensure_ospf_instance(self, row, preview=True)
+
+    def _ensure_ospf_area(self, row):
+        """No `preview` argument, and that is the audit result, not an omission.
+
+        The area resolves through one `_upsert_values_from_defaults` and
+        nothing else - no device, no VRF, no interface - so the impl function
+        is already read-only under this runner as written.
+        """
+        from .sync_routing_impl import ensure_ospf_area
+
+        return ensure_ospf_area(self, row)
+
+    def _ensure_ospf_interface(self, row):
+        from .sync_routing_impl import ensure_ospf_interface
+
+        return ensure_ospf_interface(self, row, preview=True)
+
     def _ensure_peering_relationship(self, row):
         """No `preview` argument, and that is the audit result, not an omission.
 
@@ -826,7 +847,12 @@ def _compare_netbox_routing_peering(model_string, apply_function):
 
 
 def _peering_comparisons():
-    """The four peering models, which share one classification.
+    """The seven netbox-routing models, which share one row loop.
+
+    They do NOT share one verdict rule, and the split is the substance of these
+    two slices - see `preview_routing_outcome` against `preview_leaf_outcome`.
+
+    Named for peering because that is the slice that built it.
 
     All four funnel into `ensure_netbox_routing_bgppeer` or the address-family
     pair beneath it, and every write in those chains is either behind a
@@ -841,6 +867,9 @@ def _peering_comparisons():
     from .sync_routing_impl import apply_netbox_routing_bgpaddressfamily
     from .sync_routing_impl import apply_netbox_routing_bgppeer
     from .sync_routing_impl import apply_netbox_routing_bgppeeraddressfamily
+    from .sync_routing_impl import apply_netbox_routing_ospfarea
+    from .sync_routing_impl import apply_netbox_routing_ospfinstance
+    from .sync_routing_impl import apply_netbox_routing_ospfinterface
 
     return {
         "netbox_routing.bgppeer": apply_netbox_routing_bgppeer,
@@ -851,6 +880,9 @@ def _peering_comparisons():
         "netbox_peering_manager.peeringsession": (
             apply_netbox_peering_manager_peeringsession
         ),
+        "netbox_routing.ospfinstance": apply_netbox_routing_ospfinstance,
+        "netbox_routing.ospfarea": apply_netbox_routing_ospfarea,
+        "netbox_routing.ospfinterface": apply_netbox_routing_ospfinterface,
     }
 
 
@@ -943,11 +975,13 @@ def compare_model_rows(sync, model_string, rows):
     # There used to be one: no rows, therefore nothing to create or update,
     # therefore a confident zero. It is true arithmetic and the wrong answer,
     # because it answers for models this function cannot compare at all.
-    # `netbox_dlm.softwareversion` is adapter-only and has no comparison; a
-    # deployment reporting 45 Forward rows for it still reached this line with
-    # an empty row list, took the shortcut, and the drift report showed it
-    # measured and `In sync: Yes` - the only affirmative claim on the page,
-    # made by the one branch that never looked at NetBox.
+    # `netbox_dlm.softwareversion` was adapter-only and had no comparison when
+    # this was written (it has since been wired up); a deployment reporting 45
+    # Forward rows for it still reached this line with an empty row list, took
+    # the shortcut, and the drift report showed it measured and `In sync: Yes`
+    # - the only affirmative claim on the page, made by the one branch that
+    # never looked at NetBox. The `netbox_cisco_aci.*` models are in that
+    # position now.
     #
     # An empty row list is not evidence of agreement. It means either that the
     # model genuinely has nothing incoming, or that its rows never reached this

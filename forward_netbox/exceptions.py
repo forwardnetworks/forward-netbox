@@ -55,7 +55,46 @@ class ForwardLicenseTierError(ForwardClientError):
 
 
 class ForwardQueryError(ForwardSyncError):
-    """Raised when a built-in Forward NQE query fails."""
+    """Raised when a built-in Forward NQE query fails.
+
+    Accepts the same structured keywords as `ForwardDataError` because two
+    callers already passed them: `ensure_bgp_address_family` for an unsupported
+    address family, and `ensure_ospf_instance` for a row with no `router_id`.
+    Both took `message, model_string=..., context=..., data=...` against an
+    `__init__` that took none, so BOTH raised `TypeError` instead - and
+    `apply_model_rows` catches `ForwardQueryError` per row and continues, but
+    catches no `TypeError` at all. One malformed OSPF or BGP address-family row
+    therefore aborted the apply for its whole model rather than being recorded
+    and skipped.
+
+    Kept as a `ForwardSyncError` rather than reparented under `ForwardDataError`:
+    several `except ForwardDataError` sites would silently start catching query
+    failures, which is a behaviour change nothing here needs. The keywords are
+    accepted and recorded; the hierarchy is not touched.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        model_string: str | None = None,
+        context: dict | None = None,
+        defaults: dict | None = None,
+        data: dict | None = None,
+        issue_id: int | None = None,
+        dependency: str | None = None,
+        dependency_is_protecting: bool = False,
+        netbox_pk=None,
+    ):
+        super().__init__(message)
+        self.model_string = model_string
+        self.context = context or {}
+        self.defaults = defaults or {}
+        self.data = data or {}
+        self.issue_id = issue_id
+        self.dependency = dependency or ""
+        self.dependency_is_protecting = bool(dependency_is_protecting)
+        self.netbox_pk = None if netbox_pk is None else str(netbox_pk).strip() or None
 
 
 class ForwardDataError(ForwardSyncError):
