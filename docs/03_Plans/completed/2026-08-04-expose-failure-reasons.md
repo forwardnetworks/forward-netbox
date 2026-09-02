@@ -209,13 +209,12 @@ repairs a regression that predates this work.
 
 ## Open
 
-- `Job.error` messages that carry no exception at all - `Forward sync ended
-  with status {status}.`, `Forward merge cannot be retried after the
-  interrupted job; the authoritative branch state is {state}.` - still export
-  as `<redacted diagnostic>`. Both are plugin-authored sentences interpolating
-  a plugin-defined enum, so nothing in them is customer data, but recovering
-  them needs an allowlist of whole sentences rather than a classifier rule.
-  Left out deliberately; it is a different mechanism, not a wider one.
+- ~~`Job.error` messages that carry no exception at all still export as
+  `<redacted diagnostic>`.~~ **Closed 2026-09-02** in
+  `2026-09-02-diagnostics-readback.md`: `_SAFE_JOB_ERROR_SHAPES` is the
+  allowlist this predicted, of whole SHAPES rather than sentences - each pins
+  its wording and constrains the interpolated value to its enum, so a reworded
+  message is redacted rather than admitted.
 - The wording fallback can still emit a leading alphabetic word that happens to
   be customer data - a single-word tenant label at the very start of an
   otherwise uncatalogued message. The catalogue is the mitigation, and each
@@ -224,7 +223,10 @@ repairs a regression that predates this work.
 - `redacted_message_shape` (used for unrecognised validation rules) still keeps
   whole wording. It was not changed here because its inputs are a narrower
   population, but the two masking rules should probably converge.
-- The reason catalogue is matched against message text. A message reworded by
-  a future change silently stops resolving to its slug and falls back to
-  `unrecognized-fetch-failure`. That is visible rather than silent, but a test
-  that asserts each catalogued raise site still resolves would close it.
+- ~~The reason catalogue is matched against message text. A message reworded
+  by a future change silently stops resolving to its slug.~~ **Closed
+  2026-09-02**: `test_diagnostics_readback.py` asserts every plugin-authored
+  needle still matches a literal the plugin composes. Worth recording that the
+  first version of that test reported two slugs dead which were not - the
+  needles span an implicit string concatenation, which the runtime merges and
+  a text search does not, so the reader parses with `ast`.
