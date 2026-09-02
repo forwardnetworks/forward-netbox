@@ -66,6 +66,7 @@ def clean_forward_source(source):
             "sync_generic_endpoints",
             "scope_endpoints_by_include_tags",
             "config_backup_data_source",
+            "config_backup_include_unmanaged",
         }
     )
     if invalid:
@@ -89,6 +90,8 @@ def clean_forward_source(source):
         raise ValidationError(
             _("`config_backup_data_source` must be a data source id.")
         )
+    if not isinstance(parameters.get("config_backup_include_unmanaged", False), bool):
+        raise ValidationError(_("`config_backup_include_unmanaged` must be a boolean."))
     if not isinstance(parameters.get("sync_generic_endpoints", False), bool):
         raise ValidationError(_("`sync_generic_endpoints` must be a boolean."))
     parameters.setdefault("scope_endpoints_by_include_tags", True)
