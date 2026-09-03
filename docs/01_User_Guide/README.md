@@ -6,7 +6,7 @@ Install the plugin package, enable the required plugins, run the migrations, and
 
 - NetBox `4.7.x` (`4.6.x` and earlier are not supported by this release; stay
   on the `2.9.x` line for those). Tested and validated on `4.7.0`.
-- `netboxlabs-netbox-branching` `1.2.x`. Tested on `1.2.0b1`.
+- `netboxlabs-netbox-branching` `1.2.x`. Tested on `1.2.0`.
 - PostgreSQL `15+` and Redis `6+`, which NetBox `4.7` requires. These are the
   part of the upgrade that installing a newer plugin does not fix, so check
   them first.
@@ -35,13 +35,6 @@ integration are not available.
 Nothing about those integrations was removed - the code, models and sync paths
 are all still here and report an absent plugin honestly. If you depend on any
 of them, stay on the `2.9.x` line until the plugin you need raises its ceiling.
-
-### Beta dependency
-
-`netbox-branching` `1.2.0` is not released; `1.2.0b1` is what supports NetBox
-`4.7`, and it is what this release pins. Its own notes say no upgrade path is
-provided to future releases, so expect to re-provision branches when `1.2.0`
-final lands. That is a deliberate trade to make `4.7` available now.
 
 ## Package Installation
 

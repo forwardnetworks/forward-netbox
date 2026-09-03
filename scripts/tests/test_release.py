@@ -616,7 +616,7 @@ class RenderReleaseAuthorizationTest(unittest.TestCase):
         record = {
             "version": "2.9.2",
             "netbox_version": "4.7.0",
-            "branching_version": "1.2.0b1",
+            "branching_version": "1.2.0",
             "python_version": "3.14",
             "wheel": "forward_netbox-2.9.2-py3-none-any.whl",
             "gate": {

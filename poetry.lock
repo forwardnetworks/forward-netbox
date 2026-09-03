@@ -1659,14 +1659,15 @@ docs = ["mkdocs (==1.6.1)", "mkdocs-include-markdown-plugin (==7.1.8)", "mkdocs-
 
 [[package]]
 name = "netboxlabs-netbox-branching"
-version = "1.2.0b1"
+version = "1.2.0"
 description = "A git-like branching implementation for NetBox"
 optional = false
-python-versions = ">=3.10"
+python-versions = ">=3.12"
 groups = ["main"]
+markers = "python_version >= \"3.12\""
 files = [
-    {file = "netboxlabs_netbox_branching-1.2.0b1-py3-none-any.whl", hash = "sha256:fd8b356668b7767e061094a2931447bb955f79f921648a3b099b0c04227aaa6e"},
-    {file = "netboxlabs_netbox_branching-1.2.0b1.tar.gz", hash = "sha256:a6a39d3727b0a50630604311c671c88000d208d3f2467760bba3998807d280b1"},
+    {file = "netboxlabs_netbox_branching-1.2.0-py3-none-any.whl", hash = "sha256:222b88291a1e0e5e9762d8586a764bc5caf462929706179aae2db749d606ee52"},
+    {file = "netboxlabs_netbox_branching-1.2.0.tar.gz", hash = "sha256:97102bdb2d1d25f94851e0468f8643e9ef80cf9cba77e402918f1522c0211461"},
 ]
 
 [package.extras]
@@ -2828,4 +2829,4 @@ validity = ["netbox-validity"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.15"
-content-hash = "c8d90311f2d567bb315bfbe1f3631972e34bed0f60ffc415e72ab6ca76bb81e6"
+content-hash = "c497a528f378ce8c2240023ebcf0c46607ccc26421fefdde687188a6e86862d3"
