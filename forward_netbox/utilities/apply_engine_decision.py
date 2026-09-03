@@ -64,8 +64,8 @@ COPY_SQL_MODEL_SPEC_VERSIONS = {
 }
 COPY_SQL_ALLOWED_MODELS = frozenset(COPY_SQL_MODEL_SPEC_VERSIONS)
 
-COPY_SQL_SUPPORTED_NETBOX_SERIES = "4.6"
-COPY_SQL_SUPPORTED_BRANCHING_SERIES = "1.1"
+COPY_SQL_SUPPORTED_NETBOX_SERIES = "4.7"
+COPY_SQL_SUPPORTED_BRANCHING_SERIES = "1.2"
 # Derived from the single validated-runtime declaration; see
 # `validated_runtime` for why these are no longer written out per engine, and
 # for the netbox-validity entry - a CONSUMER integration reads configuration
@@ -373,7 +373,15 @@ def _copy_sql_runtime_supported():
             },
         )
     for distribution, actual in optional_versions:
-        expected = COPY_SQL_SUPPORTED_OPTIONAL_DISTRIBUTIONS[distribution]
+        # `.get`, not `[...]`. A distribution the runtime reports but this
+        # declaration has never heard of is an UNVALIDATED runtime, which is
+        # exactly what this loop exists to refuse - so it must fail closed and
+        # say so, not raise KeyError out of a decision function. That is not
+        # hypothetical on NetBox 4.7: the validated map is empty there, so any
+        # deployment carrying an optional plugin hit this.
+        expected = COPY_SQL_SUPPORTED_OPTIONAL_DISTRIBUTIONS.get(
+            distribution, frozenset()
+        )
         # Absence is also a different runtime tuple. Each entry lists every
         # version validated against this engine; anything else fails closed.
         if actual not in expected:

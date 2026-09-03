@@ -7,8 +7,8 @@ class NetboxForwardConfig(PluginConfig):
     description = "Sync Forward data into NetBox using built-in NQE queries."
     version = "2.9.2"
     base_url = "forward"
-    min_version = "4.6.5"
-    max_version = "4.6.99"
+    min_version = "4.7.0"
+    max_version = "4.7.99"
 
     def ready(self):
         super().ready()
@@ -31,7 +31,7 @@ def _check_runtime_dependencies():
     # loading at all — the same hard block `max_version` imposed for NetBox
     # patches. Behaviour we actually depend on is checked per engine against the
     # live runtime, not inferred from a version string.
-    required_series = "1.1"
+    required_series = "1.2"
     label = "netbox_branching"
 
     try:

@@ -78,12 +78,41 @@ device_analysis = PluginMenuItem(
     permissions=["forward_netbox.view_forwarddeviceanalysis"],
 )
 
+change = PluginMenuItem(
+    link="plugins:forward_netbox:forwardchange_list",
+    link_text=_("Changes"),
+    buttons=[
+        PluginMenuButton(
+            link="plugins:forward_netbox:forwardchange_add",
+            title=_("Add"),
+            icon_class="mdi mdi-plus-thick",
+            permissions=["forward_netbox.add_forwardchange"],
+        )
+    ],
+    permissions=["forward_netbox.view_forwardchange"],
+)
+
+change_policy = PluginMenuItem(
+    link="plugins:forward_netbox:forwardchangepolicy_list",
+    link_text=_("Change Policies"),
+    buttons=[
+        PluginMenuButton(
+            link="plugins:forward_netbox:forwardchangepolicy_add",
+            title=_("Add"),
+            icon_class="mdi mdi-plus-thick",
+            permissions=["forward_netbox.add_forwardchangepolicy"],
+        )
+    ],
+    permissions=["forward_netbox.view_forwardchangepolicy"],
+)
+
 menu = PluginMenu(
     label="Forward",
     icon_class="mdi mdi-cloud-sync",
     groups=(
         ("Data Sync", (source, sync, ingestion, validation_run)),
+        ("Change Control", (change,)),
         ("Analysis", (device_analysis,)),
-        ("Configuration", (nqe_map, drift_policy)),
+        ("Configuration", (nqe_map, drift_policy, change_policy)),
     ),
 )

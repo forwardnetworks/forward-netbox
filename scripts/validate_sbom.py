@@ -10,13 +10,10 @@ from pathlib import Path
 REQUIRED_COMPONENTS = {
     "forward-netbox": None,
     "httpx": "0.28.1",
-    "netbox": "4.6.8",
-    "netbox-cisco-aci": "0.4.0",
-    "netbox-dlm": "0.9.1",
-    "netbox-peering-manager": "0.3.0",
-    "netbox-routing": "0.4.3",
-    "netbox-validity": "3.5.2",
-    "netboxlabs-netbox-branching": "1.1.3",
+    "netbox": "4.7.0",
+    # The five optional plugins are absent on 4.7: each declares
+    # a max_version in the 4.6 series, so the artifact cannot contain them.
+    "netboxlabs-netbox-branching": "1.2.0",
     "pyzipper": "0.4.0",
 }
 

@@ -7,7 +7,7 @@ from core.choices import JobStatusChoices
 from core.models import Job
 from core.models import ObjectType
 from django.db import transaction
-from django_pglocks import advisory_lock
+from django_pg_utils import advisory_lock
 from netbox.constants import ADVISORY_LOCK_KEYS
 from utilities.rqworker import get_queue_for_model
 

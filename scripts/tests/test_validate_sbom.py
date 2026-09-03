@@ -42,7 +42,7 @@ class ValidateSbomTest(unittest.TestCase):
         )
 
         self.assertGreaterEqual(result["component_count"], 20)
-        self.assertEqual(result["netbox_version"], "4.6.8")
+        self.assertEqual(result["netbox_version"], "4.7.0")
 
     def test_rejects_runtime_version_mismatch(self):
         components = self._components()

@@ -8,7 +8,7 @@ from core.exceptions import SyncError
 from core.models import Job
 from django.db import IntegrityError
 from django.db import transaction
-from django_pglocks import advisory_lock
+from django_pg_utils import advisory_lock
 from netbox.constants import ADVISORY_LOCK_KEYS
 from netbox.context_managers import event_tracking
 from netbox.jobs import JobRunner

@@ -1,0 +1,55 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+{% load i18n %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Policy" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Enabled" %}</th>
+            <td>{{ object.enabled|yesno:"Yes,No" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Approvals before apply" %}</th>
+            <td>{{ object.min_pre_approvals }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Approvals before close" %}</th>
+            <td>
+              {{ object.min_post_approvals }}
+              {% if not object.min_post_approvals %}
+                <span class="text-muted small">
+                  {% trans "a PROCEED verdict closes on its own" %}
+                </span>
+              {% endif %}
+            </td>
+          </tr>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Scope rules" %}</h5>
+      <div class="card-body">
+        {# Scoped by the properties a NETWORK change has - role, site, tag - #}
+        {# rather than by NetBox object type, because that is how an operator #}
+        {# reasons about which changes need which approvers. #}
+        {% if rules %}
+          <ul class="list-unstyled mb-0">
+            {% for rule in rules %}<li>{{ rule }}</li>{% endfor %}
+          </ul>
+        {% else %}
+          <p class="text-muted mb-0">
+            {% trans "No rules: this policy applies to every change." %}
+          </p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock content %}

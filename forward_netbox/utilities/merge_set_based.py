@@ -29,8 +29,8 @@ logger = logging.getLogger("forward_netbox.bulk_merge")
 
 SET_BASED_MERGE_MODEL_SPEC_VERSIONS = {"dcim.macaddress": 1}
 SET_BASED_MERGE_ALLOWED_MODELS = frozenset(SET_BASED_MERGE_MODEL_SPEC_VERSIONS)
-SET_BASED_MERGE_SUPPORTED_NETBOX_SERIES = "4.6"
-SET_BASED_MERGE_SUPPORTED_BRANCHING_SERIES = "1.1"
+SET_BASED_MERGE_SUPPORTED_NETBOX_SERIES = "4.7"
+SET_BASED_MERGE_SUPPORTED_BRANCHING_SERIES = "1.2"
 # Derived from the single validated-runtime declaration; see
 # `validated_runtime` for why these are no longer written out per engine.
 SET_BASED_MERGE_SUPPORTED_OPTIONAL_DISTRIBUTIONS = VALIDATED_OPTIONAL_DISTRIBUTIONS
@@ -49,14 +49,26 @@ _MAC_PAYLOAD_FIELDS = frozenset(
     }
 )
 _MAC_FAST_UPDATE_FIELDS = frozenset({"assigned_object_type", "assigned_object_id"})
+# Read off the live NetBox 4.7 runtime, not carried forward from 4.6. Two
+# entries changed and both are load-bearing:
+#
+# - `netbox.denormalized.update_denormalized_fields` is GONE from post_save.
+#   4.7 maintains denormalized columns with database triggers, and the
+#   `netbox.denormalized` module does not exist at all. That is a reason this
+#   engine can do MORE on 4.7, not less: the per-row Python work it used to
+#   have to reason about is now the database's job.
+# - The search cache handlers moved from `netbox.search.backends.SearchBackend`
+#   to `netbox.search.signals`, and 4.7 defers the write to a background job.
+#
+# This set is exact equality: a receiver appearing or disappearing disables the
+# engine rather than letting it run against a runtime it was not validated on.
 _EXPECTED_MAC_SIGNAL_RECEIVERS = {
     "pre_save": frozenset(),
     "post_save": frozenset(
         {
             "core.signals.handle_changed_object",
             "extras.signals.notify_object_changed",
-            "netbox.denormalized.update_denormalized_fields",
-            "netbox.search.backends.SearchBackend.caching_handler",
+            "netbox.search.signals.caching_handler",
         }
     ),
     "pre_delete": frozenset(
@@ -65,7 +77,7 @@ _EXPECTED_MAC_SIGNAL_RECEIVERS = {
             "extras.signals.notify_object_changed",
         }
     ),
-    "post_delete": frozenset({"netbox.search.backends.SearchBackend.removal_handler"}),
+    "post_delete": frozenset({"netbox.search.signals.removal_handler"}),
 }
 
 
@@ -180,7 +192,15 @@ def _runtime_tuple_decision():
             },
         )
     for distribution, actual in optional_versions:
-        expected = SET_BASED_MERGE_SUPPORTED_OPTIONAL_DISTRIBUTIONS[distribution]
+        # `.get`, not `[...]`. A distribution the runtime reports but this
+        # declaration has never heard of is an UNVALIDATED runtime, which is
+        # exactly what this loop exists to refuse - so it must fail closed and
+        # say so, not raise KeyError out of a decision function. That is not
+        # hypothetical on NetBox 4.7: the validated map is empty there, so any
+        # deployment carrying an optional plugin hit this.
+        expected = SET_BASED_MERGE_SUPPORTED_OPTIONAL_DISTRIBUTIONS.get(
+            distribution, frozenset()
+        )
         if actual not in expected:
             return SetBasedMergeDecision(
                 False,
@@ -245,7 +265,6 @@ def set_based_merge_decision(*, sync, branch, model_string=SET_BASED_MAC_MODEL):
     from extras.models import CustomField
     from extras.models import EventRule
     from netbox.config import get_config
-    from netbox.denormalized import registry as denormalized_registry
     from netbox.search import get_indexer
 
     expected_columns = {
@@ -270,7 +289,8 @@ def set_based_merge_decision(*, sync, branch, model_string=SET_BASED_MAC_MODEL):
             {"expected": sorted(expected_columns), "actual": sorted(actual_columns)},
         )
     content_type = ContentType.objects.get_for_model(MACAddress)
-    if CustomField.objects.get_for_model(MACAddress).exists():
+    # NetBox 4.7 returns a list here, not a queryset: no `.exists()`.
+    if CustomField.objects.get_for_model(MACAddress):
         return SetBasedMergeDecision(False, "custom_field_definition_present", {})
     config = get_config()
     validators = getattr(config, "CUSTOM_VALIDATORS", {}) or getattr(
@@ -316,8 +336,16 @@ def set_based_merge_decision(*, sync, branch, model_string=SET_BASED_MAC_MODEL):
                 },
             },
         )
-    if denormalized_registry["denormalized_fields"].get(MACAddress):
-        return SetBasedMergeDecision(False, "denormalized_fields_present", {})
+    # NetBox 4.7 removed `registry["denormalized_fields"]` along with the whole
+    # `netbox.denormalized` module: denormalized columns are maintained by
+    # database triggers now. The gate existed because a Python post_save
+    # handler would have written columns this engine's set-based UPDATE does
+    # not go through. A trigger fires inside the same statement, so that class
+    # of divergence cannot arise, and there is nothing left to ask.
+    #
+    # This is a real widening: on 4.6 an installed denormalization disabled the
+    # engine outright. It is recorded here rather than silently dropped so the
+    # next reader knows the check was retired on purpose.
     try:
         indexer = get_indexer(MACAddress)
     except KeyError:

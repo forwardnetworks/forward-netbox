@@ -4,21 +4,37 @@ Install the plugin package, enable the required plugins, run the migrations, and
 
 ## Requirements
 
-- NetBox `4.6.x`, `4.6.5` or newer (`4.5.x` and earlier are not supported).
-  Tested and validated on `4.6.8`.
-- `netboxlabs-netbox-branching` `1.1.x`. Tested on `1.1.2`.
+- NetBox `4.7.x` (`4.6.x` and earlier are not supported by this release; stay
+  on the `2.9.x` line for those). Tested and validated on `4.7.0`.
+- `netboxlabs-netbox-branching` `1.2.x`. Tested on `1.2.0`.
+- PostgreSQL `15+` and Redis `6+`, which NetBox `4.7` requires. These are the
+  part of the upgrade that installing a newer plugin does not fix, so check
+  them first.
 - Forward `26.6` is the baseline for async NQE.
 
-### Planning for NetBox 4.7
+### Which line to run
 
-The plugin declares `max_version = "4.6.99"`, so it refuses to load on NetBox
-`4.7` rather than half-working there. That is deliberate and will lift once the
-release gate has actually run against a `4.7` runtime.
+The two versions move together and cannot be mixed: `netbox-branching` `1.2`
+requires NetBox `4.7`, and `1.1` cannot run on it. There is no configuration
+that spans both.
 
-NetBox `4.7` also raises its own service minimums to **PostgreSQL 15+** and
-**Redis 6+**. Those are NetBox's requirements rather than the plugin's, and they
-are worth checking before planning that upgrade, because they are the part that
-is not fixed by installing a newer plugin.
+| You run | Use | Notes |
+| --- | --- | --- |
+| NetBox `4.6.x` | forward-netbox `2.9.x` | Maintained. All optional integrations available. |
+| NetBox `4.7.x` | forward-netbox `3.0.x` | No optional integrations yet - see below. |
+
+### Optional integrations are unavailable on 4.7
+
+`netbox-dlm`, `netbox-cisco-aci`, `netbox-peering-manager`, `netbox-routing`
+and `netbox-validity` each declare a `max_version` in the `4.6` series, and
+NetBox refuses to start with a plugin outside its declared range. They cannot
+be installed on `4.7` at all, so on this release the CVE and software-lifecycle
+tab, the ACI models, peering, routing and the Validity config-backup
+integration are not available.
+
+Nothing about those integrations was removed - the code, models and sync paths
+are all still here and report an absent plugin honestly. If you depend on any
+of them, stay on the `2.9.x` line until the plugin you need raises its ceiling.
 
 ## Package Installation
 

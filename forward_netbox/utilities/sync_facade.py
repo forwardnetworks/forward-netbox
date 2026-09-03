@@ -3,7 +3,7 @@ from core.exceptions import SyncError
 from django.db import transaction as db_transaction
 from django.db.models import Q
 from django.utils.module_loading import import_string
-from django_pglocks import advisory_lock
+from django_pg_utils import advisory_lock
 from netbox.constants import ADVISORY_LOCK_KEYS
 
 from ..choices import forward_configured_models

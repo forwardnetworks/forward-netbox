@@ -100,18 +100,27 @@ def bump_version_text(text: str, old: str, new: str, *, key: str) -> str:
     return new_text
 
 
-def insert_release_row(table_text: str, version: str, summary: str) -> str:
+def insert_release_row(
+    table_text: str, version: str, summary: str, *, support: str = ""
+) -> str:
     """Insert a release candidate while retaining the published current row.
 
     Finalization promotes the candidate and demotes the prior release only after
     the release branch is green, so unreleased docs never claim publication.
+
+    `support` overrides the compatibility cell. It defaults to reusing the
+    current row's text verbatim, which is right for every release that does not
+    move the runtime - and wrong for the one that does. 3.0 changes NetBox 4.6
+    to 4.7 and Branching 1.1 to 1.2, and inheriting the previous cell would
+    have published a row claiming 3.0 runs on the version it explicitly
+    refuses to load on.
     """
     if "| Release candidate;" in table_text:
         raise ReleaseError("a release candidate already exists")
     match = CURRENT_RELEASE_RE.search(table_text)
     if not match:
         raise ReleaseError("could not find the current-release row to supersede")
-    support = match.group("support")
+    support = support or match.group("support")
     new_row = f"| `v{version}` | {support} | Release candidate; {summary} |"
     old_line_start = match.start()
     return table_text[:old_line_start] + new_row + "\n" + table_text[old_line_start:]
@@ -150,8 +159,15 @@ def promote_release_candidate_text(table_text: str, version: str) -> str:
     return "".join(lines)
 
 
-def set_release_intro_text(text: str, version: str, *, candidate: bool) -> str:
-    """Keep the compatibility introduction aligned with the release table."""
+def set_release_intro_text(
+    text: str, version: str, *, candidate: bool, requirements: str = ""
+) -> str:
+    """Keep the compatibility introduction aligned with the release table.
+
+    `requirements` overrides the sentence's runtime clause for the same reason
+    `insert_release_row` takes `support`: a release that moves the runtime must
+    not inherit the previous one's wording.
+    """
     matches = list(RELEASE_INTRO_RE.finditer(text))
     if len(matches) != 1:
         raise ReleaseError(
@@ -160,8 +176,9 @@ def set_release_intro_text(text: str, version: str, *, candidate: bool) -> str:
     match = matches[0]
     release_label = "release candidate" if candidate else "release"
     notes_label = "candidate notes" if candidate else "release notes"
+    requirements = requirements or match.group("requirements")
     replacement = (
-        f"The `{version}` {release_label} requires {match.group('requirements')}. "
+        f"The `{version}` {release_label} requires {requirements}. "
         f"Expand for the published release history and {notes_label}."
     )
     return text[: match.start()] + replacement + text[match.end() :]
@@ -221,15 +238,25 @@ def version_surface_edits(old: str, new: str) -> dict[Path, str]:
     return edits
 
 
-def stage_prepare(version: str, summary: str, *, write: bool) -> None:
+def stage_prepare(
+    version: str,
+    summary: str,
+    *,
+    write: bool,
+    support: str = "",
+    requirements: str = "",
+) -> None:
     old = read_current_version()
     print(f"[prepare] bump {old} -> {version}")
     edits = version_surface_edits(old, version)
     for path in README_TABLES:
         edits[path] = set_release_intro_text(
-            insert_release_row(path.read_text(encoding="utf-8"), version, summary),
+            insert_release_row(
+                path.read_text(encoding="utf-8"), version, summary, support=support
+            ),
             version,
             candidate=True,
+            requirements=requirements,
         )
     # Install-doc wheel/sdist/pin references.
     install_text = edits.get(INSTALL_DOC, INSTALL_DOC.read_text(encoding="utf-8"))
@@ -1524,6 +1551,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--write", action="store_true", help="write prepare edits")
     parser.add_argument(
+        "--support",
+        default="",
+        help=(
+            "compatibility cell for the new table row. Defaults to reusing the "
+            "current row, which is only right when the runtime has not moved."
+        ),
+    )
+    parser.add_argument(
+        "--requirements",
+        default="",
+        help=(
+            "runtime clause for the compatibility sentence, e.g. "
+            "'NetBox `4.7.x` (tested on `4.7.0`) and `netbox-branching` `1.2.x`'"
+        ),
+    )
+    parser.add_argument(
         "--publish",
         action="store_true",
         help="branch + push (rollout), then wait for GitHub CI. Off by default.",
@@ -1574,7 +1617,13 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 stage_finish(args.version)
             return 0
-        stage_prepare(args.version, args.summary, write=args.write)
+        stage_prepare(
+            args.version,
+            args.summary,
+            write=args.write,
+            support=args.support,
+            requirements=args.requirements,
+        )
         if args.write:
             stage_verify(args.version)
         if args.publish:
