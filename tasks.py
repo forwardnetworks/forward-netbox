@@ -1109,10 +1109,10 @@ def _previous_released_version(context, version):
     gate asks is "what could an operator actually be upgrading from", and only
     the index can answer that.
     """
+    import http.client
     import json
     import time
-    import urllib.error
-    import urllib.request
+    import urllib.parse
 
     url = "https://pypi.org/pypi/forward-netbox/json"
     # Retry before failing. A single attempt failed this gate twice in a row on
@@ -1129,16 +1129,36 @@ def _previous_released_version(context, version):
     for backoff in (0, 10, 30):
         if backoff:
             time.sleep(backoff)
+        # http.client, not urllib.request: urllib appends `Connection: close`
+        # inside `do_open` after the caller's headers, so it cannot be
+        # suppressed, and this host stalls close-mode responses - measured at
+        # 1/10 completions against 6/6 with keep-alive
+        # (`scripts/verify_release_provenance.py`, which speaks http.client for
+        # the same reason). Setting no Connection header leaves the HTTP/1.1
+        # keep-alive default standing. PyPI has not been seen stalling; this
+        # removes the fault-prone pattern from the last place it appears.
+        parsed = urllib.parse.urlsplit(url)
+        connection = http.client.HTTPSConnection(
+            parsed.hostname, parsed.port or 443, timeout=45
+        )
         try:
-            with urllib.request.urlopen(url, timeout=45) as response:
-                payload = json.load(response)
+            connection.request(
+                "GET", parsed.path, headers={"Accept": "application/json"}
+            )
+            response = connection.getresponse()
+            body = response.read()
+            if response.status >= 400:
+                raise OSError(f"PyPI returned HTTP {response.status}")
+            payload = json.loads(body)
             break
         # OSError, not just TimeoutError: the read can also fail with
-        # ConnectionResetError, which is not a URLError and was escaping raw -
-        # failing the release gate with a bare socket error instead of the
-        # message that says how to run it offline.
-        except (urllib.error.URLError, OSError, ValueError) as exc:
+        # ConnectionResetError, which was escaping raw - failing the release
+        # gate with a bare socket error instead of the message that says how to
+        # run it offline.
+        except (http.client.HTTPException, OSError, ValueError) as exc:
             last_error = exc
+        finally:
+            connection.close()
     if payload is None:
         raise Exit(
             f"Could not read released versions from PyPI ({last_error}) after "

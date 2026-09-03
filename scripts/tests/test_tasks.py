@@ -214,6 +214,37 @@ class ReleaseArtifactTaskTest(unittest.TestCase):
         )
 
 
+def _fake_https_connection(body=None, *, status=200, error=None):
+    """Stand in for `http.client.HTTPSConnection` in `_previous_released_version`.
+
+    tasks.py speaks http.client directly rather than urllib, because urllib
+    forces `Connection: close` and this host stalls close-mode responses.
+    """
+
+    class _Response:
+        def __init__(self):
+            self.status = status
+
+        def read(self):
+            return (body or "").encode("utf-8")
+
+    class _Connection:
+        def __init__(self, host, port=None, timeout=None):
+            self.host = host
+
+        def request(self, method, path, headers=None):
+            if error is not None:
+                raise error
+
+        def getresponse(self):
+            return _Response()
+
+        def close(self):
+            pass
+
+    return _Connection
+
+
 class PreviousReleasedVersionTest(unittest.TestCase):
     """Cover the index resolution itself, against a fixed payload.
 
@@ -234,16 +265,9 @@ class PreviousReleasedVersionTest(unittest.TestCase):
     }
 
     def _resolve(self, version, payload=None):
-        import contextlib
-        import io
-
         body = json.dumps(self.PAYLOAD if payload is None else payload)
 
-        @contextlib.contextmanager
-        def fake_urlopen(url, timeout=None):
-            yield io.StringIO(body)
-
-        with patch("urllib.request.urlopen", fake_urlopen):
+        with patch("http.client.HTTPSConnection", _fake_https_connection(body)):
             return tasks._previous_released_version(Mock(), version)
 
     def test_a_dev_marker_resolves_from_the_release_it_heads_for(self):
@@ -284,16 +308,19 @@ class PreviousReleasedVersionTest(unittest.TestCase):
         self.assertEqual(raised.exception.code, 2)
 
     def test_a_connection_reset_reports_how_to_run_offline(self):
-        # A reset during the read is not a URLError; it used to escape raw and
-        # fail the release gate with a bare socket error.
-        import contextlib
-
-        @contextlib.contextmanager
-        def reset(url, timeout=None):
-            raise ConnectionResetError(104, "Connection reset by peer")
-            yield  # pragma: no cover
-
-        with patch("urllib.request.urlopen", reset):
+        # A reset during the read used to escape raw and fail the release gate
+        # with a bare socket error instead of the offline instructions.
+        # The retry backoff is (0, 10, 30); sleeping it here bought nothing but
+        # 40 seconds of suite time.
+        with (
+            patch(
+                "http.client.HTTPSConnection",
+                _fake_https_connection(
+                    error=ConnectionResetError(104, "Connection reset by peer")
+                ),
+            ),
+            patch("time.sleep"),
+        ):
             with self.assertRaises(Exit) as raised:
                 tasks._previous_released_version(Mock(), "2.6.7")
         self.assertEqual(raised.exception.code, 2)
@@ -451,7 +478,6 @@ class ArtifactUpgradeTaskTest(unittest.TestCase):
         context.run.assert_not_called()
 
     def _pypi(self, *versions, yanked=()):
-        import io
         import json
 
         payload = {
@@ -460,15 +486,13 @@ class ArtifactUpgradeTaskTest(unittest.TestCase):
                 for v in versions
             }
         }
-        return io.BytesIO(json.dumps(payload).encode())
+        return _fake_https_connection(json.dumps(payload))
 
     def test_previous_version_picks_the_highest_published_below_the_build(self):
         with patch(
-            "urllib.request.urlopen",
-            return_value=self._pypi("2.5.11", "2.6.5", "2.6.6", "2.6.9"),
-        ) as urlopen:
-            urlopen.return_value.__enter__ = lambda s: s
-            urlopen.return_value.__exit__ = lambda *a: None
+            "http.client.HTTPSConnection",
+            self._pypi("2.5.11", "2.6.5", "2.6.6", "2.6.9"),
+        ):
             self.assertEqual(
                 tasks._previous_released_version(self._context(), "2.6.9"), "2.6.6"
             )
@@ -477,51 +501,39 @@ class ArtifactUpgradeTaskTest(unittest.TestCase):
         # The defect this replaced: v2.6.7 and v2.6.8 are git tags with no PyPI
         # artifact, so resolving from tags produced an uninstallable version and
         # the release failed *after* the tag was pushed.
-        with patch(
-            "urllib.request.urlopen", return_value=self._pypi("2.6.5", "2.6.6")
-        ) as urlopen:
-            urlopen.return_value.__enter__ = lambda s: s
-            urlopen.return_value.__exit__ = lambda *a: None
+        with patch("http.client.HTTPSConnection", self._pypi("2.6.5", "2.6.6")):
             self.assertEqual(
                 tasks._previous_released_version(self._context(), "2.6.9"), "2.6.6"
             )
 
     def test_previous_version_skips_a_yanked_release(self):
         with patch(
-            "urllib.request.urlopen",
-            return_value=self._pypi("2.6.5", "2.6.6", yanked=("2.6.6",)),
-        ) as urlopen:
-            urlopen.return_value.__enter__ = lambda s: s
-            urlopen.return_value.__exit__ = lambda *a: None
+            "http.client.HTTPSConnection",
+            self._pypi("2.6.5", "2.6.6", yanked=("2.6.6",)),
+        ):
             self.assertEqual(
                 tasks._previous_released_version(self._context(), "2.6.9"), "2.6.5"
             )
 
     def test_previous_version_orders_numerically_not_lexically(self):
-        with patch(
-            "urllib.request.urlopen", return_value=self._pypi("2.5.9", "2.5.11")
-        ) as urlopen:
-            urlopen.return_value.__enter__ = lambda s: s
-            urlopen.return_value.__exit__ = lambda *a: None
+        with patch("http.client.HTTPSConnection", self._pypi("2.5.9", "2.5.11")):
             self.assertEqual(
                 tasks._previous_released_version(self._context(), "2.6.0"), "2.5.11"
             )
 
     def test_previous_version_fails_closed_with_nothing_published(self):
-        with patch(
-            "urllib.request.urlopen", return_value=self._pypi("2.7.0")
-        ) as urlopen:
-            urlopen.return_value.__enter__ = lambda s: s
-            urlopen.return_value.__exit__ = lambda *a: None
+        with patch("http.client.HTTPSConnection", self._pypi("2.7.0")):
             with self.assertRaises(Exit) as raised:
                 tasks._previous_released_version(self._context(), "2.6.9")
         self.assertEqual(raised.exception.code, 2)
 
     def test_previous_version_fails_closed_when_pypi_is_unreachable(self):
-        import urllib.error
-
-        with patch(
-            "urllib.request.urlopen", side_effect=urllib.error.URLError("offline")
+        with (
+            patch(
+                "http.client.HTTPSConnection",
+                _fake_https_connection(error=OSError("offline")),
+            ),
+            patch("time.sleep"),
         ):
             with self.assertRaises(Exit) as raised:
                 tasks._previous_released_version(self._context(), "2.6.9")
