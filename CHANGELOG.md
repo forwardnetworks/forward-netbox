@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v3.0.0
+
+Release candidate; NetBox 4.7 with netbox-branching 1.2, and change control gated on what Forward saw before and after the change.
+
 ## v2.9.2
 
 Drift is measured exactly for every fetched model, the uncovered-device count says why it grows and warns when it does, and five delete and diagnostic defects are closed.
