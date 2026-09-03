@@ -1,5 +1,6 @@
 """Profile real branch merges with anonymized production-shaped fixtures."""
 
+import contextlib
 import hashlib
 import json
 import logging
@@ -25,6 +26,38 @@ from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.merge import merge_branch
 from forward_netbox.utilities.merge_observability import begin_merge_attempt
 from forward_netbox.utilities.merge_profiling import MergeProfileRecorder
+from forward_netbox.utilities.merge_profiling import profile_scope
+
+
+@contextlib.contextmanager
+def _changediff_save_measured():
+    """Attribute `ChangeDiff.save()` to its own scope for the merge.
+
+    The per-row cost sits inside upstream's `ObjectChange.apply`, which the
+    recorder already times as one opaque `objectchange_apply` bucket - so
+    "is branching 1.1.3's ChangeDiff saving measurable on a real merge"
+    could not be answered from a profile. Wrapping the method here rather
+    than in the merge path keeps production untouched: this is a profiling
+    command and the instrumentation belongs with the measurement.
+    """
+    from netbox_branching.models import ChangeDiff
+
+    original = ChangeDiff.save
+
+    def measured(self, *args, **kwargs):
+        with profile_scope(
+            "changediff_save",
+            owner="upstream_netbox_branching",
+            rows=1,
+        ):
+            return original(self, *args, **kwargs)
+
+    ChangeDiff.save = measured
+    try:
+        yield
+    finally:
+        ChangeDiff.save = original
+
 
 LOG = logging.getLogger("forward_netbox.merge_profile")
 STAGE_CHUNK_SIZE = 500
@@ -40,6 +73,11 @@ FIXTURE_WEIGHTS = (
     ("ipam.ipaddress", 0.053),
     ("ipam.prefix", 0.036),
     ("dcim.site", 0.001),
+    # A tree model, so `_is_bulk_safe` (bulk_merge.py) always refuses it and
+    # the row goes through the per-object upstream fallback - the only path
+    # that reaches ChangeDiff.save(). Without it this fixture is CREATE-only
+    # and bulk-safe, so it measured everything EXCEPT the cost in question.
+    ("dcim.region", 0.002),
 )
 
 
@@ -47,6 +85,7 @@ def _allocated_counts(volume):
     counts = {model: int(volume * weight) for model, weight in FIXTURE_WEIGHTS}
     counts["dcim.device"] = max(1, counts["dcim.device"])
     counts["dcim.site"] = max(1, counts["dcim.site"])
+    counts["dcim.region"] = max(1, counts["dcim.region"])
     assigned = sum(counts.values())
     counts["dcim.interface"] += volume - assigned
     return counts
@@ -156,6 +195,7 @@ class Command(BaseCommand):
             InventoryItem,
             MACAddress,
             Manufacturer,
+            Region,
             Site,
         )
         from ipam.models import IPAddress, Prefix
@@ -267,6 +307,16 @@ class Command(BaseCommand):
             ),
         )
 
+        self._stage_rows(
+            branch,
+            request,
+            counts["dcim.region"],
+            lambda index: Region.objects.create(
+                name=f"Profile Branch Region {short} {index}",
+                slug=f"profile-branch-region-{short}-{index}",
+            ),
+        )
+
         Branch.objects.filter(pk=branch.pk).update(status=BranchStatusChoices.READY)
         branch.refresh_from_db()
         staged_changes = branch.get_unmerged_changes().count()
@@ -296,7 +346,7 @@ class Command(BaseCommand):
                 "staged_changes": staged_changes,
             }
         )
-        with recorder.activate():
+        with recorder.activate(), _changediff_save_measured():
             merge_branch(
                 ingestion,
                 user=user,
