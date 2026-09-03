@@ -752,6 +752,19 @@ def _checkout_merged_main() -> str:
 
 
 def _pull_request_for_branch(branch: str) -> dict | None:
+    """The pull request for `branch`, ignoring ones merged into dead history.
+
+    A merged PR whose merge commit is no longer reachable from `origin/main`
+    belongs to a history that was rewritten away. It looks identical to a real
+    one here - same head branch, state MERGED - and treating it as this
+    release's PR makes `stage_finish` conclude the release is already cut and
+    stop, every time, with nothing to fix.
+
+    That is not hypothetical: purging two live Forward identifiers from public
+    history orphaned the v3.0.0 release PRs exactly this way, and the flow
+    refused to move until the check learned to ask whether the merge is still
+    part of the branch being released.
+    """
     raw = _capture(
         [
             "gh",
@@ -766,16 +779,43 @@ def _pull_request_for_branch(branch: str) -> dict | None:
             "--state",
             "all",
             "--limit",
-            "1",
+            "5",
             "--json",
-            "number,state,mergedAt,url,headRefName,baseRefName",
+            "number,state,mergedAt,url,headRefName,baseRefName,mergeCommit",
         ]
     )
     try:
         pulls = json.loads(raw) if raw else []
     except json.JSONDecodeError:
         pulls = []
-    return pulls[0] if pulls else None
+    for pull in pulls:
+        if pull.get("state") != "MERGED":
+            return pull
+        if _merge_is_live(pull):
+            return pull
+    return None
+
+
+def _merge_is_live(pull: dict) -> bool:
+    """Whether a merged PR's merge commit is still reachable from origin/main."""
+    commit = (pull.get("mergeCommit") or {}).get("oid") or ""
+    if not commit:
+        # No merge commit recorded: assume live rather than silently reopening
+        # a release that really did complete.
+        return True
+    exists = subprocess.run(
+        ["git", "cat-file", "-e", f"{commit}^{{commit}}"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+    )
+    if exists.returncode != 0:
+        return False
+    reachable = subprocess.run(
+        ["git", "merge-base", "--is-ancestor", commit, "origin/main"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+    )
+    return reachable.returncode == 0
 
 
 def _open_release_pull_request(version: str, branch: str, *, evidence: bool) -> None:
