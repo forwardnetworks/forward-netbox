@@ -33,9 +33,9 @@ class ReleaseProvenanceTest(unittest.TestCase):
 
     def _git(self, *arguments):
         responses = {
-            ("cat-file", "-t", "refs/tags/v2.6.0"): "tag",
-            ("rev-parse", "refs/tags/v2.6.0^{commit}"): self.release_commit,
-            ("rev-parse", "refs/remotes/origin/main"): self.release_commit,
+            ("cat-file", "-t", "refs/tags/v3.0.1"): "tag",
+            ("rev-parse", "refs/tags/v3.0.1^{commit}"): self.release_commit,
+            ("rev-parse", provenance.LANE.remote_tracking_ref): self.release_commit,
             (
                 "merge-base",
                 "--is-ancestor",
@@ -54,7 +54,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
                 "--name-only",
                 self.production_commit,
                 self.release_commit,
-            ): "docs/03_Plans/active/2026-07-18-release-2.6.0-scope-convergence.md",
+            ): "docs/03_Plans/active/2026-07-18-release-3.0.1-scope-convergence.md",
             (
                 "cat-file",
                 "-t",
@@ -146,7 +146,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
                     {
                         "number": number,
                         "merged_at": merged_at,
-                        "base": {"ref": "main"},
+                        "base": {"ref": provenance.LANE.branch},
                         "merge_commit_sha": commit,
                     }
                 ]
@@ -167,7 +167,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
                     "number": number,
                     "merged_at": merged_at[number],
                     "head": {"sha": candidate},
-                    "base": {"ref": "main"},
+                    "base": {"ref": provenance.LANE.branch},
                 }
 
         status_runs = {
@@ -226,7 +226,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
                             "workflow_id": workflow_id,
                             "path": workflow_path,
                             "head_sha": commit,
-                            "head_branch": "main",
+                            "head_branch": provenance.LANE.branch,
                             "event": "push",
                             "status": "completed",
                             "conclusion": "success",
@@ -266,7 +266,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
                 provenance, "_github_json", side_effect=github or self._github
             ),
         ):
-            return provenance.verify_release_provenance("v2.6.0", "token")
+            return provenance.verify_release_provenance("v3.0.1", "token")
 
     def test_accepts_reviewed_bootstrap_and_release_lineage(self):
         result = self._verify()
@@ -285,7 +285,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
         argv = [
             "verify_release_provenance.py",
             "--tag",
-            "v2.6.0",
+            "v3.0.1",
         ]
         with (
             patch.dict(os.environ, {"GH_TOKEN": secret}, clear=True),
@@ -332,7 +332,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
         advanced_main = "e" * 40
 
         def git(*arguments):
-            if arguments == ("rev-parse", "refs/remotes/origin/main"):
+            if arguments == ("rev-parse", provenance.LANE.remote_tracking_ref):
                 return advanced_main
             if arguments == (
                 "merge-base",
@@ -359,7 +359,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
             ),
         ):
             self.assertTrue(
-                provenance._require_merged_main_pr(
+                provenance._require_merged_release_branch_pr(
                     commit,
                     "token",
                     allow_direct_control_commit=True,
@@ -378,7 +378,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
             ),
         ):
             with self.assertRaises(provenance.ProvenanceError):
-                provenance._require_merged_main_pr(
+                provenance._require_merged_release_branch_pr(
                     commit,
                     "token",
                     allow_direct_control_commit=True,
@@ -409,7 +409,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
         advanced_main = "e" * 40
 
         def git(*arguments):
-            if arguments == ("rev-parse", "refs/remotes/origin/main"):
+            if arguments == ("rev-parse", provenance.LANE.remote_tracking_ref):
                 return advanced_main
             if arguments == (
                 "merge-base",
@@ -423,7 +423,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
         with self.assertRaisesRegex(provenance.ProvenanceError, "ancestor"):
             self._verify(git=git)
 
-    def test_tag_only_push_survives_real_remote_main_advance(self):
+    def test_tag_only_push_survives_real_remote_lane_advance(self):
         def run(repository: Path | None, *arguments: str) -> str:
             command = ["git"]
             if repository is not None:
@@ -441,7 +441,13 @@ class ReleaseProvenanceTest(unittest.TestCase):
             origin = root / "origin.git"
             tagger = root / "tagger"
             advancer = root / "advancer"
-            run(None, "init", "--bare", "--initial-branch=main", str(origin))
+            run(
+                None,
+                "init",
+                "--bare",
+                f"--initial-branch={provenance.LANE.branch}",
+                str(origin),
+            )
             run(None, "clone", str(origin), str(tagger))
             run(tagger, "config", "user.name", "Release Tagger")
             run(tagger, "config", "user.email", "tagger@example.invalid")
@@ -449,7 +455,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
             run(tagger, "add", "release.txt")
             run(tagger, "commit", "-m", "release")
             release_commit = run(tagger, "rev-parse", "HEAD")
-            run(tagger, "push", "-u", "origin", "main")
+            run(tagger, "push", "-u", "origin", provenance.LANE.branch)
 
             run(None, "clone", str(origin), str(advancer))
             run(advancer, "config", "user.name", "Main Advancer")
@@ -458,28 +464,28 @@ class ReleaseProvenanceTest(unittest.TestCase):
             run(advancer, "add", "next.txt")
             run(advancer, "commit", "-m", "advance main")
             advanced_main = run(advancer, "rev-parse", "HEAD")
-            run(advancer, "push", "origin", "main")
+            run(advancer, "push", "origin", provenance.LANE.branch)
 
             run(
                 tagger,
                 "tag",
                 "-a",
-                "v2.6.0",
+                "v3.0.1",
                 "-m",
-                "Forward NetBox 2.6.0",
+                "Forward NetBox 3.0.1",
                 release_commit,
             )
-            run(tagger, "push", "origin", "refs/tags/v2.6.0")
+            run(tagger, "push", "origin", "refs/tags/v3.0.1")
             run(
                 tagger,
                 "fetch",
                 "origin",
-                "main:refs/remotes/origin/main",
+                f"{provenance.LANE.branch}:{provenance.LANE.remote_tracking_ref}",
             )
 
             with patch.object(provenance, "REPO_ROOT", tagger):
                 self.assertEqual(
-                    provenance._require_release_on_main_lineage(release_commit),
+                    provenance._require_release_on_lane_lineage(release_commit),
                     advanced_main,
                 )
             self.assertEqual(
@@ -488,7 +494,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
                     "--git-dir",
                     str(origin),
                     "rev-parse",
-                    "refs/tags/v2.6.0^{commit}",
+                    "refs/tags/v3.0.1^{commit}",
                 ),
                 release_commit,
             )
@@ -548,7 +554,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
                 return (
                     "forward_netbox/models.py\n"
                     "docs/03_Plans/active/"
-                    "2026-07-18-release-2.6.0-scope-convergence.md"
+                    "2026-07-18-release-3.0.1-scope-convergence.md"
                 )
             return result
 
@@ -648,9 +654,9 @@ class GitHubReleaseControlsTest(unittest.TestCase):
         # No `required_status_checks` rule: the CI gates were removed, so the
         # ruleset must not name checks that can never report again.
         main = self._ruleset(
-            provenance.MAIN_RULESET_NAME,
+            provenance.RELEASE_BRANCH_RULESET_NAME,
             "branch",
-            "refs/heads/main",
+            provenance.LANE.ref_pattern,
             [
                 {"type": "deletion"},
                 {"type": "non_fast_forward"},
@@ -670,7 +676,7 @@ class GitHubReleaseControlsTest(unittest.TestCase):
             [],
         )
         rulesets = {
-            provenance.MAIN_RULESET_NAME: main,
+            provenance.RELEASE_BRANCH_RULESET_NAME: main,
             provenance.VERSION_TAG_INTEGRITY_RULESET: self._ruleset(
                 provenance.VERSION_TAG_INTEGRITY_RULESET,
                 "tag",
@@ -755,7 +761,9 @@ class GitHubReleaseControlsTest(unittest.TestCase):
     def test_accepts_complete_live_release_controls(self):
         result = self._verify()
 
-        self.assertEqual(result["main_ruleset"], provenance.MAIN_RULESET_NAME)
+        self.assertEqual(
+            result["release_branch_ruleset"], provenance.RELEASE_BRANCH_RULESET_NAME
+        )
         # No required status checks remain: the gates that reported them were
         # removed, and a ruleset naming checks that can never report again would
         # block every pull request permanently.

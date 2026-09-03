@@ -959,7 +959,7 @@ class StageAnchorTest(unittest.TestCase):
             patch.object(release, "_anchor_plan_path", return_value=plan),
             patch.object(release, "promote_release_tables") as promote,
             patch.object(release, "_open_pull_request") as open_pull_request,
-            patch.object(release, "_capture", return_value="main"),
+            patch.object(release, "_capture", return_value=release.RELEASE_BRANCH),
             patch.object(release, "run", side_effect=run),
         ):
             try:
@@ -982,13 +982,16 @@ class StageAnchorTest(unittest.TestCase):
         promote.assert_called_once_with("2.9.2")
         open_pull_request.assert_called_once()
         joined = [" ".join(call) for call in calls]
-        self.assertIn("git checkout -B chore/anchor-2.9.2 origin/main", joined)
+        self.assertIn(
+            f"git checkout -B chore/anchor-2.9.2 {release.REMOTE_RELEASE_REF}",
+            joined,
+        )
         commit = next(i for i, c in enumerate(joined) if "git commit" in c)
         harness = next(i for i, c in enumerate(joined) if "check_harness.py" in c)
         push = next(i for i, c in enumerate(joined) if c.startswith("git push"))
         self.assertLess(commit, harness)
         self.assertLess(harness, push)
-        self.assertEqual(joined[-1], "git checkout --force main")
+        self.assertEqual(joined[-1], f"git checkout --force {release.RELEASE_BRANCH}")
 
     def test_the_generated_plan_carries_the_harness_headings(self):
         _text, plan, _calls, _promote, _open = self._run()
@@ -1047,7 +1050,10 @@ class StageAuthorizeTest(unittest.TestCase):
         self.assertIn("## Release Authorization", text)
         self.assertIn("- Evidence base commit: `" + "e" * 40 + "`", text)
         joined = [" ".join(call) for call in calls]
-        self.assertIn("git checkout -B release/2.9.2-evidence origin/main", joined)
+        self.assertIn(
+            f"git checkout -B release/2.9.2-evidence {release.REMOTE_RELEASE_REF}",
+            joined,
+        )
         self.assertTrue(any("release: authorize v2.9.2" in c for c in joined))
         self.assertTrue(any("check_release_authorization.py" in c for c in joined))
 
@@ -1277,7 +1283,7 @@ class StageIdempotencyTest(unittest.TestCase):
             patch.object(release, "_text_on_main", return_value=None),
             patch.object(release, "_pull_request_for_branch", return_value=None),
             patch.object(release, "run", side_effect=lambda c, **k: commands.append(c)),
-            patch.object(release, "_capture", return_value="main"),
+            patch.object(release, "_capture", return_value=release.RELEASE_BRANCH),
             patch.object(release, "_open_pull_request") as open_pull_request,
             patch.object(release, "_bridge_plan_path") as plan_path,
         ):
@@ -1320,7 +1326,7 @@ class StageIdempotencyTest(unittest.TestCase):
             patch.object(release, "_text_on_main", return_value=landed),
             patch.object(release, "_pull_request_for_branch", return_value=None),
             patch.object(release, "run"),
-            patch.object(release, "_capture", return_value="main"),
+            patch.object(release, "_capture", return_value=release.RELEASE_BRANCH),
             patch.object(release, "promote_release_tables") as promote,
             patch.object(release, "_open_pull_request"),
             patch.object(release, "_anchor_plan_path") as plan_path,

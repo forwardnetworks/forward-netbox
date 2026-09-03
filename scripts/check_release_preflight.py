@@ -26,6 +26,13 @@ import sys
 import tomllib
 from pathlib import Path
 
+# Imported as a sibling when run directly and as a package member when
+# the tests import it; both spellings resolve to the same module.
+try:  # pragma: no cover - exercised by whichever entry point is in use
+    from release_lane import REMOTE_RELEASE_REF
+except ImportError:  # pragma: no cover
+    from scripts.release_lane import REMOTE_RELEASE_REF
+
 import verify_release_provenance as provenance
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -383,27 +390,27 @@ def check_release_plan_evidence_base(version: str) -> str:
 
     Authorization binds the tagged commit to its parent. A release branch's own
     parent is *not* that commit: the release squash-merges, so on `main` the
-    release commit's parent is `origin/main`'s head at merge time. Recording the
+    release commit's parent is the release branch's head at merge time. Recording the
     branch-side parent therefore always mismatches once merged, and the release
     cannot be tagged until a second PR corrects it — which costs a full CI cycle
     for a one-line change.
 
     Reported here, before the push, so the round trip is seconds instead of an
-    hour. Skipped when `origin/main` is unknown (a fresh clone or offline run),
+    hour. Skipped when the release branch is unknown (a fresh clone or offline run),
     since a missing remote ref is not evidence of a wrong value.
 
-    `origin/main` is only the right comparison *before* the merge. Once the
-    release has merged, `origin/main` is the release commit itself, so demanding
+    The branch head is only the right comparison *before* the merge. Once the
+    release has merged, that head is the release commit itself, so demanding
     it here would tell the operator to record the tagged commit in place of its
     parent — the exact value `release_evidence_commit_binding` then rejects,
     since it binds against `HEAD^`. In that window the two checks contradicted
     each other and the release could not be tagged at all. So when `HEAD` is
-    already `origin/main`, compare against `HEAD^`: same rule, evaluated from
+    already the branch head, compare against `HEAD^`: same rule, evaluated from
     the side of the merge the repository is actually on.
     """
     if _git("tag", "--list", f"v{version}"):
         # Already tagged: the recorded value was correct at tag time and is now
-        # history. Re-checking it against a moved origin/main is meaningless.
+        # history. Re-checking it against a moved branch head is meaningless.
         return f"skipped (v{version} is already tagged)"
     plans = sorted((REPO_ROOT / "docs" / "03_Plans").rglob(f"*release-{version}*.md"))
     if len(plans) != 1:
@@ -416,12 +423,12 @@ def check_release_plan_evidence_base(version: str) -> str:
     )
     if match is None:
         return "skipped (plan records no evidence base commit yet)"
-    remote_main = _git("rev-parse", "origin/main")
-    if len(remote_main) != 40:
-        return "skipped (origin/main is unknown in this checkout)"
-    merged = _git("rev-parse", "HEAD") == remote_main
-    reference = "HEAD^" if merged else "origin/main"
-    expected = _git("rev-parse", reference) if merged else remote_main
+    remote_head = _git("rev-parse", REMOTE_RELEASE_REF)
+    if len(remote_head) != 40:
+        return f"skipped ({REMOTE_RELEASE_REF} is unknown in this checkout)"
+    merged = _git("rev-parse", "HEAD") == remote_head
+    reference = "HEAD^" if merged else REMOTE_RELEASE_REF
+    expected = _git("rev-parse", reference) if merged else remote_head
     if len(expected) != 40:
         return f"skipped ({reference} is unknown in this checkout)"
     recorded = match.group(1)
@@ -431,7 +438,7 @@ def check_release_plan_evidence_base(version: str) -> str:
             f"and its parent is {expected}"
             if merged
             else f"a squash merge will make the release commit's parent "
-            f"{expected} (origin/main)"
+            f"{expected} ({REMOTE_RELEASE_REF})"
         )
         raise PreflightError(
             f"{plans[0].relative_to(REPO_ROOT)} records evidence base commit "
@@ -506,7 +513,7 @@ def _outcome(detail: str) -> str:
     """Say `skipped` for a check that declined to run.
 
     Several checks return a `skipped (reason)` string when they cannot decide -
-    no plan yet, no `origin/main`, already tagged. Every one of them was printed
+    no plan yet, no release branch, already tagged. Every one of them was printed
     under a `passed:` prefix, so the release log read
 
         release preflight passed: evidence base commit skipped (v2.8.3 is
