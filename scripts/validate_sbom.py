@@ -13,7 +13,7 @@ REQUIRED_COMPONENTS = {
     "netbox": "4.7.0",
     # The five optional plugins are absent on 4.7: each declares
     # a max_version in the 4.6 series, so the artifact cannot contain them.
-    "netboxlabs-netbox-branching": "1.2.0b1",
+    "netboxlabs-netbox-branching": "1.2.0",
     "pyzipper": "0.4.0",
 }
 

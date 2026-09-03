@@ -43,8 +43,10 @@ class RuntimeDependencyCheckTest(SimpleTestCase):
                         _check_runtime_dependencies()
 
     def test_accepts_the_supported_series_including_a_prerelease(self):
-        # 1.2.0b1 is what 3.0 ships against: 1.2.0 final is not released, and
-        # `series_matches` accepts it by prefix without special-casing betas.
+        # 3.0 ships against 1.2.0 final. The prerelease stays in this list on
+        # purpose: `series_matches` accepts it by prefix, and anyone who
+        # installed the beta before final shipped must not be locked out by a
+        # version check that only ever saw release strings.
         for version in ("1.2.0b1", "1.2.0", "1.2.4"):
             with self.subTest(branching=version):
                 with patch(

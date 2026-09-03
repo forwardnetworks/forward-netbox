@@ -104,6 +104,9 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
         # not silently switch an engine off.
         for version in ("4.6.5", "4.6.6", "4.6.12", "4.6"):
             self.assertTrue(series_matches(version, "4.6"), version)
+        # The prerelease stays: anyone who installed the beta before 1.2.0
+        # shipped must not be refused by a series check that only ever saw
+        # release strings.
         for version in ("1.2.0b1", "1.2.0", "1.2.9"):
             self.assertTrue(series_matches(version, "1.2"), version)
 
@@ -127,7 +130,7 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
 
         tuple_ = {
             "netbox": netbox,
-            "branching": "1.2.0b1",
+            "branching": "1.2.0",
             "forward_netbox": fast_baseline.forward_config.version,
             "optional_plugins": optional_plugins or {},
             "plugin_apps": sorted(

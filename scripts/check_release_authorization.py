@@ -67,7 +67,7 @@ EVIDENCE_BASE_RE = re.compile(
 EVIDENCE_REQUIRED_TEXT_PATTERNS = {
     "exact-runtime-artifact": (
         re.compile(r"\bNetBox\s+4\.7\.0\b", re.IGNORECASE),
-        re.compile(r"\bBranching\s+1\.2\.0b1\b", re.IGNORECASE),
+        re.compile(r"\bBranching\s+1\.2\.0\b", re.IGNORECASE),
         re.compile(r"\bPython\s+3\.14\b", re.IGNORECASE),
         re.compile(r"\bSBOM\b", re.IGNORECASE),
     ),

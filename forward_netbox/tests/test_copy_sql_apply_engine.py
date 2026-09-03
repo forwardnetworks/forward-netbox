@@ -64,12 +64,12 @@ class CopySQLSelectionTest(TestCase):
             # 4.6/1.1 are the rejections that matter now - that pair is the
             # previous lane, and it is the one somebody could plausibly still
             # be running.
-            (("4.6.8", "1.2.0b1", ()), "unsupported_netbox_version"),
+            (("4.6.8", "1.2.0", ()), "unsupported_netbox_version"),
             (("4.7.0", "1.1.3", ()), "unsupported_branching_version"),
             (
                 (
                     "4.7.0",
-                    "1.2.0b1",
+                    "1.2.0",
                     (("netbox-cisco-aci", "9.9.9"),),
                 ),
                 "unsupported_optional_plugin_version",
