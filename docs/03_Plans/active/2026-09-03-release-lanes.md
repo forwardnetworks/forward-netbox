@@ -37,6 +37,14 @@ would be refused - not by one check, but by four independent ones.
 
 ### 1. Declare the lane, do not derive it
 
+`series` is optional. A maintenance lane exists to carry exactly one series, so
+pinning it there is the point; the trunk is where new series are born - it
+released 2.9, then 3.0, and will release whatever comes next - so pinning it
+would refuse the next minor bump and would have to be edited on every one of
+them. `None` means the lane is not confined, and ancestry remains the real gate
+either way.
+
+
 `scripts/release_lane.py` holds one `ReleaseLane` - branch, series, and the
 name of the branch ruleset that must protect it - and derives every ref form
 from the branch so a slash in `maint/2.9.x` cannot be mishandled by one caller

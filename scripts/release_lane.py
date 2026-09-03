@@ -21,11 +21,20 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ReleaseLane:
-    """The branch a release comes from, and what proves it is protected."""
+    """The branch a release comes from, and what proves it is protected.
+
+    `series` is the version series this lane is CONFINED to, and it is optional
+    on purpose. A maintenance lane exists to carry exactly one series, so
+    pinning it there is the point. The trunk is where new series are born - it
+    released 2.9, then 3.0, and will release whatever comes next - so pinning it
+    would refuse the next minor bump and would have to be edited on every one of
+    them. `None` means "this lane is not confined", and ancestry remains the
+    real gate either way.
+    """
 
     branch: str
-    series: str
     ruleset: str
+    series: str | None = None
 
     @property
     def remote_ref(self) -> str:
@@ -47,8 +56,8 @@ class ReleaseLane:
 # 4.6 fix has nowhere else to land.
 LANE = ReleaseLane(
     branch="maint/2.9.x",
-    series="2.9",
     ruleset="maint-2-9-x-release-integrity",
+    series="2.9",
 )
 
 RELEASE_BRANCH = LANE.branch
@@ -66,7 +75,14 @@ def require_version_in_lane(version: str) -> None:
     `LANE` onto the other's branch. Ancestry would still refuse the release,
     but with an error about merge-base that reads as a git problem rather than
     as "you are releasing 3.0.1 from the 2.9 branch".
+
+    A lane with no declared series accepts any version. That is not a weakened
+    check, it is the absence of one that never applied: the trunk is where the
+    next series comes from, and refusing it there would be refusing the normal
+    case.
     """
+    if LANE.series is None:
+        return
     series = ".".join(str(version).split(".")[:2])
     if series != LANE.series:
         raise ReleaseLaneError(

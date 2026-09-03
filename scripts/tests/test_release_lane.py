@@ -4,7 +4,7 @@
 # merge that carries one lane's declaration onto the other's branch. Ancestry
 # would still refuse the release, but with an error about merge-base that reads
 # as a git problem rather than as "you are releasing the wrong series here".
-import unittest
+import unittest.mock
 
 from scripts.release_lane import LANE
 from scripts.release_lane import RELEASE_BRANCH
@@ -16,7 +16,7 @@ from scripts.release_lane import require_version_in_lane
 
 class TheLaneNamesOneBranchTest(unittest.TestCase):
     def test_the_refs_all_derive_from_the_branch(self):
-        lane = ReleaseLane(branch="maint/1.2.x", series="1.2", ruleset="whatever")
+        lane = ReleaseLane(branch="maint/1.2.x", ruleset="whatever", series="1.2")
         self.assertEqual(lane.remote_ref, "origin/maint/1.2.x")
         self.assertEqual(lane.remote_tracking_ref, "refs/remotes/origin/maint/1.2.x")
         self.assertEqual(lane.ref_pattern, "refs/heads/maint/1.2.x")
@@ -52,3 +52,25 @@ class AVersionFromAnotherSeriesIsRefusedTest(unittest.TestCase):
     def test_a_longer_version_is_still_matched_on_its_series(self):
         with self.assertRaises(ReleaseLaneError):
             require_version_in_lane("10.9.3")
+
+    def test_this_lane_is_confined_to_one_series(self):
+        # A maintenance lane exists to carry exactly one series. If this ever
+        # reads None, the branch has stopped being a maintenance lane and the
+        # guard below it has stopped applying.
+        self.assertEqual(LANE.series, "2.9")
+
+
+class AnUnconfinedLaneAcceptsAnySeriesTest(unittest.TestCase):
+    """The trunk is where the next series is born.
+
+    Pinning a series there would refuse the next minor bump and would have to
+    be edited on every one of them. Ancestry stays the real gate.
+    """
+
+    def test_a_lane_without_a_series_refuses_nothing(self):
+        trunk = ReleaseLane(branch="main", ruleset="main-release-integrity")
+        self.assertIsNone(trunk.series)
+        with unittest.mock.patch("scripts.release_lane.LANE", trunk):
+            require_version_in_lane("3.0.1")
+            require_version_in_lane("4.0.0")
+            require_version_in_lane("2.9.3")
