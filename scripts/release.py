@@ -40,6 +40,21 @@ from datetime import datetime
 from datetime import timezone
 from pathlib import Path
 
+# `release_lane` is imported two ways: as a sibling when a script is run
+# directly (`python scripts/release.py`, where `scripts/` is on sys.path), and
+# as a package member when the tests import `scripts.release`. Both spellings
+# resolve to the same module; neither is a fallback for the other failing.
+try:  # pragma: no cover - exercised by whichever entry point is in use
+    from release_lane import RELEASE_BRANCH
+    from release_lane import ReleaseLaneError
+    from release_lane import REMOTE_RELEASE_REF
+    from release_lane import require_version_in_lane
+except ImportError:  # pragma: no cover
+    from scripts.release_lane import RELEASE_BRANCH
+    from scripts.release_lane import ReleaseLaneError
+    from scripts.release_lane import REMOTE_RELEASE_REF
+    from scripts.release_lane import require_version_in_lane
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 INIT_PY = REPO_ROOT / "forward_netbox/__init__.py"
@@ -737,7 +752,7 @@ def stage_publish(version: str, *, auto_finish: bool = False) -> None:
         print(f"[publish] v{version} is already committed on {branch}")
     # Simulate the push-event harness gate (every commit's high-risk paths need a
     # plan file in the SAME commit) BEFORE pushing — avoids a failed-CI round-trip.
-    run([sys.executable, "scripts/check_harness.py", "--base", "origin/main"])
+    run([sys.executable, "scripts/check_harness.py", "--base", REMOTE_RELEASE_REF])
     run(["git", "push", "--no-verify", "-u", "origin", branch])
     published_head = _capture(["git", "rev-parse", "HEAD"])
     if not wait_for_required_workflows(
@@ -809,17 +824,17 @@ def _wait_for_pull_request_merge(
 
 
 def _checkout_merged_main() -> str:
-    """Put the checkout on `main` at exactly `origin/main` and return that SHA."""
-    run(["git", "fetch", "origin", "main"])
-    run(["git", "checkout", "--force", "main"])
-    run(["git", "reset", "--hard", "origin/main"])
+    """Put the checkout on the release branch at its remote head, and return it."""
+    run(["git", "fetch", "origin", RELEASE_BRANCH])
+    run(["git", "checkout", "--force", RELEASE_BRANCH])
+    run(["git", "reset", "--hard", REMOTE_RELEASE_REF])
     return _capture(["git", "rev-parse", "HEAD"])
 
 
 def _pull_request_for_branch(branch: str) -> dict | None:
     """The pull request for `branch`, ignoring ones merged into dead history.
 
-    A merged PR whose merge commit is no longer reachable from `origin/main`
+    A merged PR whose merge commit is no longer reachable from the lane head
     belongs to a history that was rewritten away. It looks identical to a real
     one here - same head branch, state MERGED - and treating it as this
     release's PR makes `stage_finish` conclude the release is already cut and
@@ -840,7 +855,7 @@ def _pull_request_for_branch(branch: str) -> dict | None:
             "--head",
             branch,
             "--base",
-            "main",
+            RELEASE_BRANCH,
             "--state",
             "all",
             "--limit",
@@ -862,7 +877,7 @@ def _pull_request_for_branch(branch: str) -> dict | None:
 
 
 def _merge_is_live(pull: dict) -> bool:
-    """Whether a merged PR's merge commit is still reachable from origin/main.
+    """Whether a merged PR's merge commit is still on the release branch.
 
     The answer is read from local refs, so a merge that landed seconds ago -
     which is exactly the case while a release is running - looks absent until
@@ -887,7 +902,7 @@ def _merge_is_live(pull: dict) -> bool:
             return False
         return (
             subprocess.run(
-                ["git", "merge-base", "--is-ancestor", commit, "origin/main"],
+                ["git", "merge-base", "--is-ancestor", commit, REMOTE_RELEASE_REF],
                 cwd=REPO_ROOT,
                 capture_output=True,
             ).returncode
@@ -897,7 +912,7 @@ def _merge_is_live(pull: dict) -> bool:
     if _reachable():
         return True
     subprocess.run(
-        ["git", "fetch", "--quiet", "origin", "main"],
+        ["git", "fetch", "--quiet", "origin", RELEASE_BRANCH],
         cwd=REPO_ROOT,
         capture_output=True,
     )
@@ -905,7 +920,7 @@ def _merge_is_live(pull: dict) -> bool:
 
 
 def _head_is_merged() -> bool:
-    """Whether THIS branch's current head is already on origin/main.
+    """Whether THIS branch's current head is already on the release branch.
 
     `_merge_is_live` asks whether a merged pull request is still reachable.
     That is a different question from whether the work in hand has shipped,
@@ -918,7 +933,7 @@ def _head_is_merged() -> bool:
     def _merged() -> bool:
         return (
             subprocess.run(
-                ["git", "merge-base", "--is-ancestor", head, "origin/main"],
+                ["git", "merge-base", "--is-ancestor", head, REMOTE_RELEASE_REF],
                 cwd=REPO_ROOT,
                 capture_output=True,
             ).returncode
@@ -928,7 +943,7 @@ def _head_is_merged() -> bool:
     if _merged():
         return True
     subprocess.run(
-        ["git", "fetch", "--quiet", "origin", "main"],
+        ["git", "fetch", "--quiet", "origin", RELEASE_BRANCH],
         cwd=REPO_ROOT,
         capture_output=True,
     )
@@ -946,7 +961,8 @@ def _open_release_pull_request(version: str, branch: str, *, evidence: bool) -> 
         # is how a regenerated release authorization went missing.
         print(
             f"[finish] {pull['url']} merged an earlier attempt on {branch}; "
-            "this branch's head is not on origin/main, so it needs its own "
+            f"this branch's head is not on {REMOTE_RELEASE_REF}, so it "
+            f"needs its own "
             "pull request."
         )
         pull = None
@@ -966,7 +982,7 @@ def _open_release_pull_request(version: str, branch: str, *, evidence: bool) -> 
                 "--repo",
                 GITHUB_REPOSITORY,
                 "--base",
-                "main",
+                RELEASE_BRANCH,
                 "--head",
                 branch,
                 "--title",
@@ -1126,7 +1142,7 @@ def stage_finish(version: str) -> None:
         # tag, because the harness ties the anchor to the current release and
         # refuses either one moving alone - see `promote_release_tables`.
         head_commit = _capture(["git", "rev-parse", "HEAD"])
-        run([sys.executable, "scripts/check_harness.py", "--base", "origin/main"])
+        run([sys.executable, "scripts/check_harness.py", "--base", REMOTE_RELEASE_REF])
         run(["git", "push", "--no-verify", "origin", production_branch])
         if not wait_for_required_workflows(
             head_commit,
@@ -1143,7 +1159,7 @@ def stage_finish(version: str) -> None:
 
     if current_branch == evidence_branch:
         head_commit = _capture(["git", "rev-parse", "HEAD"])
-        run([sys.executable, "scripts/check_harness.py", "--base", "origin/main"])
+        run([sys.executable, "scripts/check_harness.py", "--base", REMOTE_RELEASE_REF])
         run(
             [
                 sys.executable,
@@ -1166,16 +1182,19 @@ def stage_finish(version: str) -> None:
         )
         return
 
-    if current_branch != "main":
+    if current_branch != RELEASE_BRANCH:
         raise ReleaseError(
             f"finish requires {production_branch}, {evidence_branch}, or main; "
             f"found {current_branch!r}"
         )
-    run(["git", "fetch", "origin", "main"])
+    run(["git", "fetch", "origin", RELEASE_BRANCH])
     head_commit = _capture(["git", "rev-parse", "HEAD"])
-    remote_main = _capture(["git", "rev-parse", "origin/main"])
+    remote_main = _capture(["git", "rev-parse", REMOTE_RELEASE_REF])
     if head_commit != remote_main:
-        raise ReleaseError("local main must exactly match origin/main before tagging")
+        raise ReleaseError(
+            f"local {RELEASE_BRANCH} must exactly match {REMOTE_RELEASE_REF} "
+            f"before tagging"
+        )
     run(
         [
             sys.executable,
@@ -1184,7 +1203,7 @@ def stage_finish(version: str) -> None:
             version,
         ]
     )
-    if not wait_for_required_workflows(head_commit, expected_branch="main"):
+    if not wait_for_required_workflows(head_commit, expected_branch=RELEASE_BRANCH):
         raise ReleaseError("Final main exact workflows did not all succeed")
     tag = f"v{version}"
     ensure_release_tag(tag, head_commit)
@@ -1235,7 +1254,7 @@ def _repo_relative(path: Path) -> str | None:
 
     Redirected to a scratch directory by tests, which do not always redirect
     REPO_ROOT with it. A path we cannot express repo-relatively is one we
-    cannot ask origin/main about, so the caller falls through to doing the work.
+    cannot ask the release branch about, so the caller does the work.
     """
     try:
         return str(path.relative_to(REPO_ROOT))
@@ -1244,14 +1263,14 @@ def _repo_relative(path: Path) -> str | None:
 
 
 def _text_on_main(relative_path: str) -> str | None:
-    """A tracked file's content on origin/main, or None if it is not there.
+    """A tracked file's content on the release branch, or None if absent.
 
-    The bookkeeping stages rebuild their branch from origin/main every run, so
-    "has this already landed" has to be asked of origin/main itself rather than
+    The bookkeeping stages rebuild their branch from the lane head every run,
+    so "has this already landed" is asked of the lane itself rather than
     of the working tree, which a failed attempt may have left in any state.
     """
     result = subprocess.run(
-        ["git", "show", f"origin/main:{relative_path}"],
+        ["git", "show", f"{REMOTE_RELEASE_REF}:{relative_path}"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -1325,7 +1344,7 @@ def stage_post_release(version: str, tag: str) -> None:
 
     It failed. The bump touches `pyproject.toml` and
     `forward_netbox/utilities/fast_baseline.py`, both high-risk paths, and
-    `check_harness.py --base origin/main` requires a plan file in the same
+    `check_harness.py --base <lane>` requires a plan file in the same
     commit. `stage_open_next` writes none, so the stage rejected its own commit
     on every release.
 
@@ -1353,31 +1372,34 @@ def stage_post_release(version: str, tag: str) -> None:
     branch = f"docs/post-release-{version}"
     print(f"[post-release] opening {branch} for {tag}")
 
-    run(["git", "fetch", "origin", "main"])
+    run(["git", "fetch", "origin", RELEASE_BRANCH])
     plan_path = _bridge_plan_path(version)
-    # Ask origin/main before building anything. This stage deletes its branch on
+    # Ask the lane before building anything. This stage deletes its branch on
     # failure (below) precisely so it never inherits a half-made bridge, which
     # means every retry starts from scratch and re-pushing over an earlier
     # attempt's branch is a non-fast-forward. A pre-check is the only safe way
     # to make the retry a no-op: it never resumes a partial branch.
     tracked = _repo_relative(plan_path)
     if tracked is not None and _text_on_main(tracked) is not None:
-        print(f"[post-release] the {version} bridge is already on origin/main")
+        print(
+            f"[post-release] the {version} bridge is already on "
+            f"{REMOTE_RELEASE_REF}"
+        )
         return
     existing = _pull_request_for_branch(branch)
     if existing and existing.get("state") == "OPEN":
         print(f"[post-release] bridge pull request already open: {existing['url']}")
         return
     # Where the operator started, so they are put back whatever happens.
-    starting_branch = _capture(["git", "branch", "--show-current"]) or "main"
+    starting_branch = _capture(["git", "branch", "--show-current"]) or RELEASE_BRANCH
     try:
-        run(["git", "checkout", "-B", branch, "origin/main"])
+        run(["git", "checkout", "-B", branch, REMOTE_RELEASE_REF])
         plan_path.write_text(_bridge_plan_text(version, tag), encoding="utf-8")
         # This path only. `git add -A` here would sweep anything else the
         # working tree happens to hold into a commit that must carry one file.
         run(["git", "add", str(plan_path)])
         run(["git", "commit", "-m", f"docs: record the {version} post-release bridge"])
-        run([sys.executable, "scripts/check_harness.py", "--base", "origin/main"])
+        run([sys.executable, "scripts/check_harness.py", "--base", REMOTE_RELEASE_REF])
         run(["git", "push", "--no-verify", "-u", "origin", branch])
         _open_pull_request(
             branch,
@@ -1390,7 +1412,7 @@ def stage_post_release(version: str, tag: str) -> None:
     except Exception:
         # A failed stage leaves nothing behind. The branch was created by this
         # function and holds at most the one commit it made; deleting it means
-        # the next attempt starts from origin/main rather than inheriting a
+        # the next attempt starts from the lane head rather than inheriting a
         # half-made bridge - which is how v2.8.3's slot was lost.
         run(["git", "checkout", "--force", starting_branch], check=False)
         run(["git", "branch", "-D", branch], check=False)
@@ -1422,7 +1444,7 @@ def _open_pull_request(branch: str, *, title: str, body: str) -> dict:
                 "--repo",
                 GITHUB_REPOSITORY,
                 "--base",
-                "main",
+                RELEASE_BRANCH,
                 "--head",
                 branch,
                 "--title",
@@ -1452,13 +1474,21 @@ def _open_pull_request(branch: str, *, title: str, body: str) -> dict:
 
 
 def _bridge_commit_for(tag: str) -> str:
-    """The first first-parent commit after ``tag`` on origin/main: the bridge."""
-    run(["git", "fetch", "origin", "main"])
+    """The first first-parent commit after ``tag`` on the lane: the bridge."""
+    run(["git", "fetch", "origin", RELEASE_BRANCH])
     lineage = _capture(
-        ["git", "rev-list", "--first-parent", "--reverse", f"{tag}..origin/main"]
+        [
+            "git",
+            "rev-list",
+            "--first-parent",
+            "--reverse",
+            f"{tag}..{REMOTE_RELEASE_REF}",
+        ]
     ).splitlines()
     if not lineage:
-        raise ReleaseError(f"nothing has landed on origin/main after {tag} yet")
+        raise ReleaseError(
+            f"nothing has landed on {REMOTE_RELEASE_REF} after {tag} yet"
+        )
     bridge = lineage[0]
     tag_commit = _capture(["git", "rev-list", "-n", "1", tag])
     changed = [
@@ -1523,7 +1553,7 @@ the previous release to superseded.
 
 ## Validation
 
-`check_harness.py --base origin/main` passes with the anchor advanced.
+`check_harness.py --base <lane>` passes with the anchor advanced.
 
 ## Rollback
 
@@ -1555,23 +1585,23 @@ def stage_anchor(version: str, tag: str) -> None:
     bridge = _bridge_commit_for(tag)
     branch = f"chore/anchor-{version}"
     print(f"[anchor] {tag} -> bridge {bridge[:12]} on {branch}")
-    # Same shape as the bridge: rebuilt from origin/main every run, so a retry
+    # Same shape as the bridge: rebuilt from the lane head every run, so a retry
     # after a partial attempt would push a divergent commit. `promote_release_tables`
     # is already a no-op when the tables are promoted; this makes the whole
     # stage one.
     tracked = _repo_relative(PROVENANCE)
     landed = _text_on_main(tracked) if tracked is not None else None
     if landed is not None and _capture_constant(landed, "PRIOR_RELEASE_TAG") == tag:
-        print(f"[anchor] origin/main already anchors {tag}")
+        print(f"[anchor] {REMOTE_RELEASE_REF} already anchors {tag}")
         return
     existing = _pull_request_for_branch(branch)
     if existing and existing.get("state") == "OPEN":
         print(f"[anchor] anchor pull request already open: {existing['url']}")
         return
-    starting_branch = _capture(["git", "branch", "--show-current"]) or "main"
+    starting_branch = _capture(["git", "branch", "--show-current"]) or RELEASE_BRANCH
     plan_path = _anchor_plan_path(version)
     try:
-        run(["git", "checkout", "-B", branch, "origin/main"])
+        run(["git", "checkout", "-B", branch, REMOTE_RELEASE_REF])
         text = PROVENANCE.read_text(encoding="utf-8")
         text = bump_version_text(
             text,
@@ -1606,7 +1636,7 @@ def stage_anchor(version: str, tag: str) -> None:
                 f"chore: advance the release provenance anchor to {version}",
             ]
         )
-        run([sys.executable, "scripts/check_harness.py", "--base", "origin/main"])
+        run([sys.executable, "scripts/check_harness.py", "--base", REMOTE_RELEASE_REF])
         run(["git", "push", "--no-verify", "-u", "origin", branch])
         _open_pull_request(
             branch,
@@ -1696,7 +1726,7 @@ def stage_authorize(version: str) -> None:
     """Append the Release Authorization section on the evidence branch.
 
     Runs after the production pull request has merged, because the evidence
-    base commit is the commit the tag's parent will be - `origin/main` at that
+    base commit is the commit the tag's parent will be - the lane head at that
     moment - and nothing else.
     """
     record = read_evidence_record(version)
@@ -1706,7 +1736,7 @@ def stage_authorize(version: str) -> None:
     text = plan_path.read_text(encoding="utf-8")
     if "## Release Authorization" in text:
         raise ReleaseError(f"{plan_path.name} already carries a Release Authorization")
-    run(["git", "checkout", "-B", evidence_branch, "origin/main"])
+    run(["git", "checkout", "-B", evidence_branch, REMOTE_RELEASE_REF])
     section = render_release_authorization(record, evidence_base)
     plan_path.write_text(text.rstrip("\n") + "\n\n" + section, encoding="utf-8")
     run(["git", "add", str(plan_path.relative_to(REPO_ROOT))])
@@ -1824,6 +1854,13 @@ def main(argv: list[str] | None = None) -> int:
 
     if not SEMVER_RE.match(args.version):
         parser.error(f"version must be X.Y.Z, got {args.version!r}")
+    # Before any stage touches git or GitHub. Releasing the wrong series from
+    # this checkout would otherwise fail deep inside an ancestry check, with an
+    # error about merge-base rather than about the mistake.
+    try:
+        require_version_in_lane(args.version)
+    except ReleaseLaneError as error:
+        parser.error(str(error))
 
     try:
         if args.anchor:

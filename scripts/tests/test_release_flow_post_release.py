@@ -70,10 +70,13 @@ class StagePostReleaseTest(unittest.TestCase):
         _calls, written = self._run()
         self.assertIn("# Post-release bridge for 2.7.0", written)
 
-    def test_it_branches_from_origin_main_and_pushes(self):
+    def test_it_branches_from_the_release_branch_and_pushes(self):
         calls, _written = self._run()
         joined = [" ".join(call) for call in calls]
-        self.assertIn("git checkout -B docs/post-release-2.7.0 origin/main", joined)
+        self.assertIn(
+            f"git checkout -B docs/post-release-2.7.0 {release.REMOTE_RELEASE_REF}",
+            joined,
+        )
         self.assertTrue(
             any(
                 call.startswith("git push") and "docs/post-release-2.7.0" in call

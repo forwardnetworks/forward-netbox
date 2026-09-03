@@ -609,7 +609,8 @@ BOOTSTRAP_FILE_DIGESTS
 BASE_REQUIRED_STATUS_CHECKS
 TRUSTED_STATUS_CONTEXT
 operation.add_argument("--controls-only", action="store_true")
-"merge-base", "--is-ancestor", release_commit, current_main
+"merge-base", "--is-ancestor", release_commit, current_head
+from release_lane import LANE
 """
 
     def _check(self, *, release=None, provenance=None):
