@@ -123,12 +123,37 @@ profiling changes affect a management command that only runs behind
   Instrumenting production to answer a profiling question would leave a
   permanent wrapper on a hot path.
 
+## Measured: `ChangeDiff.save()` is never called on a merge
+
+Run on 2026-09-03, isolated `fnb-merge` stack, volumes 1000 and 5000, two
+rounds each.
+
+| volume | merge wall | fallback rows | fallback ms/row | fallback stmts/row | bulk `changediff_resolution` ms/row | `ChangeDiff.save()` calls |
+|---|---|---|---|---|---|---|
+| 1000 | 9.76s | 86 | 23.05 | 27.98 | 0.0176 | **0** |
+| 1000 | 9.98s | 86 | 18.71 | 27.95 | 0.0189 | **0** |
+| 5000 | 63.65s | 430 | 25.30 | 27.95 | 0.0206 | **0** |
+| 5000 | 64.90s | 430 | 24.08 | 27.95 | 0.0202 | **0** |
+
+**The answer to branching 1.1.3's question is that the saving cannot show up on
+a merge at all, because the method is not on the merge path.** Zero calls, with
+the wrapper confirmed installed (`changediff_save_instrumented: true` is
+recorded next to the count for exactly this reason - an absent bucket cannot
+otherwise be told apart from instrumentation that never ran). Every ChangeDiff
+write on this path goes through `bulk_create`/`bulk_update`
+(`apply_engine_bulk.py:231`, `bulk_merge.py:296`) or raw SQL
+(`merge_set_based.py:1017`). 1.1.3's change may still matter to callers we do
+not exercise; it does not matter here.
+
+**The more useful finding is the one the fixture change exposed.** The
+`dcim.region` rows forced the per-object upstream fallback that the CREATE-only
+fixture barely entered, and it is expensive: ~19-25 ms and ~28 statements per
+row, against 0.02 ms for the bulk path - roughly a thousandfold difference. At
+volume 5000 that is **16% of total merge wall time for 430 of 5000 rows (8.6%)**.
+Avoiding the fallback is worth far more than optimising anything inside it, and
+`_is_bulk_safe` (`bulk_merge.py:614`) is what decides which rows pay it.
+
 ## Open
 
-- The measurement itself has not been run: `scripts/run_merge_profile.sh` needs
-  exclusive use of the docker stack, and a concurrent run corrupts it and reads
-  as a code failure. The fixture and the scope are in place so the question -
-  whether branching 1.1.3's `ChangeDiff.save()` saving is measurable on a real
-  merge - can be answered in one run. If the fallback turns out to be rare in
-  practice, "not measurable on a merge" is the honest answer and should be
-  written down rather than pursued.
+- Nothing here. Whether more models can be made bulk-safe is a separate
+  question this measurement now makes answerable, and is not in this tranche.

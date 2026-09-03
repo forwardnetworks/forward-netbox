@@ -43,8 +43,10 @@ def _changediff_save_measured():
     from netbox_branching.models import ChangeDiff
 
     original = ChangeDiff.save
+    calls = {"installed": True, "count": 0}
 
     def measured(self, *args, **kwargs):
+        calls["count"] += 1
         with profile_scope(
             "changediff_save",
             owner="upstream_netbox_branching",
@@ -54,7 +56,7 @@ def _changediff_save_measured():
 
     ChangeDiff.save = measured
     try:
-        yield
+        yield calls
     finally:
         ChangeDiff.save = original
 
@@ -346,7 +348,7 @@ class Command(BaseCommand):
                 "staged_changes": staged_changes,
             }
         )
-        with recorder.activate(), _changediff_save_measured():
+        with recorder.activate(), _changediff_save_measured() as changediff_calls:
             merge_branch(
                 ingestion,
                 user=user,
@@ -354,6 +356,10 @@ class Command(BaseCommand):
             )
         after_postgres = _postgres_snapshot()
         result = recorder.result()
+        # Recorded explicitly: an absent `changediff_save` bucket otherwise
+        # cannot be told apart from instrumentation that never installed.
+        result["changediff_save_calls"] = changediff_calls["count"]
+        result["changediff_save_instrumented"] = changediff_calls["installed"]
         result["postgres"] = _snapshot_delta(before_postgres, after_postgres)
         result["changes_per_second"] = (
             volume / result["wall_seconds"] if result["wall_seconds"] else 0.0
