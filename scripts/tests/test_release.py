@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import tempfile
-import unittest
+import unittest.mock
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -954,3 +955,41 @@ class StageAuthorizeTest(unittest.TestCase):
     def test_it_refuses_to_authorize_twice(self):
         with self.assertRaisesRegex(release.ReleaseError, "already carries"):
             self._run(existing_section=True)
+
+
+class PullRequestLookupIgnoresDeadHistoryTest(unittest.TestCase):
+    """A PR merged into rewritten-away history is not this release's PR.
+
+    It looks identical to a real one - same head branch, state MERGED - so
+    `stage_finish` concluded the release was already cut and stopped, with
+    nothing to fix. Purging two live Forward identifiers from public history
+    orphaned the v3.0.0 release PRs exactly this way.
+    """
+
+    def _pull(self, oid, state="MERGED"):
+        return {
+            "number": 348,
+            "state": state,
+            "url": "https://example.invalid/pr/348",
+            "mergeCommit": {"oid": oid} if oid else None,
+        }
+
+    def test_an_unreachable_merge_commit_is_not_live(self):
+        completed = SimpleNamespace(returncode=1)
+        with unittest.mock.patch.object(
+            release.subprocess, "run", return_value=completed
+        ):
+            self.assertFalse(release._merge_is_live(self._pull("deadbeef" * 5)))
+
+    def test_a_reachable_merge_commit_is_live(self):
+        completed = SimpleNamespace(returncode=0)
+        with unittest.mock.patch.object(
+            release.subprocess, "run", return_value=completed
+        ):
+            self.assertTrue(release._merge_is_live(self._pull("cafebabe" * 5)))
+
+    def test_a_pull_without_a_merge_commit_is_assumed_live(self):
+        # Assume live rather than silently reopening a release that really did
+        # complete: a false "already merged" stops the flow loudly, a false
+        # "not merged" would re-cut a shipped release.
+        self.assertTrue(release._merge_is_live(self._pull(None)))
