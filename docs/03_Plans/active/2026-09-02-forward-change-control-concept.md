@@ -136,42 +136,32 @@ Stated first, because every section below is shorter for it.
 
 ## Touched Surfaces
 
-A new repository, `forward-change-control`, laid out to mirror
-forward-netbox so that a reader of one can read the other:
+Inside `forward_netbox/`, as a `change_control` subpackage so the feature is
+legible as one thing and its imports read as internal:
 
-- `forward_change_control/__init__.py` — `PluginConfig`, the fail-closed
-  dependency check, the branching pre-action registration.
-- `forward_change_control/models.py` — the six models below.
-- `forward_change_control/choices.py` — `ForwardChangeStateChoices`,
+- `forward_netbox/change_control/__init__.py`
+- `forward_netbox/change_control/choices.py` - `ForwardChangeStateChoices`,
   `ForwardChangeVerdictChoices`, `ForwardCriterionFamilyChoices`,
   `ForwardCriterionExpectationChoices`, `ForwardEvidencePhaseChoices`.
-- `forward_change_control/state_machine.py` — the transitions and their
-  entry/exit evidence. Pure functions over the database, no request
-  object, so they test in under a second (the reference plugin's
-  `policy.py` discipline).
-- `forward_change_control/criteria.py` — binding, execution, expectation
-  evaluation.
-- `forward_change_control/evidence.py` — recording and the
+- `forward_netbox/change_control/state_machine.py` - the transitions and their
+  entry/exit evidence. Pure functions over the database, no request object, so
+  they test in under a second.
+- `forward_netbox/change_control/criteria.py` - binding, execution,
+  expectation evaluation.
+- `forward_netbox/change_control/evidence.py` - recording and the
   regression-flip comparison.
-- `forward_change_control/gates.py` — the collect gate, the verify gate,
-  the state-preservation gate, and the `can_merge` pre-action check.
-- `forward_change_control/document.py` — the change document renderer.
-- `forward_change_control/jobs.py` — collect-wait and verify as NetBox
-  `JobRunner`s.
-- `forward_change_control/integration.py` — the forward-netbox
-  dependency declaration (see below).
-- Views, forms, tables, filtersets, API, navigation, templates, tests —
-  standard NetBox plugin surfaces.
+- `forward_netbox/change_control/gates.py` - the collect gate and the verify
+  gate.
+- `forward_netbox/change_control/predict.py` - the stub and its
+  `PredictOutcome`.
 
-In **forward-netbox 3.0**, two additions only, both in its own tree:
+Existing files that grow:
 
-- `VALIDATED_PLUGIN_APPS` gains `forward_change_control`.
-- `utilities/change_explainability.py` — `change_explainability_summary`
-  is generalized from taking a `ForwardIngestion` to taking a `Branch`.
-  Today it reads `ingestion.branch` and then only uses the branch.
-
-Nothing else in forward-netbox changes. If this design requires a third
-edit there, the design is wrong.
+- `forward_netbox/models.py` - the six models, beside the ones they reference.
+- `forward_netbox/migrations/` - one migration.
+- `forward_netbox/views.py`, `tables.py`, `forms.py`, `filtersets.py`,
+  `navigation.py`, `templates/` - the UI, following the surrounding idiom.
+- `forward_netbox/tests/` - one test module per change_control module.
 
 ## Approach
 
@@ -436,82 +426,42 @@ in the plan, not a shortcut.
 - **`ForwardIngestion`.** A change is not a sync run. It shares
   `before`/`after` snapshot ids and a branch, and nothing else.
 
-### 4. Declaring the dependency on forward-netbox
+### 4. It ships inside forward-netbox
 
-forward-netbox's own pattern is
-`utilities/plugin_integrations/registry.py`: a frozen
-`OptionalPluginIntegration` dataclass carrying `app_label`,
-`package_name`, `required_models`, an exact-version allowlist
-(`supported_package_versions`), and an `adapter_module`; runtime
-availability computed into five statuses — `not_installed`,
-`missing_required_models`, `package_metadata_unavailable`,
-`unsupported_version`, `available` — each with a human reason string,
-surfaced through `integration_capability_summary()`.
+**Decided 2026-09-02: this is not a separate plugin.** It is a feature of
+forward-netbox, shipped in 3.0, opt-in per source.
 
-`forward_change_control/integration.py` reuses that shape verbatim, with
-one inversion that must be stated loudly:
+The alternative was a sibling plugin depending on forward-netbox 3.0, and the
+reason it lost is the reuse table above. Every capability in it -
+`ForwardClient`, `resolve_snapshot_id()`, `run_nqe_diff()`,
+`compare_model_rows()`, `PreviewRunner`, `change_explainability_summary()`,
+`run_config_backup()` - is private API. A separate plugin consuming those
+would couple two independently-versioned packages through internals, which is
+exactly the shape that made the netbox-branching 1.2 move expensive: six
+private `SquashMergeStrategy` members and raw SQL against its tables, each of
+which had to be audited against the new wheel before the runtime could move.
+Choosing that deliberately, against ourselves, would have been repeating a
+mistake we had just finished paying for.
 
-**The registry pattern is built to degrade silently. This dependency must
-fail closed and loudly.** In forward-netbox an unavailable integration
-leaves a sync map dormant, which is correct there. Here, an unavailable
-forward-netbox leaves a plugin whose every gate would answer from
-nothing. So the same five statuses are computed, the same reason strings
-are produced — and anything other than `available` raises
-`ImproperlyConfigured` from `ready()`, exactly as forward-netbox's own
-`_check_runtime_dependencies()` does for `netbox_branching`:
+Shipping in-plugin removes the problem rather than managing it. There is no
+published surface to maintain, no version matrix, no `ImproperlyConfigured` on
+a missing dependency, and no registry entry. Direct imports are legitimate
+within one package.
 
-```
-FORWARD_NETBOX = ForwardDependency(
-    app_label="forward_netbox",
-    package_name="forward-netbox",
-    required_series="3.0",
-    required_models=(
-        "forward_netbox.forwardsource",
-        "forward_netbox.forwardsync",
-        "forward_netbox.forwarddeviceidentity",
-    ),
-    required_callables=(
-        "forward_netbox.utilities.forward_api_impl:ForwardClient.run_nqe_diff",
-        "forward_netbox.utilities.drift_comparison:compare_model_rows",
-        "forward_netbox.utilities.change_explainability:"
-        "change_explainability_summary",
-    ),
-)
-```
+What that costs, stated plainly:
 
-There is already a precedent in that registry for a **consumer** rather
-than a sync target: `VALIDITY_INTEGRATION` declares `required_models=()`,
-`supported_models=()` and no `adapter_module`, and its entry exists
-purely so the version reaches the support bundle and a health check can
-tell an operator whether the chain is joined up — "the failure this
-integration exists to surface, because every part of it succeeds
-independently while delivering nothing". That is exactly the failure mode
-of a change-control plugin whose forward-netbox is subtly wrong, and it
-is the right template. `forward-netbox` also declares no
-`required_settings` and no `default_settings`, reading plugin settings
-defensively at the call site so misconfiguration never blocks NetBox
-startup; this plugin should copy that posture and put its refusals in
-`ready()`'s dependency check, where they can carry a reason.
+- Six models and an eleven-state machine land in the plugin that writes
+  inventory, so every future forward-netbox release gate carries them.
+- The 45-minute gate is built around delete-path safety this feature does not
+  touch, and it will now run for changes to it.
+- A regression in 3.0 is harder to attribute, because a major runtime
+  migration and a large new feature ship together. The release owner weighed
+  that and chose it.
 
-Three deliberate differences from the source pattern:
-
-1. **A series, not an exact version.** forward-netbox pins its optional
-   plugins to exact versions because they are third-party and their
-   contracts move without notice. This dependency is ours, so it takes
-   the `series_matches()` treatment forward-netbox gives branching: a
-   patch release must not stop the plugin loading.
-2. **`required_callables` as well as `required_models`.** The registry
-   checks that content types exist. That is the right check for a sync
-   target and the wrong one here: what this plugin consumes is functions.
-   A `ForwardSource` row proves nothing about whether `run_nqe_diff`
-   still takes `before_snapshot_id`. Resolve each dotted path at
-   `ready()` and refuse on `AttributeError`, so a contract change in
-   forward-netbox is a startup failure with a name in it, not a
-   `TypeError` in a verify job at 2am.
-3. **The status still renders on a Health page** even though it can only
-   ever read `available` on a running system, because that page is what
-   a support bundle carries, and "which forward-netbox was this evidence
-   produced against" is the first question anyone asks about a verdict.
+What that does NOT change: this feature stages into a branch and merges
+through branching like everything else, and it writes nothing to the network.
+The safety argument for separation was about blast radius, and the blast
+radius here is a NetBox branch either way.
 
 ### 5. Genuinely new work vs. thin wrappers
 

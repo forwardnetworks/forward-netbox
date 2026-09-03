@@ -23,6 +23,9 @@ from .choices import ForwardSourceStatusChoices
 from .choices import ForwardSyncStatusChoices
 from .exceptions import ForwardConnectivityError
 from .exceptions import ForwardSyncError
+from .models import ForwardChange
+from .models import ForwardChangePolicy
+from .models import ForwardChangePolicyRule
 from .models import ForwardDriftPolicy
 from .models import ForwardNQEMap
 from .models import ForwardSource
@@ -522,6 +525,17 @@ class ForwardSourceForm(NetBoxModelForm):
                 "is transferred. On, the fetch is the whole collected estate."
             ),
         )
+        self.fields["enable_predict"] = forms.BooleanField(
+            required=False,
+            label="Ask Forward to predict change-control changes",
+            help_text=(
+                "Off by default. Forward's predict workflow is not generally "
+                "available, is licensed separately, and is limited in scope "
+                "today, so change control never asks unless this is on. The "
+                "verdict does not depend on it either way: it is computed "
+                "from the post-change snapshot, which every licence tier has."
+            ),
+        )
         self.fields["sync_device_tags"] = FlexibleMultipleChoiceField(
             required=False,
             choices=(),
@@ -651,6 +665,7 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["config_backup_include_unmanaged"].initial = bool(
             parameters.get("config_backup_include_unmanaged")
         )
+        self.fields["enable_predict"].initial = bool(parameters.get("enable_predict"))
         self.fields["sync_generic_endpoints"].initial = bool(
             parameters.get("sync_generic_endpoints")
         )
@@ -729,6 +744,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "scope_endpoints_by_include_tags",
                     "config_backup_data_source",
                     "config_backup_include_unmanaged",
+                    "enable_predict",
                     name="Parameters",
                 )
             )
@@ -765,6 +781,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "scope_endpoints_by_include_tags",
                     "config_backup_data_source",
                     "config_backup_include_unmanaged",
+                    "enable_predict",
                     name="Parameters",
                 )
             )
@@ -925,6 +942,7 @@ class ForwardSourceForm(NetBoxModelForm):
             "config_backup_include_unmanaged": bool(
                 cleaned.get("config_backup_include_unmanaged")
             ),
+            "enable_predict": bool(cleaned.get("enable_predict")),
             "sync_generic_endpoints": bool(cleaned.get("sync_generic_endpoints")),
             "scope_endpoints_by_include_tags": bool(
                 cleaned.get("scope_endpoints_by_include_tags")
@@ -2065,3 +2083,75 @@ class ForwardDriftPolicyBulkEditForm(NetBoxModelBulkEditForm):
     enabled = forms.NullBooleanField(required=False, label="Enabled")
     model = ForwardDriftPolicy
     fields = ("enabled",)
+
+
+class ForwardChangeForm(NetBoxModelForm):
+    """Author a change. State is NOT editable here.
+
+    The workflow moves through `state_machine.check_transition`, which refuses
+    with reasons; a form field would let an operator type their way past a gate
+    that exists to stop exactly that.
+    """
+
+    class Meta:
+        model = ForwardChange
+        fields = (
+            "ref",
+            "title",
+            "source",
+            "requester",
+            "window_start",
+            "window_end",
+            "description",
+            "comments",
+            "tags",
+        )
+
+    fieldsets = (
+        FieldSet("ref", "title", "source", "requester", name="Change"),
+        FieldSet("window_start", "window_end", name="Window"),
+        FieldSet("description", "comments", "tags", name="Notes"),
+    )
+
+
+class ForwardChangePolicyForm(NetBoxModelForm):
+    class Meta:
+        model = ForwardChangePolicy
+        fields = (
+            "name",
+            "enabled",
+            "min_pre_approvals",
+            "min_post_approvals",
+            "description",
+            "comments",
+            "tags",
+        )
+
+    fieldsets = (
+        FieldSet(
+            "name",
+            "enabled",
+            "min_pre_approvals",
+            "min_post_approvals",
+            name="Policy",
+        ),
+        FieldSet("description", "comments", "tags", name="Notes"),
+    )
+
+
+class ForwardChangePolicyRuleForm(NetBoxModelForm):
+    """Scope a policy to the properties a network change has.
+
+    Without this the rules were creatable only through the ORM, so the scoping
+    that decides how many approvals a change needs was unreachable to the
+    operator who has to live with it.
+    """
+
+    class Meta:
+        model = ForwardChangePolicyRule
+        fields = ("policy", "device_role", "site", "tag_slug")
+
+    fieldsets = (
+        FieldSet("policy", name="Policy"),
+        FieldSet("device_role", "site", "tag_slug", name="Scope"),
+    )
