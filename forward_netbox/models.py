@@ -22,6 +22,12 @@ from netbox_branching.models import Branch
 from rq.timeouts import JobTimeoutException
 from utilities.querysets import RestrictedQuerySet
 
+from .change_control.choices import ForwardChangeStateChoices
+from .change_control.choices import ForwardChangeVerdictChoices
+from .change_control.choices import ForwardCriterionExpectationChoices
+from .change_control.choices import ForwardCriterionFamilyChoices
+from .change_control.choices import ForwardEvidencePhaseChoices
+from .change_control.choices import ForwardReviewPhaseChoices
 from .choices import forward_configured_models
 from .choices import FORWARD_OPTIONAL_MODELS
 from .choices import FORWARD_SUPPORTED_MODELS
@@ -1844,3 +1850,355 @@ class ForwardDeviceAnalysis(ForwardPluginModelDocsMixin, ChangeLoggedModel):
         source = getattr(self.sync, "source", None)
         url = (getattr(source, "url", "") or "").rstrip("/")
         return url or None
+
+
+class ForwardChange(ForwardPluginModelDocsMixin, PrimaryModel):
+    """A network change, gated on what Forward saw before and after it.
+
+    The branch merges when this reaches CLOSED, not when it is APPROVED.
+    Approval is a necessary condition; the sufficient one is a post-change
+    snapshot showing the network is the way the branch says it is.
+    """
+
+    source = models.ForeignKey(
+        ForwardSource,
+        on_delete=models.PROTECT,
+        related_name="changes",
+    )
+    ref = models.CharField(max_length=100, blank=True, default="")
+    title = models.CharField(max_length=200)
+    state = models.CharField(
+        max_length=32,
+        choices=ForwardChangeStateChoices,
+        default=ForwardChangeStateChoices.DRAFT,
+    )
+    verdict = models.CharField(
+        max_length=16,
+        choices=ForwardChangeVerdictChoices,
+        blank=True,
+        default="",
+    )
+    requester = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="+",
+    )
+    branch = models.OneToOneField(
+        Branch,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="+",
+    )
+    # Denormalized so the record stays readable after the branch is merged or
+    # discarded; the FK is SET_NULL and a merged branch is routinely removed.
+    branch_name = models.CharField(max_length=200, blank=True, default="")
+    branch_last_change_time = models.DateTimeField(blank=True, null=True)
+
+    # Pinned as literal ids, never selectors. A selector re-resolved at verify
+    # time would compare the change against a different snapshot than the one
+    # it was baselined and approved against.
+    before_snapshot_id = models.CharField(max_length=100, blank=True, default="")
+    after_snapshot_id = models.CharField(max_length=100, blank=True, default="")
+
+    window_start = models.DateTimeField(blank=True, null=True)
+    window_end = models.DateTimeField(blank=True, null=True)
+
+    # Attested, not measured. Nothing here can observe a network being changed.
+    applied_at = models.DateTimeField(blank=True, null=True)
+    applied_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="+",
+    )
+    applied_ref = models.CharField(max_length=200, blank=True, default="")
+
+    # Advisory columns, quarantined from the verify gate by construction: the
+    # gate reads ForwardChangeEvidence and nothing else. Making the verdict
+    # depend on a prediction would mean moving a column into that table, which
+    # is a visible, migration-shaped act rather than a quiet drift. They ship
+    # now, while predict is stubbed, so its arrival needs no schema change.
+    predict_status = models.CharField(max_length=32, blank=True, default="")
+    predict_reason = models.TextField(blank=True, default="")
+    predict_pre_verdict = models.CharField(max_length=32, blank=True, default="")
+    netbox_impact = models.JSONField(blank=True, default=dict)
+
+    class Meta:
+        ordering = ("-created",)
+        verbose_name = _("Forward Change")
+        verbose_name_plural = _("Forward Changes")
+        db_table = "forward_netbox_change"
+        # Approving is a distinct right from editing, following the
+        # `run_forwardsync` precedent. Anyone who can change a record should
+        # not thereby be able to sign it off.
+        permissions = (("approve_forwardchange", "Can approve Forward change"),)
+
+    def __str__(self):
+        return self.ref and f"{self.ref} {self.title}" or self.title
+
+    def get_absolute_url(self):
+        return reverse("plugins:forward_netbox:forwardchange", args=[self.pk])
+
+    def get_state_color(self):
+        return ForwardChangeStateChoices.colors.get(self.state)
+
+    def get_verdict_color(self):
+        return ForwardChangeVerdictChoices.colors.get(self.verdict)
+
+
+class ForwardChangeDevice(models.Model):
+    """One device in a change's scope.
+
+    `forward_device_key` is copied at scope time rather than resolved on
+    demand: a device removed from NetBox later must still leave a readable
+    record of what the change covered.
+    """
+
+    change = models.ForeignKey(
+        ForwardChange,
+        on_delete=models.CASCADE,
+        related_name="devices",
+    )
+    device = models.ForeignKey(
+        "dcim.Device",
+        on_delete=models.CASCADE,
+        related_name="+",
+    )
+    forward_device_key = models.CharField(max_length=255, blank=True, default="")
+
+    class Meta:
+        ordering = ("device__name",)
+        verbose_name = _("Forward Change Device")
+        verbose_name_plural = _("Forward Change Devices")
+        db_table = "forward_netbox_change_device"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["change", "device"],
+                name="forward_change_device_unique",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.change}: {self.device}"
+
+
+class ForwardChangeCriterion(ForwardPluginModelDocsMixin, ChangeLoggedModel):
+    """One assertion, bound to a committed query version.
+
+    The query-identity triple is why binding is a gate: an unbound criterion
+    would be evaluated against whatever the query says at the time, so an
+    assertion could change under the change it is judging.
+    """
+
+    change = models.ForeignKey(
+        ForwardChange,
+        on_delete=models.CASCADE,
+        related_name="criteria",
+    )
+    name = models.CharField(max_length=200)
+    family = models.CharField(
+        max_length=32,
+        choices=ForwardCriterionFamilyChoices,
+        default=ForwardCriterionFamilyChoices.ACCEPTANCE,
+    )
+    expectation = models.CharField(
+        max_length=32,
+        choices=ForwardCriterionExpectationChoices,
+        default=ForwardCriterionExpectationChoices.NO_ROWS,
+    )
+    blocking = models.BooleanField(default=True)
+
+    query_path = models.CharField(max_length=500, blank=True, default="")
+    query_id = models.CharField(max_length=100, blank=True, default="")
+    commit_id = models.CharField(max_length=100, blank=True, default="")
+    source_sha256 = models.CharField(max_length=64, blank=True, default="")
+
+    class Meta:
+        ordering = ("change", "name")
+        verbose_name = _("Forward Change Criterion")
+        verbose_name_plural = _("Forward Change Criteria")
+        db_table = "forward_netbox_change_criterion"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["change", "name"],
+                name="forward_change_criterion_unique_name",
+            )
+        ]
+
+    def __str__(self):
+        return self.name
+
+    @property
+    def is_bound(self) -> bool:
+        return bool(self.query_id and self.commit_id)
+
+
+class ForwardChangeEvidence(models.Model):
+    """One criterion's result at one pinned snapshot.
+
+    This table IS the verify gate's input. Nothing advisory is recorded here -
+    that separation is what keeps a prediction from becoming a verdict.
+
+    `shape` holds schema identifiers only, never row values, following the same
+    rule as ingestion-issue diagnosis: evidence is support-bundle content.
+    """
+
+    criterion = models.ForeignKey(
+        ForwardChangeCriterion,
+        on_delete=models.CASCADE,
+        related_name="evidence",
+    )
+    phase = models.CharField(max_length=16, choices=ForwardEvidencePhaseChoices)
+    passed = models.BooleanField()
+    row_count = models.PositiveIntegerField(default=0)
+    snapshot_id = models.CharField(max_length=100)
+    commit_id = models.CharField(max_length=100, blank=True, default="")
+    executed_at = models.DateTimeField(default=timezone.now)
+    duration_ms = models.PositiveIntegerField(default=0)
+    shape = models.JSONField(blank=True, default=dict)
+
+    class Meta:
+        ordering = ("criterion", "phase")
+        verbose_name = _("Forward Change Evidence")
+        verbose_name_plural = _("Forward Change Evidence")
+        db_table = "forward_netbox_change_evidence"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["criterion", "phase", "snapshot_id"],
+                name="forward_change_evidence_unique",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.criterion} @ {self.phase}"
+
+
+class ForwardChangeReview(ForwardPluginModelDocsMixin, ChangeLoggedModel):
+    """One reviewer's decision, anchored to what they actually saw.
+
+    Staleness is anchored to the branch AND the baseline. A change can be
+    re-baselined without touching the branch, and a reviewer who approved
+    against the old snapshot approved different evidence.
+    """
+
+    change = models.ForeignKey(
+        ForwardChange,
+        on_delete=models.CASCADE,
+        related_name="reviews",
+    )
+    reviewer = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="+",
+    )
+    phase = models.CharField(
+        max_length=16,
+        choices=ForwardReviewPhaseChoices,
+        default=ForwardReviewPhaseChoices.PRE,
+    )
+    approved = models.BooleanField(default=False)
+    comment = models.TextField(blank=True, default="")
+
+    # Pre-phase anchors: what the reviewer saw of the PLAN.
+    branch_change_time = models.DateTimeField(blank=True, null=True)
+    baseline_snapshot_id = models.CharField(max_length=100, blank=True, default="")
+
+    # Post-phase anchors: what the reviewer saw of the RESULT. Re-verifying
+    # against a newer snapshot, or the verdict changing, voids a closure
+    # sign-off - the reviewer approved specific evidence.
+    after_snapshot_id = models.CharField(max_length=100, blank=True, default="")
+    verdict = models.CharField(max_length=16, blank=True, default="")
+
+    class Meta:
+        ordering = ("-created",)
+        verbose_name = _("Forward Change Review")
+        verbose_name_plural = _("Forward Change Reviews")
+        db_table = "forward_netbox_change_review"
+        constraints = [
+            # One reviewer, one decision per gate. Without this, N approvals
+            # from the same person satisfy an N-approval policy alone, which
+            # makes the count meaningless.
+            models.UniqueConstraint(
+                fields=["change", "reviewer", "phase"],
+                name="forward_change_review_one_per_reviewer_phase",
+            )
+        ]
+
+    def __str__(self):
+        verdict = "approved" if self.approved else "rejected"
+        return f"{self.change} {verdict} by {self.reviewer}"
+
+
+class ForwardChangePolicy(ForwardPluginModelDocsMixin, PrimaryModel):
+    """Who must approve, scoped by the properties a NETWORK change has.
+
+    Scoped by device role, site or tag rather than by NetBox object type: an
+    operator reasons about "changes touching core routers at this site", not
+    about which model rows a branch happens to contain.
+    """
+
+    name = models.CharField(max_length=100, unique=True)
+    enabled = models.BooleanField(default=True)
+    # Split per gate. A team that wants two sign-offs on the plan and one on
+    # the closure cannot say so with a single number, and that is the common
+    # real shape.
+    min_pre_approvals = models.PositiveSmallIntegerField(default=1)
+    # 0 lets a PROCEED verdict close on its own. That is the escape hatch for
+    # low-risk automation and is deliberately not the default: CLOSE is where
+    # the branch merges.
+    min_post_approvals = models.PositiveSmallIntegerField(default=1)
+
+    class Meta:
+        ordering = ("name",)
+        verbose_name = _("Forward Change Policy")
+        verbose_name_plural = _("Forward Change Policies")
+        db_table = "forward_netbox_change_policy"
+
+    def __str__(self):
+        return self.name
+
+    def get_absolute_url(self):
+        return reverse("plugins:forward_netbox:forwardchangepolicy", args=[self.pk])
+
+
+class ForwardChangePolicyRule(ChangeLoggedModel):
+    """One scoping rule on a policy."""
+
+    policy = models.ForeignKey(
+        ForwardChangePolicy,
+        on_delete=models.CASCADE,
+        related_name="rules",
+    )
+    device_role = models.ForeignKey(
+        "dcim.DeviceRole",
+        on_delete=models.CASCADE,
+        blank=True,
+        null=True,
+        related_name="+",
+    )
+    site = models.ForeignKey(
+        "dcim.Site",
+        on_delete=models.CASCADE,
+        blank=True,
+        null=True,
+        related_name="+",
+    )
+    tag_slug = models.CharField(max_length=100, blank=True, default="")
+
+    class Meta:
+        ordering = ("policy", "pk")
+        verbose_name = _("Forward Change Policy Rule")
+        verbose_name_plural = _("Forward Change Policy Rules")
+        db_table = "forward_netbox_change_policy_rule"
+
+    def __str__(self):
+        parts = [
+            str(x) for x in (self.device_role, self.site, self.tag_slug or None) if x
+        ]
+        return f"{self.policy}: {' / '.join(parts) or 'any'}"

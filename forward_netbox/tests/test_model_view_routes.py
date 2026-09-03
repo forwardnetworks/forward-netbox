@@ -51,6 +51,46 @@ class EveryModelWithADetailViewCanReverseItsListTest(TestCase):
         self.assertTrue(reverse("plugins:forward_netbox:forwardingestionissue_list"))
 
 
+class EveryRegisteredModelIsRoutableTest(TestCase):
+    """A model with views registered must also be reachable.
+
+    The sweeps above both start by reversing the DETAIL route and `continue`
+    when it is missing, so a model whose views exist but whose URLs were never
+    added to `urls.py` is silently skipped by every one of them. That is
+    exactly what happened to the change-control models: views, tables, forms
+    and a menu entry all existed, `forwardchange_list` did not resolve, and 25
+    unrelated tests failed with NoReverseMatch when the nav menu rendered.
+
+    This asserts the other direction - if a model has an ObjectListView
+    registered, its list route must reverse.
+    """
+
+    def test_every_model_with_a_list_view_has_a_list_route(self):
+        from netbox.registry import registry
+
+        missing = []
+        for model in apps.get_app_config("forward_netbox").get_models():
+            name = model._meta.model_name
+            views = registry["views"].get("forward_netbox", {}).get(name, {})
+            # A registered LIST view specifically, not any view. NetBox
+            # auto-registers changelog and journal views for every
+            # ChangeLoggedModel, so "has views" is true of child models that
+            # are only ever rendered inside a parent's page and correctly have
+            # no list route of their own.
+            if "list" not in views:
+                continue
+            try:
+                reverse(f"plugins:forward_netbox:{name}_list")
+            except NoReverseMatch:
+                missing.append(name)
+        self.assertEqual(
+            missing,
+            [],
+            "these models register views but have no list route, so every page "
+            f"that renders the plugin menu raises NoReverseMatch: {missing}",
+        )
+
+
 class EveryDetailViewHasATemplateTest(TestCase):
     """`generic.ObjectView` resolves a template by name, or raises at render.
 
