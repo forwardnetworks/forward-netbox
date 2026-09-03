@@ -1250,8 +1250,7 @@ def artifact_test(context):
             # at a max_version in the 4.6 series, so none of them is installed
             # in the artifact and naming them would put components in the SBOM
             # that the image does not contain.
-            "']' "
-            "> /tmp/netbox-runtime-pyproject.toml",
+            "']' " "> /tmp/netbox-runtime-pyproject.toml",
             "UV_CACHE_DIR=/tmp/uv-cache uv tool run --isolated "
             f"--from cyclonedx-bom=={CYCLONEDX_BOM_VERSION} "
             "cyclonedx-py environment "

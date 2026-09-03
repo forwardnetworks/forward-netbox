@@ -40,7 +40,7 @@ def suppress_ingest_side_effect_signals():
     Does NOT suppress core.signals.handle_changed_object (ObjectChange /
     Branching diff tracking) — that is intentional and required for Branching
     review.
-    
+
     NOT suppressed on NetBox 4.7, and deliberately not replaced:
     `sync_cached_scope_fields` no longer exists. 4.7 maintains the
     CachedScopeMixin denormalized columns - Site's among them - with database
