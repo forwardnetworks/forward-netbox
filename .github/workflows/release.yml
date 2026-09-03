@@ -35,12 +35,25 @@ jobs:
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.14"
-      - name: Verify protected main-branch release provenance
+      - name: Verify protected release-branch provenance
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git fetch --no-tags origin main:refs/remotes/origin/main
-          git fetch --force origin refs/tags/v2.9.1:refs/tags/v2.9.1
+          # Both values are read from the scripts, never written here, so the
+          # workflow and the verifier cannot disagree about which branch a tag
+          # may come from. The prior-release tag used to be a literal, and
+          # nothing advanced it when the anchor moved - so this fetched the tag
+          # from two releases back and the bridge check had no object.
+          export PYTHONPATH=scripts
+          BRANCH="$(python -c \
+          'import release_lane as r; print(r.RELEASE_BRANCH)')"
+          PRIOR_TAG="$(python -c \
+          'import verify_release_provenance as v; print(v.PRIOR_RELEASE_TAG)')"
+          echo "Release lane: ${BRANCH}; prior release: ${PRIOR_TAG}"
+          git fetch --no-tags origin \
+            "${BRANCH}:refs/remotes/origin/${BRANCH}"
+          git fetch --force origin \
+            "refs/tags/${PRIOR_TAG}:refs/tags/${PRIOR_TAG}"
           set -o pipefail
           for attempt in $(seq 1 120); do
             provenance_log="$(mktemp)"
@@ -56,11 +69,11 @@ jobs:
               exit 1
             fi
             rm -f "${provenance_log}"
-            echo "Main-commit provenance is still settling;"
+            echo "Lane-commit provenance is still settling;"
             echo "retry ${attempt}/120."
             sleep 30
           done
-          echo "Timed out waiting for successful main-commit provenance."
+          echo "Timed out waiting for successful lane-commit provenance."
           exit 1
       - name: Set up Node
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
