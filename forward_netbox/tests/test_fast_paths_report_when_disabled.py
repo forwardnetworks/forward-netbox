@@ -65,12 +65,15 @@ class AnUnvalidatedPluginIsNamedTest(SimpleTestCase):
         self.assertIn("still succeed", message)
 
     def test_a_missing_validated_plugin_is_also_named(self):
-        reduced = sorted(COPY_SQL_SUPPORTED_PLUGIN_APPS - {"netbox_dlm"})
+        # netbox_branching, not an optional plugin: the validated set holds no
+        # optional plugin on NetBox 4.7, so removing one would leave the set
+        # unchanged and this would assert nothing.
+        reduced = sorted(COPY_SQL_SUPPORTED_PLUGIN_APPS - {"netbox_branching"})
         with patch("django.conf.settings.PLUGINS", reduced):
             check = _fast_path_runtime_check()
 
         self.assertIsNotNone(check)
-        self.assertIn("netbox_dlm", check["message"])
+        self.assertIn("netbox_branching", check["message"])
         self.assertIn("not installed", check["message"])
 
     def test_the_check_survives_a_broken_fast_baseline_probe(self):

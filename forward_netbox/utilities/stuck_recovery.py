@@ -15,7 +15,7 @@ from core.choices import JobStatusChoices
 from core.models import Job
 from core.models import ObjectType
 from django.utils import timezone
-from django_pglocks import advisory_lock
+from django_pg_utils import advisory_lock
 from netbox.constants import ADVISORY_LOCK_KEYS
 from netbox_branching.choices import BranchStatusChoices
 

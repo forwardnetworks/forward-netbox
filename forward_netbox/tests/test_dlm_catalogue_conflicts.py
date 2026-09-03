@@ -1,3 +1,5 @@
+import unittest
+
 """A shared DLM catalogue row must never be created twice in one branch.
 
 `netbox_dlm.cve` is a global catalogue keyed by `cve_id`, created from two
@@ -28,6 +30,12 @@ from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.sync import ForwardSyncRunner
 from forward_netbox.utilities.sync_primitives import UNIQUE_LOOKUP_CACHE_FIELD_SETS
+
+# netbox-dlm cannot be installed on NetBox 4.7: it declares a max_version in
+# the 4.6 series and NetBox refuses to start with a plugin outside its range.
+# These skip rather than fail, which IS lost coverage - the 4.6 lane on 2.9.x
+# is where the DLM paths stay exercised until that ceiling moves.
+DLM_INSTALLED = apps.is_installed("netbox_dlm")
 
 
 class DLMCatalogueConflictPolicyTest(SimpleTestCase):
@@ -88,6 +96,7 @@ class DLMCatalogueConflictPolicyTest(SimpleTestCase):
         )
 
 
+@unittest.skipUnless(DLM_INSTALLED, "netbox-dlm is not installed")
 class DLMCatalogueConflictBehaviourTest(TestCase):
     """The policy is only worth anything if a real conflict actually reuses."""
 

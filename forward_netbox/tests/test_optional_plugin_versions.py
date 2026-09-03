@@ -1,3 +1,17 @@
+import unittest
+from unittest.mock import patch
+
+from django.apps import apps
+from django.test import SimpleTestCase
+
+from forward_netbox.utilities.apply_engine_decision import (
+    COPY_SQL_SUPPORTED_OPTIONAL_DISTRIBUTIONS,
+)
+from forward_netbox.utilities.merge_set_based import (
+    SET_BASED_MERGE_SUPPORTED_OPTIONAL_DISTRIBUTIONS,
+)
+from forward_netbox.utilities.version_series import series_matches
+
 # An optional NetBox plugin upgrade must not silently disable the fast paths.
 #
 # The runtime gates for the fast baseline, set-based merge and COPY/SQL each
@@ -25,56 +39,63 @@
 # roughly half an hour before 0.9.1 with a NoReverseMatch on every one of its
 # view URLs; 0.9.1 is that fix. Skipping a version that cannot render is not the
 # same as failing to validate it.
-from unittest.mock import patch
-
-from django.test import SimpleTestCase
-
-from forward_netbox.utilities.apply_engine_decision import (
-    COPY_SQL_SUPPORTED_OPTIONAL_DISTRIBUTIONS,
-)
-from forward_netbox.utilities.merge_set_based import (
-    SET_BASED_MERGE_SUPPORTED_OPTIONAL_DISTRIBUTIONS,
-)
-from forward_netbox.utilities.version_series import series_matches
 
 
 class OptionalDistributionVersionSetTest(SimpleTestCase):
-    def test_every_gate_accepts_all_validated_dlm_versions(self):
-        for name, supported in (
+    """The validated optional-distribution sets, whatever they currently hold.
+
+    On NetBox 4.7 they hold nothing. Every optional plugin - netbox-dlm,
+    netbox-cisco-aci, netbox-peering-manager, netbox-routing, netbox-validity -
+    declares a max_version in the 4.6 series, and NetBox refuses to start with a
+    plugin outside its declared range, so none of them can be installed on this
+    runtime at all. Claiming a validated version for a plugin nobody can install
+    would be a claim about a runtime nobody can assemble.
+
+    These assertions are therefore about the INVARIANTS rather than the
+    contents, so they keep working in both directions: they hold today with the
+    sets empty, and they hold the day an upstream raises its ceiling and entries
+    come back. The per-version assertions that used to live here (netbox-dlm
+    0.4.1 through 0.9.1) are recorded in
+    `docs/03_Plans/active/2026-09-02-netbox-4.7-runtime.md`, because those
+    versions were validated against 4.6 and none of them is evidence about 4.7.
+    """
+
+    def test_both_gates_read_the_same_declaration(self):
+        # One source, two consumers. When these diverge the fast paths disable
+        # themselves silently, which is the failure this module exists to catch.
+        self.assertIs(
+            COPY_SQL_SUPPORTED_OPTIONAL_DISTRIBUTIONS,
+            SET_BASED_MERGE_SUPPORTED_OPTIONAL_DISTRIBUTIONS,
+        )
+
+    def test_no_distribution_is_validated_on_this_runtime(self):
+        self.assertEqual(
+            dict(COPY_SQL_SUPPORTED_OPTIONAL_DISTRIBUTIONS),
+            {},
+            "an optional plugin cannot be installed on NetBox 4.7, so a "
+            "validated version for one is a claim about an unbuildable runtime",
+        )
+
+    def test_any_entry_that_returns_names_a_real_version(self):
+        # Guards the way back in: an empty frozenset would accept nothing while
+        # reading as configured, and a bare string would accept every substring.
+        for name, supported in COPY_SQL_SUPPORTED_OPTIONAL_DISTRIBUTIONS.items():
+            with self.subTest(distribution=name):
+                self.assertIsInstance(supported, frozenset)
+                self.assertTrue(supported)
+                for version in supported:
+                    self.assertRegex(version, r"^\d+\.\d+")
+
+    def test_an_unvalidated_version_is_refused_whatever_the_set_holds(self):
+        # The gates fail closed; widening must never become "any version".
+        for gate, supported in (
             ("copy_sql", COPY_SQL_SUPPORTED_OPTIONAL_DISTRIBUTIONS),
             ("set_based", SET_BASED_MERGE_SUPPORTED_OPTIONAL_DISTRIBUTIONS),
         ):
-            with self.subTest(gate=name):
-                self.assertIn("0.4.1", supported["netbox-dlm"])
-                self.assertIn("0.5.0", supported["netbox-dlm"])
-                self.assertIn("0.6.0", supported["netbox-dlm"])
-                self.assertIn("0.8.0", supported["netbox-dlm"])
-                self.assertIn("0.9.1", supported["netbox-dlm"])
-
-    def test_an_unvalidated_version_is_still_refused(self):
-        # The gates fail closed; widening must not become "any version".
-        for supported in (
-            COPY_SQL_SUPPORTED_OPTIONAL_DISTRIBUTIONS,
-            SET_BASED_MERGE_SUPPORTED_OPTIONAL_DISTRIBUTIONS,
-        ):
-            self.assertNotIn("0.6.1", supported["netbox-dlm"])
-            self.assertNotIn("0.3.3", supported["netbox-dlm"])
-            # Released, and still refused: 0.9.0 cannot render any of its own
-            # views. Widening to 0.9.1 must not sweep it in by proximity.
-            self.assertNotIn("0.9.0", supported["netbox-dlm"])
-
-    def test_the_other_distributions_stay_single_valued(self):
-        # Only netbox-dlm has a second validated version so far.
-        for supported in (
-            COPY_SQL_SUPPORTED_OPTIONAL_DISTRIBUTIONS,
-            SET_BASED_MERGE_SUPPORTED_OPTIONAL_DISTRIBUTIONS,
-        ):
-            for name in (
-                "netbox-cisco-aci",
-                "netbox-peering-manager",
-                "netbox-routing",
-            ):
-                self.assertEqual(len(supported[name]), 1, name)
+            with self.subTest(gate=gate):
+                self.assertNotIn(
+                    "999.999.999", supported.get("netbox-dlm", frozenset())
+                )
 
 
 class FastBaselineRuntimeTupleTest(SimpleTestCase):
@@ -83,40 +104,37 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
         # not silently switch an engine off.
         for version in ("4.6.5", "4.6.6", "4.6.12", "4.6"):
             self.assertTrue(series_matches(version, "4.6"), version)
-        for version in ("1.1.1", "1.1.2", "1.1.9"):
-            self.assertTrue(series_matches(version, "1.1"), version)
+        # The prerelease stays: anyone who installed the beta before 1.2.0
+        # shipped must not be refused by a series check that only ever saw
+        # release strings.
+        for version in ("1.2.0b1", "1.2.0", "1.2.9"):
+            self.assertTrue(series_matches(version, "1.2"), version)
 
     def test_a_different_series_is_still_refused(self):
         # Permissive within a series is not permissive across one.
-        for version in ("4.7.0", "4.5.9", "5.0.0", "", None, "4.60.1"):
-            self.assertFalse(series_matches(version, "4.6"), version)
-        for version in ("1.2.0", "1.0.9", "2.0.0"):
-            self.assertFalse(series_matches(version, "1.1"), version)
+        for version in ("4.6.8", "4.5.9", "5.0.0", "", None, "4.70.1"):
+            self.assertFalse(series_matches(version, "4.7"), version)
+        for version in ("1.1.3", "1.0.9", "2.0.0"):
+            self.assertFalse(series_matches(version, "1.2"), version)
 
-    def _decide(self, dlm_version):
+    def _decide(self, *, optional_plugins=None, plugin_apps=None, netbox="4.7.0"):
+        """A runtime tuple in the 4.7 shape: no optional plugin can be there.
+
+        The old helper varied a netbox-dlm version, because on 4.6 that was the
+        thing customers changed under us. On 4.7 no optional plugin can be
+        installed at all, so the interesting variable is now whether an
+        UNEXPECTED app is present - which must fail closed exactly as a wrong
+        version did.
+        """
         from forward_netbox.utilities import fast_baseline
 
         tuple_ = {
-            "netbox": "4.6.5",
-            "branching": "1.1.1",
+            "netbox": netbox,
+            "branching": "1.2.0",
             "forward_netbox": fast_baseline.forward_config.version,
-            "optional_plugins": {
-                "netbox-cisco-aci": "0.4.0",
-                "netbox-dlm": dlm_version,
-                "netbox-peering-manager": "0.3.0",
-                "netbox-routing": "0.4.3",
-                "netbox-validity": "3.5.2",
-            },
+            "optional_plugins": optional_plugins or {},
             "plugin_apps": sorted(
-                {
-                    "forward_netbox",
-                    "netbox_branching",
-                    "netbox_cisco_aci",
-                    "netbox_dlm",
-                    "netbox_peering_manager",
-                    "netbox_routing",
-                    "validity",
-                }
+                plugin_apps or {"forward_netbox", "netbox_branching"}
             ),
         }
         with patch.object(
@@ -124,70 +142,48 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
         ):
             return fast_baseline._runtime_decision()
 
+    def test_the_validated_runtime_keeps_the_fast_baseline(self):
+        self.assertNotEqual(self._decide().reason_code, "unsupported_runtime_tuple")
+
     def test_a_later_netbox_patch_keeps_the_fast_baseline(self):
-        from forward_netbox.utilities import fast_baseline
-
-        tuple_ = {
-            "netbox": "4.6.9",
-            "branching": "1.1.3",
-            "forward_netbox": fast_baseline.forward_config.version,
-            "optional_plugins": {
-                "netbox-cisco-aci": "0.4.0",
-                "netbox-dlm": "0.5.0",
-                "netbox-peering-manager": "0.3.0",
-                "netbox-routing": "0.4.3",
-                "netbox-validity": "3.5.2",
-            },
-            "plugin_apps": sorted(
-                {
-                    "forward_netbox",
-                    "netbox_branching",
-                    "netbox_cisco_aci",
-                    "netbox_dlm",
-                    "netbox_peering_manager",
-                    "netbox_routing",
-                    "validity",
-                }
-            ),
-        }
-        with patch.object(
-            fast_baseline, "fast_baseline_runtime_tuple", return_value=tuple_
-        ):
-            self.assertNotEqual(
-                fast_baseline._runtime_decision().reason_code,
-                "unsupported_runtime_tuple",
-            )
-
-    def test_the_previously_pinned_version_is_still_supported(self):
+        # Series matching, not an exact pin: a 4.7 patch must not silently drop
+        # a deployment onto the slow path.
         self.assertNotEqual(
-            self._decide("0.4.1").reason_code, "unsupported_runtime_tuple"
+            self._decide(netbox="4.7.9").reason_code, "unsupported_runtime_tuple"
         )
 
-    def test_the_upgraded_version_no_longer_disables_the_fast_baseline(self):
-        # The customer-visible symptom: upgrading netbox-dlm made a first sync
-        # fall back to the slow path with nothing explaining why.
-        self.assertNotEqual(
-            self._decide("0.5.0").reason_code, "unsupported_runtime_tuple"
+    def test_an_optional_plugin_that_cannot_run_here_fails_closed(self):
+        # Nothing validates netbox-dlm on 4.7 - it cannot be installed - so a
+        # runtime reporting one is a runtime this was never checked against.
+        decision = self._decide(
+            optional_plugins={"netbox-dlm": "0.9.1"},
+            plugin_apps={"forward_netbox", "netbox_branching", "netbox_dlm"},
         )
 
-    def test_an_unvalidated_version_still_fails_closed(self):
-        decision = self._decide("0.6.1")
+        self.assertFalse(decision.enabled)
+        self.assertEqual(decision.reason_code, "unsupported_runtime_tuple")
+
+    def test_an_unexpected_plugin_app_fails_closed(self):
+        # The app set is exact equality: an extra app is an unvalidated runtime
+        # even when it declares no version at all.
+        decision = self._decide(
+            plugin_apps={"forward_netbox", "netbox_branching", "some_other_plugin"}
+        )
 
         self.assertFalse(decision.enabled)
         self.assertEqual(decision.reason_code, "unsupported_runtime_tuple")
 
     def test_the_rejection_detail_stays_serialisable(self):
-        # `expected` holds sets now; it is persisted as job evidence, so it must
+        # `expected` holds sets; it is persisted as job evidence, so it must
         # render as sorted lists rather than blow up on JSON encoding.
         import json
 
-        detail = self._decide("0.6.1").context
+        detail = self._decide(
+            plugin_apps={"forward_netbox", "netbox_branching", "some_other_plugin"}
+        ).context
 
         json.dumps(detail)
-        self.assertEqual(
-            detail["expected"]["optional_plugins"]["netbox-dlm"],
-            ["0.4.1", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.9.1"],
-        )
+        self.assertEqual(detail["expected"]["optional_plugins"], {})
 
 
 class FastBaselineFieldContractTest(SimpleTestCase):
@@ -220,6 +216,7 @@ class FastBaselineFieldContractTest(SimpleTestCase):
 
         self.assertEqual([entry["model"] for entry in drift], ["dcim.site"])
 
+    @unittest.skipUnless(apps.is_installed("netbox_dlm"), "netbox-dlm is not installed")
     def test_an_optional_field_does_not_trip_it(self):
         # netbox-dlm 0.5.0 adds SoftwareVersion.release_designation as a blank
         # CharField. bulk_create fills that in without help, so it must not be

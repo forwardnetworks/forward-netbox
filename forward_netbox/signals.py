@@ -98,6 +98,24 @@ def seed_builtin_nqe_maps(sender, **kwargs):
 
 @receiver(pre_delete, sender=ForwardSync)
 def cancel_enqueued_jobs_on_sync_delete(sender, instance, **kwargs):
+    """Signal entry point, kept for any delete path that skips the override.
+
+    On Django 6.1 (NetBox 4.7) this fires TOO LATE to do its job: the
+    collector removes the `jobs` GenericRelation rows before sending
+    `pre_delete` for the ForwardSync, so by the time this runs there is
+    nothing left to find. Verified directly - `Job.objects.count()` is 0
+    inside this handler while a RUNNING job existed a moment earlier.
+
+    That is why `ForwardSync.delete()` calls `enforce_sync_job_safety()`
+    itself, before anything is collected. This receiver stays because a delete
+    path that bypasses the model override would otherwise have no guard at
+    all, and running it twice is harmless: the refusal is a read, and the
+    cancellation is idempotent.
+    """
+    enforce_sync_job_safety(instance)
+
+
+def enforce_sync_job_safety(instance):
     """Cancel queued work and reject deletion while a worker is running.
 
     The JobsMixin GenericRelation cascade removes Job rows through the SQL

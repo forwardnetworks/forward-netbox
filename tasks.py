@@ -91,7 +91,7 @@ namespace = Collection("forward_netbox")
 namespace.configure(
     {
         "forward_netbox": {
-            "netbox_ver": os.environ.get("NETBOX_VER", "v4.6.8"),
+            "netbox_ver": os.environ.get("NETBOX_VER", "v4.7.0"),
             "project_name": os.environ.get(
                 "FORWARD_NETBOX_DOCKER_PROJECT",
                 "forward-netbox",
@@ -1199,9 +1199,9 @@ def artifact_test(context):
     version, wheel = _release_artifact_inputs()
     sbom_path = _prepare_sbom_output(version)
     netbox_version = str(context.forward_netbox.netbox_ver or "").strip()
-    if netbox_version != "v4.6.8":
+    if netbox_version != "v4.7.0":
         raise Exit(
-            "Release artifact validation requires NETBOX_VER=v4.6.8.",
+            "Release artifact validation requires NETBOX_VER=v4.7.0.",
             code=2,
         )
 
@@ -1246,13 +1246,11 @@ def artifact_test(context):
             "'requires-python = \">=3.14,<3.15\"' "
             "'dependencies = [' "
             f"'  \"forward-netbox=={version}\",' "
-            "'  \"netbox-cisco-aci==0.4.0\",' "
-            "'  \"netbox-dlm==0.9.1\",' "
-            "'  \"netbox-peering-manager==0.3.0\",' "
-            "'  \"netbox-routing==0.4.3\",' "
-            "'  \"netbox-validity==3.5.2\",' "
-            "']' "
-            "> /tmp/netbox-runtime-pyproject.toml",
+            # The five optional plugins are NOT listed on NetBox 4.7: each caps
+            # at a max_version in the 4.6 series, so none of them is installed
+            # in the artifact and naming them would put components in the SBOM
+            # that the image does not contain.
+            "']' " "> /tmp/netbox-runtime-pyproject.toml",
             "UV_CACHE_DIR=/tmp/uv-cache uv tool run --isolated "
             f"--from cyclonedx-bom=={CYCLONEDX_BOM_VERSION} "
             "cyclonedx-py environment "
@@ -1313,9 +1311,9 @@ def artifact_upgrade_test(context, from_version=None, from_netbox_ver=None):
     """
     version, wheel = _release_artifact_inputs()
     netbox_version = str(context.forward_netbox.netbox_ver or "").strip()
-    if netbox_version != "v4.6.8":
+    if netbox_version != "v4.7.0":
         raise Exit(
-            "Release artifact validation requires NETBOX_VER=v4.6.8.",
+            "Release artifact validation requires NETBOX_VER=v4.7.0.",
             code=2,
         )
     # `invoke ci` runs this through its pre-list, which cannot pass arguments, so

@@ -1,8 +1,10 @@
 import json
 import re
+import unittest
 from pathlib import Path
 from unittest.mock import Mock
 
+from django.apps import apps
 from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
 
@@ -2539,6 +2541,9 @@ select {name: "vendor", slug: "vendor"}
         )
         self.assertFalse(dlm_maps.filter(enabled=True).exists())
 
+    @unittest.skipUnless(
+        apps.is_installed("netbox_cisco_aci"), "netbox-cisco-aci is not installed"
+    )
     def test_seed_builtin_maps_includes_installed_aci_models(self):
         seed_builtin_nqe_maps(type("Sender", (), {"label": "forward_netbox"}))
 
