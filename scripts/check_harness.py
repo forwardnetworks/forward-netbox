@@ -197,7 +197,13 @@ REQUIRED_TEXT = {
     ],
     ".github/workflows/release.yml": [
         "fetch-depth: 0",
-        "refs/tags/v2.9.1",
+        # The prior-release tag is read from the verifier, not written here.
+        # It was a literal, and nothing advanced it when the anchor moved, so
+        # the workflow fetched a tag from two releases back.
+        "import verify_release_provenance as v; print(v.PRIOR_RELEASE_TAG)",
+        # The lane is read the same way, so the workflow cannot fetch one
+        # branch while the verifier checks ancestry against another.
+        "import release_lane as r",
         "verify_release_provenance.py",
         "--git-files",
         "--protected-history",
@@ -1097,7 +1103,9 @@ def _check_standard_release_tag_flow(failures: list[str]) -> None:
         "BOOTSTRAP_REQUIRED_FILES",
         "BOOTSTRAP_FILE_DIGESTS",
         'operation.add_argument("--controls-only", action="store_true")',
-        '"merge-base", "--is-ancestor", release_commit, current_main',
+        '"merge-base", "--is-ancestor", release_commit, current_head',
+        # The release branch is declared, never inferred from the checkout.
+        "from release_lane import LANE",
     ):
         if fragment not in texts["provenance"]:
             failures.append(f"release provenance must contain: {fragment}")
@@ -1120,7 +1128,7 @@ def main() -> int:
         "--base",
         help=(
             "Validate every commit in <base>..HEAD against the push-event plan "
-            "gate (use before pushing, e.g. --base origin/main)."
+            "gate (use before pushing, e.g. --base origin/<release branch>)."
         ),
     )
     args = parser.parse_args()

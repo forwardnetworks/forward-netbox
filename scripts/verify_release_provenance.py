@@ -11,6 +11,17 @@ import urllib.parse
 from pathlib import Path
 
 
+# Imported as a sibling when run directly and as a package member when
+# the tests import it; both spellings resolve to the same module.
+try:  # pragma: no cover - exercised by whichever entry point is in use
+    from release_lane import LANE
+    from release_lane import ReleaseLaneError
+    from release_lane import require_version_in_lane
+except ImportError:  # pragma: no cover
+    from scripts.release_lane import LANE
+    from scripts.release_lane import ReleaseLaneError
+    from scripts.release_lane import require_version_in_lane
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GITHUB_REPOSITORY = "forwardnetworks/forward-netbox"
 GITHUB_API_URL = "https://api.github.com"
@@ -68,7 +79,11 @@ BOOTSTRAP_FILE_DIGESTS = {
 # so provenance no longer looks for a workflow run it cannot find.
 REQUIRED_WORKFLOWS = ()
 GITHUB_ACTIONS_APP_ID = 15368
-MAIN_RULESET_NAME = "main-release-integrity"
+# The branch ruleset that must protect THIS lane. `main-release-integrity`
+# only ever covered `refs/heads/main`; a maintenance lane needs its own, with
+# the same shape, or a release from it would be a release from an unprotected
+# branch.
+RELEASE_BRANCH_RULESET_NAME = LANE.ruleset
 RETIRED_VERSION_TAG_CREATION_RULESET = "version-tag-creation"
 VERSION_TAG_INTEGRITY_RULESET = "version-tag-integrity"
 PYPI_ENVIRONMENT = "pypi"
@@ -240,16 +255,18 @@ def _rules_by_type(ruleset: dict, expected: set[str]) -> dict[str, dict]:
     return {rule_type: rules[0] for rule_type, rules in grouped.items()}
 
 
-def _require_main_ruleset(token: str) -> list[str]:
-    ruleset = _named_ruleset(MAIN_RULESET_NAME, token)
+def _require_release_branch_ruleset(token: str) -> list[str]:
+    ruleset = _named_ruleset(RELEASE_BRANCH_RULESET_NAME, token)
     _require_ruleset_identity(
         ruleset,
-        name=MAIN_RULESET_NAME,
+        name=RELEASE_BRANCH_RULESET_NAME,
         target="branch",
-        ref_pattern="refs/heads/main",
+        ref_pattern=LANE.ref_pattern,
     )
     if ruleset.get("bypass_actors") != []:
-        raise ProvenanceError("protected main ruleset must not have bypass actors")
+        raise ProvenanceError(
+            f"protected {LANE.branch} ruleset must not have bypass actors"
+        )
     # `required_status_checks` is deliberately absent. This repository has a
     # single maintainer and runs its gates locally (`invoke ci`,
     # `invoke artifact-test`), whose results are recorded in the release plan's
@@ -278,7 +295,9 @@ def _require_main_ruleset(token: str) -> list[str]:
         pull_parameters.get(key) != value
         for key, value in required_pull_parameters.items()
     ):
-        raise ProvenanceError("protected main pull-request controls are incomplete")
+        raise ProvenanceError(
+            f"protected {LANE.branch} pull-request controls are incomplete"
+        )
     return []
 
 
@@ -360,7 +379,7 @@ def verify_github_release_controls(token: str) -> dict:
     if actions.get("sha_pinning_required") is not True:
         raise ProvenanceError("GitHub Actions SHA pinning is not required")
 
-    _require_main_ruleset(token)
+    _require_release_branch_ruleset(token)
     _require_ruleset_absent(RETIRED_VERSION_TAG_CREATION_RULESET, token)
     _require_tag_ruleset(
         token,
@@ -374,7 +393,8 @@ def verify_github_release_controls(token: str) -> dict:
         policy_type="tag",
     )
     return {
-        "main_ruleset": MAIN_RULESET_NAME,
+        "release_branch": LANE.branch,
+        "release_branch_ruleset": RELEASE_BRANCH_RULESET_NAME,
         "required_statuses": [],
         "pypi_environment": PYPI_ENVIRONMENT,
     }
@@ -391,7 +411,7 @@ def _require_release_commit_shape(commit: str, token: str) -> dict:
     return payload
 
 
-def _require_merged_main_pr(
+def _require_merged_release_branch_pr(
     commit: str,
     token: str,
     *,
@@ -402,7 +422,7 @@ def _require_merged_main_pr(
         pull
         for pull in pulls
         if pull.get("merged_at")
-        and (pull.get("base") or {}).get("ref") == "main"
+        and (pull.get("base") or {}).get("ref") == LANE.branch
         and pull.get("merge_commit_sha") == commit
     ]
     if len(matches) != 1:
@@ -429,7 +449,8 @@ def _require_merged_main_pr(
                 )
             return True
         raise ProvenanceError(
-            f"commit {commit} must map to exactly one merged main pull request"
+            f"commit {commit} must map to exactly one merged "
+            f"{LANE.branch} pull request"
         )
     pull = _github_json(f"pulls/{matches[0]['number']}", token)
     if not isinstance(pull, dict):
@@ -461,12 +482,13 @@ def _require_successful_workflow(commit: str, workflow_path: str, token: str) ->
         if run.get("workflow_id") == workflow_id
         and run.get("path") == workflow_path
         and run.get("head_sha") == commit
-        and run.get("head_branch") == "main"
+        and run.get("head_branch") == LANE.branch
         and run.get("event") == "push"
     ]
     if not exact:
         raise ProvenanceError(
-            f"commit {commit} has no exact main push run for {workflow_path}"
+            f"commit {commit} has no exact {LANE.branch} push run "
+            f"for {workflow_path}"
         )
     latest = max(exact, key=lambda run: int(run.get("id") or 0))
     if latest.get("status") != "completed" or latest.get("conclusion") != "success":
@@ -630,15 +652,16 @@ def _require_security_bootstrap(release_commit: str) -> None:
         )
 
 
-def _require_release_on_main_lineage(release_commit: str) -> str:
-    current_main = _git_capture("rev-parse", "refs/remotes/origin/main")
+def _require_release_on_lane_lineage(release_commit: str) -> str:
+    current_head = _git_capture("rev-parse", LANE.remote_tracking_ref)
     try:
-        _git_capture("merge-base", "--is-ancestor", release_commit, current_main)
+        _git_capture("merge-base", "--is-ancestor", release_commit, current_head)
     except subprocess.CalledProcessError as exc:
         raise ProvenanceError(
-            "release commit must be an ancestor of the current origin/main commit"
+            f"release commit must be an ancestor of the current "
+            f"{LANE.remote_ref} commit"
         ) from exc
-    return current_main
+    return current_head
 
 
 def verify_release_commit_provenance(
@@ -646,7 +669,7 @@ def verify_release_commit_provenance(
     version: str,
     token: str,
 ) -> dict:
-    _require_release_on_main_lineage(release_commit)
+    _require_release_on_lane_lineage(release_commit)
     production_commit = _commit_parent(release_commit)
     plan = _require_release_plan(production_commit, release_commit, version)
 
@@ -668,7 +691,7 @@ def verify_release_commit_provenance(
     control_commit_limit = len(reviewed_commits) - 2
     for index, commit in enumerate(reviewed_commits):
         _require_release_commit_shape(commit, token)
-        direct_control_commit = _require_merged_main_pr(
+        direct_control_commit = _require_merged_release_branch_pr(
             commit,
             token,
             allow_direct_control_commit=index < control_commit_limit,
@@ -691,6 +714,13 @@ def verify_release_commit_provenance(
 def verify_release_provenance(tag: str, token: str) -> dict:
     if not tag.startswith("v"):
         raise ProvenanceError(f"release tag must start with v: {tag!r}")
+    # Asked before any GitHub call. A tag from another series would otherwise
+    # be refused several checks later by an ancestry failure, which reads as a
+    # git problem rather than as a tag pushed from the wrong lane.
+    try:
+        require_version_in_lane(tag[1:])
+    except ReleaseLaneError as error:
+        raise ProvenanceError(str(error)) from error
     result = verify_release_commit_provenance(
         _require_annotated_tag(tag),
         tag[1:],
