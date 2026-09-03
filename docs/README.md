@@ -8,15 +8,15 @@ Forward 26.6 is the baseline for async NQE.
 
 ## Release Compatibility
 
-The `3.0.0` release candidate requires NetBox `4.7.x` (tested on `4.7.0`) and `netbox-branching` `1.2.x` (tested on `1.2.0`). Expand for the published release history and candidate notes.
+The `3.0.0` release requires NetBox `4.7.x` (tested on `4.7.0`) and `netbox-branching` `1.2.x` (tested on `1.2.0`). Expand for the published release history and release notes.
 
 <details>
 <summary>Release compatibility history</summary>
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v3.0.0` | NetBox `4.7.x` supported, tested on `4.7.0`; needs netbox-branching `1.2.x`, tested on `1.2.0` | Release candidate; NetBox 4.7 with netbox-branching 1.2, and change control gated on what Forward saw before and after the change. |
-| `v2.9.2` | `4.6.x` (>= `4.6.5`) supported, tested on `4.6.8`; needs netbox-branching `1.1.x`, tested on `1.1.2` | Current release; Drift is measured exactly for every fetched model, the uncovered-device count says why it grows and warns when it does, and five delete and diagnostic defects are closed. |
+| `v3.0.0` | NetBox `4.7.x` supported, tested on `4.7.0`; needs netbox-branching `1.2.x`, tested on `1.2.0` | Current release; NetBox 4.7 with netbox-branching 1.2, and change control gated on what Forward saw before and after the change. |
+| `v2.9.2` | `4.6.x` (>= `4.6.5`) supported, tested on `4.6.8`; needs netbox-branching `1.1.x`, tested on `1.1.2` | Superseded by `v3.0.0`; Drift is measured exactly for every fetched model, the uncovered-device count says why it grows and warns when it does, and five delete and diagnostic defects are closed. |
 | `v2.9.1` | `4.6.x` (>= `4.6.5`) supported, tested on `4.6.8`; needs netbox-branching `1.1.x`, tested on `1.1.2` | Superseded by `v2.9.2`; Accepts netbox-branching 1.1.3 and records the validated runtime in the lockfile. |
 | `v2.9.0` | `4.6.x` (>= `4.6.5`) supported, tested on `4.6.8`; needs netbox-branching `1.1.x`, tested on `1.1.2` | Superseded by `v2.9.1`; Feature: back up device configurations from Forward into a git data source for Validity golden-config checks, plus the runtime-validation refactor and health check it required. |
 | `v2.8.9` | `4.6.x` (>= `4.6.5`) supported, tested on `4.6.8`; needs netbox-branching `1.1.x`, tested on `1.1.2` | Superseded by `v2.9.0`; Fix: a sync deletes a device only on the same quarantined evidence the operator prune requires, and never stages a delete the database will refuse. |
