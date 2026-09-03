@@ -114,6 +114,29 @@ class InsertReleaseRowTest(unittest.TestCase):
         with self.assertRaises(release.ReleaseError):
             release.insert_release_row(candidate, "1.5.12", "second")
 
+    def test_re_inserting_the_same_version_is_a_no_op(self):
+        """A retried prepare must not fail on the row it wrote itself.
+
+        The guard matched the bare "| Release candidate;" marker, so it could
+        not tell this version's candidate from another version's. Because the
+        edits are computed before `stage_prepare`'s `write` check, even a dry
+        run tripped it, and the only way past was resetting the tree and
+        re-running the whole ~45-minute gate.
+        """
+        candidate = release.insert_release_row(self.TABLE, "1.5.11", "first")
+
+        self.assertEqual(
+            release.insert_release_row(candidate, "1.5.11", "first"),
+            candidate,
+        )
+
+    def test_the_no_op_does_not_soften_the_other_version_guard(self):
+        """The opposite branch: two releases in flight is still an error."""
+        candidate = release.insert_release_row(self.TABLE, "1.5.11", "first")
+
+        with self.assertRaises(release.ReleaseError):
+            release.insert_release_row(candidate, "1.6.0", "second")
+
 
 class ReleaseIntroTest(unittest.TestCase):
     INTRO = (
@@ -457,6 +480,82 @@ class VersionSurfaceEditTest(unittest.TestCase):
             for text in edits.values():
                 self.assertIn("1.2.4", text)
                 self.assertNotIn("1.2.3", text)
+
+    def test_a_partially_bumped_tree_resumes_instead_of_failing(self):
+        """A prepare that died mid-write must be retryable.
+
+        The surfaces are written one at a time. If the run dies after some are
+        bumped, the retry reads the NEW version out of pyproject, looks for it
+        in a file still holding the old one, and reported "expected exactly
+        one" - unresumable, so the whole gate had to be re-paid.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._tree(directory, "1.2.3")
+            # pyproject and __init__ made it; the other two did not.
+            (root / "pyproject.toml").write_text(
+                'version = "1.2.4"\n', encoding="utf-8"
+            )
+            (root / "forward_netbox" / "__init__.py").write_text(
+                '    version = "1.2.4"\n', encoding="utf-8"
+            )
+            patches = self._patched(root)
+            for item in patches:
+                item.start()
+            try:
+                edits = release.version_surface_edits("1.2.4", "1.2.4")
+            finally:
+                for item in patches:
+                    item.stop()
+            self.assertEqual(len(edits), 4)
+            for text in edits.values():
+                self.assertIn("1.2.4", text)
+                self.assertNotIn("1.2.3", text)
+
+    def test_a_surface_at_an_unexpected_version_is_repaired(self):
+        """Drifted surfaces are set to the target, not refused.
+
+        Matching by shape means the outgoing literal no longer has to be known,
+        which is what makes a half-written prepare resumable - and it also means
+        a surface that drifted to some third value is brought to the target
+        rather than raising. Detecting drift is
+        `check_release_preflight.py::check_version_surfaces`' job and it runs in
+        the gate; prepare's job is to set the version. `stage_prepare` prints
+        which surfaces it had to move so the repair is not silent.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._tree(directory, "1.2.3")
+            (root / "forward_netbox" / "utilities" / "fast_baseline.py").write_text(
+                '    "forward_netbox": "9.9.9",\n', encoding="utf-8"
+            )
+            patches = self._patched(root)
+            for item in patches:
+                item.start()
+            try:
+                edits = release.version_surface_edits("1.2.3", "1.2.4")
+            finally:
+                for item in patches:
+                    item.stop()
+            pin = edits[root / "forward_netbox/utilities/fast_baseline.py"]
+            self.assertIn('"forward_netbox": "1.2.4"', pin)
+            self.assertNotIn("9.9.9", pin)
+
+    def test_two_version_literals_in_one_surface_is_reported(self):
+        """The strictness that remains: ambiguity is still refused."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._tree(directory, "1.2.3")
+            (root / "forward_netbox" / "utilities" / "fast_baseline.py").write_text(
+                '    "forward_netbox": "1.2.3",\n    "forward_netbox": "1.2.3",\n',
+                encoding="utf-8",
+            )
+            patches = self._patched(root)
+            for item in patches:
+                item.start()
+            try:
+                with self.assertRaisesRegex(release.ReleaseError, "fast_baseline"):
+                    release.version_surface_edits("1.2.3", "1.2.4")
+            finally:
+                for item in patches:
+                    item.stop()
 
     def test_a_missing_surface_is_reported_not_skipped(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1098,3 +1197,145 @@ class PullRequestLookupIgnoresDeadHistoryTest(unittest.TestCase):
         with unittest.mock.patch.object(release.subprocess, "run", fake_run):
             self.assertFalse(release._merge_is_live(self._pull("deadbeef" * 5)))
         self.assertIn(["git", "fetch"], calls)
+
+
+class StageIdempotencyTest(unittest.TestCase):
+    """Re-entering a stage must be a reported no-op, not an error.
+
+    v3.0.0 took fourteen attempts. One was a product defect; the rest failed in
+    fast bookkeeping steps AFTER the ~45-minute gate. The driver already prints
+    which flag to resume with (`stage_finish_unattended`), but the stages it
+    names could not run twice, so the advice did not work and every retry
+    re-paid the gate.
+    """
+
+    def test_publish_does_not_recommit_an_already_committed_release(self):
+        commands = []
+
+        def capture(cmd, **kwargs):
+            if cmd[:3] == ["git", "status", "--porcelain"]:
+                return ""  # nothing staged: the prior attempt already committed
+            if cmd[:2] == ["git", "branch"]:
+                return "release/3.0.0"
+            return ""
+
+        with (
+            patch.object(release, "_capture", side_effect=capture),
+            patch.object(release, "run", side_effect=lambda c, **k: commands.append(c)),
+            patch.object(release, "wait_for_required_workflows", return_value=True),
+            patch.object(release, "_assert_release_head"),
+        ):
+            release.stage_publish("3.0.0")
+
+        joined = [" ".join(c) for c in commands]
+        self.assertFalse(
+            any(c.startswith("git commit") for c in joined),
+            "an already-committed release must not be committed again",
+        )
+        self.assertTrue(any(c.startswith("git push") for c in joined))
+
+    def test_publish_still_commits_when_prepare_left_changes(self):
+        commands = []
+
+        def capture(cmd, **kwargs):
+            if cmd[:3] == ["git", "status", "--porcelain"]:
+                return " M pyproject.toml"
+            if cmd[:2] == ["git", "branch"]:
+                return "release/3.0.0"
+            return ""
+
+        with (
+            patch.object(release, "_capture", side_effect=capture),
+            patch.object(release, "run", side_effect=lambda c, **k: commands.append(c)),
+            patch.object(release, "wait_for_required_workflows", return_value=True),
+            patch.object(release, "_assert_release_head"),
+        ):
+            release.stage_publish("3.0.0")
+
+        joined = [" ".join(c) for c in commands]
+        self.assertTrue(any(c.startswith("git commit") for c in joined))
+
+    def test_post_release_stops_when_the_bridge_is_already_on_main(self):
+        commands = []
+        with (
+            patch.object(release, "_text_on_main", return_value="# bridge\n"),
+            patch.object(release, "run", side_effect=lambda c, **k: commands.append(c)),
+            patch.object(release, "_open_pull_request") as open_pull_request,
+        ):
+            release.stage_post_release("3.0.0", "v3.0.0")
+
+        open_pull_request.assert_not_called()
+        joined = [" ".join(c) for c in commands]
+        self.assertFalse(
+            any("checkout -B" in c for c in joined),
+            "a landed bridge must not rebuild its branch",
+        )
+
+    def test_post_release_still_builds_the_bridge_when_it_is_absent(self):
+        commands = []
+        with (
+            patch.object(release, "_text_on_main", return_value=None),
+            patch.object(release, "_pull_request_for_branch", return_value=None),
+            patch.object(release, "run", side_effect=lambda c, **k: commands.append(c)),
+            patch.object(release, "_capture", return_value="main"),
+            patch.object(release, "_open_pull_request") as open_pull_request,
+            patch.object(release, "_bridge_plan_path") as plan_path,
+        ):
+            scratch = tempfile.TemporaryDirectory()
+            self.addCleanup(scratch.cleanup)
+            plan_path.return_value = Path(scratch.name) / "post-release-3.0.0.md"
+            with patch.object(release, "REPO_ROOT", Path(scratch.name)):
+                release.stage_post_release("3.0.0", "v3.0.0")
+
+        open_pull_request.assert_called_once()
+        self.assertTrue(any("checkout -B" in " ".join(c) for c in commands))
+
+    def test_anchor_stops_when_main_already_anchors_the_tag(self):
+        commands = []
+        landed = (
+            'PRIOR_RELEASE_TAG = "v3.0.0"\nPRIOR_POST_RELEASE_DOC_COMMIT = "%s"\n'
+            % ("b" * 40)
+        )
+        with (
+            patch.object(release, "_bridge_commit_for", return_value="b" * 40),
+            patch.object(release, "_text_on_main", return_value=landed),
+            patch.object(release, "run", side_effect=lambda c, **k: commands.append(c)),
+            patch.object(release, "promote_release_tables") as promote,
+            patch.object(release, "_open_pull_request") as open_pull_request,
+        ):
+            release.stage_anchor("3.0.0", "v3.0.0")
+
+        promote.assert_not_called()
+        open_pull_request.assert_not_called()
+        self.assertFalse(any("checkout -B" in " ".join(c) for c in commands))
+
+    def test_anchor_still_runs_when_main_anchors_the_previous_release(self):
+        """The opposite branch: a stale anchor must not be mistaken for done."""
+        landed = (
+            'PRIOR_RELEASE_TAG = "v2.9.2"\nPRIOR_POST_RELEASE_DOC_COMMIT = "%s"\n'
+            % ("a" * 40)
+        )
+        with (
+            patch.object(release, "_bridge_commit_for", return_value="b" * 40),
+            patch.object(release, "_text_on_main", return_value=landed),
+            patch.object(release, "_pull_request_for_branch", return_value=None),
+            patch.object(release, "run"),
+            patch.object(release, "_capture", return_value="main"),
+            patch.object(release, "promote_release_tables") as promote,
+            patch.object(release, "_open_pull_request"),
+            patch.object(release, "_anchor_plan_path") as plan_path,
+        ):
+            scratch = tempfile.TemporaryDirectory()
+            self.addCleanup(scratch.cleanup)
+            root = Path(scratch.name)
+            provenance = root / "verify_release_provenance.py"
+            provenance.write_text(landed, encoding="utf-8")
+            plan_path.return_value = root / "anchor-3.0.0.md"
+            with (
+                patch.object(release, "PROVENANCE", provenance),
+                patch.object(release, "REPO_ROOT", root),
+                patch.object(release, "README_TABLES", ()),
+            ):
+                release.stage_anchor("3.0.0", "v3.0.0")
+
+        promote.assert_called_once_with("3.0.0")
