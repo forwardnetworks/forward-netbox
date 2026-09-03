@@ -684,7 +684,7 @@ which is the worst possible time to be writing anything.
   unavailable without a published query. Gated on
   `has_nqe_library_write_permission()`, additive only, never deleting,
   and the plugin works without it at the cost of the state-preservation
-  gate. Note also that the ADP org token is Basic auth and that a
+  gate. Note also that the org-level token is Basic auth and that a
   customer's own login often lacks library write permission, so this must
   degrade rather than fail.
 
