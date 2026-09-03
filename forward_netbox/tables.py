@@ -8,6 +8,9 @@ from netbox.tables import columns
 from netbox.tables import NetBoxTable
 from netbox_branching.models import ChangeDiff
 
+from .models import ForwardChange
+from .models import ForwardChangeCriterion
+from .models import ForwardChangePolicy
 from .models import ForwardDeviceAnalysis
 from .models import ForwardDriftPolicy
 from .models import ForwardIngestion
@@ -358,4 +361,82 @@ class ForwardIngestionIssueTable(NetBoxTable):
             "coalesce_fields",
             "defaults",
             "message",
+        )
+
+
+class ForwardChangeTable(NetBoxTable):
+    title = tables.Column(linkify=True)
+    source = tables.Column(linkify=True)
+    state = columns.ChoiceFieldColumn()
+    verdict = columns.ChoiceFieldColumn()
+
+    class Meta(NetBoxTable.Meta):
+        model = ForwardChange
+        fields = (
+            "pk",
+            "ref",
+            "title",
+            "source",
+            "state",
+            "verdict",
+            "branch_name",
+            "before_snapshot_id",
+            "after_snapshot_id",
+            "applied_at",
+            "created",
+        )
+        default_columns = (
+            "pk",
+            "ref",
+            "title",
+            "source",
+            "state",
+            "verdict",
+            "applied_at",
+        )
+
+
+class ForwardChangeCriterionTable(NetBoxTable):
+    name = tables.Column(linkify=False)
+    change = tables.Column(linkify=True)
+    family = columns.ChoiceFieldColumn()
+    expectation = columns.ChoiceFieldColumn()
+    blocking = columns.BooleanColumn()
+    actions = columns.ActionsColumn(actions=())
+
+    class Meta(NetBoxTable.Meta):
+        model = ForwardChangeCriterion
+        fields = (
+            "pk",
+            "name",
+            "change",
+            "family",
+            "expectation",
+            "blocking",
+            "query_path",
+            "query_id",
+            "commit_id",
+        )
+        default_columns = (
+            "name",
+            "change",
+            "family",
+            "expectation",
+            "blocking",
+            "commit_id",
+        )
+
+
+class ForwardChangePolicyTable(NetBoxTable):
+    name = tables.Column(linkify=True)
+
+    class Meta(NetBoxTable.Meta):
+        model = ForwardChangePolicy
+        fields = ("pk", "name", "enabled", "min_pre_approvals", "min_post_approvals")
+        default_columns = (
+            "pk",
+            "name",
+            "enabled",
+            "min_pre_approvals",
+            "min_post_approvals",
         )

@@ -1,0 +1,245 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+{% load i18n %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Change" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Reference" %}</th>
+            <td>{{ object.ref|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Source" %}</th>
+            <td>{{ object.source|linkify }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "State" %}</th>
+            <td>{% badge object.get_state_display bg_color=object.get_state_color %}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Verdict" %}</th>
+            <td>
+              {% if object.verdict %}
+                {% badge object.get_verdict_display bg_color=object.get_verdict_color %}
+              {% else %}
+                <span class="text-muted">{% trans "Not yet verified" %}</span>
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Requester" %}</th>
+            <td>{{ object.requester|placeholder }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h5 class="card-header">{% trans "Snapshots" %}</h5>
+      <div class="card-body">
+        {# Pinned as literal ids, never selectors: verifying against a #}
+        {# re-resolved snapshot would judge the change against a different #}
+        {# network than the one it was approved against. #}
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Baseline (before)" %}</th>
+            <td><code>{{ object.before_snapshot_id|placeholder }}</code></td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Post-change (after)" %}</th>
+            <td><code>{{ object.after_snapshot_id|placeholder }}</code></td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Branch" %}</th>
+            <td>{{ object.branch_name|placeholder }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h5 class="card-header">{% trans "Applied" %}</h5>
+      <div class="card-body">
+        <p class="text-muted small">
+          {% trans "Attested, not measured. Nothing here can observe the network being changed, so this is a human claim about when it happened." %}
+        </p>
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "When" %}</th>
+            <td>{{ object.applied_at|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Attested by" %}</th>
+            <td>{{ object.applied_by|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Reference" %}</th>
+            <td>{{ object.applied_ref|placeholder }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Evidence" %}</h5>
+      <div class="card-body">
+        <p class="text-muted small">
+          {% trans "This is what the verdict is computed from, and the only thing it is computed from." %}
+        </p>
+        {% if criterion_outcomes %}
+          <table class="table table-hover">
+            <thead>
+              <tr>
+                <th>{% trans "Criterion" %}</th>
+                <th>{% trans "Before" %}</th>
+                <th>{% trans "After" %}</th>
+                <th>{% trans "Result" %}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for outcome in criterion_outcomes %}
+                <tr>
+                  <td>
+                    {{ outcome.criterion.name }}
+                    {% if not outcome.blocking %}
+                      <span class="badge text-bg-gray">{% trans "advisory" %}</span>
+                    {% endif %}
+                  </td>
+                  <td>{% checkmark outcome.before_passed %}</td>
+                  <td>{% checkmark outcome.after_passed %}</td>
+                  <td>
+                    {% if outcome.flip %}
+                      {% if outcome.blocks %}
+                        <span class="badge text-bg-red">{% trans "regression" %}</span>
+                      {% else %}
+                        <span class="badge text-bg-green">{{ outcome.flip }}</span>
+                      {% endif %}
+                    {% else %}
+                      {# Never rendered as a pass. A criterion nobody #}
+                      {# evaluated is not a criterion that passed. #}
+                      <span class="badge text-bg-orange">{% trans "not measured" %}</span>
+                    {% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        {% else %}
+          <p class="text-muted mb-0">
+            {% trans "No criteria have been evaluated. A change with nothing asserted cannot be verified, only asserted to have happened." %}
+          </p>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card">
+      <h5 class="card-header">{{ predict_panel.heading }}</h5>
+      <div class="card-body">
+        {# Advisory, and separated from Evidence above on purpose. An #}
+        {# advisory panel that looks like evidence is how a prediction #}
+        {# quietly becomes a decision. #}
+        <p class="text-muted small">
+          {% trans "Advisory only. The verdict does not depend on this." %}
+        </p>
+        <p class="mb-0">{{ predict_panel.message }}</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h5 class="card-header">{% trans "Scope" %}</h5>
+      <div class="card-body">
+        {% if scoped_devices %}
+          <ul class="list-unstyled mb-0">
+            {% for scoped in scoped_devices %}
+              <li>
+                {{ scoped.device|linkify }}
+                {% if not scoped.forward_device_key %}
+                  <span class="badge text-bg-orange">{% trans "no Forward identity" %}</span>
+                {% endif %}
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <p class="text-muted mb-0">{% trans "No devices in scope." %}</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card">
+      <h5 class="card-header">{% trans "Reviews" %}</h5>
+      <div class="card-body">
+        {# Two gates. The pre gate approves the PLAN; the post gate approves #}
+        {# the CLOSURE, which is where the branch actually merges. A PROCEED #}
+        {# verdict opens that gate rather than walking through it. #}
+        {% if reviews %}
+          <table class="table table-hover">
+            {% for review in reviews %}
+              <tr>
+                <td>{{ review.reviewer|placeholder }}</td>
+                <td><span class="badge text-bg-gray">{{ review.phase }}</span></td>
+                <td>
+                  {% if review.approved %}
+                    <span class="badge text-bg-green">{% trans "approved" %}</span>
+                  {% else %}
+                    <span class="badge text-bg-red">{% trans "rejected" %}</span>
+                  {% endif %}
+                </td>
+                <td class="text-muted small">{{ review.comment }}</td>
+              </tr>
+            {% endfor %}
+          </table>
+        {% else %}
+          <p class="text-muted">{% trans "No reviews yet." %}</p>
+        {% endif %}
+
+        {% if perms.forward_netbox.approve_forwardchange %}
+          <form method="post" action="{% url 'plugins:forward_netbox:forwardchange_review' pk=object.pk %}">
+            {% csrf_token %}
+            <input type="text" name="comment" class="form-control mb-2"
+                   placeholder="{% trans 'Comment (optional)' %}">
+            <button type="submit" name="decision" value="approve"
+                    class="btn btn-green">{% trans "Approve" %}</button>
+            <button type="submit" name="decision" value="reject"
+                    class="btn btn-red">{% trans "Reject" %}</button>
+          </form>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card">
+      <h5 class="card-header">{% trans "Next steps" %}</h5>
+      <div class="card-body">
+        {% if transitions %}
+          <table class="table table-hover">
+            {% for transition in transitions %}
+              <tr>
+                <th scope="row">{{ transition.target }}</th>
+                <td>
+                  {% if transition.allowed %}
+                    <span class="badge text-bg-green">{% trans "ready" %}</span>
+                  {% else %}
+                    <ul class="list-unstyled mb-0 small text-muted">
+                      {% for blocker in transition.blockers %}
+                        <li>{{ blocker }}</li>
+                      {% endfor %}
+                    </ul>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </table>
+        {% else %}
+          <p class="text-muted mb-0">{% trans "This change is finished; there is nowhere further to go." %}</p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock content %}

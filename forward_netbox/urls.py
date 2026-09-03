@@ -53,6 +53,32 @@ urlpatterns = (
         include(get_model_urls("forward_netbox", "forwardnqemap")),
     ),
     path(
+        "change/",
+        include(get_model_urls("forward_netbox", "forwardchange", detail=False)),
+    ),
+    path(
+        "change/<int:pk>/",
+        include(get_model_urls("forward_netbox", "forwardchange")),
+    ),
+    path(
+        "change-policy/",
+        include(get_model_urls("forward_netbox", "forwardchangepolicy", detail=False)),
+    ),
+    path(
+        "change-policy/<int:pk>/",
+        include(get_model_urls("forward_netbox", "forwardchangepolicy")),
+    ),
+    path(
+        "change-policy-rule/",
+        include(
+            get_model_urls("forward_netbox", "forwardchangepolicyrule", detail=False)
+        ),
+    ),
+    path(
+        "change-policy-rule/<int:pk>/",
+        include(get_model_urls("forward_netbox", "forwardchangepolicyrule")),
+    ),
+    path(
         "drift-policy/",
         include(get_model_urls("forward_netbox", "forwarddriftpolicy", detail=False)),
     ),

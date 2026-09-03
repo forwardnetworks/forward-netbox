@@ -43,6 +43,9 @@ from .filtersets import ForwardNQEMapFilterSet
 from .filtersets import ForwardSourceFilterSet
 from .filtersets import ForwardSyncFilterSet
 from .filtersets import ForwardValidationRunFilterSet
+from .forms import ForwardChangeForm
+from .forms import ForwardChangePolicyForm
+from .forms import ForwardChangePolicyRuleForm
 from .forms import ForwardDriftPolicyBulkEditForm
 from .forms import ForwardDriftPolicyForm
 from .forms import ForwardIngestionMergeForm
@@ -53,6 +56,10 @@ from .forms import ForwardSourceForm
 from .forms import ForwardSyncBulkEditForm
 from .forms import ForwardSyncForm
 from .forms import ForwardValidationRunForceAllowForm
+from .models import ForwardChange
+from .models import ForwardChangePolicy
+from .models import ForwardChangePolicyRule
+from .models import ForwardChangeReview
 from .models import ForwardDeviceAnalysis
 from .models import ForwardDriftPolicy
 from .models import ForwardIngestion
@@ -61,6 +68,8 @@ from .models import ForwardNQEMap
 from .models import ForwardSource
 from .models import ForwardSync
 from .models import ForwardValidationRun
+from .tables import ForwardChangePolicyTable
+from .tables import ForwardChangeTable
 from .tables import ForwardDeviceAnalysisTable
 from .tables import ForwardDriftPolicyTable
 from .tables import ForwardIngestionChangesTable
@@ -2950,3 +2959,191 @@ if django_apps.is_installed("netbox_dlm"):
                     for label in ("critical", "high", "medium", "low")
                 },
             }
+
+
+@register_model_view(ForwardChange, "list", path="", detail=False)
+class ForwardChangeListView(generic.ObjectListView):
+    queryset = ForwardChange.objects.all()
+    table = ForwardChangeTable
+    actions = (AddObject, BulkExport, BulkDelete)
+
+
+@register_model_view(ForwardChange, "add", detail=False)
+@register_model_view(ForwardChange, "edit")
+class ForwardChangeEditView(generic.ObjectEditView):
+    queryset = ForwardChange.objects.all()
+    form = ForwardChangeForm
+
+
+@register_model_view(ForwardChange)
+class ForwardChangeView(generic.ObjectView):
+    queryset = ForwardChange.objects.all()
+    template_name = "forward_netbox/forwardchange.html"
+
+    def get_extra_context(self, request, instance):
+        """Everything the approver needs on one page, and nothing implied.
+
+        The two panels are kept apart deliberately. `criterion_outcomes` is
+        evidence and feeds the verdict; the predict panel is advisory and does
+        not. A reader must be able to tell which is which, because an advisory
+        panel that looks like evidence is how a prediction becomes a decision.
+        """
+        from .change_control.evidence import criterion_outcomes
+        from .change_control.predict import PredictOutcome
+        from .change_control.predict import render_predict_panel
+        from .change_control.state_machine import available_transitions
+        from .change_control.state_machine import check_transition
+
+        outcomes = criterion_outcomes(instance)
+        transitions = []
+        for target in available_transitions(instance.state):
+            result = check_transition(instance, target)
+            transitions.append(
+                {
+                    "target": target,
+                    "allowed": result.allowed,
+                    "blockers": result.blockers,
+                }
+            )
+
+        return {
+            "criterion_outcomes": outcomes,
+            "transitions": transitions,
+            "predict_panel": render_predict_panel(
+                PredictOutcome(
+                    status=instance.predict_status or PredictOutcome.UNAVAILABLE,
+                    reason=instance.predict_reason,
+                    pre_verdict=instance.predict_pre_verdict,
+                )
+            ),
+            "scoped_devices": instance.devices.select_related("device"),
+            "reviews": instance.reviews.select_related("reviewer"),
+        }
+
+
+@register_model_view(ForwardChange, "delete")
+class ForwardChangeDeleteView(generic.ObjectDeleteView):
+    queryset = ForwardChange.objects.all()
+
+
+@register_model_view(ForwardChange, "bulk_delete", path="delete", detail=False)
+class ForwardChangeBulkDeleteView(generic.BulkDeleteView):
+    queryset = ForwardChange.objects.all()
+    table = ForwardChangeTable
+
+
+@register_model_view(ForwardChangePolicy, "list", path="", detail=False)
+class ForwardChangePolicyListView(generic.ObjectListView):
+    queryset = ForwardChangePolicy.objects.all()
+    table = ForwardChangePolicyTable
+    actions = (AddObject, BulkExport, BulkEdit, BulkDelete)
+
+
+@register_model_view(ForwardChangePolicy, "add", detail=False)
+@register_model_view(ForwardChangePolicy, "edit")
+class ForwardChangePolicyEditView(generic.ObjectEditView):
+    queryset = ForwardChangePolicy.objects.all()
+    form = ForwardChangePolicyForm
+
+
+@register_model_view(ForwardChangePolicy)
+class ForwardChangePolicyView(generic.ObjectView):
+    queryset = ForwardChangePolicy.objects.all()
+    template_name = "forward_netbox/forwardchangepolicy.html"
+
+    def get_extra_context(self, request, instance):
+        return {"rules": instance.rules.select_related("device_role", "site")}
+
+
+@register_model_view(ForwardChangePolicy, "delete")
+class ForwardChangePolicyDeleteView(generic.ObjectDeleteView):
+    queryset = ForwardChangePolicy.objects.all()
+
+
+@register_model_view(ForwardChangePolicy, "bulk_delete", path="delete", detail=False)
+class ForwardChangePolicyBulkDeleteView(generic.BulkDeleteView):
+    queryset = ForwardChangePolicy.objects.all()
+    table = ForwardChangePolicyTable
+
+
+@register_model_view(ForwardChange, "review", path="review")
+class ForwardChangeReviewView(BaseObjectView):
+    """Record an approval or a rejection at whichever gate is open.
+
+    The first and only writer of `ForwardChangeReview`. Until this existed the
+    approval gate was unreachable: reviews had no form, view or API, so no
+    change could leave STAGED at all.
+
+    The anchors are captured HERE, from the change as it is at this moment,
+    rather than accepted from the request. That is what makes staleness mean
+    anything - a reviewer approves the evidence they were shown, and a review
+    that carried its own anchors could claim to have seen anything.
+    """
+
+    queryset = ForwardChange.objects.all()
+
+    def get_required_permission(self):
+        # A distinct right from editing, following `run_forwardsync`. Anyone
+        # who can edit a change should not thereby be able to sign it off.
+        return "forward_netbox.approve_forwardchange"
+
+    def get(self, request, pk):
+        change = get_object_or_404(self.queryset, pk=pk)
+        return redirect(change.get_absolute_url())
+
+    def post(self, request, pk):
+        from .change_control.choices import ForwardChangeStateChoices
+        from .change_control.choices import ForwardReviewPhaseChoices
+
+        change = get_object_or_404(self.queryset, pk=pk)
+        approved = request.POST.get("decision") == "approve"
+
+        # The gate is derived from the change's state, not chosen by the
+        # reviewer: a POST approval recorded while the change is still STAGED
+        # would sign off on evidence that does not exist yet.
+        phase = (
+            ForwardReviewPhaseChoices.POST
+            if change.state == ForwardChangeStateChoices.VERIFIED_PROCEED
+            else ForwardReviewPhaseChoices.PRE
+        )
+
+        if change.requester_id and change.requester_id == request.user.pk:
+            messages.error(
+                request,
+                _(
+                    "You raised this change, so your own approval does not "
+                    "count towards it."
+                ),
+            )
+            return redirect(change.get_absolute_url())
+
+        ForwardChangeReview.objects.update_or_create(
+            change=change,
+            reviewer=request.user,
+            phase=phase,
+            defaults={
+                "approved": approved,
+                "comment": (request.POST.get("comment") or "").strip(),
+                "branch_change_time": change.branch_last_change_time,
+                "baseline_snapshot_id": change.before_snapshot_id,
+                "after_snapshot_id": change.after_snapshot_id,
+                "verdict": change.verdict,
+            },
+        )
+        messages.success(
+            request,
+            _("Recorded your %(phase)s-change decision.") % {"phase": phase},
+        )
+        return redirect(change.get_absolute_url())
+
+
+@register_model_view(ForwardChangePolicyRule, "add", detail=False)
+@register_model_view(ForwardChangePolicyRule, "edit")
+class ForwardChangePolicyRuleEditView(generic.ObjectEditView):
+    queryset = ForwardChangePolicyRule.objects.all()
+    form = ForwardChangePolicyRuleForm
+
+
+@register_model_view(ForwardChangePolicyRule, "delete")
+class ForwardChangePolicyRuleDeleteView(generic.ObjectDeleteView):
+    queryset = ForwardChangePolicyRule.objects.all()
