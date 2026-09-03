@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import tempfile
-import unittest
+import unittest.mock
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -960,3 +961,146 @@ class StageAuthorizeTest(unittest.TestCase):
     def test_it_refuses_to_authorize_twice(self):
         with self.assertRaisesRegex(release.ReleaseError, "already carries"):
             self._run(existing_section=True)
+
+
+class PullRequestLookupIgnoresDeadHistoryTest(unittest.TestCase):
+    """A PR merged into rewritten-away history is not this release's PR.
+
+    It looks identical to a real one - same head branch, state MERGED - so
+    `stage_finish` concluded the release was already cut and stopped, with
+    nothing to fix. Purging two live Forward identifiers from public history
+    orphaned the v3.0.0 release PRs exactly this way.
+    """
+
+    def _pull(self, oid, state="MERGED"):
+        return {
+            "number": 348,
+            "state": state,
+            "url": "https://example.invalid/pr/348",
+            "mergeCommit": {"oid": oid} if oid else None,
+        }
+
+    def test_an_unreachable_merge_commit_is_not_live(self):
+        completed = SimpleNamespace(returncode=1)
+        with unittest.mock.patch.object(
+            release.subprocess, "run", return_value=completed
+        ):
+            self.assertFalse(release._merge_is_live(self._pull("deadbeef" * 5)))
+
+    def test_a_reachable_merge_commit_is_live(self):
+        completed = SimpleNamespace(returncode=0)
+        with unittest.mock.patch.object(
+            release.subprocess, "run", return_value=completed
+        ):
+            self.assertTrue(release._merge_is_live(self._pull("cafebabe" * 5)))
+
+    def test_a_pull_without_a_merge_commit_is_assumed_live(self):
+        # Assume live rather than silently reopening a release that really did
+        # complete: a false "already merged" stops the flow loudly, a false
+        # "not merged" would re-cut a shipped release.
+        self.assertTrue(release._merge_is_live(self._pull(None)))
+
+    def test_a_merge_that_just_landed_is_live_after_a_fetch(self):
+        """The race this check creates on the release it is meant to protect.
+
+        Reachability is read from local refs, so the production merge the
+        script itself queued moments earlier is invisible until the
+        remote-tracking ref catches up. Unretried, that reads as "no pull
+        request exists for release/3.0.0" and the release stops one step short
+        of the tag - which is exactly how v3.0.0's first cut ended.
+        """
+        fetched = []
+
+        def fake_run(argv, **kwargs):
+            if argv[:2] == ["git", "fetch"]:
+                fetched.append(argv)
+                return SimpleNamespace(returncode=0)
+            if argv[:2] == ["git", "cat-file"]:
+                return SimpleNamespace(returncode=0)
+            # merge-base: unreachable until the fetch has happened
+            return SimpleNamespace(returncode=1 if not fetched else 0)
+
+        with unittest.mock.patch.object(release.subprocess, "run", fake_run):
+            self.assertTrue(release._merge_is_live(self._pull("abadcafe" * 5)))
+        self.assertEqual(len(fetched), 1, "expected exactly one fetch retry")
+
+    def test_a_merged_pull_from_an_earlier_attempt_does_not_skip_the_push(self):
+        """ "Already merged" must mean THIS head shipped, not a same-named PR.
+
+        v3.0.0's authorization was regenerated after the first tag was refused.
+        The evidence branch kept its name, so the lookup found the FIRST
+        attempt's pull request - merged, live, and irrelevant - and reported
+        the release finished while the new commit sat unpushed. main then had
+        no authorization section at all.
+        """
+        opened = []
+
+        # The stale merged PR first, then the freshly opened one.
+        lookups = [
+            {"state": "MERGED", "url": "https://example.invalid/pr/353"},
+            {
+                "state": "OPEN",
+                "url": "https://example.invalid/pr/355",
+                "number": 355,
+            },
+        ]
+
+        with (
+            unittest.mock.patch.object(
+                release, "_pull_request_for_branch", side_effect=lookups
+            ),
+            unittest.mock.patch.object(release, "_head_is_merged", return_value=False),
+            unittest.mock.patch.object(
+                release, "_verify_live_release_controls", lambda: None
+            ),
+            unittest.mock.patch.object(
+                release, "run", lambda *a, **k: opened.append(a)
+            ),
+        ):
+            release._open_release_pull_request(
+                "3.0.0", "release/3.0.0-evidence", evidence=True
+            )
+
+        commands = [a[0] for a in opened]
+        self.assertTrue(
+            any(c[:3] == ["gh", "pr", "create"] for c in commands),
+            "expected a new pull request to be opened",
+        )
+
+    def test_a_merged_pull_for_this_head_does_return_early(self):
+        """The opposite branch: a real completion must still short-circuit."""
+        opened = []
+
+        with (
+            unittest.mock.patch.object(
+                release,
+                "_pull_request_for_branch",
+                return_value={
+                    "state": "MERGED",
+                    "url": "https://example.invalid/pr/353",
+                },
+            ),
+            unittest.mock.patch.object(release, "_head_is_merged", return_value=True),
+            unittest.mock.patch.object(
+                release, "run", lambda *a, **k: opened.append(a)
+            ),
+        ):
+            release._open_release_pull_request(
+                "3.0.0", "release/3.0.0-evidence", evidence=True
+            )
+
+        self.assertEqual(opened, [], "a shipped release must not be re-opened")
+
+    def test_a_genuinely_dead_merge_stays_dead_across_the_fetch(self):
+        """The retry must not turn the dead-history verdict back into a pass."""
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv[:2])
+            if argv[:2] == ["git", "fetch"]:
+                return SimpleNamespace(returncode=0)
+            return SimpleNamespace(returncode=1)
+
+        with unittest.mock.patch.object(release.subprocess, "run", fake_run):
+            self.assertFalse(release._merge_is_live(self._pull("deadbeef" * 5)))
+        self.assertIn(["git", "fetch"], calls)

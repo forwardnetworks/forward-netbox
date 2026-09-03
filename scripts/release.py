@@ -763,14 +763,104 @@ def _pull_request_for_branch(branch: str) -> dict | None:
         pulls = json.loads(raw) if raw else []
     except json.JSONDecodeError:
         pulls = []
-    return pulls[0] if pulls else None
+    for pull in pulls:
+        if pull.get("state") != "MERGED":
+            return pull
+        if _merge_is_live(pull):
+            return pull
+    return None
+
+
+def _merge_is_live(pull: dict) -> bool:
+    """Whether a merged PR's merge commit is still reachable from the lane.
+
+    The answer is read from local refs, so a merge that landed seconds ago -
+    which is exactly the case while a release is running - looks absent until
+    the remote-tracking ref catches up. A negative is therefore only trusted
+    after a fetch: without that retry the production merge this very script
+    just queued reports "no pull request exists" and the release stops one
+    step short of the tag.
+    """
+    commit = (pull.get("mergeCommit") or {}).get("oid") or ""
+    if not commit:
+        # No merge commit recorded: assume live rather than silently reopening
+        # a release that really did complete.
+        return True
+
+    def _reachable() -> bool:
+        exists = subprocess.run(
+            ["git", "cat-file", "-e", f"{commit}^{{commit}}"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+        )
+        if exists.returncode != 0:
+            return False
+        return (
+            subprocess.run(
+                ["git", "merge-base", "--is-ancestor", commit, REMOTE_RELEASE_REF],
+                cwd=REPO_ROOT,
+                capture_output=True,
+            ).returncode
+            == 0
+        )
+
+    if _reachable():
+        return True
+    subprocess.run(
+        ["git", "fetch", "--quiet", "origin", RELEASE_BRANCH],
+        cwd=REPO_ROOT,
+        capture_output=True,
+    )
+    return _reachable()
+
+
+def _head_is_merged() -> bool:
+    """Whether THIS branch's current head is already on the lane branch.
+
+    `_merge_is_live` asks whether a merged pull request is still reachable.
+    That is a different question from whether the work in hand has shipped,
+    and conflating the two skips a push: v3.0.0's second authorization was
+    written, then dropped, because a pull request from the FIRST attempt
+    carried the same head-ref name and was merged and live.
+    """
+    head = _capture(["git", "rev-parse", "HEAD"])
+
+    def _merged() -> bool:
+        return (
+            subprocess.run(
+                ["git", "merge-base", "--is-ancestor", head, REMOTE_RELEASE_REF],
+                cwd=REPO_ROOT,
+                capture_output=True,
+            ).returncode
+            == 0
+        )
+
+    if _merged():
+        return True
+    subprocess.run(
+        ["git", "fetch", "--quiet", "origin", RELEASE_BRANCH],
+        cwd=REPO_ROOT,
+        capture_output=True,
+    )
+    return _merged()
 
 
 def _open_release_pull_request(version: str, branch: str, *, evidence: bool) -> None:
     pull = _pull_request_for_branch(branch)
     if pull and pull.get("state") == "MERGED":
-        print(f"[finish] release PR already merged: {pull['url']}")
-        return
+        if _head_is_merged():
+            print(f"[finish] release PR already merged: {pull['url']}")
+            return
+        # Same head-ref name, earlier attempt. Reporting "already merged" here
+        # returns success while THIS branch's commit is still unpushed, which
+        # is how a regenerated release authorization went missing.
+        print(
+            f"[finish] {pull['url']} merged an earlier attempt on {branch}; "
+            f"this branch's head is not on {REMOTE_RELEASE_REF}, so it needs "
+            "its own "
+            "pull request."
+        )
+        pull = None
     _verify_live_release_controls()
     if not pull:
         kind = "release evidence" if evidence else "production release"
