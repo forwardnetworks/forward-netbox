@@ -37,6 +37,7 @@ and the live call site, both verified against the 2.9.2 tree.
 | `.dev0` on main decided; `--open-next` removed | #313 | absent from `scripts/release.py` |
 | Undeletable ingestions #45/#46 | - | no `PROTECT` relation to `ForwardIngestion` remains |
 | Route probe covers registered detail views | #330/#331 | `scripts/validate_installed_routes.py` |
+| Uncovered `unclaimed` half is enumerable | #317 | `views.py:1545,1551`; "List all N" on the scope panel |
 
 ## Validation
 
