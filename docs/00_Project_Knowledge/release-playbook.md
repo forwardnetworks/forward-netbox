@@ -2,19 +2,48 @@
 
 Use this playbook for check-gated production releases.
 
+## Release lanes
+
+Since 3.0.0 there is more than one release branch. `main` carries the NetBox
+4.7 line; `maint/2.9.x` carries the 4.6 line, because `main` declares
+`min_version = "4.7.0"` and a 4.6 fix has nowhere else to land.
+
+**Which branch a checkout releases from is declared in
+`scripts/release_lane.py`, and only there.** Every gate reads it: the driver
+checks out and resets to that branch, the harness base is that branch, the
+provenance verifier requires the release commit to be an ancestor of it, and it
+names the branch ruleset that must protect it. Each lane carries its own copy of
+that file, so the values differ between branches by design.
+
+A version from another series is refused by name before any stage runs. That is
+belt and braces - the ancestry check would refuse it anyway - but a release
+stopped by "version 3.0.1 is in the 3.0 series, but this checkout releases the
+2.9 series from maint/2.9.x" is one an operator can act on, and a merge-base
+error is not.
+
+To add a lane: cut the branch from the last release tag of that series, edit
+`scripts/release_lane.py` on it, and create a branch ruleset for it with the
+same shape as `main-release-integrity` (no bypass actors, deletion and
+non-fast-forward blocked, linear history, squash-only through a pull request
+with conversation resolution). `python scripts/verify_release_provenance.py
+--controls-only` run from that branch confirms the ruleset before any tag
+exists.
+
 ## Preconditions
 
 - Worktree is clean except for intended release changes.
 - Version is updated in `pyproject.toml` and `forward_netbox/__init__.py`.
 - Release notes are updated in `README.md`, `docs/README.md`, and `docs/01_User_Guide/README.md`.
 - No customer identifiers, network IDs, snapshot IDs, credentials, or private screenshots are in tracked content.
-- Repository rulesets `main-release-integrity` and `version-tag-integrity` are
-  active. Main has no bypass actors and
+- The branch ruleset naming this lane (`scripts/release_lane.py` declares
+  which; `maint-2-9-x-release-integrity` here) and `version-tag-integrity` are
+  active. The release branch has no bypass actors and
   requires a pull request, resolved conversations, the trusted
   candidate scan, exact NetBox 4.6.5 CI, both CodeQL analyses, and the separate
   GitHub Advanced Security CodeQL result. Version tags
   reject deletion and movement. Releases use a normal annotated tag created by
-  the authenticated maintainer from an exact validated `main` commit.
+  the authenticated maintainer from an exact validated commit on the lane's
+  release branch.
 - Environment `pypi` accepts only `v*` tags and has no reviewer gate. PyPI
   Trusted Publishing uses GitHub OIDC; no repository or environment PyPI token
   is stored.
