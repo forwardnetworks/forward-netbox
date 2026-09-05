@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.9.3
+
+Release candidate; Fix: **OSPF interface rows converge instead of drifting forever**, and the interface lookup behind MAC-address apply uses an index instead of scanning every interface in the estate. Feature: **netbox-dlm `0.10.0` is supported**. No migration; upgrade and re-run the sync.
+
 ## v2.9.2
 
 Drift is measured exactly for every fetched model, the uncovered-device count says why it grows and warns when it does, and five delete and diagnostic defects are closed.

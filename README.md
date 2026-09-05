@@ -64,13 +64,14 @@ See the
 
 ## Release Compatibility
 
-The `2.9.2` release requires NetBox `4.6.x` (>= `4.6.5`, tested on `4.6.8`) and `netbox-branching` `1.1.x` (tested on `1.1.2`). Expand for the published release history and release notes.
+The `2.9.3` release candidate requires NetBox `4.6.x` (>= `4.6.5`, tested on `4.6.8`) and `netbox-branching` `1.1.x` (tested on `1.1.2`). Expand for the published release history and candidate notes.
 
 <details>
 <summary>Release compatibility history</summary>
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
+| `v2.9.3` | `4.6.x` (>= `4.6.5`) supported, tested on `4.6.8`; needs netbox-branching `1.1.x`, tested on `1.1.2` | Release candidate; Fix: **OSPF interface rows converge instead of drifting forever**, and the interface lookup behind MAC-address apply uses an index instead of scanning every interface in the estate. Feature: **netbox-dlm `0.10.0` is supported**. No migration; upgrade and re-run the sync. |
 | `v2.9.2` | `4.6.x` (>= `4.6.5`) supported, tested on `4.6.8`; needs netbox-branching `1.1.x`, tested on `1.1.2` | Current release; Drift is measured exactly for every fetched model, the uncovered-device count says why it grows and warns when it does, and five delete and diagnostic defects are closed. |
 | `v2.9.1` | `4.6.x` (>= `4.6.5`) supported, tested on `4.6.8`; needs netbox-branching `1.1.x`, tested on `1.1.2` | Superseded by `v2.9.2`; Accepts netbox-branching 1.1.3 and records the validated runtime in the lockfile. |
 | `v2.9.0` | `4.6.x` (>= `4.6.5`) supported, tested on `4.6.8`; needs netbox-branching `1.1.x`, tested on `1.1.2` | Superseded by `v2.9.1`; Feature: back up device configurations from Forward into a git data source for Validity golden-config checks, plus the runtime-validation refactor and health check it required. |
