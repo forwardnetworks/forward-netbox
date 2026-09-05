@@ -1379,8 +1379,7 @@ class ResumeChecksAskTheLaneNotMainTest(unittest.TestCase):
                 [
                     "git",
                     "show",
-                    f"{release.REMOTE_RELEASE_REF}:"
-                    "docs/03_Plans/active/whatever.md",
+                    f"{release.REMOTE_RELEASE_REF}:" "docs/03_Plans/active/whatever.md",
                 ]
             ],
         )
