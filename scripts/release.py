@@ -121,6 +121,17 @@ def insert_release_row(table_text: str, version: str, summary: str) -> str:
     Finalization promotes the candidate and demotes the prior release only after
     the release branch is green, so unreleased docs never claim publication.
     """
+    candidate_prefix = f"| `v{version}` |"
+    if any(
+        line.startswith(candidate_prefix) and "| Release candidate;" in line
+        for line in table_text.splitlines()
+    ):
+        # Our own prior attempt, not a competing release. The guard below still
+        # refuses a candidate for a DIFFERENT version, which is what it is for;
+        # matching the bare marker could not tell the two apart, so a retried
+        # prepare failed on the row it had written itself - and, because the
+        # edits are computed before the `write` check, so did a dry run.
+        return table_text
     if "| Release candidate;" in table_text:
         raise ReleaseError("a release candidate already exists")
     match = CURRENT_RELEASE_RE.search(table_text)
@@ -204,6 +215,27 @@ def run(
     return result.returncode
 
 
+def _version_patterns() -> dict[Path, re.Pattern[str]]:
+    """{path: pattern capturing the version literal} for every version surface.
+
+    Matched by shape rather than by the outgoing literal, so the answer does
+    not depend on knowing which version the file currently holds. That is what
+    makes a half-written prepare resumable: the retry rewrites whatever is
+    there to the target instead of hunting for a value the file may already
+    have moved past. The patterns mirror
+    `scripts/check_release_preflight.py::version_surfaces`, which is the
+    backstop for the same four files.
+    """
+    return {
+        PYPROJECT: re.compile(r'(?m)^(version = ")([^"]+)(")'),
+        INIT_PY: re.compile(r'(?m)^(\s*version\s*=\s*")([^"]+)(")'),
+        FAST_BASELINE: re.compile(r'("forward_netbox":\s*")([^"]+)(")'),
+        RUNTIME_VERSION_TEST: re.compile(
+            r'(NetboxForwardConfig\.version,\s*")([^"]+)(")'
+        ),
+    }
+
+
 def version_surface_edits(old: str, new: str) -> dict[Path, str]:
     """Every file carrying the version literal, as {path: new text}.
 
@@ -213,32 +245,64 @@ def version_surface_edits(old: str, new: str) -> dict[Path, str]:
     the fast-baseline pin: a stale value silently reverts a first sync from the
     fast path to the slow one. Bumping them together is the fix;
     `scripts/check_release_preflight.py` is the backstop.
+
+    `old` is accepted for call-site clarity but not required to be present: a
+    surface already reading `new` is left alone rather than reported missing.
     """
-    substitutions = {
-        PYPROJECT: (f'version = "{old}"', f'version = "{new}"'),
-        INIT_PY: (f'version = "{old}"', f'version = "{new}"'),
-        FAST_BASELINE: (f'"forward_netbox": "{old}"', f'"forward_netbox": "{new}"'),
-        RUNTIME_VERSION_TEST: (
-            f'NetboxForwardConfig.version, "{old}"',
-            f'NetboxForwardConfig.version, "{new}"',
-        ),
-    }
+    del old
     edits: dict[Path, str] = {}
-    for path, (needle, replacement) in substitutions.items():
+    for path, pattern in _version_patterns().items():
         text = path.read_text(encoding="utf-8")
-        count = text.count(needle)
-        if count != 1:
+        matches = pattern.findall(text)
+        if len(matches) != 1:
             raise ReleaseError(
-                f"expected exactly one {needle!r} in "
-                f"{path.relative_to(REPO_ROOT)}, found {count}"
+                f"expected exactly one version literal in "
+                f"{path.relative_to(REPO_ROOT)}, found {len(matches)}"
             )
-        edits[path] = text.replace(needle, replacement)
+        edits[path] = pattern.sub(lambda m: f"{m.group(1)}{new}{m.group(3)}", text)
     return edits
 
 
-def stage_prepare(version: str, summary: str, *, write: bool) -> None:
+def version_surfaces_already_at(version: str) -> list[Path]:
+    """The version surfaces that already read `version`.
+
+    Reported by `stage_prepare` so a resumed run says what it found rather
+    than silently rewriting identical bytes.
+    """
+    already = []
+    for path, pattern in _version_patterns().items():
+        match = pattern.search(path.read_text(encoding="utf-8"))
+        if match is not None and match.group(2) == version:
+            already.append(path)
+    return already
+
+
+def stage_prepare(
+    version: str,
+    summary: str,
+    *,
+    write: bool,
+    support: str = "",
+    requirements: str = "",
+) -> None:
     old = read_current_version()
-    print(f"[prepare] bump {old} -> {version}")
+    already = version_surfaces_already_at(version)
+    surfaces = _version_patterns()
+    if already:
+        # A resumed prepare, or a partially written one. Naming the surfaces it
+        # still has to move keeps the repair visible: matching by shape means a
+        # surface that drifted to some third value is set to the target rather
+        # than reported, so the only signal is this line.
+        moving = sorted(
+            str(path.relative_to(REPO_ROOT)) for path in surfaces if path not in already
+        )
+        print(
+            f"[prepare] {len(already)} of {len(surfaces)} version surfaces "
+            f"already read {version}"
+            + (f"; moving {', '.join(moving)}" if moving else "; nothing to bump")
+        )
+    else:
+        print(f"[prepare] bump {old} -> {version}")
     edits = version_surface_edits(old, version)
     for path in README_TABLES:
         edits[path] = set_release_intro_text(
@@ -657,7 +721,15 @@ def stage_publish(version: str, *, auto_finish: bool = False) -> None:
             checkout_arguments.append("-b")
         run([*checkout_arguments, branch])
     run(["git", "add", "-A"])
-    run(["git", "commit", "-m", f"release: cut v{version}"])
+    # Commit only if prepare left something to commit. An unconditional commit
+    # turned "the previous attempt already committed this" into a hard failure
+    # (`git commit` exits non-zero with nothing staged, and `check=True` raises),
+    # so a publish that failed at the push or workflow step could not be retried
+    # without re-running the whole gate.
+    if _capture(["git", "status", "--porcelain"]):
+        run(["git", "commit", "-m", f"release: cut v{version}"])
+    else:
+        print(f"[publish] v{version} is already committed on {branch}")
     # Simulate the push-event harness gate (every commit's high-risk paths need a
     # plan file in the SAME commit) BEFORE pushing — avoids a failed-CI round-trip.
     run([sys.executable, "scripts/check_harness.py", "--base", REMOTE_RELEASE_REF])
@@ -763,14 +835,104 @@ def _pull_request_for_branch(branch: str) -> dict | None:
         pulls = json.loads(raw) if raw else []
     except json.JSONDecodeError:
         pulls = []
-    return pulls[0] if pulls else None
+    for pull in pulls:
+        if pull.get("state") != "MERGED":
+            return pull
+        if _merge_is_live(pull):
+            return pull
+    return None
+
+
+def _merge_is_live(pull: dict) -> bool:
+    """Whether a merged PR's merge commit is still reachable from the lane.
+
+    The answer is read from local refs, so a merge that landed seconds ago -
+    which is exactly the case while a release is running - looks absent until
+    the remote-tracking ref catches up. A negative is therefore only trusted
+    after a fetch: without that retry the production merge this very script
+    just queued reports "no pull request exists" and the release stops one
+    step short of the tag.
+    """
+    commit = (pull.get("mergeCommit") or {}).get("oid") or ""
+    if not commit:
+        # No merge commit recorded: assume live rather than silently reopening
+        # a release that really did complete.
+        return True
+
+    def _reachable() -> bool:
+        exists = subprocess.run(
+            ["git", "cat-file", "-e", f"{commit}^{{commit}}"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+        )
+        if exists.returncode != 0:
+            return False
+        return (
+            subprocess.run(
+                ["git", "merge-base", "--is-ancestor", commit, REMOTE_RELEASE_REF],
+                cwd=REPO_ROOT,
+                capture_output=True,
+            ).returncode
+            == 0
+        )
+
+    if _reachable():
+        return True
+    subprocess.run(
+        ["git", "fetch", "--quiet", "origin", RELEASE_BRANCH],
+        cwd=REPO_ROOT,
+        capture_output=True,
+    )
+    return _reachable()
+
+
+def _head_is_merged() -> bool:
+    """Whether THIS branch's current head is already on the lane branch.
+
+    `_merge_is_live` asks whether a merged pull request is still reachable.
+    That is a different question from whether the work in hand has shipped,
+    and conflating the two skips a push: v3.0.0's second authorization was
+    written, then dropped, because a pull request from the FIRST attempt
+    carried the same head-ref name and was merged and live.
+    """
+    head = _capture(["git", "rev-parse", "HEAD"])
+
+    def _merged() -> bool:
+        return (
+            subprocess.run(
+                ["git", "merge-base", "--is-ancestor", head, REMOTE_RELEASE_REF],
+                cwd=REPO_ROOT,
+                capture_output=True,
+            ).returncode
+            == 0
+        )
+
+    if _merged():
+        return True
+    subprocess.run(
+        ["git", "fetch", "--quiet", "origin", RELEASE_BRANCH],
+        cwd=REPO_ROOT,
+        capture_output=True,
+    )
+    return _merged()
 
 
 def _open_release_pull_request(version: str, branch: str, *, evidence: bool) -> None:
     pull = _pull_request_for_branch(branch)
     if pull and pull.get("state") == "MERGED":
-        print(f"[finish] release PR already merged: {pull['url']}")
-        return
+        if _head_is_merged():
+            print(f"[finish] release PR already merged: {pull['url']}")
+            return
+        # Same head-ref name, earlier attempt. Reporting "already merged" here
+        # returns success while THIS branch's commit is still unpushed, which
+        # is how a regenerated release authorization went missing.
+        print(
+            f"[finish] {pull['url']} merged an earlier attempt on {branch}; "
+            f"this branch's head is not on {REMOTE_RELEASE_REF}, so it needs "
+            "its own "
+            "pull request."
+        )
+        pull = None
     _verify_live_release_controls()
     if not pull:
         kind = "release evidence" if evidence else "production release"
@@ -1057,6 +1219,42 @@ def _next_patch_version(version: str) -> str:
     return f"{major}.{minor}.{patch + 1}"
 
 
+def _repo_relative(path: Path) -> str | None:
+    """`path` relative to the repository, or None if it lies outside it.
+
+    Redirected to a scratch directory by tests, which do not always redirect
+    REPO_ROOT with it. A path we cannot express repo-relatively is one we
+    cannot ask the lane about, so the caller falls through to doing the work.
+    """
+    try:
+        return str(path.relative_to(REPO_ROOT))
+    except ValueError:
+        return None
+
+
+def _text_on_lane(relative_path: str) -> str | None:
+    """A tracked file's content on the lane branch, or None if it is not there.
+
+    The bookkeeping stages rebuild their branch from the lane every run, so
+    "has this already landed" has to be asked of the lane itself rather than
+    of the working tree, which a failed attempt may have left in any state.
+
+    Named for the lane rather than for main: this backport landed on the 2.9.x
+    maintenance branch, where a check against `origin/main` would answer about
+    a branch that carries a different series entirely - and would answer NO
+    forever, making every resume check silently useless.
+    """
+    result = subprocess.run(
+        ["git", "show", f"{REMOTE_RELEASE_REF}:{relative_path}"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout
+
+
 def _bridge_plan_path(version: str) -> Path:
     """Where the generated bridge plan lands. Separate so a test can redirect it."""
     return REPO_ROOT / "docs" / "03_Plans" / "active" / f"post-release-{version}.md"
@@ -1150,9 +1348,25 @@ def stage_post_release(version: str, tag: str) -> None:
     print(f"[post-release] opening {branch} for {tag}")
 
     run(["git", "fetch", "origin", RELEASE_BRANCH])
+    plan_path = _bridge_plan_path(version)
+    # Ask the lane before building anything. This stage deletes its branch on
+    # failure (below) precisely so it never inherits a half-made bridge, which
+    # means every retry starts from scratch and re-pushing over an earlier
+    # attempt's branch is a non-fast-forward. A pre-check is the only safe way
+    # to make the retry a no-op: it never resumes a partial branch.
+    tracked = _repo_relative(plan_path)
+    if tracked is not None and _text_on_lane(tracked) is not None:
+        print(
+            f"[post-release] the {version} bridge is already on "
+            f"{REMOTE_RELEASE_REF}"
+        )
+        return
+    existing = _pull_request_for_branch(branch)
+    if existing and existing.get("state") == "OPEN":
+        print(f"[post-release] bridge pull request already open: {existing['url']}")
+        return
     # Where the operator started, so they are put back whatever happens.
     starting_branch = _capture(["git", "branch", "--show-current"]) or RELEASE_BRANCH
-    plan_path = _bridge_plan_path(version)
     try:
         run(["git", "checkout", "-B", branch, REMOTE_RELEASE_REF])
         plan_path.write_text(_bridge_plan_text(version, tag), encoding="utf-8")
@@ -1346,6 +1560,19 @@ def stage_anchor(version: str, tag: str) -> None:
     bridge = _bridge_commit_for(tag)
     branch = f"chore/anchor-{version}"
     print(f"[anchor] {tag} -> bridge {bridge[:12]} on {branch}")
+    # Same shape as the bridge: rebuilt from the lane every run, so a retry
+    # after a partial attempt would push a divergent commit. `promote_release_tables`
+    # is already a no-op when the tables are promoted; this makes the whole
+    # stage one.
+    tracked = _repo_relative(PROVENANCE)
+    landed = _text_on_lane(tracked) if tracked is not None else None
+    if landed is not None and _capture_constant(landed, "PRIOR_RELEASE_TAG") == tag:
+        print(f"[anchor] {REMOTE_RELEASE_REF} already anchors {tag}")
+        return
+    existing = _pull_request_for_branch(branch)
+    if existing and existing.get("state") == "OPEN":
+        print(f"[anchor] anchor pull request already open: {existing['url']}")
+        return
     starting_branch = _capture(["git", "branch", "--show-current"]) or RELEASE_BRANCH
     plan_path = _anchor_plan_path(version)
     try:

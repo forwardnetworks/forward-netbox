@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import importlib.util
 import tempfile
-import unittest
+import unittest.mock
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 _SPEC = importlib.util.spec_from_file_location(
@@ -112,6 +113,29 @@ class InsertReleaseRowTest(unittest.TestCase):
 
         with self.assertRaises(release.ReleaseError):
             release.insert_release_row(candidate, "1.5.12", "second")
+
+    def test_re_inserting_the_same_version_is_a_no_op(self):
+        """A retried prepare must not fail on the row it wrote itself.
+
+        The guard matched the bare "| Release candidate;" marker, so it could
+        not tell this version's candidate from another version's. Because the
+        edits are computed before `stage_prepare`'s `write` check, even a dry
+        run tripped it, and the only way past was resetting the tree and
+        re-running the whole ~45-minute gate.
+        """
+        candidate = release.insert_release_row(self.TABLE, "1.5.11", "first")
+
+        self.assertEqual(
+            release.insert_release_row(candidate, "1.5.11", "first"),
+            candidate,
+        )
+
+    def test_the_no_op_does_not_soften_the_other_version_guard(self):
+        """The opposite branch: two releases in flight is still an error."""
+        candidate = release.insert_release_row(self.TABLE, "1.5.11", "first")
+
+        with self.assertRaises(release.ReleaseError):
+            release.insert_release_row(candidate, "1.6.0", "second")
 
 
 class ReleaseIntroTest(unittest.TestCase):
@@ -456,6 +480,82 @@ class VersionSurfaceEditTest(unittest.TestCase):
             for text in edits.values():
                 self.assertIn("1.2.4", text)
                 self.assertNotIn("1.2.3", text)
+
+    def test_a_partially_bumped_tree_resumes_instead_of_failing(self):
+        """A prepare that died mid-write must be retryable.
+
+        The surfaces are written one at a time. If the run dies after some are
+        bumped, the retry reads the NEW version out of pyproject, looks for it
+        in a file still holding the old one, and reported "expected exactly
+        one" - unresumable, so the whole gate had to be re-paid.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._tree(directory, "1.2.3")
+            # pyproject and __init__ made it; the other two did not.
+            (root / "pyproject.toml").write_text(
+                'version = "1.2.4"\n', encoding="utf-8"
+            )
+            (root / "forward_netbox" / "__init__.py").write_text(
+                '    version = "1.2.4"\n', encoding="utf-8"
+            )
+            patches = self._patched(root)
+            for item in patches:
+                item.start()
+            try:
+                edits = release.version_surface_edits("1.2.4", "1.2.4")
+            finally:
+                for item in patches:
+                    item.stop()
+            self.assertEqual(len(edits), 4)
+            for text in edits.values():
+                self.assertIn("1.2.4", text)
+                self.assertNotIn("1.2.3", text)
+
+    def test_a_surface_at_an_unexpected_version_is_repaired(self):
+        """Drifted surfaces are set to the target, not refused.
+
+        Matching by shape means the outgoing literal no longer has to be known,
+        which is what makes a half-written prepare resumable - and it also means
+        a surface that drifted to some third value is brought to the target
+        rather than raising. Detecting drift is
+        `check_release_preflight.py::check_version_surfaces`' job and it runs in
+        the gate; prepare's job is to set the version. `stage_prepare` prints
+        which surfaces it had to move so the repair is not silent.
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._tree(directory, "1.2.3")
+            (root / "forward_netbox" / "utilities" / "fast_baseline.py").write_text(
+                '    "forward_netbox": "9.9.9",\n', encoding="utf-8"
+            )
+            patches = self._patched(root)
+            for item in patches:
+                item.start()
+            try:
+                edits = release.version_surface_edits("1.2.3", "1.2.4")
+            finally:
+                for item in patches:
+                    item.stop()
+            pin = edits[root / "forward_netbox/utilities/fast_baseline.py"]
+            self.assertIn('"forward_netbox": "1.2.4"', pin)
+            self.assertNotIn("9.9.9", pin)
+
+    def test_two_version_literals_in_one_surface_is_reported(self):
+        """The strictness that remains: ambiguity is still refused."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._tree(directory, "1.2.3")
+            (root / "forward_netbox" / "utilities" / "fast_baseline.py").write_text(
+                '    "forward_netbox": "1.2.3",\n    "forward_netbox": "1.2.3",\n',
+                encoding="utf-8",
+            )
+            patches = self._patched(root)
+            for item in patches:
+                item.start()
+            try:
+                with self.assertRaisesRegex(release.ReleaseError, "fast_baseline"):
+                    release.version_surface_edits("1.2.3", "1.2.4")
+            finally:
+                for item in patches:
+                    item.stop()
 
     def test_a_missing_surface_is_reported_not_skipped(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -960,3 +1060,362 @@ class StageAuthorizeTest(unittest.TestCase):
     def test_it_refuses_to_authorize_twice(self):
         with self.assertRaisesRegex(release.ReleaseError, "already carries"):
             self._run(existing_section=True)
+
+
+class PullRequestLookupIgnoresDeadHistoryTest(unittest.TestCase):
+    """A PR merged into rewritten-away history is not this release's PR.
+
+    It looks identical to a real one - same head branch, state MERGED - so
+    `stage_finish` concluded the release was already cut and stopped, with
+    nothing to fix. Purging two live Forward identifiers from public history
+    orphaned the v3.0.0 release PRs exactly this way.
+    """
+
+    def _pull(self, oid, state="MERGED"):
+        return {
+            "number": 348,
+            "state": state,
+            "url": "https://example.invalid/pr/348",
+            "mergeCommit": {"oid": oid} if oid else None,
+        }
+
+    def test_an_unreachable_merge_commit_is_not_live(self):
+        completed = SimpleNamespace(returncode=1)
+        with unittest.mock.patch.object(
+            release.subprocess, "run", return_value=completed
+        ):
+            self.assertFalse(release._merge_is_live(self._pull("deadbeef" * 5)))
+
+    def test_a_reachable_merge_commit_is_live(self):
+        completed = SimpleNamespace(returncode=0)
+        with unittest.mock.patch.object(
+            release.subprocess, "run", return_value=completed
+        ):
+            self.assertTrue(release._merge_is_live(self._pull("cafebabe" * 5)))
+
+    def test_a_pull_without_a_merge_commit_is_assumed_live(self):
+        # Assume live rather than silently reopening a release that really did
+        # complete: a false "already merged" stops the flow loudly, a false
+        # "not merged" would re-cut a shipped release.
+        self.assertTrue(release._merge_is_live(self._pull(None)))
+
+    def test_a_merge_that_just_landed_is_live_after_a_fetch(self):
+        """The race this check creates on the release it is meant to protect.
+
+        Reachability is read from local refs, so the production merge the
+        script itself queued moments earlier is invisible until the
+        remote-tracking ref catches up. Unretried, that reads as "no pull
+        request exists for release/3.0.0" and the release stops one step short
+        of the tag - which is exactly how v3.0.0's first cut ended.
+        """
+        fetched = []
+
+        def fake_run(argv, **kwargs):
+            if argv[:2] == ["git", "fetch"]:
+                fetched.append(argv)
+                return SimpleNamespace(returncode=0)
+            if argv[:2] == ["git", "cat-file"]:
+                return SimpleNamespace(returncode=0)
+            # merge-base: unreachable until the fetch has happened
+            return SimpleNamespace(returncode=1 if not fetched else 0)
+
+        with unittest.mock.patch.object(release.subprocess, "run", fake_run):
+            self.assertTrue(release._merge_is_live(self._pull("abadcafe" * 5)))
+        self.assertEqual(len(fetched), 1, "expected exactly one fetch retry")
+
+    def test_a_merged_pull_from_an_earlier_attempt_does_not_skip_the_push(self):
+        """ "Already merged" must mean THIS head shipped, not a same-named PR.
+
+        v3.0.0's authorization was regenerated after the first tag was refused.
+        The evidence branch kept its name, so the lookup found the FIRST
+        attempt's pull request - merged, live, and irrelevant - and reported
+        the release finished while the new commit sat unpushed. main then had
+        no authorization section at all.
+        """
+        opened = []
+
+        # The stale merged PR first, then the freshly opened one.
+        lookups = [
+            {"state": "MERGED", "url": "https://example.invalid/pr/353"},
+            {
+                "state": "OPEN",
+                "url": "https://example.invalid/pr/355",
+                "number": 355,
+            },
+        ]
+
+        with (
+            unittest.mock.patch.object(
+                release, "_pull_request_for_branch", side_effect=lookups
+            ),
+            unittest.mock.patch.object(release, "_head_is_merged", return_value=False),
+            unittest.mock.patch.object(
+                release, "_verify_live_release_controls", lambda: None
+            ),
+            unittest.mock.patch.object(
+                release, "run", lambda *a, **k: opened.append(a)
+            ),
+        ):
+            release._open_release_pull_request(
+                "3.0.0", "release/3.0.0-evidence", evidence=True
+            )
+
+        commands = [a[0] for a in opened]
+        self.assertTrue(
+            any(c[:3] == ["gh", "pr", "create"] for c in commands),
+            "expected a new pull request to be opened",
+        )
+
+    def test_a_merged_pull_for_this_head_does_return_early(self):
+        """The opposite branch: a real completion must still short-circuit."""
+        opened = []
+
+        with (
+            unittest.mock.patch.object(
+                release,
+                "_pull_request_for_branch",
+                return_value={
+                    "state": "MERGED",
+                    "url": "https://example.invalid/pr/353",
+                },
+            ),
+            unittest.mock.patch.object(release, "_head_is_merged", return_value=True),
+            unittest.mock.patch.object(
+                release, "run", lambda *a, **k: opened.append(a)
+            ),
+        ):
+            release._open_release_pull_request(
+                "3.0.0", "release/3.0.0-evidence", evidence=True
+            )
+
+        self.assertEqual(opened, [], "a shipped release must not be re-opened")
+
+    def test_a_genuinely_dead_merge_stays_dead_across_the_fetch(self):
+        """The retry must not turn the dead-history verdict back into a pass."""
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv[:2])
+            if argv[:2] == ["git", "fetch"]:
+                return SimpleNamespace(returncode=0)
+            return SimpleNamespace(returncode=1)
+
+        with unittest.mock.patch.object(release.subprocess, "run", fake_run):
+            self.assertFalse(release._merge_is_live(self._pull("deadbeef" * 5)))
+        self.assertIn(["git", "fetch"], calls)
+
+
+class StageIdempotencyTest(unittest.TestCase):
+    """Re-entering a stage must be a reported no-op, not an error.
+
+    v3.0.0 took fourteen attempts. One was a product defect; the rest failed in
+    fast bookkeeping steps AFTER the ~45-minute gate. The driver already prints
+    which flag to resume with (`stage_finish_unattended`), but the stages it
+    names could not run twice, so the advice did not work and every retry
+    re-paid the gate.
+    """
+
+    def test_publish_does_not_recommit_an_already_committed_release(self):
+        commands = []
+
+        def capture(cmd, **kwargs):
+            if cmd[:3] == ["git", "status", "--porcelain"]:
+                return ""  # nothing staged: the prior attempt already committed
+            if cmd[:2] == ["git", "branch"]:
+                return "release/3.0.0"
+            return ""
+
+        with (
+            patch.object(release, "_capture", side_effect=capture),
+            patch.object(release, "run", side_effect=lambda c, **k: commands.append(c)),
+            patch.object(release, "wait_for_required_workflows", return_value=True),
+            patch.object(release, "_assert_release_head"),
+        ):
+            release.stage_publish("3.0.0")
+
+        joined = [" ".join(c) for c in commands]
+        self.assertFalse(
+            any(c.startswith("git commit") for c in joined),
+            "an already-committed release must not be committed again",
+        )
+        self.assertTrue(any(c.startswith("git push") for c in joined))
+
+    def test_publish_still_commits_when_prepare_left_changes(self):
+        commands = []
+
+        def capture(cmd, **kwargs):
+            if cmd[:3] == ["git", "status", "--porcelain"]:
+                return " M pyproject.toml"
+            if cmd[:2] == ["git", "branch"]:
+                return "release/3.0.0"
+            return ""
+
+        with (
+            patch.object(release, "_capture", side_effect=capture),
+            patch.object(release, "run", side_effect=lambda c, **k: commands.append(c)),
+            patch.object(release, "wait_for_required_workflows", return_value=True),
+            patch.object(release, "_assert_release_head"),
+        ):
+            release.stage_publish("3.0.0")
+
+        joined = [" ".join(c) for c in commands]
+        self.assertTrue(any(c.startswith("git commit") for c in joined))
+
+    def test_post_release_stops_when_the_bridge_is_already_on_main(self):
+        commands = []
+        with (
+            patch.object(release, "_text_on_lane", return_value="# bridge\n"),
+            patch.object(release, "run", side_effect=lambda c, **k: commands.append(c)),
+            patch.object(release, "_open_pull_request") as open_pull_request,
+        ):
+            release.stage_post_release("3.0.0", "v3.0.0")
+
+        open_pull_request.assert_not_called()
+        joined = [" ".join(c) for c in commands]
+        self.assertFalse(
+            any("checkout -B" in c for c in joined),
+            "a landed bridge must not rebuild its branch",
+        )
+
+    def test_post_release_still_builds_the_bridge_when_it_is_absent(self):
+        commands = []
+        with (
+            patch.object(release, "_text_on_lane", return_value=None),
+            patch.object(release, "_pull_request_for_branch", return_value=None),
+            patch.object(release, "run", side_effect=lambda c, **k: commands.append(c)),
+            patch.object(release, "_capture", return_value="main"),
+            patch.object(release, "_open_pull_request") as open_pull_request,
+            patch.object(release, "_bridge_plan_path") as plan_path,
+        ):
+            scratch = tempfile.TemporaryDirectory()
+            self.addCleanup(scratch.cleanup)
+            plan_path.return_value = Path(scratch.name) / "post-release-3.0.0.md"
+            with patch.object(release, "REPO_ROOT", Path(scratch.name)):
+                release.stage_post_release("3.0.0", "v3.0.0")
+
+        open_pull_request.assert_called_once()
+        self.assertTrue(any("checkout -B" in " ".join(c) for c in commands))
+
+    def test_anchor_stops_when_main_already_anchors_the_tag(self):
+        commands = []
+        landed = (
+            'PRIOR_RELEASE_TAG = "v3.0.0"\nPRIOR_POST_RELEASE_DOC_COMMIT = "%s"\n'
+            % ("b" * 40)
+        )
+        with (
+            patch.object(release, "_bridge_commit_for", return_value="b" * 40),
+            patch.object(release, "_text_on_lane", return_value=landed),
+            patch.object(release, "run", side_effect=lambda c, **k: commands.append(c)),
+            patch.object(release, "promote_release_tables") as promote,
+            patch.object(release, "_open_pull_request") as open_pull_request,
+        ):
+            release.stage_anchor("3.0.0", "v3.0.0")
+
+        promote.assert_not_called()
+        open_pull_request.assert_not_called()
+        self.assertFalse(any("checkout -B" in " ".join(c) for c in commands))
+
+    def test_anchor_still_runs_when_main_anchors_the_previous_release(self):
+        """The opposite branch: a stale anchor must not be mistaken for done."""
+        landed = (
+            'PRIOR_RELEASE_TAG = "v2.9.2"\nPRIOR_POST_RELEASE_DOC_COMMIT = "%s"\n'
+            % ("a" * 40)
+        )
+        with (
+            patch.object(release, "_bridge_commit_for", return_value="b" * 40),
+            patch.object(release, "_text_on_lane", return_value=landed),
+            patch.object(release, "_pull_request_for_branch", return_value=None),
+            patch.object(release, "run"),
+            patch.object(release, "_capture", return_value="main"),
+            patch.object(release, "promote_release_tables") as promote,
+            patch.object(release, "_open_pull_request"),
+            patch.object(release, "_anchor_plan_path") as plan_path,
+        ):
+            scratch = tempfile.TemporaryDirectory()
+            self.addCleanup(scratch.cleanup)
+            root = Path(scratch.name)
+            provenance = root / "verify_release_provenance.py"
+            provenance.write_text(landed, encoding="utf-8")
+            plan_path.return_value = root / "anchor-3.0.0.md"
+            with (
+                patch.object(release, "PROVENANCE", provenance),
+                patch.object(release, "REPO_ROOT", root),
+                patch.object(release, "README_TABLES", ()),
+            ):
+                release.stage_anchor("3.0.0", "v3.0.0")
+
+        promote.assert_called_once_with("3.0.0")
+
+
+class ResumeChecksAskTheLaneNotMainTest(unittest.TestCase):
+    """Every resume check this backport added must ask the LANE branch.
+
+    The two fixes were written on `main`, where `origin/main` and "the branch
+    this release comes from" are the same string. On the 2.9.x maintenance
+    lane they are not, and the failure mode is silent in the worst direction:
+    a check that asks `origin/main` whether the 2.9.3 bridge landed gets NO
+    forever - main carries a different series - so the stage rebuilds and
+    re-pushes every time and the idempotency this backport exists to provide
+    is not there at all. Nothing else in the suite would notice.
+    """
+
+    def test_the_lane_ref_is_not_main_on_this_branch(self):
+        # If this ever fails, the rest of this class proves nothing.
+        self.assertNotEqual(release.REMOTE_RELEASE_REF, "origin/main")
+
+    def test_landed_text_is_read_from_the_lane(self):
+        seen = []
+
+        def fake_run(argv, **kwargs):
+            seen.append(argv)
+            return SimpleNamespace(returncode=1, stdout="")
+
+        with unittest.mock.patch.object(release.subprocess, "run", fake_run):
+            release._text_on_lane("docs/03_Plans/active/whatever.md")
+
+        self.assertEqual(
+            seen,
+            [
+                [
+                    "git",
+                    "show",
+                    f"{release.REMOTE_RELEASE_REF}:" "docs/03_Plans/active/whatever.md",
+                ]
+            ],
+        )
+
+    def test_merge_liveness_is_measured_against_the_lane(self):
+        ancestry = []
+
+        def fake_run(argv, **kwargs):
+            if argv[:2] == ["git", "merge-base"]:
+                ancestry.append(argv)
+            return SimpleNamespace(returncode=0, stdout="")
+
+        pull = {"mergeCommit": {"oid": "a" * 40}}
+        with unittest.mock.patch.object(release.subprocess, "run", fake_run):
+            self.assertTrue(release._merge_is_live(pull))
+
+        self.assertTrue(ancestry)
+        for argv in ancestry:
+            self.assertIn(release.REMOTE_RELEASE_REF, argv)
+            self.assertNotIn("origin/main", argv)
+
+    def test_head_merged_is_measured_against_the_lane(self):
+        ancestry = []
+
+        def fake_run(argv, **kwargs):
+            if argv[:2] == ["git", "merge-base"]:
+                ancestry.append(argv)
+            return SimpleNamespace(returncode=0, stdout="")
+
+        with (
+            unittest.mock.patch.object(release.subprocess, "run", fake_run),
+            patch.object(release, "_capture", return_value="b" * 40),
+        ):
+            self.assertTrue(release._head_is_merged())
+
+        self.assertTrue(ancestry)
+        for argv in ancestry:
+            self.assertIn(release.REMOTE_RELEASE_REF, argv)
+            self.assertNotIn("origin/main", argv)
