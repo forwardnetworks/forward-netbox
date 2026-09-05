@@ -31,12 +31,13 @@ VALIDATED_BRANCHING_SERIES = "1.2"
 
 # Plugin apps as they appear in `settings.PLUGINS`.
 #
-# On NetBox 4.7 this is forward_netbox and Branching, and nothing else. Every
-# optional integration - netbox-dlm 0.9.1, netbox-cisco-aci 0.4.0,
-# netbox-peering-manager 0.3.0, netbox-routing, netbox-validity 3.5.2 -
-# declares `max_version = "4.6.99"`, and NetBox refuses to start with a plugin
-# outside its declared range. They cannot be installed here, so listing them
-# would be a claim about a runtime nobody can assemble.
+# On NetBox 4.7 this is forward_netbox, Branching and netbox-dlm. netbox-dlm
+# 0.10.0 raised its ceiling to 4.7.99 on 2026-09-03 and is the first optional
+# integration back. The other four - netbox-cisco-aci 0.4.0,
+# netbox-peering-manager 0.3.0, netbox-routing 0.4.3, netbox-validity 3.5.2 -
+# still declare `max_version = "4.6.99"`, and NetBox refuses to start with a
+# plugin outside its declared range. They cannot be installed here, so listing
+# them would be a claim about a runtime nobody can assemble.
 #
 # This set is an EXACT match that fails closed and silently: an app present in
 # PLUGINS but absent here disables COPY/SQL, the set-based merge and the fast
@@ -48,19 +49,24 @@ VALIDATED_PLUGIN_APPS = frozenset(
     {
         "forward_netbox",
         "netbox_branching",
+        "netbox_dlm",
     }
 )
 
 # Distribution name -> every version validated against these subsystems, not a
 # single pin. An exact pin meant a customer upgrading one optional plugin
 # silently lost the fast paths, because the whole tuple stopped matching.
-# Empty on 4.7 for the reason above, not because the integrations were
-# removed: their registry, models and sync paths are all still here and still
-# report an absent plugin honestly. The 4.6 versions this set held are kept in
-# the 2.9.x line, and the values to restore are recorded in
+# Only netbox-dlm on 4.7, and only 0.10.0 of it: every earlier release caps at
+# 4.6.99, and the 4.6 validations of 0.4.1 through 0.9.1 are evidence about a
+# different runtime. The four absent integrations are not removed - their
+# registry, models and sync paths are all still here and still report an
+# absent plugin honestly. The 4.6 versions this set held are kept in the 2.9.x
+# line, and the values to restore are recorded in
 # `docs/03_Plans/active/2026-09-02-netbox-4.7-runtime.md` so regaining one is a
 # lookup rather than an archaeology exercise.
-VALIDATED_OPTIONAL_DISTRIBUTIONS: dict[str, frozenset[str]] = {}
+VALIDATED_OPTIONAL_DISTRIBUTIONS: dict[str, frozenset[str]] = {
+    "netbox-dlm": frozenset({"0.10.0"}),
+}
 
 # The distributions whose versions a runtime probe reports. Derived rather than
 # repeated: a name expected but never probed reads as ABSENT and fails the

@@ -219,7 +219,7 @@ DLM_INTEGRATION = OptionalPluginIntegration(
     ),
     package_name="netbox-dlm",
     adapter_module="forward_netbox.utilities.sync_dlm",
-    required_package_version="0.9.1",
+    required_package_version="0.10.0",
     supported_package_versions=(
         "0.4.1",
         "0.5.0",
@@ -229,6 +229,10 @@ DLM_INTEGRATION = OptionalPluginIntegration(
         # 0.9.0 is skipped on purpose: it shipped with a NoReverseMatch on every
         # one of its view URLs and 0.9.1, half an hour later, is that fix.
         "0.9.1",
+        # 0.10.0 changes nothing but `__init__.py`: its own version, and
+        # `max_version` 4.6.99 -> 4.7.99. It is the only release that installs
+        # on NetBox 4.7.
+        "0.10.0",
     ),
     enabled_by_default=False,
     status="supported",
