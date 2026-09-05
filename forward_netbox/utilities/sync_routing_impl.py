@@ -693,7 +693,17 @@ def ospf_instance_comments(row, process_label):
     return "\n".join(lines)
 
 
+# Where a collapsed group's merged text is carried. Set only by
+# `row_collapsing` and only when one interface really did report more than one
+# neighbour; a single-neighbour row never has it, so its comments stay exactly
+# what they were.
+COLLAPSED_COMMENTS_KEY = "_forward_collapsed_comments"
+
+
 def ospf_interface_comments(row):
+    merged = row.get(COLLAPSED_COMMENTS_KEY)
+    if merged is not None:
+        return merged
     lines = ["Observed by Forward from structured OSPF neighbor state."]
     for label, key in (
         ("Cost", "cost"),

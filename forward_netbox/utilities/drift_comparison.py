@@ -1043,6 +1043,12 @@ def compare_model_rows(sync, model_string, rows):
     they are in sync when nothing checked.
     """
     from .apply_engine_bulk import bulk_orm_apply_simple_models
+    from .row_collapsing import collapse_rows
+
+    # The same collapse the apply performs, and for the same reason. If only
+    # one of the two did it they would disagree about how many objects a row
+    # set means, which is the defect this fixes rather than a variation on it.
+    rows = collapse_rows(model_string, rows)
 
     # No shortcut for an empty row list.
     #

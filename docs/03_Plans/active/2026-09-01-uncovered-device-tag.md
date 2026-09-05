@@ -134,10 +134,15 @@ Forward result, not from the tag.
 
 ## Limits
 
-- The `unclaimed` half stays un-enumerable beyond its 25-name sample. That is
-  intentional - it is not this sync's data - but it means an operator whose
-  count is mostly unclaimed still cannot list it from this page.
+- ~~The `unclaimed` half stays un-enumerable beyond its 25-name sample.~~
+  **Closed in this same release.** Both halves list in full:
+  `forwardsync_unclaimed_devices` and `forwardsync_uncovered_devices`
+  (`views.py:1545,1551`), reached by the "List all N" buttons on the scope
+  panel. The limit was written against the sample-only version and never
+  updated when the device ids were kept for exactly this purpose
+  (`scope_reconciliation.py`, `unclaimed_device_ids`).
 - The tag reflects the most recent reconciliation run, not live Forward state.
   A device re-enabled in Forward keeps the tag until the next run.
 - Nothing back-fills the tag onto devices whose absence predates this change
-  until the next reconciliation runs.
+  until the next reconciliation runs. This resolves itself on the next run; it
+  is a timing note, not an outstanding defect.
