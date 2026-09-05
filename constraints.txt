@@ -5,7 +5,7 @@
 #   '^(httpx|netboxlabs-netbox-branching|pyzipper|cryptography|netbox-(cisco-aci|dlm|peering-manager|routing))=='
 # cryptography backs at-rest credential encryption (Fernet); it ships with NetBox
 # but is pinned here for audit/reproducibility.
-cryptography==50.0.0
+cryptography==50.0.1
 httpx==0.28.1
 netbox-cisco-aci==0.4.0
 netbox-dlm==0.9.1

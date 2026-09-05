@@ -25,7 +25,7 @@
 #
 # Re-check this on any release that widens an optional plugin's range: the
 # entry has to move back down the moment the FROM release cannot satisfy it.
-cryptography==50.0.0
+cryptography==50.0.1
 httpx==0.28.1
 netbox-cisco-aci==0.4.0
 netbox-dlm==0.9.1
