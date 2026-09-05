@@ -47,9 +47,9 @@ from forward_netbox.utilities.workload_state import PendingWorkloadState
 
 
 # The fast-baseline contracts cover ten models, four of which belong to
-# optional plugins that cannot be installed on NetBox 4.7 - each caps at a
-# max_version in the 4.6 series. Tests that build rows for those models can
-# only run where the plugin exists. Skipping is honest here in a way it would
+# optional plugins. netbox-dlm 0.10.0 installs on NetBox 4.7; netbox-routing
+# still caps at a max_version in the 4.6 series. Tests that build rows for
+# those models can only run where the plugin exists. Skipping is honest here in a way it would
 # not be for the core models: the contract for netbox_routing rows is not
 # WEAKER on 4.7, it is unreachable, because rows for an absent plugin are
 # refused before any contract is consulted.

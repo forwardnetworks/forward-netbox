@@ -31,10 +31,9 @@ from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.sync import ForwardSyncRunner
 from forward_netbox.utilities.sync_primitives import UNIQUE_LOOKUP_CACHE_FIELD_SETS
 
-# netbox-dlm cannot be installed on NetBox 4.7: it declares a max_version in
-# the 4.6 series and NetBox refuses to start with a plugin outside its range.
-# These skip rather than fail, which IS lost coverage - the 4.6 lane on 2.9.x
-# is where the DLM paths stay exercised until that ceiling moves.
+# netbox-dlm 0.10.0 runs on NetBox 4.7, so these are exercised here again. The
+# guard stays: a runtime without the plugin skips rather than fails, and that
+# is stated as lost coverage, not as a pass.
 DLM_INSTALLED = apps.is_installed("netbox_dlm")
 
 

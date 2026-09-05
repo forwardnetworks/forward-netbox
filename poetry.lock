@@ -1573,15 +1573,15 @@ test = ["coverage[toml] (>=7.4)", "pytest (>=8.0)", "pytest-cov (>=4.1)", "pytes
 
 [[package]]
 name = "netbox-dlm"
-version = "0.9.1"
+version = "0.10.0"
 description = "Device/software/hardware lifecycle management plugin for NetBox"
 optional = true
 python-versions = ">=3.12"
 groups = ["main"]
 markers = "python_version >= \"3.12\" and (extra == \"dlm\" or extra == \"integrations\")"
 files = [
-    {file = "netbox_dlm-0.9.1-py3-none-any.whl", hash = "sha256:5104730d03eb2c5836789f037cb0aa7d24f9f8a6cb5fc5e60e18ce84657f7356"},
-    {file = "netbox_dlm-0.9.1.tar.gz", hash = "sha256:67a3782a7e9a15187b1b1963126f76a87458efc578ec99f21aec55718a9d10e1"},
+    {file = "netbox_dlm-0.10.0-py3-none-any.whl", hash = "sha256:de6d72eb663ec8320c371983d8da32d6d5220d0606ec791134699a3f388bef44"},
+    {file = "netbox_dlm-0.10.0.tar.gz", hash = "sha256:6fb4bc060f921921c1aba8f2ab70ac9ddedc1ebb7b630f74d17f5aae2dddfa6b"},
 ]
 
 [package.dependencies]
@@ -2829,4 +2829,4 @@ validity = ["netbox-validity"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.15"
-content-hash = "c497a528f378ce8c2240023ebcf0c46607ccc26421fefdde687188a6e86862d3"
+content-hash = "bac10503a7d8b778c59093aa830fb70c8b374b260b18bff6381df0a22e1542c5"

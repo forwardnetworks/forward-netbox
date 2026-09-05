@@ -1266,11 +1266,13 @@ def artifact_test(context):
             "'requires-python = \">=3.14,<3.15\"' "
             "'dependencies = [' "
             f"'  \"forward-netbox=={version}\",' "
-            # The five optional plugins are NOT listed on NetBox 4.7: each caps
-            # at a max_version in the 4.6 series, so none of them is installed
-            # in the artifact and naming them would put components in the SBOM
-            # that the image does not contain.
-            "']' " "> /tmp/netbox-runtime-pyproject.toml",
+            # netbox-dlm 0.10.0 is the one optional plugin installed on NetBox
+            # 4.7. The other four each cap at a max_version in the 4.6 series,
+            # so none of them is in the artifact and naming them would put
+            # components in the SBOM that the image does not contain.
+            "'  \"netbox-dlm==0.10.0\",' "
+            "']' "
+            "> /tmp/netbox-runtime-pyproject.toml",
             "UV_CACHE_DIR=/tmp/uv-cache uv tool run --isolated "
             f"--from cyclonedx-bom=={CYCLONEDX_BOM_VERSION} "
             "cyclonedx-py environment "
