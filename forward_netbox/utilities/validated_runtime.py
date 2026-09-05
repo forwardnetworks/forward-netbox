@@ -54,7 +54,9 @@ VALIDATED_PLUGIN_APPS = frozenset(
 # silently lost the fast paths, because the whole tuple stopped matching.
 VALIDATED_OPTIONAL_DISTRIBUTIONS = {
     "netbox-cisco-aci": frozenset({"0.4.0"}),
-    "netbox-dlm": frozenset({"0.4.1", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.9.1"}),
+    "netbox-dlm": frozenset(
+        {"0.4.1", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.9.1", "0.10.0"}
+    ),
     "netbox-peering-manager": frozenset({"0.3.0"}),
     "netbox-routing": frozenset({"0.4.3"}),
     "netbox-validity": frozenset({"3.5.2"}),

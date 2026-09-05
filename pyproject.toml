@@ -44,7 +44,7 @@ python = ">=3.10,<3.15"
 # `requires-python` to >=3.12. Without the marker poetry has to satisfy this
 # dependency all the way down to our own 3.10 floor and therefore resolves to
 # 0.8.0, pinning us a release behind with no error to read.
-netbox-dlm = {version = ">=0.4.1,<0.10.0", optional = true, python = ">=3.12,<3.15"}
+netbox-dlm = {version = ">=0.4.1,<0.11.0", optional = true, python = ">=3.12,<3.15"}
 netbox-routing = {version = "0.4.3", optional = true, python = ">=3.12,<3.15"}
 netbox-cisco-aci = {version = "0.4.0", optional = true, python = ">=3.12,<3.15"}
 netbox-peering-manager = {version = "0.3.0", optional = true, python = ">=3.12,<3.15"}

@@ -15,13 +15,12 @@
 # Branching is deliberately absent: the previous release's own metadata pins it,
 # and letting that resolve is the point.
 #
-# `netbox-dlm` diverged here for one release and no longer does. The rule is
-# that this side holds the newest version the FROM release supports: while the
-# FROM release was 2.7.13, which declares `netbox-dlm >=0.4.1,<0.9.0`, pinning
-# 0.9.1 was unsatisfiable rather than merely old, so it was held at 0.8.0. The
-# FROM release is now 2.8.0, which declares `>=0.4.1,<0.10.0` and supports
-# 0.9.1, so the divergence has lapsed and the pin returns to matching
-# `constraints.txt`.
+# `netbox-dlm` diverges here again. The rule is that this side holds the
+# newest version the FROM release supports: the FROM release is 2.9.2, which
+# declares `netbox-dlm >=0.4.1,<0.10.0`, so pinning 0.10.0 would be
+# unsatisfiable rather than merely old. It is held at 0.9.1 until the FROM
+# release is one that admits 0.10.0. (The same thing happened at 2.7.13 ->
+# 2.8.0, when 0.9.1 was held at 0.8.0.)
 #
 # Re-check this on any release that widens an optional plugin's range: the
 # entry has to move back down the moment the FROM release cannot satisfy it.

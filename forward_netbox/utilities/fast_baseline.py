@@ -196,6 +196,24 @@ def fast_baseline_runtime_tuple():
     }
 
 
+def _version_sort_key(version):
+    """Sort versions numerically, so 0.10.0 lands after 0.9.1, not before 0.4.1.
+
+    This list is persisted as job evidence and read by people. A plain string
+    sort put netbox-dlm 0.10.0 at the head of the validated list the moment it
+    was admitted, which reads as a typo rather than as the newest entry.
+    """
+    parts = []
+    for part in str(version).split("."):
+        digits = ""
+        for ch in part:
+            if not ch.isdigit():
+                break
+            digits += ch
+        parts.append((int(digits) if digits else -1, part))
+    return tuple(parts)
+
+
 def _runtime_decision():
     actual = fast_baseline_runtime_tuple()
     expected = {
@@ -228,7 +246,7 @@ def _runtime_decision():
                 "expected": {
                     **expected,
                     "optional_plugins": {
-                        name: sorted(versions)
+                        name: sorted(versions, key=_version_sort_key)
                         for name, versions in expected["optional_plugins"].items()
                     },
                 },
