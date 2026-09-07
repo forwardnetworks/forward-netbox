@@ -1257,77 +1257,7 @@ class ForwardClient:
             self._snapshot_data_file_hashes_cache[cache_key] = dict(hashes)
         return hashes
 
-    def trigger_snapshot_reachability(self, network_id, snapshot_id):
-        """Trigger advanced reachability computation for a snapshot (FWD-53559).
-
-        POSTs to start computation, then polls until the job reaches a terminal
-        state. Returns the final status payload. Raises ForwardClientError on
-        failure or timeout.
-        """
-        network_id = str(network_id or "").strip()
-        snapshot_id = str(snapshot_id or "").strip()
-        if not network_id or not snapshot_id:
-            raise ForwardClientError(
-                "trigger_snapshot_reachability requires both network_id and snapshot_id."
-            )
-        self._record_api_usage("reachability_trigger_calls")
-        response = self._request(
-            "POST",
-            "/networks/{network_id}/snapshots/{snapshot_id}/reachability".format(
-                network_id=quote(str(network_id), safe=""),
-                snapshot_id=quote(str(snapshot_id), safe=""),
-            ),
-        )
-        data = response.json() or {}
-        job_key = str(
-            data.get("jobKey") or data.get("executionKey") or data.get("id") or ""
-        ).strip()
-        state = str(data.get("status") or "").strip().upper()
-        if state in ("COMPLETED", "DONE", "READY") or not job_key:
-            return data
-        return self._wait_for_reachability_completion(
-            network_id=network_id,
-            snapshot_id=snapshot_id,
-            job_key=job_key,
-            status=data,
-        )
-
-    def _wait_for_reachability_completion(
-        self, *, network_id, snapshot_id, job_key, status
-    ):
-        current_status = status or {}
-        poll_ceiling = self.nqe_async_poll_interval_seconds
-        for poll_index in range(self.nqe_async_max_polls + 1):
-            state = str(current_status.get("status") or "").strip().upper()
-            if state in ("COMPLETED", "DONE", "READY"):
-                return current_status
-            if state in ("FAILED", "ERROR"):
-                error = current_status.get("error") or current_status
-                raise ForwardClientError(
-                    f"Forward reachability computation failed for snapshot "
-                    f"`{snapshot_id}`: {error}"
-                )
-            if poll_index >= self.nqe_async_max_polls:
-                break
-            if poll_ceiling:
-                sleep_seconds = min(poll_ceiling, 0.1 * (2**poll_index))
-                time.sleep(sleep_seconds)
-            self._record_api_usage("reachability_status_calls")
-            response = self._request(
-                "GET",
-                "/networks/{network_id}/snapshots/{snapshot_id}/reachability/{job_key}".format(
-                    network_id=quote(str(network_id), safe=""),
-                    snapshot_id=quote(str(snapshot_id), safe=""),
-                    job_key=quote(str(job_key), safe=""),
-                ),
-            )
-            current_status = response.json() or {}
-        raise ForwardClientError(
-            f"Forward reachability computation did not complete after "
-            f"{self.nqe_async_max_polls} poll(s) for snapshot `{snapshot_id}`."
-        )
-
-    def get_org_nqe_queries(self, *, directory="/"):
+    def _get_org_nqe_queries(self, *, directory="/"):
         directory = _normalize_nqe_directory(directory)
         shared_cache_key = self._shared_read_cache_key(
             "org-nqe-queries", directory, self._shared_query_read_generation()
@@ -1350,11 +1280,11 @@ class ForwardClient:
         self._shared_read_cache_set(shared_cache_key, list(rows))
         return rows if isinstance(rows, list) else []
 
-    def get_nqe_repository_queries(self, *, repository="org", directory="/"):
+    def _get_nqe_repository_queries(self, *, repository="org", directory="/"):
         repository = _normalize_nqe_repository(repository)
         directory = _normalize_nqe_directory(directory)
         if repository == "org":
-            rows = self.get_org_nqe_queries(directory=directory)
+            rows = self._get_org_nqe_queries(directory=directory)
             return [
                 normalized
                 for row in rows
@@ -1425,7 +1355,7 @@ class ForwardClient:
                 )
             self._record_read_cache_hit()
             return self._copy_nqe_repository_query_index(cached_index)
-        rows = self.get_nqe_repository_queries(
+        rows = self._get_nqe_repository_queries(
             repository=repository,
             directory=directory,
         )
@@ -1436,47 +1366,6 @@ class ForwardClient:
             )
         self._shared_read_cache_set(shared_cache_key, index)
         return index
-
-    def resolve_nqe_query_head_commit(
-        self,
-        *,
-        query_id,
-        repository="org",
-        query_index: dict | None = None,
-    ) -> str:
-        """Return the current head commit for a query bound only by its ID.
-
-        A map may store a query ID with no path at all, and the committed-query
-        lookup is path-based. Without this the execution contract can never
-        resolve a commit for such a map and refuses to run it at all.
-
-        Returns an empty string when the ID is unknown or ambiguous; an
-        ambiguous ID must not be resolved to an arbitrary revision.
-        """
-        query_id = str(query_id or "").strip()
-        if not query_id:
-            return ""
-        repository = _normalize_nqe_repository(repository)
-        if query_index is None:
-            try:
-                query_index = self.get_nqe_repository_query_index(
-                    repository=repository,
-                    directory="/",
-                )
-            except JobTimeoutException:
-                raise
-            except Exception:
-                return ""
-        rows = (query_index.get("by_query_id") or {}).get(query_id) or []
-        if len(rows) != 1:
-            return ""
-        row = rows[0]
-        return str(
-            row.get("commitId")
-            or row.get("lastCommitId")
-            or (row.get("lastCommit") or {}).get("id")
-            or ""
-        ).strip()
 
     def get_committed_nqe_query(
         self,
