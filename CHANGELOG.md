@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v2.9.3
 
-Release candidate; Fix: **OSPF interface rows converge instead of drifting forever**, and the interface lookup behind MAC-address apply uses an index instead of scanning every interface in the estate. Feature: **netbox-dlm `0.10.0` is supported**. No migration; upgrade and re-run the sync.
+Release candidate; Feature: **uncovered devices can be cleaned up**, not only counted - `forward_device_scope_reconciliation_audit --prune-uncovered` deletes devices this sync created that Forward no longer reports at all. The orphan prune never reached them: it acts on devices claimed by the run that produced the current result, so a deployment whose orphan count reads zero had no way to clear a growing uncovered count. Only devices the census marks absent are eligible, and only once their absence has outlasted the quarantine - a device Forward still reports without an include tag is a scoping decision and is never deleted, and neither is one this sync did not create. Dry run unless `--apply` is passed. Fix: **OSPF interface rows converge instead of drifting forever**, and the interface lookup behind MAC-address apply uses an index instead of scanning every interface in the estate. Feature: **netbox-dlm `0.10.0` is supported**. No migration; upgrade and re-run the sync.
 
 ## v2.9.2
 
