@@ -6,6 +6,7 @@ from django.core.management.base import CommandError
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.scope_reconciliation import compute_scope_reconciliation
 from forward_netbox.utilities.scope_reconciliation import prune_orphan_devices
+from forward_netbox.utilities.scope_reconciliation import prune_uncovered_devices
 
 
 class Command(BaseCommand):
@@ -34,9 +35,24 @@ class Command(BaseCommand):
             ),
         )
         parser.add_argument(
+            "--prune-uncovered",
+            action="store_true",
+            help=(
+                "Delete devices this sync created that Forward no longer "
+                "reports at all. Only devices the census marks absent are "
+                "eligible: one Forward still returns without an include tag is "
+                "a scoping question and is never touched, and a device this "
+                "sync did not create is never touched. Reports what would be "
+                "deleted unless --apply is also passed."
+            ),
+        )
+        parser.add_argument(
             "--apply",
             action="store_true",
-            help="With --prune-orphans, actually delete instead of dry-run.",
+            help=(
+                "With --prune-orphans or --prune-uncovered, actually delete "
+                "instead of dry-run."
+            ),
         )
         parser.add_argument(
             "--include-quarantined",
@@ -170,6 +186,46 @@ class Command(BaseCommand):
             elif out_of_scope:
                 payload["prune_dry_run_note"] = (
                     "Dry run: re-run with --apply to delete these devices."
+                )
+
+        if options["prune_uncovered"]:
+            owned_absence = (report.get("unmanaged") or {}).get("owned_absence") or {}
+            candidates = int(owned_absence.get("absent_from_snapshot") or 0)
+            payload["uncovered_prune_requested"] = True
+            payload["uncovered_prune_applied"] = False
+            payload["uncovered_prune_candidate_count"] = candidates
+            if not owned_absence.get("available", False):
+                # Without the census nothing is known about WHY these devices
+                # are uncovered, and "absent" is the only eligible reason.
+                payload["uncovered_prune_aborted"] = "census-unavailable"
+                payload["uncovered_prune_abort_reason"] = (
+                    "The Forward census that says whether each uncovered device "
+                    "is absent or merely untagged did not run, so eligibility "
+                    "cannot be established. Retry once Forward is reachable."
+                )
+                self.stdout.write(json.dumps(payload, indent=2, default=str))
+                raise SystemExit(2)
+            if options["apply"] and candidates:
+                result = prune_uncovered_devices(
+                    sync,
+                    report=report,
+                    allow_scope_shrink=options["allow_scope_shrink"],
+                    include_quarantined=options["include_quarantined"],
+                )
+                payload["uncovered_prune_applied"] = True
+                payload["uncovered_pruned_device_count"] = result["pruned_device_count"]
+                payload["uncovered_pruned_object_count"] = result["pruned_object_count"]
+                payload["uncovered_quarantine_held_device_count"] = result[
+                    "quarantine_held_device_count"
+                ]
+                payload["uncovered_quarantine_overridden_device_count"] = result[
+                    "quarantine_overridden_device_count"
+                ]
+            elif candidates:
+                payload["uncovered_prune_dry_run_note"] = (
+                    "Dry run: re-run with --apply to delete these devices. Only "
+                    f"the {candidates} absent from Forward are eligible; "
+                    "uncovered devices Forward still reports are not."
                 )
 
         self.stdout.write(json.dumps(payload, indent=2, default=str))

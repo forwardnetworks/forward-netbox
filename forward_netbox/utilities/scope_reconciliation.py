@@ -153,8 +153,18 @@ def absence_quarantine_thresholds(sync) -> tuple:
     )
 
 
-def record_device_absence(sync, out_of_scope_pks, *, snapshot_id="") -> dict:
-    """Advance the absence streak for out-of-scope devices, clear it for the rest.
+def record_device_absence(
+    sync, out_of_scope_pks, *, uncovered_pks=(), snapshot_id=""
+) -> dict:
+    """Advance the absence streak for absent devices, clear it for the rest.
+
+    Two sets are tracked, because two sets can be deleted. Orphans are devices
+    this sync claimed in the run that produced the current result. The
+    uncovered set is devices it created at some point and the current result no
+    longer covers - which is not a subset of the first, and at a customer whose
+    orphan count reads zero it is the only one that has members. Streaks were
+    kept for orphans alone, so an uncovered device could never leave quarantine
+    no matter how long it had been gone, and nothing could clean it up.
 
     Called once per promoted sync from ``tag_backfilled_devices`` - the
     post-sync "reconcile device scope tags" job - which already holds the
@@ -176,7 +186,7 @@ def record_device_absence(sync, out_of_scope_pks, *, snapshot_id="") -> dict:
     from ..models import ForwardDeviceAbsence
 
     now = timezone.now()
-    absent_ids = set(out_of_scope_pks or ())
+    absent_ids = set(out_of_scope_pks or ()) | set(uncovered_pks or ())
     returned = ForwardDeviceAbsence.objects.filter(sync=sync).exclude(
         device_id__in=absent_ids
     )
@@ -533,6 +543,10 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         "_owned_untagged": owned_untagged_names,
         "_missing_in_netbox": missing_in_netbox,
         "_out_of_scope_pks": out_of_scope_pks,
+        # The census verdict per name. A cleanup acts only on "absent"; a device
+        # Forward still reports is a scoping question, not a dead device.
+        "_absence_kinds": kinds,
+        "_owned_untagged_pks": list(unmanaged.get("owned_untagged_device_ids") or ()),
         "_present_backfilled": present_backfilled,
         "_matched_include_tags_by_name": present_scope_tags_by_name,
     }
@@ -811,6 +825,15 @@ class EmptyForwardScopeError(RuntimeError):
     """Raised when an empty Forward scope would make a mutation unsafe."""
 
 
+class ScopeCensusUnavailableError(RuntimeError):
+    """The census that says why a device is uncovered did not run.
+
+    Raised rather than treated as "no devices are absent": a census failure and
+    a genuinely empty absent set look identical from the counts, and only one of
+    them makes deleting safe.
+    """
+
+
 class ScopeShrinkGuardError(RuntimeError):
     """Raised when the scope shrank far enough that a prune looks like a fault.
 
@@ -932,6 +955,70 @@ def _prune_result(
     }
 
 
+def _delete_prunable_devices(sync, device_pks):
+    """Delete devices, releasing ownership first and respecting PROTECT.
+
+    One implementation, shared by every prune. A second copy of this loop is
+    how a delete path acquires a guard the other one does not have, and the
+    deletes here are permanent.
+
+    Returns the ids actually deleted, the total objects removed, a tally of what
+    refused by model label, and the ids ownership would not release.
+    """
+    from .ownership import ownership_write_lock
+    from .ownership import _release_prunable_device_ownership_locked
+
+    deleted_total = 0
+    pruned_device_ids = []
+    protected_tally = {}
+    ownership_blocked_ids = set()
+    pending_device_ids = set(device_pks)
+    while pending_device_ids:
+        ordered_device_ids, cyclic_device_ids = _prunable_device_order(
+            pending_device_ids
+        )
+        if cyclic_device_ids:
+            ownership_blocked_ids.update(cyclic_device_ids)
+            protected_tally["forward_netbox.forwardvirtualparentclaim"] = (
+                protected_tally.get(
+                    "forward_netbox.forwardvirtualparentclaim",
+                    0,
+                )
+                + len(cyclic_device_ids)
+            )
+        retry_device_ids = set()
+        pass_progress = False
+        for device_id in ordered_device_ids:
+            try:
+                with ownership_write_lock():
+                    release = _release_prunable_device_ownership_locked(
+                        sync,
+                        [device_id],
+                    )
+                    if release["blocked_device_ids"]:
+                        retry_device_ids.add(device_id)
+                        continue
+                    lock_related_writes_for_delete(
+                        Device,
+                        using=Device.objects.db,
+                    )
+                    deleted, _ = Device.objects.filter(pk=device_id).delete()
+                    deleted_total += deleted
+                    pruned_device_ids.append(device_id)
+                    pass_progress = True
+            except ProtectedError as exc:
+                for obj in exc.protected_objects:
+                    label = obj._meta.label_lower
+                    protected_tally[label] = protected_tally.get(label, 0) + 1
+        if not retry_device_ids:
+            break
+        if not pass_progress:
+            ownership_blocked_ids.update(retry_device_ids)
+            break
+        pending_device_ids = retry_device_ids
+    return pruned_device_ids, deleted_total, protected_tally, ownership_blocked_ids
+
+
 def prune_orphan_devices(
     sync,
     *,
@@ -994,57 +1081,12 @@ def prune_orphan_devices(
             out_of_scope_sample=orphans[:SAMPLE_LIMIT],
             **quarantine_counts,
         )
-    from .ownership import ownership_write_lock
-    from .ownership import _release_prunable_device_ownership_locked
-
-    deleted_total = 0
-    pruned_device_ids = []
-    protected_tally = {}
-    ownership_blocked_ids = set()
-    pending_device_ids = set(orphan_pks)
-    while pending_device_ids:
-        ordered_device_ids, cyclic_device_ids = _prunable_device_order(
-            pending_device_ids
-        )
-        if cyclic_device_ids:
-            ownership_blocked_ids.update(cyclic_device_ids)
-            protected_tally["forward_netbox.forwardvirtualparentclaim"] = (
-                protected_tally.get(
-                    "forward_netbox.forwardvirtualparentclaim",
-                    0,
-                )
-                + len(cyclic_device_ids)
-            )
-        retry_device_ids = set()
-        pass_progress = False
-        for device_id in ordered_device_ids:
-            try:
-                with ownership_write_lock():
-                    release = _release_prunable_device_ownership_locked(
-                        sync,
-                        [device_id],
-                    )
-                    if release["blocked_device_ids"]:
-                        retry_device_ids.add(device_id)
-                        continue
-                    lock_related_writes_for_delete(
-                        Device,
-                        using=Device.objects.db,
-                    )
-                    deleted, _ = Device.objects.filter(pk=device_id).delete()
-                    deleted_total += deleted
-                    pruned_device_ids.append(device_id)
-                    pass_progress = True
-            except ProtectedError as exc:
-                for obj in exc.protected_objects:
-                    label = obj._meta.label_lower
-                    protected_tally[label] = protected_tally.get(label, 0) + 1
-        if not retry_device_ids:
-            break
-        if not pass_progress:
-            ownership_blocked_ids.update(retry_device_ids)
-            break
-        pending_device_ids = retry_device_ids
+    (
+        pruned_device_ids,
+        deleted_total,
+        protected_tally,
+        ownership_blocked_ids,
+    ) = _delete_prunable_devices(sync, orphan_pks)
     result = _prune_result(
         pruned_device_count=len(pruned_device_ids),
         pruned_object_count=deleted_total,
@@ -1058,6 +1100,168 @@ def prune_orphan_devices(
     if protected_tally:
         result["protected_by_model"] = protected_tally
     return result
+
+
+def _require_survivable_uncovered_shrink(sync, absent_names, *, allow_scope_shrink):
+    """Refuse an uncovered cleanup that is too large to be ordinary attrition.
+
+    The orphan guard cannot stand in for this one. It measures orphans against
+    what the run previously claimed, and at the customer this was built for the
+    orphan count is zero while hundreds of devices are uncovered - so it returns
+    early and guards nothing. This measures the set actually being deleted,
+    against every device this sync has ever created.
+
+    The same two-part threshold as the orphan guard, and for the same reason: a
+    ratio alone fires on a small estate where three of eight is normal, so an
+    absolute floor has to clear first.
+    """
+    from ..models import ForwardDeviceIdentity
+
+    if allow_scope_shrink or not absent_names:
+        return
+    owned_total = ForwardDeviceIdentity.objects.filter(sync=sync).count()
+    absent_count = len(absent_names)
+    if not owned_total or absent_count <= SCOPE_SHRINK_REFUSAL_FLOOR:
+        return
+    ratio = absent_count / owned_total
+    if ratio <= SCOPE_SHRINK_REFUSAL_RATIO:
+        return
+    raise ScopeShrinkGuardError(
+        f"Refusing to delete uncovered devices: {absent_count} of "
+        f"{owned_total} devices this sync created ({ratio:.0%}) are absent "
+        "from Forward. Above "
+        f"{SCOPE_SHRINK_REFUSAL_RATIO:.0%} a collection or query fault is "
+        "likelier than that many devices being decommissioned. Confirm in "
+        "Forward that they are genuinely gone, then re-run with the "
+        "scope-shrink override."
+    )
+
+
+def prune_uncovered_devices(
+    sync,
+    *,
+    report=None,
+    allow_scope_shrink=False,
+    include_quarantined=False,
+) -> dict:
+    """Delete devices this sync created that Forward no longer reports at all.
+
+    What it deletes, exactly: a device is eligible only when all four hold.
+
+      * this sync holds a `ForwardDeviceIdentity` for it - it created the
+        device, so removing it undoes its own work rather than someone else's;
+      * the current scope result does not cover it;
+      * the census says `absent`, meaning Forward did not return the device at
+        all. A device Forward still reports, but which carries no include tag,
+        is a scoping decision and is never touched here. Nor is one excluded by
+        the vendor guard;
+      * its absence has outlasted the quarantine.
+
+    What it does not bypass: the empty-scope refusal, the scope-shrink refusal,
+    and the quarantine are the same gates the orphan prune passes, for the same
+    reasons. It also cannot reach a device this sync never created - the
+    unclaimed half of "untagged" is not ours to delete and has no code path
+    here at all.
+
+    Why it exists: the orphan prune acts on devices claimed by the run that
+    produced the current result. A device created by an earlier run and dropped
+    from scope since is not in that set, so at a customer whose orphan count
+    reads zero the prune is a no-op while the uncovered count climbs. That was
+    the whole of the reported problem: the count was diagnosable and not
+    actionable.
+
+    The quarantine is what makes this safe rather than merely gated. Disabling
+    a device in Forward removes it from the API exactly as decommissioning does
+    - confirmed against a live customer snapshot, from both the NQE result and
+    the REST inventory - so `absent` cannot distinguish the two. Absence
+    sustained across the configured runs and hours can: a maintenance window
+    does not span them.
+    """
+    if report is None:
+        report = compute_scope_reconciliation(sync)
+
+    _require_nonempty_forward_scope(report, operation="prune uncovered devices")
+    _require_survivable_scope_shrink(report, allow_scope_shrink=allow_scope_shrink)
+
+    required_runs, required_hours = absence_quarantine_thresholds(sync)
+    owned_names = report.get("_owned_untagged") or set()
+    if not owned_names:
+        return _prune_result(
+            required_runs=required_runs,
+            required_hours=required_hours,
+        )
+
+    kinds = report.get("_absence_kinds")
+    if kinds is None:
+        # The census could not run, so nothing is known about WHY these devices
+        # are uncovered. Refusing beats deleting on an assumption.
+        raise ScopeCensusUnavailableError(
+            "Refusing to delete uncovered devices: the Forward census that "
+            "says whether each device is absent or merely untagged did not "
+            "run, so eligibility cannot be established."
+        )
+
+    absent_names = {name for name in owned_names if kinds.get(name) == "absent"}
+    _require_survivable_uncovered_shrink(
+        sync, absent_names, allow_scope_shrink=allow_scope_shrink
+    )
+    if not absent_names:
+        return _prune_result(
+            out_of_scope_sample=sorted(owned_names)[:SAMPLE_LIMIT],
+            required_runs=required_runs,
+            required_hours=required_hours,
+        )
+
+    # Resolve to the pks the report already established, then keep only those
+    # whose name is absent. Matching on the name at delete time would re-resolve
+    # a value NetBox does not hold unique.
+    owned_pks = set(report.get("_owned_untagged_pks") or ())
+    absent_pks = [
+        device_id
+        for device_id, name in Device.objects.filter(pk__in=owned_pks).values_list(
+            "pk", "name"
+        )
+        if (name or "").strip() in absent_names
+    ]
+    if not absent_pks:
+        return _prune_result(
+            out_of_scope_sample=sorted(absent_names)[:SAMPLE_LIMIT],
+            required_runs=required_runs,
+            required_hours=required_hours,
+        )
+
+    partition = partition_quarantined_orphans(sync, absent_pks)
+    held_device_count = len(partition["held_pks"])
+    eligible_pks = absent_pks if include_quarantined else partition["eligible_pks"]
+    quarantine_counts = {
+        "required_runs": partition["required_runs"],
+        "required_hours": partition["required_hours"],
+        "held_device_count": 0 if include_quarantined else held_device_count,
+        "overridden_device_count": held_device_count if include_quarantined else 0,
+    }
+    if not eligible_pks:
+        return _prune_result(
+            out_of_scope_sample=sorted(absent_names)[:SAMPLE_LIMIT],
+            **quarantine_counts,
+        )
+
+    (
+        pruned_device_ids,
+        deleted_total,
+        protected_tally,
+        ownership_blocked_ids,
+    ) = _delete_prunable_devices(sync, eligible_pks)
+
+    return _prune_result(
+        pruned_device_count=len(pruned_device_ids),
+        pruned_object_count=deleted_total,
+        out_of_scope_sample=sorted(absent_names)[:SAMPLE_LIMIT],
+        ownership_blocked_device_count=len(ownership_blocked_ids),
+        protected_device_count=len(eligible_pks)
+        - len(pruned_device_ids)
+        - len(ownership_blocked_ids),
+        **quarantine_counts,
+    )
 
 
 def _occupied_site_ids() -> set:
@@ -1320,6 +1524,7 @@ def tag_backfilled_devices(
         absence_streak = record_device_absence(
             sync,
             report.get("_out_of_scope_pks") or (),
+            uncovered_pks=report.get("_owned_untagged_pks") or (),
             snapshot_id=generation["snapshot_id"],
         )
     return {
