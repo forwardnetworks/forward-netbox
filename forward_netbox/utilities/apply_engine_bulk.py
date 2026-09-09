@@ -23,19 +23,65 @@ def _chunks(items, size=_APPLY_LOOKUP_CHUNK_SIZE):
         yield items[index : index + size]
 
 
-def _device_scoped_name_query(pairs):
-    from django.db.models import Q
+# How many DEVICES one interface lookup covers. Chunking by device rather than
+# by pair is what keeps the query shape indexable; the number only bounds the
+# result size.
+_DEVICE_LOOKUP_CHUNK_SIZE = 200
 
-    grouped_names_by_device = {}
+
+def _interfaces_by_device_and_name(pairs, *, devices_by_name):
+    """Interfaces for `(device name, interface name)` pairs, without an OR-tree.
+
+    The previous form built one `Q(device__name=..., name__in=[...])` branch per
+    device and OR'd up to 500 of them together, joining `dcim_device` by NAME.
+    Postgres cannot use an index for that shape, so every chunk scanned the
+    interface table whole - 360,771 rows on a customer estate, once per chunk,
+    for 247 seconds of SQL inside a single model's comparison.
+
+    Every caller has already resolved the devices by name, so the join was
+    unnecessary as well as expensive. Chunking by DEVICE keeps each query to one
+    indexed `device_id IN (...)` with a name filter, and the exact pair match
+    happens in Python where it costs nothing.
+
+    The name filter is a superset - a name wanted on one device in the chunk is
+    fetched for every device in it - which is why the pair check below is not
+    optional.
+    """
+    from dcim.models import Interface
+
+    names_by_device: dict[str, set] = {}
     for device_name, interface_name in pairs:
-        grouped_names_by_device.setdefault(device_name, set()).add(interface_name)
-    query = Q()
-    for device_name, interface_names in grouped_names_by_device.items():
-        query |= Q(
-            device__name=device_name,
-            name__in=sorted(interface_names),
-        )
-    return query
+        if device_name in devices_by_name:
+            names_by_device.setdefault(device_name, set()).add(interface_name)
+    if not names_by_device:
+        return {}
+
+    found = {}
+    ordered = sorted(names_by_device)
+    for index in range(0, len(ordered), _DEVICE_LOOKUP_CHUNK_SIZE):
+        chunk = ordered[index : index + _DEVICE_LOOKUP_CHUNK_SIZE]
+        device_names_by_id = {devices_by_name[name].pk: name for name in chunk}
+        wanted_names = set()
+        for name in chunk:
+            wanted_names |= names_by_device[name]
+        # `.order_by()` clears NetBox's default Interface ordering, which sorts
+        # by device name and then by the naturalized `_name` under a collation.
+        # The result goes into a dict, so the order is discarded either way -
+        # but the database still pays for the sort on every chunk.
+        for interface in (
+            Interface.objects.select_related("device")
+            .filter(
+                device_id__in=list(device_names_by_id),
+                name__in=sorted(wanted_names),
+            )
+            .order_by()
+        ):
+            device_name = device_names_by_id.get(interface.device_id)
+            if device_name is None:
+                continue
+            if interface.name in names_by_device[device_name]:
+                found[(device_name, interface.name)] = interface
+    return found
 
 
 def _isolate_bulk_objects(
@@ -1048,12 +1094,9 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]], *, preview=Fal
     for batch in _chunks(list(device_names)):
         for device in Device.objects.filter(name__in=batch):
             devices_by_name[device.name] = device
-    interfaces_by_key = {}
-    # Pair chunking avoids a device/interface Cartesian product across batches.
-    for batch in _chunks(list(interface_pairs)):
-        query = _device_scoped_name_query(batch)
-        for interface in Interface.objects.select_related("device").filter(query):
-            interfaces_by_key[(interface.device.name, interface.name)] = interface
+    interfaces_by_key = _interfaces_by_device_and_name(
+        interface_pairs, devices_by_name=devices_by_name
+    )
     macs_by_address = {}
     # Two persisted rows can share a canonical MAC. Last-write-wins would pick
     # one arbitrarily and silently write the customer's assignment to whichever
@@ -2574,12 +2617,9 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]], *, preview=Fals
     for batch in _chunks(list(device_names)):
         for device in Device.objects.filter(name__in=batch):
             devices_by_name[device.name] = device
-    interfaces_by_key = {}
-    # Pair chunking avoids a device/interface Cartesian product across batches.
-    for batch in _chunks(list(interface_pairs)):
-        query = _device_scoped_name_query(batch)
-        for interface in Interface.objects.select_related("device").filter(query):
-            interfaces_by_key[(interface.device.name, interface.name)] = interface
+    interfaces_by_key = _interfaces_by_device_and_name(
+        interface_pairs, devices_by_name=devices_by_name
+    )
 
     # Pre-ensure VRFs once (the adapter ensures-or-creates per row).
     vrf_by_name = {}

@@ -625,8 +625,15 @@ def record_issue(
 
 
 def apply_model_rows(runner, model_string, rows):
+    from .row_collapsing import collapse_rows
+
     rows = list(rows)
     total_rows = len(rows)
+    # Before the row count is taken for anything else. Some queries report one
+    # row per observation while the apply writes one object per identity, and
+    # writing that object once per observation is how a row set that never
+    # converges is produced.
+    rows = collapse_rows(model_string, rows)
     if model_string == "dcim.interface":
         rows = sorted(rows, key=lambda row: bool(row.get("lag")))
     handler_name = f"_apply_{model_string.replace('.', '_')}"
