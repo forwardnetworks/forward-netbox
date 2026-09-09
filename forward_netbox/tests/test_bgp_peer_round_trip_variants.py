@@ -5,6 +5,7 @@
 # The existing round trip calls the peer adapter directly, so it never runs
 # the dependency-cache priming the sync runs before every batch. This one
 # goes through `apply_model_rows`, exactly as a sync does, and then compares.
+from unittest import skipUnless
 from unittest.mock import Mock
 
 from dcim.models import Device
@@ -13,6 +14,7 @@ from dcim.models import DeviceType
 from dcim.models import Interface
 from dcim.models import Manufacturer
 from dcim.models import Site
+from django.apps import apps
 from django.test import TestCase
 from ipam.models import IPAddress
 from ipam.models import VRF
@@ -36,6 +38,15 @@ def _routing_models():
     )
 
 
+# These models only exist when the optional plugin is installed, and on
+# NetBox 4.7 it cannot be: netbox-routing declares a max_version in the 4.6
+# series, so NetBox refuses to start with it. The suite skips rather than
+# fails - but this IS lost coverage, not a clean pass, and the 4.6 lane on
+# 2.9.x is where these adapters stay exercised until that ceiling moves.
+NETBOX_ROUTING_INSTALLED = apps.is_installed("netbox_routing")
+
+
+@skipUnless(NETBOX_ROUTING_INSTALLED, "netbox_routing is not installed")
 class BgpPeerRoundTripVariantsTest(TestCase):
     def setUp(self):
         self.source = ForwardSource.objects.create(
