@@ -16,10 +16,13 @@ COPY development/launch-netbox.sh /opt/netbox/launch-netbox.sh
 RUN chmod +x /opt/netbox/launch-netbox.sh
 
 RUN uv pip install --constraint ${CONSTRAINTS} ${PACKAGE}
-# The five optional plugins are NOT installed on NetBox 4.7: every one of them
-# declares `max_version = "4.6.99"`, and NetBox refuses to start with a plugin
-# outside its declared range, so the image would not boot. They return here the
-# moment an upstream raises its ceiling. The 4.6 lane keeps them on 2.9.x.
+# netbox-dlm is the one optional plugin on NetBox 4.7: 0.10.0 raised its
+# ceiling to 4.7.99. The other four - netbox-cisco-aci, netbox-peering-manager,
+# netbox-routing, netbox-validity - still declare `max_version = "4.6.99"`, and
+# NetBox refuses to start with a plugin outside its declared range, so the
+# image would not boot. Each returns here the moment its upstream raises its
+# ceiling. The 4.6 lane keeps all five on 2.9.x.
+RUN uv pip install --constraint ${CONSTRAINTS} netbox-dlm
 RUN uv pip install "watchdog[watchmedo]"
 RUN uv pip install coverage
 

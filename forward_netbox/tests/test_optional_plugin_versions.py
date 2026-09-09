@@ -44,20 +44,18 @@ from forward_netbox.utilities.version_series import series_matches
 class OptionalDistributionVersionSetTest(SimpleTestCase):
     """The validated optional-distribution sets, whatever they currently hold.
 
-    On NetBox 4.7 they hold nothing. Every optional plugin - netbox-dlm,
-    netbox-cisco-aci, netbox-peering-manager, netbox-routing, netbox-validity -
-    declares a max_version in the 4.6 series, and NetBox refuses to start with a
-    plugin outside its declared range, so none of them can be installed on this
-    runtime at all. Claiming a validated version for a plugin nobody can install
-    would be a claim about a runtime nobody can assemble.
+    On NetBox 4.7 they hold one entry: netbox-dlm 0.10.0, the first release of
+    any optional plugin to raise its ceiling past 4.6.99. netbox-cisco-aci,
+    netbox-peering-manager, netbox-routing and netbox-validity still declare a
+    max_version in the 4.6 series, and NetBox refuses to start with a plugin
+    outside its declared range, so none of them can be installed on this
+    runtime. Claiming a validated version for a plugin nobody can install would
+    be a claim about a runtime nobody can assemble.
 
-    These assertions are therefore about the INVARIANTS rather than the
-    contents, so they keep working in both directions: they hold today with the
-    sets empty, and they hold the day an upstream raises its ceiling and entries
-    come back. The per-version assertions that used to live here (netbox-dlm
-    0.4.1 through 0.9.1) are recorded in
-    `docs/03_Plans/active/2026-09-02-netbox-4.7-runtime.md`, because those
-    versions were validated against 4.6 and none of them is evidence about 4.7.
+    The 4.6 validations of netbox-dlm 0.4.1 through 0.9.1 are deliberately NOT
+    carried over: they were evidence about 4.6, and none of those releases can
+    boot here anyway. They are recorded in
+    `docs/03_Plans/active/2026-09-02-netbox-4.7-runtime.md`.
     """
 
     def test_both_gates_read_the_same_declaration(self):
@@ -68,12 +66,13 @@ class OptionalDistributionVersionSetTest(SimpleTestCase):
             SET_BASED_MERGE_SUPPORTED_OPTIONAL_DISTRIBUTIONS,
         )
 
-    def test_no_distribution_is_validated_on_this_runtime(self):
+    def test_only_netbox_dlm_0_10_0_is_validated_on_this_runtime(self):
         self.assertEqual(
             dict(COPY_SQL_SUPPORTED_OPTIONAL_DISTRIBUTIONS),
-            {},
-            "an optional plugin cannot be installed on NetBox 4.7, so a "
-            "validated version for one is a claim about an unbuildable runtime",
+            {"netbox-dlm": frozenset({"0.10.0"})},
+            "the other four optional plugins cannot be installed on NetBox "
+            "4.7, so a validated version for one is a claim about an "
+            "unbuildable runtime; and no netbox-dlm before 0.10.0 can boot here",
         )
 
     def test_any_entry_that_returns_names_a_real_version(self):
@@ -118,13 +117,12 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
             self.assertFalse(series_matches(version, "1.2"), version)
 
     def _decide(self, *, optional_plugins=None, plugin_apps=None, netbox="4.7.0"):
-        """A runtime tuple in the 4.7 shape: no optional plugin can be there.
+        """A runtime tuple in the 4.7 shape.
 
-        The old helper varied a netbox-dlm version, because on 4.6 that was the
-        thing customers changed under us. On 4.7 no optional plugin can be
-        installed at all, so the interesting variable is now whether an
-        UNEXPECTED app is present - which must fail closed exactly as a wrong
-        version did.
+        The default is the validated tuple: forward_netbox, Branching and
+        netbox-dlm 0.10.0. Two things can be varied under it - the netbox-dlm
+        version (the thing customers change under us) and whether an UNEXPECTED
+        app is present - and both must fail closed.
         """
         from forward_netbox.utilities import fast_baseline
 
@@ -132,9 +130,13 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
             "netbox": netbox,
             "branching": "1.2.0",
             "forward_netbox": fast_baseline.forward_config.version,
-            "optional_plugins": optional_plugins or {},
+            "optional_plugins": (
+                {"netbox-dlm": "0.10.0"}
+                if optional_plugins is None
+                else optional_plugins
+            ),
             "plugin_apps": sorted(
-                plugin_apps or {"forward_netbox", "netbox_branching"}
+                plugin_apps or {"forward_netbox", "netbox_branching", "netbox_dlm"}
             ),
         }
         with patch.object(
@@ -152,12 +154,21 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
             self._decide(netbox="4.7.9").reason_code, "unsupported_runtime_tuple"
         )
 
-    def test_an_optional_plugin_that_cannot_run_here_fails_closed(self):
-        # Nothing validates netbox-dlm on 4.7 - it cannot be installed - so a
-        # runtime reporting one is a runtime this was never checked against.
+    def test_a_netbox_dlm_validated_only_on_4_6_fails_closed(self):
+        # 0.9.1 was validated against 4.6 and cannot boot on 4.7. A runtime
+        # reporting it is one this was never checked against, whatever the
+        # 2.9.x lane says about the same version.
+        decision = self._decide(optional_plugins={"netbox-dlm": "0.9.1"})
+
+        self.assertFalse(decision.enabled)
+        self.assertEqual(decision.reason_code, "unsupported_runtime_tuple")
+
+    def test_netbox_dlm_absent_from_plugins_fails_closed(self):
+        # The set is an exact match in both directions: an app the validated
+        # tuple expects and PLUGINS lacks is as much a mismatch as a stranger.
         decision = self._decide(
-            optional_plugins={"netbox-dlm": "0.9.1"},
-            plugin_apps={"forward_netbox", "netbox_branching", "netbox_dlm"},
+            optional_plugins={},
+            plugin_apps={"forward_netbox", "netbox_branching"},
         )
 
         self.assertFalse(decision.enabled)
@@ -183,7 +194,9 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
         ).context
 
         json.dumps(detail)
-        self.assertEqual(detail["expected"]["optional_plugins"], {})
+        self.assertEqual(
+            detail["expected"]["optional_plugins"], {"netbox-dlm": ["0.10.0"]}
+        )
 
 
 class FastBaselineFieldContractTest(SimpleTestCase):

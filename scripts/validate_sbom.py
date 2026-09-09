@@ -11,8 +11,10 @@ REQUIRED_COMPONENTS = {
     "forward-netbox": None,
     "httpx": "0.28.1",
     "netbox": "4.7.0",
-    # The five optional plugins are absent on 4.7: each declares
-    # a max_version in the 4.6 series, so the artifact cannot contain them.
+    # netbox-dlm 0.10.0 is the one optional plugin that runs on 4.7. The other
+    # four each declare a max_version in the 4.6 series, so the artifact cannot
+    # contain them.
+    "netbox-dlm": "0.10.0",
     "netboxlabs-netbox-branching": "1.2.0",
     "pyzipper": "0.4.0",
 }

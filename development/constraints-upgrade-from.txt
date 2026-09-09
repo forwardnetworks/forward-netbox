@@ -15,20 +15,20 @@
 # Branching is deliberately absent: the previous release's own metadata pins it,
 # and letting that resolve is the point.
 #
-# `netbox-dlm` diverged here for one release and no longer does. The rule is
-# that this side holds the newest version the FROM release supports: while the
-# FROM release was 2.7.13, which declares `netbox-dlm >=0.4.1,<0.9.0`, pinning
-# 0.9.1 was unsatisfiable rather than merely old, so it was held at 0.8.0. The
-# FROM release is now 2.8.0, which declares `>=0.4.1,<0.10.0` and supports
-# 0.9.1, so the divergence has lapsed and the pin returns to matching
-# `constraints.txt`.
+# `netbox-dlm` is pinned at 0.10.0 here even though the FROM release (3.0.0,
+# `<0.10.0`) never installed it. The usual rule - hold the newest version the
+# FROM release supports - has no answer on NetBox 4.7: 3.0.0 shipped with no
+# optional plugin because none could boot there, and 0.10.0 is the only
+# netbox-dlm that can. The from-side image installs the bare plugin, not the
+# `dlm` extra, so 3.0.0's own cap does not constrain this line. 0.9.1 here
+# would build an image NetBox refuses to start.
 #
 # Re-check this on any release that widens an optional plugin's range: the
 # entry has to move back down the moment the FROM release cannot satisfy it.
 cryptography==50.0.0
 httpx==0.28.1
 netbox-cisco-aci==0.4.0
-netbox-dlm==0.9.1
+netbox-dlm==0.10.0
 netbox-peering-manager==0.3.0
 netbox-routing==0.4.3
 netbox-validity==3.5.2
