@@ -166,8 +166,18 @@ jobs:
           FORWARD_SENSITIVE_PATTERNS: ${{ secrets.FORWARD_SENSITIVE_PATTERNS }}
           FORWARD_SENSITIVE_BINARY_HISTORY_ALLOWLIST: >-
             ${{ secrets.FORWARD_SENSITIVE_BINARY_HISTORY_ALLOWLIST }}
+          # Lane-specific on purpose. One repo variable cannot serve two
+          # lanes with disjoint histories: `main` and `maint/2.9.x` share no
+          # recent ancestor, so a baseline correct for one is refused on the
+          # other - and the refusal lands AFTER the tag is pushed, where a
+          # version number is already spent. That happened twice, and both
+          # times the fix was to swap the global variable and swap it back,
+          # which leaves the next release on this lane broken again. This
+          # workflow file is per-lane (each branch carries its own copy, the
+          # same reason `scripts/release_lane.py` is declared rather than
+          # derived), so the variable it reads is per-lane too.
           FORWARD_SENSITIVE_HISTORY_BASELINE: >-
-            ${{ vars.FORWARD_SENSITIVE_HISTORY_BASELINE }}
+            ${{ vars.FORWARD_SENSITIVE_HISTORY_BASELINE_MAINT_2_9_X }}
         run: |
           python scripts/check_sensitive_content.py --git-files \
             --protected-history --require-env-patterns --require-baseline-env
