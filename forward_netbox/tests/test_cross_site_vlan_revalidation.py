@@ -119,7 +119,12 @@ class ClearCrossSiteUntaggedVlansTest(_Fixture):
         self.assertEqual(self._vlan_of(device, "eth1"), self.old_site_vlan)
         warning = runner._record_aggregated_skip_warning.call_args.kwargs
         self.assertIn("does not manage dcim.interface", warning["warning_message"])
-        self.assertIn("forward_interface_vlan_audit", warning["warning_message"])
+        # This used to name `forward_interface_vlan_audit`, which is the only
+        # place the per-row detail existed. The rows are in the support bundle
+        # now, so the warning names a surface an operator can actually reach
+        # and no longer hands them a command mid-incident.
+        self.assertIn("support bundle", warning["warning_message"])
+        self.assertNotIn("forward_interface_vlan_audit", warning["warning_message"])
 
     def test_a_clean_device_costs_no_warning(self):
         device = self._device()

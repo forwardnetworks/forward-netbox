@@ -635,6 +635,7 @@ def _sync_support_bundle_payload(sync):
         ownership_finalization_summary,
         ownership_integrity_summary,
     )
+    from .utilities.interface_vlan_audit import interface_untagged_vlan_keys
     from .utilities.sync_facade import effective_scope_endpoints_by_include_tags
     from .utilities.upgrade_reconciliation import compute_upgrade_reconciliation
 
@@ -700,6 +701,12 @@ def _sync_support_bundle_payload(sync):
         # Everything the operator can see on the scope panel and the sync page,
         # so a problem they cannot fix themselves arrives with its evidence.
         "environment": _environment_bundle_payload(),
+        # The interfaces NetBox will refuse on their untagged VLAN, by key.
+        # The sync's skip warning tells the operator to export this file for
+        # the per-row detail, and a warning-level log row is redacted to a
+        # fixed sentence - so without this section that instruction pointed at
+        # nothing.
+        "interface_untagged_vlans": json_safe_value(interface_untagged_vlan_keys()),
         "scope_reconciliation": _scope_reconciliation_bundle_payload(sync),
         "operator_action_jobs": _operator_action_jobs_bundle_payload(sync),
         "ownership_records": _ownership_records_bundle_payload(sync),

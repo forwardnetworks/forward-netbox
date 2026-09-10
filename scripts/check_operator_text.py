@@ -23,7 +23,6 @@ from __future__ import annotations
 import argparse
 import ast
 import re
-import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -62,11 +61,16 @@ def _command_names(repo_root: Path) -> tuple[str, ...]:
         return ()
     return tuple(
         sorted(
-            (path.stem for path in commands.glob("*.py") if not path.stem.startswith("_")),
+            (
+                path.stem
+                for path in commands.glob("*.py")
+                if not path.stem.startswith("_")
+            ),
             key=len,
             reverse=True,
         )
     )
+
 
 SCAN_PY = ("forward_netbox",)
 SKIP_PY_DIRS = ("management", "tests", "migrations")
@@ -88,7 +92,9 @@ def _offending(text: str, commands: tuple[str, ...] = ()) -> str | None:
     return None
 
 
-def _python_string_findings(path: Path, commands: tuple[str, ...]) -> list[tuple[int, str, str]]:
+def _python_string_findings(
+    path: Path, commands: tuple[str, ...]
+) -> list[tuple[int, str, str]]:
     """Forbidden fragments in string literals, ignoring docstrings."""
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -99,9 +105,15 @@ def _python_string_findings(path: Path, commands: tuple[str, ...]) -> list[tuple
     # identity rather than by re-matching their text somewhere else.
     docstrings = set()
     for node in ast.walk(tree):
-        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
             body = getattr(node, "body", None) or []
-            if body and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Constant):
+            if (
+                body
+                and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+            ):
                 if isinstance(body[0].value.value, str):
                     docstrings.add(id(body[0].value))
 
@@ -117,9 +129,13 @@ def _python_string_findings(path: Path, commands: tuple[str, ...]) -> list[tuple
     return findings
 
 
-def _template_findings(path: Path, commands: tuple[str, ...]) -> list[tuple[int, str, str]]:
+def _template_findings(
+    path: Path, commands: tuple[str, ...]
+) -> list[tuple[int, str, str]]:
     findings = []
-    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
+    for number, line in enumerate(
+        path.read_text(encoding="utf-8").splitlines(), start=1
+    ):
         fragment = _offending(line, commands)
         if fragment:
             findings.append((number, fragment, line.strip()))
@@ -136,13 +152,17 @@ def scan(repo_root: Path) -> list[str]:
             if any(part in SKIP_PY_DIRS for part in relative.parts):
                 continue
             for line, fragment, text in _python_string_findings(path, commands):
-                problems.append(f"{relative}:{line}: names `{fragment}` in operator-facing text: {text[:160]}")
+                problems.append(
+                    f"{relative}:{line}: names `{fragment}` in operator-facing text: {text[:160]}"
+                )
 
     for root in SCAN_TEMPLATES:
         for path in sorted((repo_root / root).rglob("*.html")):
             relative = path.relative_to(repo_root)
             for line, fragment, text in _template_findings(path, commands):
-                problems.append(f"{relative}:{line}: names `{fragment}` in a template: {text[:160]}")
+                problems.append(
+                    f"{relative}:{line}: names `{fragment}` in a template: {text[:160]}"
+                )
 
     return problems
 

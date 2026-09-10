@@ -1100,3 +1100,56 @@ class SupportBundleTroubleshootingDepthTest(TestCase):
         self.assertEqual(survey["sampled"], 0)
         self.assertTrue(survey["stopped_on_time_budget"])
         self.assertTrue(survey["truncated"])
+
+    def test_the_bundle_carries_the_refused_untagged_vlan_rows(self):
+        # The sync's skip warning says to export this file for the per-row
+        # detail. A warning-level log row is redacted to a fixed sentence, so
+        # without this section that instruction pointed at nothing.
+        from dcim.models import Device
+        from dcim.models import DeviceRole
+        from dcim.models import DeviceType
+        from dcim.models import Interface
+        from dcim.models import Manufacturer
+        from dcim.models import Site
+        from ipam.models import VLAN
+
+        from forward_netbox.models import ForwardDeviceIdentity
+        from forward_netbox.models import ForwardIngestion
+
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync, snapshot_id="snap-vlan"
+        )
+        mfr = Manufacturer.objects.create(name="MfrV", slug="mfr-v")
+        dt = DeviceType.objects.create(manufacturer=mfr, model="dt-v", slug="dt-v")
+        role = DeviceRole.objects.create(name="RoleV", slug="role-v")
+        home = Site.objects.create(name="SiteV-home", slug="site-v-home")
+        other = Site.objects.create(name="SiteV-other", slug="site-v-other")
+        device = Device.objects.create(
+            name="vlan-device", device_type=dt, role=role, site=home
+        )
+        ForwardDeviceIdentity.objects.create(
+            sync=self.sync,
+            ingestion=ingestion,
+            source_device_key=device.name,
+            device=device,
+            snapshot_id="snap-vlan",
+        )
+        foreign_vlan = VLAN.objects.create(name="secret-vlan", vid=211, site=other)
+        interface = Interface.objects.create(
+            device=device, name="eth9", type="1000base-t", mode="access"
+        )
+        Interface.objects.filter(pk=interface.pk).update(untagged_vlan=foreign_vlan)
+
+        payload, raw = self._bundle()
+        rows = payload["interface_untagged_vlans"]
+        self.assertEqual(rows["cross_site_count"], 1)
+        self.assertFalse(rows["truncated"])
+        row = rows["cross_site"][0]
+        # Keys, not names: this file leaves the customer's estate.
+        self.assertEqual(row["interface"], interface.pk)
+        self.assertEqual(row["device"], device.pk)
+        self.assertEqual(row["device_site"], home.pk)
+        self.assertEqual(row["untagged_vlan"], foreign_vlan.pk)
+        self.assertEqual(row["untagged_vlan_site"], other.pk)
+        self.assertNotIn("secret-vlan", raw)
+        self.assertNotIn("vlan-device", raw)
