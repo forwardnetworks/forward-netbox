@@ -71,6 +71,7 @@
               {{ payload.forward_tagged_backfilled }}
               {% if payload.netbox_present_backfilled %}
                 &nbsp;<a href="{{ backfilled_tag_url }}" class="text-decoration-none">{% blocktrans with count=payload.netbox_present_backfilled %}view {{ count }} tagged{% endblocktrans %}</a>
+                &nbsp;<a href="#backfilled-sample" class="text-decoration-none small">{% trans "why?" %}</a>
               {% endif %}
             </td>
           </tr>
@@ -78,7 +79,8 @@
             <th scope="row">{% trans "Out of scope (orphans)" %}</th>
             <td>
               {% if payload.netbox_out_of_scope %}
-                <span class="badge text-bg-warning">{{ payload.netbox_out_of_scope }}</span>
+                {# Straight to the card carrying the cause badges and the full list. #}
+                <a href="#out-of-scope-sample" class="badge text-bg-warning text-decoration-none">{{ payload.netbox_out_of_scope }}</a>
               {% else %}
                 <span class="badge text-bg-success">0</span>
               {% endif %}
@@ -105,9 +107,14 @@
               {{ payload.unmanaged.untagged_total }}
               {% if payload.unmanaged.owned_untagged %}
                 <a href="{{ uncovered_tag_url }}" class="badge text-bg-warning text-decoration-none">{% blocktrans with count=payload.unmanaged.owned_untagged %}{{ count }} created by this sync{% endblocktrans %}</a>
+                {# The cause of this number, and the cleanup for it, are in a #}
+                {# card further down the page - which is the half a customer  #}
+                {# reading only the summary never reached.                    #}
+                <a href="#uncovered-owned" class="text-decoration-none small">{% trans "why? / clean up" %}</a>
               {% endif %}
               {% if payload.unmanaged.unclaimed %}
                 <a href="{{ unclaimed_devices_url }}" class="badge text-bg-secondary text-decoration-none">{% blocktrans with count=payload.unmanaged.unclaimed %}{{ count }} not claimed by this sync{% endblocktrans %}</a>
+                <a href="#uncovered-unclaimed" class="text-decoration-none small">{% trans "why?" %}</a>
               {% endif %}
             </td>
           </tr>
@@ -115,12 +122,15 @@
         </table>
       </div>
       <div class="card-footer text-end">
+        {% if perms.dcim.change_device %}
         <form method="post" action="{{ tag_backfilled_url }}" class="d-inline">
           {% csrf_token %}
           <button type="submit" class="btn btn-outline-warning"{% if not payload.netbox_present_backfilled and not payload.netbox_out_of_scope %} disabled{% endif %}>
             <i class="mdi mdi-tag-outline" aria-hidden="true"></i>&nbsp;{% trans "Reconcile device scope tags" %}
           </button>
         </form>
+        {% endif %}
+        {% if perms.ipam.change_prefix %}
         <form method="post" action="{{ tag_delete_eligible_ipam_url }}" class="d-inline"
               title="{% trans 'Audits global IPAM (prefixes/VLANs/VRFs) against the latest Forward fetch and tags stale objects forward-delete-eligible for manual review. Never deletes.' %}">
           {% csrf_token %}
@@ -128,7 +138,8 @@
             <i class="mdi mdi-tag-remove-outline" aria-hidden="true"></i>&nbsp;{% trans "Tag delete-eligible IPAM" %}
           </button>
         </form>
-        {% if dlm_available %}
+        {% endif %}
+        {% if dlm_available and perms.netbox_dlm.delete_hardwarenotice %}
         <form method="post" class="d-inline"
               action="{% url 'plugins:forward_netbox:forwardsync_prune_stale_hardware_notices' pk=object.pk %}"
               title="{% trans 'Asks Forward which hardware notices it still reports, and removes the ones it does not. A notice is derived data; if it still applied, Forward would still be emitting it. Device types are never deleted.' %}"
@@ -139,6 +150,7 @@
           </button>
         </form>
         {% endif %}
+        {% if perms.dcim.delete_device %}
         <form method="post" class="d-inline"
               action="{% url 'plugins:forward_netbox:forwardsync_prune_orphans' pk=object.pk %}"
               onsubmit="return confirm('{% blocktrans with dev_count=payload.netbox_out_of_scope site_count=payload.netbox_empty_orphan_site_count %}Delete {{ dev_count }} out-of-scope device(s) and {{ site_count }} empty site(s)? This also removes their interfaces and IP addresses.{% endblocktrans %}');">
@@ -160,11 +172,12 @@
             <i class="mdi mdi-trash-can-outline" aria-hidden="true"></i>&nbsp;{% trans "Prune orphans" %}
           </button>
         </form>
+        {% endif %}
       </div>
     </div>
   </div>
   <div class="col col-md-6">
-    <div class="card">
+    <div class="card" id="out-of-scope-sample">
       <h5 class="card-header">{% trans "Out-of-Scope Sample" %}</h5>
       <div class="card-body">
         {% if payload.out_of_scope_sample %}
@@ -203,6 +216,10 @@
           </ul>
           {% if payload.netbox_out_of_scope > payload.out_of_scope_sample|length %}
             <p class="text-muted mt-2 mb-0">{% blocktrans with shown=payload.out_of_scope_sample|length total=payload.netbox_out_of_scope %}Showing {{ shown }} of {{ total }}.{% endblocktrans %}</p>
+          {% endif %}
+          {% if payload.netbox_out_of_scope %}
+            {# The red button below deletes every one of these; the sample is 25. #}
+            <p class="mt-2 mb-0"><a href="{{ out_of_scope_devices_url }}" class="btn btn-sm btn-outline-danger"><i class="mdi mdi-format-list-bulleted" aria-hidden="true"></i>&nbsp;{% blocktrans with count=payload.netbox_out_of_scope %}List all {{ count }}{% endblocktrans %}</a></p>
           {% endif %}
         {% else %}
           <p class="text-muted mb-0">{% trans "No out-of-scope devices." %}</p>
@@ -344,7 +361,7 @@
     </div>
   </div>
   <div class="col col-md-6">
-    <div class="card">
+    <div class="card" id="backfilled-sample">
       <h5 class="card-header">{% trans "Tagged-but-Backfilled Sample" %}</h5>
       <div class="card-body">
         {% if payload.present_backfilled_detail_sample %}
@@ -366,6 +383,9 @@
           {% if payload.netbox_present_backfilled > payload.present_backfilled_detail_sample|length %}
             <p class="text-muted mt-2 mb-0">{% blocktrans with shown=payload.present_backfilled_detail_sample|length total=payload.netbox_present_backfilled %}Showing {{ shown }} of {{ total }}.{% endblocktrans %}</p>
           {% endif %}
+          {% if payload.netbox_present_backfilled %}
+            <p class="mt-2 mb-0"><a href="{{ present_backfilled_devices_url }}" class="btn btn-sm btn-outline-secondary"><i class="mdi mdi-format-list-bulleted" aria-hidden="true"></i>&nbsp;{% blocktrans with count=payload.netbox_present_backfilled %}List all {{ count }}{% endblocktrans %}</a></p>
+          {% endif %}
         {% else %}
           <p class="text-muted mb-0">{% trans "No backfilled devices in NetBox." %}</p>
         {% endif %}
@@ -377,7 +397,7 @@
 <div class="row mt-3">
   <div class="col col-md-6">
     <div class="card">
-      <h5 class="card-header">{% trans "Uncovered, Created by This Sync" %}</h5>
+      <h5 class="card-header" id="uncovered-owned">{% trans "Uncovered, Created by This Sync" %}</h5>
       <div class="card-body">
         {% if payload.unmanaged.owned_untagged_sample %}
           <p class="text-muted mt-0">{% trans "This sync created these devices, and the current Forward result no longer covers them. A device disabled in Forward looks exactly like this, so they are kept, not pruned — which is why this count grows. Use the tag to list all of them, not just this sample." %}</p>
@@ -401,6 +421,33 @@
             <a href="{{ uncovered_devices_url }}" class="btn btn-sm btn-outline-warning"><i class="mdi mdi-format-list-bulleted" aria-hidden="true"></i>&nbsp;{% blocktrans with count=payload.unmanaged.owned_untagged %}List all {{ count }}{% endblocktrans %}</a>
             <a href="{{ uncovered_tag_url }}" class="btn btn-sm btn-outline-secondary"><i class="mdi mdi-tag-outline" aria-hidden="true"></i>&nbsp;{% trans "Filter devices by tag" %}</a>
           </p>
+          {% comment %} Only the devices Forward no longer reports at all are eligible, so
+             the button counts `absent_from_snapshot` rather than the card's own total.
+             Offering the larger number would promise a deletion the gates refuse, which
+             is how an operator learns to distrust the panel. {% endcomment %}
+          {% if perms.dcim.delete_device %}
+            <form method="post" class="mt-2"
+                  action="{% url 'plugins:forward_netbox:forwardsync_prune_uncovered' pk=object.pk %}"
+                  title="{% trans 'Deletes only the devices Forward no longer reports at all, and only once their absence has outlasted the quarantine. A device Forward still returns without an include tag is a scoping decision and is never deleted, and neither is one this sync did not create.' %}"
+                  onsubmit="return confirm('{% blocktrans with count=payload.unmanaged.owned_prune_candidates %}Delete {{ count }} device(s) this sync created that Forward no longer reports? This also removes their interfaces and IP addresses.{% endblocktrans %}');">
+              {% csrf_token %}
+              {% if payload.unmanaged.owned_quarantine.held %}
+                <div class="form-check d-inline-block me-2 align-middle">
+                  <input class="form-check-input" type="checkbox" name="include_quarantined" id="include_quarantined_uncovered" value="1">
+                  <label class="form-check-label small" for="include_quarantined_uncovered"
+                         title="{% trans 'A device disabled in Forward is indistinguishable from one that was removed, so an absence has to persist before the prune will act on it.' %}">
+                    {% blocktrans count counter=payload.unmanaged.owned_quarantine.held %}Also delete {{ counter }} device still in quarantine{% plural %}Also delete {{ counter }} devices still in quarantine{% endblocktrans %}
+                  </label>
+                </div>
+              {% endif %}
+              <button type="submit" class="btn btn-sm btn-danger"{% if not payload.unmanaged.owned_prune_candidates %} disabled{% endif %}>
+                <i class="mdi mdi-trash-can-outline" aria-hidden="true"></i>&nbsp;{% blocktrans with count=payload.unmanaged.owned_prune_candidates %}Delete {{ count }} gone from Forward{% endblocktrans %}
+              </button>
+              {% if payload.unmanaged.owned_quarantine.prune_eligible is not None %}
+                <span class="text-muted small ms-2">{% blocktrans with eligible=payload.unmanaged.owned_quarantine.prune_eligible runs=payload.unmanaged.owned_quarantine.required_runs hours=payload.unmanaged.owned_quarantine.required_hours %}{{ eligible }} past the quarantine ({{ runs }} runs and {{ hours }}h).{% endblocktrans %}</span>
+              {% endif %}
+            </form>
+          {% endif %}
           <ul class="mb-0">
             {% for name in payload.unmanaged.owned_untagged_sample %}<li><code>{{ name }}</code></li>{% endfor %}
           </ul>
@@ -415,7 +462,7 @@
   </div>
   <div class="col col-md-6">
     <div class="card">
-      <h5 class="card-header">{% trans "Uncovered, Not Claimed by This Sync" %}</h5>
+      <h5 class="card-header" id="uncovered-unclaimed">{% trans "Uncovered, Not Claimed by This Sync" %}</h5>
       <div class="card-body">
         {% if payload.unmanaged.unclaimed_sample %}
           <p class="text-muted mt-0">{% trans "Devices this sync never created: another source, an operator, or an old SNMP endpoint import. Listed so the count above can be accounted for — this sync makes no claim about them, tags none of them, and never prunes them." %}</p>

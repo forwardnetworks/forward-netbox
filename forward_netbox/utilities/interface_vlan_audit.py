@@ -120,8 +120,11 @@ def clear_cross_site_untagged_vlans(runner, device_ids, *, using=None):
             f"{total} interface(s) on {len(by_device)} device(s) this sync wrote "
             f"carry an untagged VLAN from a different site ({devices}). NetBox "
             "will refuse writes to those interfaces. Left in place because this "
-            "sync does not manage dcim.interface; see "
-            "forward_interface_vlan_audit for the rows and the remedy."
+            "sync does not manage dcim.interface. The remedy is to correct the "
+            "VLAN's site in NetBox or the device's site in Forward so the two "
+            "agree; enabling the interface model lets the next sync clear the "
+            "mismatched VLAN itself. Export the support bundle for the per-row "
+            "detail."
         )
     record = getattr(runner, "_record_aggregated_skip_warning", None)
     if callable(record):

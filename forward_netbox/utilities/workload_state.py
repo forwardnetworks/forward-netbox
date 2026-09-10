@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import zlib
 from dataclasses import dataclass
 from dataclasses import replace
@@ -14,6 +15,8 @@ from ..exceptions import ForwardQueryError
 from .delete_policy import should_suppress_aci_deletes
 from .sync_contracts import canonical_cable_endpoint_identity
 from .sync_contracts import row_coalesce_field_is_complete
+
+logger = logging.getLogger(__name__)
 
 PAYLOAD_VERSION = 2
 STATE_ACTIONS = frozenset({"upsert", "delete"})
@@ -605,6 +608,54 @@ def _reference_protected_pks(model_class, pks, *, ignore_labels=()):
     if not _blocked(objects):
         return set()
     return {obj.pk for obj in objects if _blocked([obj])}
+
+
+def describe_delete_blockers(instance):
+    """What the database would refuse this delete over, as ``[(label, count)]``.
+
+    The database's own verdict, via ``Collector.collect`` - the code
+    ``.delete()`` runs - because a scan of the model's own reverse relations is
+    not enough. A customer deleting a device by hand was refused twice: once by
+    this plugin's ownership rows, and once by ten ``netbox_routing`` BGP rows
+    that ``protecting_relations(Device)`` does not name at all, since a
+    ``BGPRouter`` attaches through a generic key and the protection only appears
+    further down the cascade (router, then scope, then peer).
+
+    Read-only and never raises: this feeds a panel, and a diagnostic that can
+    take the page down is worse than no diagnostic. An empty list means "the
+    collector found no blocker", which is not a promise the delete will succeed.
+
+    It walks the cascade the delete would perform, so it is not free on a device
+    with a large interface tree - the same work NetBox's own delete
+    confirmation does, paid once per page view.
+    """
+    from django.db import DEFAULT_DB_ALIAS
+    from django.db.models.deletion import Collector
+    from django.db.models.deletion import ProtectedError
+    from django.db.models.deletion import RestrictedError
+
+    if instance is None or instance.pk is None:
+        return []
+    collector = Collector(using=DEFAULT_DB_ALIAS)
+    try:
+        collector.collect([instance])
+    except (ProtectedError, RestrictedError) as exc:
+        blockers = (
+            getattr(exc, "protected_objects", None)
+            or getattr(exc, "restricted_objects", None)
+            or ()
+        )
+        tally = {}
+        for obj in blockers:
+            label = type(obj)._meta.label
+            tally[label] = tally.get(label, 0) + 1
+        return sorted(tally.items(), key=lambda item: (-item[1], item[0]))
+    except JobTimeoutException:
+        raise
+    except Exception:  # noqa: BLE001 - a panel must not fail on diagnostics
+        logger.warning("Delete-blocker discovery failed", exc_info=True)
+        return []
+    return []
 
 
 def _claimed_device_delete_identities(delete_entries):

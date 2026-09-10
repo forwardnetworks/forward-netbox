@@ -60,6 +60,18 @@ class ButtonJobEnqueueTest(TestCase):
         for kind, suffix in expected.items():
             self.assertEqual(BUTTON_JOB_SPECS[kind][1], suffix, kind)
 
+    def test_every_kind_is_fully_specified(self):
+        # The pinned names above cover only the kinds other code matches on.
+        # Everything in the registry still needs a whole spec, because a kind
+        # missing a suffix enqueues "sync - " and a kind missing a permission
+        # would be checked against the empty string.
+        for kind, spec in BUTTON_JOB_SPECS.items():
+            with self.subTest(kind=kind):
+                path, suffix, permission = spec
+                self.assertRegex(path, r"^forward_netbox\.jobs\.\w+Job$", kind)
+                self.assertTrue(suffix.strip(), kind)
+                self.assertIn(".", permission, kind)
+
     def test_enqueue_uses_spec_path_and_name(self):
         with patch(
             "forward_netbox.jobs.enqueue_forward_job",
@@ -120,11 +132,11 @@ class ButtonJobAPIActionTest(TestCase):
     JobSerializer on success, 202 already_running when an equivalent job is
     active (idempotent for retry-blind schedulers)."""
 
-    KINDS = (
-        ("dependency_preview", "dependency preview"),
-        ("prune_orphans", "prune orphans"),
-        ("tag_delete_eligible_ipam", "tag delete-eligible IPAM"),
-    )
+    # Derived, not listed: a hardcoded three left prune_uncovered and
+    # prune_stale_hardware_notices with no REST parity and nothing noticed.
+    # The action method is named after the kind, which is what makes this
+    # enumerable at all.
+    KINDS = tuple((kind, spec[1]) for kind, spec in BUTTON_JOB_SPECS.items())
 
     @classmethod
     def setUpTestData(cls):
@@ -241,14 +253,19 @@ class ButtonJobRunnerParityTest(TestCase):
         )
 
     def test_meta_names_match_button_spec_suffixes(self):
-        from forward_netbox.jobs import PruneOrphansJob
-        from forward_netbox.jobs import TagDeleteEligibleIpamJob
+        # Over every kind: the spec's dotted path must import, must be a
+        # JobRunner, and its `name` must equal the suffix the enqueue path
+        # builds the job name from. A mismatch means the overlap guard looks
+        # for a name the runner never writes, so the button stacks duplicates.
+        from django.utils.module_loading import import_string
 
-        self.assertEqual(PruneOrphansJob.name, BUTTON_JOB_SPECS["prune_orphans"][1])
-        self.assertEqual(
-            TagDeleteEligibleIpamJob.name,
-            BUTTON_JOB_SPECS["tag_delete_eligible_ipam"][1],
-        )
+        from netbox.jobs import JobRunner
+
+        for kind, (path, suffix, _permission) in BUTTON_JOB_SPECS.items():
+            with self.subTest(kind=kind):
+                runner_cls = import_string(path)
+                self.assertTrue(issubclass(runner_cls, JobRunner), kind)
+                self.assertEqual(runner_cls.name, suffix, kind)
 
     def test_fixed_name_occurrence_blocks_same_sync_button(self):
         Job.objects.create(
@@ -276,16 +293,35 @@ class ButtonJobRunnerParityTest(TestCase):
             enqueue_button_job(self.sync, "prune_orphans", None)
         enqueue.assert_called_once()
 
-    def test_runner_run_invokes_work(self):
-        from forward_netbox.jobs import PruneOrphansJob
-        from forward_netbox.jobs import TagDeleteEligibleIpamJob
+    # Every kind, not a sample: a runner whose `run` never reaches its work
+    # function is a button that completes green having done nothing.
+    WORK_FUNCTIONS = {
+        "dependency_preview": "_dependency_preview_work",
+        "prune_orphans": "_prune_forward_orphans_work",
+        "prune_stale_hardware_notices": "_prune_stale_hardware_notices_work",
+        "prune_uncovered": "_prune_uncovered_devices_work",
+        "recover_stuck_sync": "_recover_stuck_sync_work",
+        "tag_delete_eligible_ipam": "_tag_delete_eligible_ipam_work",
+    }
 
-        pairs = (
-            (PruneOrphansJob, "forward_netbox.jobs._prune_forward_orphans_work"),
+    def test_every_kind_names_its_work_function(self):
+        # Fails when a kind is added without extending WORK_FUNCTIONS, which
+        # is what keeps test_runner_run_invokes_work exhaustive rather than
+        # exhaustive-as-of-whenever-it-was-written.
+        self.assertEqual(
+            set(self.WORK_FUNCTIONS),
+            set(BUTTON_JOB_SPECS),
+        )
+
+    def test_runner_run_invokes_work(self):
+        from django.utils.module_loading import import_string
+
+        pairs = tuple(
             (
-                TagDeleteEligibleIpamJob,
-                "forward_netbox.jobs._tag_delete_eligible_ipam_work",
-            ),
+                import_string(BUTTON_JOB_SPECS[kind][0]),
+                f"forward_netbox.jobs.{work}",
+            )
+            for kind, work in sorted(self.WORK_FUNCTIONS.items())
         )
         for index, (runner_cls, work_path) in enumerate(pairs):
             with self.subTest(runner=runner_cls.__name__):

@@ -324,7 +324,29 @@ class ForwardIngestionIssueTable(NetBoxTable):
     phase = columns.ChoiceFieldColumn()
     coalesce_fields = tables.Column(verbose_name=_("Coalesce Fields"))
     defaults = tables.Column(verbose_name=_("Defaults"))
+    # Which of these rows actually holds the baseline back. Without it the
+    # list is a flat wall of a few hundred entries against a "not ready"
+    # banner, and the only thing that could separate them was a command.
+    blocking = tables.Column(
+        empty_values=(),
+        orderable=False,
+        verbose_name=_("Blocking"),
+    )
     actions = None
+
+    def render_blocking(self, record):
+        # Computed from the row, not annotated: this table renders on the
+        # ingestion detail tab as well as the list view, and an annotation
+        # only one caller supplies is a column that breaks on the other.
+        from .utilities.ingestion_issues import is_blocking_issue
+
+        if is_blocking_issue(record):
+            return format_html(
+                '<span class="badge text-bg-red">{}</span>', _("Blocking")
+            )
+        return format_html(
+            '<span class="badge text-bg-gray">{}</span>', _("Non-blocking")
+        )
 
     def _render_json(self, value):
         payload = json_safe_value(value or {})
@@ -343,6 +365,7 @@ class ForwardIngestionIssueTable(NetBoxTable):
         model = ForwardIngestionIssue
         fields = (
             "timestamp",
+            "blocking",
             "phase",
             "model",
             "exception",
@@ -352,6 +375,7 @@ class ForwardIngestionIssueTable(NetBoxTable):
         )
         default_columns = (
             "timestamp",
+            "blocking",
             "phase",
             "model",
             "exception",

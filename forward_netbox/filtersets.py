@@ -162,10 +162,24 @@ class ForwardIngestionIssueFilterSet(BaseFilterSet):
         choices=ForwardIngestionPhaseChoices,
         null_value=None,
     )
+    # "Which of these actually stops the baseline" was answerable only by
+    # running a command against the ingestion. Same predicate as readiness.
+    blocking = django_filters.BooleanFilter(
+        method="filter_blocking",
+        label="Blocks baseline readiness",
+    )
 
     class Meta:
         model = ForwardIngestionIssue
         fields = ("phase", "model", "timestamp", "exception", "message")
+
+    def filter_blocking(self, queryset, name, value):
+        from .utilities.ingestion_issues import blocking_issue_q
+
+        if value is None:
+            return queryset
+        predicate = blocking_issue_q()
+        return queryset.filter(predicate if value else ~predicate)
 
     def search(self, queryset, name, value):
         if not value.strip():

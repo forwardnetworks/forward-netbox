@@ -22,9 +22,11 @@ from django.contrib.contenttypes.models import ContentType
 from django.test import Client
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 from extras.models import Tag
 
 from forward_netbox.choices import ForwardSyncStatusChoices
+from forward_netbox.models import ForwardDeviceAbsence
 from forward_netbox.models import ForwardDeviceIdentity
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardSource
@@ -361,6 +363,127 @@ class UncoveredListPagesTest(_Fixture):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "gone from Forward")
         for name in ("forwardsync_uncovered_devices", "forwardsync_unclaimed_devices"):
+            self.assertContains(
+                response,
+                reverse(f"plugins:forward_netbox:{name}", kwargs={"pk": self.sync.pk}),
+            )
+
+
+class OrphanAndBackfilledListPagesTest(_Fixture):
+    """The two remaining sets the panel counted but would not list.
+
+    Prune orphans deletes every out-of-scope device and the page showed 25 of
+    them; the backfilled set had the same 25-row ceiling. Both were listable
+    only by reading a command's JSON.
+    """
+
+    def _client(self):
+        user = get_user_model().objects.create_user(
+            username="admin-lists", password="x"
+        )
+        user.is_superuser = True
+        user.is_staff = True
+        user.save()
+        client = Client()
+        client.force_login(user)
+        return client
+
+    def _stored_report(self):
+        # An absence row is one half of "this sync previously managed it", so
+        # this device is out of scope without needing a live scope claim.
+        gone = self._device("orphan-gone")
+        now = timezone.now()
+        ForwardDeviceAbsence.objects.create(
+            sync=self.sync,
+            device=gone,
+            consecutive_absent_runs=1,
+            first_absent_at=now,
+            last_absent_at=now,
+        )
+        self._device("backfilled-here")
+        fwd_client = Mock()
+        fwd_client.run_nqe_query = Mock(
+            side_effect=[
+                [
+                    # Tagged but never completed => backfilled.
+                    {
+                        "name": "backfilled-here",
+                        "completed": False,
+                        "tagNames": ["Prod_Core"],
+                    },
+                ],
+                [],
+            ]
+        )
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            from forward_netbox.jobs import _scope_reconciliation_work
+
+            job = Job.objects.create(
+                object_type=ContentType.objects.get_for_model(ForwardSync),
+                object_id=self.sync.pk,
+                name=f"{self.sync.name} - scope reconciliation",
+                status=JobStatusChoices.STATUS_COMPLETED,
+                job_id=uuid4(),
+            )
+            _scope_reconciliation_work(job)
+
+    def test_the_prune_orphans_target_set_is_listable_in_full(self):
+        self._stored_report()
+        response = self._client().get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_out_of_scope_devices",
+                kwargs={"pk": self.sync.pk},
+            )
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "orphan-gone")
+        self.assertNotContains(response, "backfilled-here")
+
+    def test_the_backfilled_set_is_listable_in_full(self):
+        self._stored_report()
+        response = self._client().get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_present_backfilled_devices",
+                kwargs={"pk": self.sync.pk},
+            )
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "backfilled-here")
+        self.assertNotContains(response, "orphan-gone")
+
+    def test_without_a_report_both_pages_say_so(self):
+        client = self._client()
+        for name in (
+            "forwardsync_out_of_scope_devices",
+            "forwardsync_present_backfilled_devices",
+        ):
+            with self.subTest(view=name):
+                response = client.get(
+                    reverse(
+                        f"plugins:forward_netbox:{name}", kwargs={"pk": self.sync.pk}
+                    )
+                )
+                self.assertEqual(response.status_code, 200)
+                self.assertContains(
+                    response, "No scope reconciliation report has run yet"
+                )
+
+    def test_the_panel_links_both_new_lists(self):
+        self._stored_report()
+        response = self._client().get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                kwargs={"pk": self.sync.pk},
+            )
+        )
+        self.assertEqual(response.status_code, 200)
+        for name in (
+            "forwardsync_out_of_scope_devices",
+            "forwardsync_present_backfilled_devices",
+        ):
             self.assertContains(
                 response,
                 reverse(f"plugins:forward_netbox:{name}", kwargs={"pk": self.sync.pk}),
