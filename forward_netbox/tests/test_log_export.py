@@ -714,3 +714,389 @@ class ForwardIngestionLogExportViewTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIsNone(json.loads(response.content)["latest_dependency_preview"])
+
+
+class SupportBundleTroubleshootingDepthTest(TestCase):
+    """What we can diagnose from a bundle when the operator cannot fix it.
+
+    The GUI now answers every operator question, but the bundle is what reaches
+    us when the answer is "this needs the vendor". It carried the ingestion and
+    merge jobs and nothing about the scope panel, the operator buttons, or the
+    ownership rows that make a device refuse a delete.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        User = get_user_model()
+        cls.user = User.objects.create_superuser(
+            username="bundle-depth-admin",
+            password="TestPassword123!",
+            email="bundle@example.com",
+        )
+        cls.source = ForwardSource.objects.create(
+            name="bundle-depth-src",
+            type="saas",
+            url="https://fwd.app",
+            parameters={
+                "username": "user@example.com",
+                "password": "secret",
+                "verify": True,
+                "network_id": "net-1",
+            },
+        )
+        cls.sync = ForwardSync.objects.create(
+            name="bundle-depth-sync",
+            source=cls.source,
+            parameters={"snapshot_id": "latestProcessed"},
+        )
+
+    def _bundle(self):
+        self.client.force_login(self.user)
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_support_bundle",
+                kwargs={"pk": self.sync.pk},
+            )
+        )
+        self.assertEqual(response.status_code, 200)
+        return json.loads(response.content), response.content.decode()
+
+    def test_a_bare_sync_exports_every_section(self):
+        # The bundle must be answerable before anything has run: a deployment
+        # that has never completed a sync is exactly the one that needs help.
+        payload, _raw = self._bundle()
+        for section in (
+            "scope_reconciliation",
+            "operator_action_jobs",
+            "ownership_records",
+            "stuck_sync",
+        ):
+            self.assertIn(section, payload, section)
+        self.assertEqual(payload["scope_reconciliation"]["report"], {})
+        self.assertEqual(payload["ownership_records"]["device_identities"], 0)
+
+    def test_every_operator_button_has_a_slot(self):
+        # Derived from BUTTON_JOB_SPECS, so a new button cannot be added
+        # without its last run reaching us.
+        from forward_netbox.utilities.sync_facade import BUTTON_JOB_SPECS
+
+        payload, _raw = self._bundle()
+        self.assertEqual(set(payload["operator_action_jobs"]), set(BUTTON_JOB_SPECS))
+
+    def test_a_refused_prune_arrives_with_its_reason(self):
+        # The job data is where a prune records what refused it, and none of
+        # the button jobs were exported at all.
+        now = timezone.now()
+        Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name=f"{self.sync.name} - prune uncovered devices",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id="123e4567-e89b-12d3-a456-426614174501",
+            created=now,
+            started=now,
+            completed=now,
+            data={
+                "deleted": 0,
+                "protected": {"forward_netbox.forwarddeviceidentity": 3},
+                "refused": "survivable-shrink",
+            },
+        )
+        payload, _raw = self._bundle()
+        prune = payload["operator_action_jobs"]["prune_uncovered"]
+        self.assertIsNotNone(prune)
+        self.assertEqual(prune["data"]["refused"], "survivable-shrink")
+        self.assertEqual(
+            prune["data"]["protected"]["forward_netbox.forwarddeviceidentity"], 3
+        )
+
+    def test_ownership_rows_are_counted_by_claim_type_without_names(self):
+        # The rows behind the ProtectedError a customer hit deleting a device.
+        from dcim.models import Device
+        from dcim.models import DeviceRole
+        from dcim.models import DeviceType
+        from dcim.models import Manufacturer
+        from dcim.models import Site
+        from extras.models import Tag
+
+        from forward_netbox.models import ForwardDeviceAbsence
+        from forward_netbox.models import ForwardDeviceIdentity
+        from forward_netbox.models import ForwardDeviceTagClaim
+        from forward_netbox.models import ForwardIngestion
+
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync, snapshot_id="snap-depth"
+        )
+        mfr = Manufacturer.objects.create(name="MfrB", slug="mfr-b")
+        dt = DeviceType.objects.create(manufacturer=mfr, model="dt-b", slug="dt-b")
+        role = DeviceRole.objects.create(name="RoleB", slug="role-b")
+        site = Site.objects.create(name="SiteB", slug="site-b")
+        device = Device.objects.create(
+            name="secret-device-name", device_type=dt, role=role, site=site
+        )
+        ForwardDeviceIdentity.objects.create(
+            sync=self.sync,
+            ingestion=ingestion,
+            source_device_key=device.name,
+            device=device,
+            snapshot_id="snap-depth",
+        )
+        tag = Tag.objects.create(name="Forward Uncovered", slug="forward-uncovered")
+        ForwardDeviceTagClaim.objects.create(
+            sync=self.sync,
+            ingestion=ingestion,
+            device=device,
+            tag=tag,
+            claim_type=ForwardDeviceTagClaim.ClaimType.UNCOVERED,
+            snapshot_id="snap-depth",
+        )
+        now = timezone.now()
+        ForwardDeviceAbsence.objects.create(
+            sync=self.sync,
+            device=device,
+            consecutive_absent_runs=7,
+            first_absent_at=now,
+            last_absent_at=now,
+        )
+
+        payload, raw = self._bundle()
+        records = payload["ownership_records"]
+        self.assertEqual(records["device_identities"], 1)
+        self.assertEqual(records["device_tag_claims_by_type"]["uncovered"], 1)
+        self.assertEqual(records["device_absences"], 1)
+        # The streak is what the prune quarantine reads, so it has to travel.
+        self.assertEqual(records["longest_absence_streak"], 7)
+        # Counts, never names: the identity's source key IS the device name.
+        self.assertNotIn("secret-device-name", raw)
+
+    def test_the_scope_report_travels_as_numbers_not_names(self):
+        now = timezone.now()
+        Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name=f"{self.sync.name} - scope reconciliation",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id="123e4567-e89b-12d3-a456-426614174502",
+            created=now,
+            started=now,
+            completed=now,
+            data={
+                "netbox_out_of_scope": 105,
+                "out_of_scope_sample": ["private-name-1", "private-name-2"],
+                "out_of_scope_device_ids": [11, 22, 33],
+                "out_of_scope_absence": {
+                    "available": True,
+                    "absent_from_snapshot": 100,
+                    "present_untagged": 5,
+                },
+                "unmanaged": {
+                    "owned_prune_candidates": 100,
+                    "owned_untagged_sample": ["private-name-3"],
+                    "owned_quarantine": {"held": 2, "required_runs": 3},
+                },
+                "present_backfilled_detail_sample": [{"name": "private-name-4"}],
+                "backfill_reason_breakdown": {"AUTHENTICATION_FAILED": 52},
+            },
+        )
+        payload, raw = self._bundle()
+        report = payload["scope_reconciliation"]["report"]
+        # The numbers that explain the panel all survive.
+        self.assertEqual(report["netbox_out_of_scope"], 105)
+        self.assertEqual(report["out_of_scope_absence"]["absent_from_snapshot"], 100)
+        self.assertEqual(report["unmanaged"]["owned_prune_candidates"], 100)
+        self.assertEqual(report["unmanaged"]["owned_quarantine"]["held"], 2)
+        self.assertEqual(
+            report["backfill_reason_breakdown"]["AUTHENTICATION_FAILED"], 52
+        )
+        # Id lists become counts; name samples do not travel at all.
+        self.assertEqual(report["out_of_scope_device_ids_count"], 3)
+        self.assertNotIn("out_of_scope_sample", report)
+        self.assertNotIn("present_backfilled_detail_sample", report)
+        for name in (
+            "private-name-1",
+            "private-name-2",
+            "private-name-3",
+            "private-name-4",
+        ):
+            self.assertNotIn(name, raw)
+
+    def test_blocking_issues_are_exported_before_non_blocking_ones(self):
+        from forward_netbox.models import ForwardIngestion
+        from forward_netbox.models import ForwardIngestionIssue
+
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync, snapshot_id="snap-issues"
+        )
+        # Non-blocking rows created FIRST, so pk order alone would truncate the
+        # blocking one away on a large ingestion.
+        for index in range(3):
+            ForwardIngestionIssue.objects.create(
+                ingestion=ingestion,
+                phase="sync",
+                model="dcim.interface",
+                exception="ForwardDependencySkipError",
+                message=f"deferred {index}",
+            )
+        ForwardIngestionIssue.objects.create(
+            ingestion=ingestion,
+            phase="merge",
+            model="dcim.device",
+            exception="IntegrityError",
+            message="the one that matters",
+        )
+        payload, _raw = self._bundle()
+        issues = payload["latest_ingestion_issues"]
+        self.assertEqual(issues["total"], 4)
+        self.assertEqual(issues["blocking_total"], 1)
+        self.assertTrue(issues["issues"][0]["blocking"])
+        self.assertEqual(issues["issues"][0]["message"], "the one that matters")
+
+    def test_the_environment_names_the_versions_behind_the_bundle(self):
+        # Without it every bundle costs a round trip to ask what is installed,
+        # and an optional plugin at an unvalidated version silently disables a
+        # whole integration.
+        from forward_netbox import NetboxForwardConfig
+
+        payload, _raw = self._bundle()
+        environment = payload["environment"]
+        self.assertEqual(environment["plugin_version"], NetboxForwardConfig.version)
+        self.assertTrue(environment["netbox_version"])
+        self.assertTrue(environment["python_version"])
+        # Every optional integration is named whether installed or not, so
+        # "absent" is a fact in the file rather than a missing key.
+        self.assertIn("netbox_routing", environment["optional_plugins"])
+        self.assertIn(
+            "netbox_routing",
+            environment["optional_plugin_versions_validated_against"],
+        )
+
+    def test_the_delete_blocker_survey_splits_ours_from_other_plugins(self):
+        # THE question behind "the uncovered count is not going down": whether
+        # the blockers are ours, which the prune releases itself, or another
+        # plugin's, which it cannot.
+        from dcim.models import Device
+        from dcim.models import DeviceRole
+        from dcim.models import DeviceType
+        from dcim.models import Manufacturer
+        from dcim.models import Site
+
+        mfr = Manufacturer.objects.create(name="MfrS", slug="mfr-s")
+        dt = DeviceType.objects.create(manufacturer=mfr, model="dt-s", slug="dt-s")
+        role = DeviceRole.objects.create(name="RoleS", slug="role-s")
+        site = Site.objects.create(name="SiteS", slug="site-s")
+        device = Device.objects.create(
+            name="survey-device", device_type=dt, role=role, site=site
+        )
+        now = timezone.now()
+        Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name=f"{self.sync.name} - scope reconciliation",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id="123e4567-e89b-12d3-a456-426614174503",
+            created=now,
+            started=now,
+            completed=now,
+            data={
+                "out_of_scope_device_ids": [device.pk],
+                "unmanaged": {"owned_untagged_device_ids": [device.pk]},
+            },
+        )
+
+        with patch(
+            "forward_netbox.utilities.workload_state.describe_delete_blockers",
+            return_value=[
+                ("netbox_routing.BGPPeer", 10),
+                ("forward_netbox.ForwardDeviceIdentity", 1),
+            ],
+        ):
+            payload, raw = self._bundle()
+
+        survey = payload["delete_blockers"]
+        # The device appears in both id lists and must be surveyed once.
+        self.assertEqual(survey["target_total"], 1)
+        self.assertEqual(survey["sampled"], 1)
+        self.assertFalse(survey["truncated"])
+        self.assertEqual(survey["devices_with_blockers"], 1)
+        self.assertEqual(
+            survey["other_plugins"]["netbox_routing.BGPPeer"],
+            {"rows": 10, "devices": 1},
+        )
+        self.assertEqual(
+            survey["forward_owned"]["forward_netbox.ForwardDeviceIdentity"],
+            {"rows": 1, "devices": 1},
+        )
+        self.assertNotIn("survey-device", raw)
+
+    def test_the_survey_admits_its_bounds(self):
+        # A survey that looks exhaustive and is not would have us conclude a
+        # blocker is systemic from a capped sample.
+        from forward_netbox import views
+
+        now = timezone.now()
+        Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name=f"{self.sync.name} - scope reconciliation",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id="123e4567-e89b-12d3-a456-426614174504",
+            created=now,
+            started=now,
+            completed=now,
+            data={
+                "out_of_scope_device_ids": list(
+                    range(1, views._SUPPORT_BUNDLE_BLOCKER_SAMPLE + 6)
+                )
+            },
+        )
+        payload, _raw = self._bundle()
+        survey = payload["delete_blockers"]
+        self.assertEqual(
+            survey["target_total"], views._SUPPORT_BUNDLE_BLOCKER_SAMPLE + 5
+        )
+        self.assertTrue(survey["truncated"])
+        self.assertFalse(survey["stopped_on_time_budget"])
+
+    def test_the_survey_gives_up_before_the_bundle_times_out(self):
+        # The bundle is a synchronous GET and the cost per device is the size
+        # of its cascade. A partial survey that says so beats a 504.
+        from dcim.models import Device
+        from forward_netbox import views
+        from dcim.models import DeviceRole
+        from dcim.models import DeviceType
+        from dcim.models import Manufacturer
+        from dcim.models import Site
+
+        mfr = Manufacturer.objects.create(name="MfrT", slug="mfr-t")
+        dt = DeviceType.objects.create(manufacturer=mfr, model="dt-t", slug="dt-t")
+        role = DeviceRole.objects.create(name="RoleT", slug="role-t")
+        site = Site.objects.create(name="SiteT", slug="site-t")
+        pks = [
+            Device.objects.create(
+                name=f"slow-{index}", device_type=dt, role=role, site=site
+            ).pk
+            for index in range(3)
+        ]
+        now = timezone.now()
+        Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name=f"{self.sync.name} - scope reconciliation",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id="123e4567-e89b-12d3-a456-426614174505",
+            created=now,
+            started=now,
+            completed=now,
+            data={"out_of_scope_device_ids": pks},
+        )
+
+        # A budget already spent when the loop starts: the first device is
+        # surveyed, the rest are declined and the bundle says so.
+        with patch.object(views, "_SUPPORT_BUNDLE_BLOCKER_BUDGET_SECONDS", -1.0):
+            payload, _raw = self._bundle()
+
+        survey = payload["delete_blockers"]
+        self.assertEqual(survey["target_total"], 3)
+        self.assertEqual(survey["sampled"], 0)
+        self.assertTrue(survey["stopped_on_time_budget"])
+        self.assertTrue(survey["truncated"])
