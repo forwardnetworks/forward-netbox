@@ -338,11 +338,28 @@ class ForwardIngestionIssueTable(NetBoxTable):
         # Computed from the row, not annotated: this table renders on the
         # ingestion detail tab as well as the list view, and an annotation
         # only one caller supplies is a column that breaks on the other.
-        from .utilities.ingestion_issues import is_blocking_issue
+        #
+        # Three states, not two. "This kind of issue blocks readiness" and
+        # "this issue blocked anything" are different questions, and a
+        # validation rejection the merge recorded and promoted over answers
+        # yes to the first and no to the second.
+        from .utilities.ingestion_issues import issue_blocking_disposition
 
-        if is_blocking_issue(record):
+        disposition = issue_blocking_disposition(record)
+        if disposition == "blocking":
             return format_html(
                 '<span class="badge text-bg-red">{}</span>', _("Blocking")
+            )
+        if disposition == "promoted_over":
+            return format_html(
+                '<span class="badge text-bg-warning" title="{}">{}</span>',
+                _(
+                    "NetBox refused this row on its own validation rules. "
+                    "Re-running cannot change that, so it was recorded and the "
+                    "baseline was promoted over it. Resolve the underlying row "
+                    "in NetBox to converge it."
+                ),
+                _("Promoted over"),
             )
         return format_html(
             '<span class="badge text-bg-gray">{}</span>', _("Non-blocking")

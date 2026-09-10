@@ -32,6 +32,33 @@ def is_blocking_issue(issue):
     )
 
 
+def issue_blocking_disposition(issue):
+    """What this row actually did: "blocking", "promoted_over", or "none".
+
+    The class predicate above answers "would an issue of this kind hold the
+    baseline back". It is not the same question as "did it", and conflating the
+    two mislabels the row a customer sees most.
+
+    A NetBox validation rejection is recorded and skipped: re-running cannot
+    change it, so the merge records the row and promotes the baseline over it.
+    `health_checks.py` gets this right by testing `skipped_change_count` BEFORE
+    `has_blocking_issues`, so the ingestion reports "promoted over them". The
+    row-level column had no such ordering and would have labelled a customer's
+    recurring `ipam.ipaddress` primary-IP rejection "Blocking" on a run whose
+    baseline had promoted - the exact disagreement between a list and the
+    banner it explains that one shared predicate was meant to prevent.
+
+    `baseline_ready` is the fact that settles it: if the baseline promoted,
+    nothing was blocked, whatever class the row belongs to.
+    """
+    if not is_blocking_issue(issue):
+        return "none"
+    ingestion = getattr(issue, "ingestion", None)
+    if ingestion is not None and getattr(ingestion, "baseline_ready", False):
+        return "promoted_over"
+    return "blocking"
+
+
 def blocking_issues_queryset(ingestion):
     """Return ingestion issues that should block baseline readiness."""
     return ingestion.issues.filter(blocking_issue_q())

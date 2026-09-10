@@ -74,6 +74,10 @@
        title="{% trans 'Everything needed to diagnose this sync without shell access: the scope reconciliation report, the last run of every operator action, the ownership records behind a refused delete, why the cleanup targets cannot be deleted, the blocking ingestion issues, and the installed versions. Counts and schema identifiers only - no device names or collected values. Send this rather than screenshots.' %}">
       <i class="mdi mdi-download" aria-hidden="true"></i>&nbsp;{% trans "Export Support Bundle" %}
     </a>
+    {# Same content, compressed - and the one to send on a large estate: the #}
+    {# bundle is repetitive JSON, so deflate takes it down by roughly an     #}
+    {# order of magnitude. A password switches the archive to AES rather     #}
+    {# than plain deflate.                                                   #}
     <form action="{{ support_bundle_zip_url }}" method="post" class="d-inline-flex align-items-center gap-2">
       {% csrf_token %}
       <input
@@ -84,7 +88,8 @@
         placeholder="{% trans 'Password' %}"
         autocomplete="off"
       >
-      <button type="submit" class="btn btn-outline-secondary">
+      <button type="submit" class="btn btn-outline-secondary"
+              title="{% trans 'The same bundle, compressed - prefer this one, and on a large estate prefer it strongly. Setting a password encrypts the archive with AES instead of storing it plainly.' %}">
         <i class="mdi mdi-zip-box" aria-hidden="true"></i>&nbsp;{% trans "Export ZIP" %}
       </button>
     </form>

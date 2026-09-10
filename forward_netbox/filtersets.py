@@ -174,11 +174,18 @@ class ForwardIngestionIssueFilterSet(BaseFilterSet):
         fields = ("phase", "model", "timestamp", "exception", "message")
 
     def filter_blocking(self, queryset, name, value):
+        from django.db.models import Q
+
         from .utilities.ingestion_issues import blocking_issue_q
 
         if value is None:
             return queryset
-        predicate = blocking_issue_q()
+        # Matches the column: a row whose ingestion promoted its baseline
+        # blocked nothing, so it is not offered as blocking however its class
+        # is scored. Filtering to rows the column calls Blocking and getting
+        # back rows it calls Promoted over is the same disagreement in the
+        # other direction.
+        predicate = blocking_issue_q() & Q(ingestion__baseline_ready=False)
         return queryset.filter(predicate if value else ~predicate)
 
     def search(self, queryset, name, value):

@@ -348,6 +348,47 @@ class BlockingIssueSurfaceTest(TestCase):
         self.assertEqual(by_queryset, {self.blocking.pk})
         self.assertEqual(by_row, by_queryset)
 
+    def test_a_promoted_over_rejection_is_not_called_blocking(self):
+        """The row a customer sees on every run.
+
+        A NetBox validation rejection is recorded and skipped, and the merge
+        promotes the baseline over it - `health_checks.py` says so by testing
+        `skipped_change_count` before `has_blocking_issues`. The row-level
+        column had no such ordering, so it labelled a recurring
+        `ipam.ipaddress` primary-IP rejection "Blocking" on a run whose
+        baseline had promoted.
+        """
+        from forward_netbox.utilities.ingestion_issues import (
+            issue_blocking_disposition,
+        )
+
+        # Nothing promoted yet: the class predicate stands.
+        self.assertEqual(issue_blocking_disposition(self.blocking), "blocking")
+        self.assertEqual(issue_blocking_disposition(self.optional), "none")
+        self.assertEqual(issue_blocking_disposition(self.skipped), "none")
+
+        self.ingestion.baseline_ready = True
+        self.ingestion.save(update_fields=["baseline_ready"])
+        self.blocking.refresh_from_db()
+        self.assertEqual(issue_blocking_disposition(self.blocking), "promoted_over")
+
+        response = self._client().get(
+            reverse("plugins:forward_netbox:forwardingestionissue_list")
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Promoted over")
+
+    def test_the_filter_and_the_column_agree_after_promotion(self):
+        # Filtering to Blocking and getting back rows the column calls
+        # Promoted over is the same disagreement in the other direction.
+        self.ingestion.baseline_ready = True
+        self.ingestion.save(update_fields=["baseline_ready"])
+        client = self._client()
+        url = reverse("plugins:forward_netbox:forwardingestionissue_list")
+        response = client.get(url, {"blocking": "true"})
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "duplicate key")
+
     def test_the_list_marks_each_row(self):
         response = self._client().get(
             reverse("plugins:forward_netbox:forwardingestionissue_list")
