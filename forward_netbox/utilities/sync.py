@@ -72,6 +72,7 @@ from .sync_primitives import (
     upsert_values_from_defaults as sync_upsert_values_from_defaults,
 )
 from .sync_reporting import ACI_EPG_BRIDGE_DOMAIN_MISSING_REASON
+from .sync_reporting import ACI_FILTER_ENTRY_PORT_RANGE_REASON
 from .sync_reporting import ACI_NODE_DEVICE_AMBIGUOUS_REASON
 from .sync_reporting import ACI_NODE_DEVICE_MISSING_REASON
 from .sync_reporting import apply_model_rows as apply_sync_model_rows
@@ -305,6 +306,7 @@ class ForwardSyncRunner(ForwardSyncRunnerContractMixin, ForwardSyncRunnerAdapter
             *ROUTING_POLICY_ROLLUP_REASONS,
             ACI_NODE_DEVICE_AMBIGUOUS_REASON,
             ACI_EPG_BRIDGE_DOMAIN_MISSING_REASON,
+            ACI_FILTER_ENTRY_PORT_RANGE_REASON,
             ACI_NODE_DEVICE_MISSING_REASON,
         }
     )

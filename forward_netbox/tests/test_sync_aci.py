@@ -1255,6 +1255,41 @@ class TenantPolicyAdapterTest(TestCase):
         self.assertTrue(values["stateful"])
         self.assertEqual(runner.upserts[-1]["coalesce_sets"], [("aci_filter", "name")])
 
+    def test_an_ephemeral_port_range_is_kept_in_the_description(self):
+        # The plugin's port fields are small integers (32767); 49152-65535 is
+        # what a real fabric's filter entries carried.
+        runner = _ACIRunner()
+        apply_netbox_cisco_aci_acifilterentry(
+            runner,
+            {
+                "fabric_name": "fabric-a",
+                "tenant_name": "TN-A",
+                "filter_name": "FT-EPH",
+                "name": "e-eph",
+                "ether_type": "ip",
+                "ip_protocol": "tcp",
+                "source_port_from": "unspecified",
+                "source_port_to": "unspecified",
+                "destination_port_from": "49152",
+                "destination_port_to": "65535",
+                "tcp_rules": "",
+                "match_only_fragments": False,
+                "arp_opcode": "unspecified",
+                "stateful": False,
+                "description": "",
+            },
+        )
+        values = runner.upserts[-1]["values"]
+        self.assertEqual(
+            (values["destination_port_from"], values["destination_port_to"]),
+            (None, None),
+        )
+        self.assertIn("dst 49152-65535", values["description"])
+        self.assertEqual(
+            [w["reason"] for w in runner.skip_warnings],
+            ["aci-filter-entry-port-out-of-range"],
+        )
+
     def test_previews_classify_from_the_leaf_upsert(self):
         runner = _ACIRunner()
         runner.last_upsert_would_change = False

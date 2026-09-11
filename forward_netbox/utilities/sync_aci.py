@@ -2,6 +2,7 @@ from django.core.exceptions import ValidationError
 
 from ..exceptions import ForwardQueryError
 from .sync_reporting import ACI_EPG_BRIDGE_DOMAIN_MISSING_REASON
+from .sync_reporting import ACI_FILTER_ENTRY_PORT_RANGE_REASON
 from .sync_reporting import ACI_NODE_DEVICE_AMBIGUOUS_REASON
 from .sync_reporting import ACI_NODE_DEVICE_MISSING_REASON
 
@@ -686,6 +687,7 @@ _ETHER_TYPES = {
     "mpls-ucast",
     "trill",
 }
+_PORT_MAX = 32767
 _IP_PROTOCOLS = {
     "unspecified",
     "tcp",
@@ -911,6 +913,41 @@ def _ensure_aci_filter_entry(runner, row):
         return None
     tcp_rules = str(row.get("tcp_rules") or "").strip()
     arp_opcode = str(row.get("arp_opcode") or "").strip().lower()
+    # netbox-cisco-aci stores ports in a PositiveSmallIntegerField, whose
+    # database ceiling is 32767; an ephemeral range such as 49152-65535 cannot
+    # be stored. Those bounds are dropped, the verbatim range is kept in the
+    # description, and one rolled-up warning names the entries.
+    ports = {
+        field: _port(row.get(field))
+        for field in (
+            "source_port_from",
+            "source_port_to",
+            "destination_port_from",
+            "destination_port_to",
+        )
+    }
+    description = row.get("description") or ""
+    if any(value is not None and value > _PORT_MAX for value in ports.values()):
+        verbatim = (
+            f"src {row.get('source_port_from')}-{row.get('source_port_to')} "
+            f"dst {row.get('destination_port_from')}-{row.get('destination_port_to')}"
+        )
+        description = (description + " " if description else "") + f"ports: {verbatim}"
+        ports = {
+            field: (None if value is not None and value > _PORT_MAX else value)
+            for field, value in ports.items()
+        }
+        warn = getattr(runner, "_record_aggregated_skip_warning", None)
+        if warn is not None:
+            warn(
+                model_string="netbox_cisco_aci.acifilterentry",
+                reason=ACI_FILTER_ENTRY_PORT_RANGE_REASON,
+                warning_message=(
+                    f"Stored filter entry `{row['name']}` without ports above "
+                    f"{_PORT_MAX}: {verbatim}."
+                ),
+                sample=f"{row['filter_name']}/{row['name']}",
+            )
     values = _aci_model_values(
         runner,
         ACIFilterEntry,
@@ -921,17 +958,14 @@ def _ensure_aci_filter_entry(runner, row):
             "ip_protocol": _choice(
                 row.get("ip_protocol"), _IP_PROTOCOLS, "unspecified"
             ),
-            "source_port_from": _port(row.get("source_port_from")),
-            "source_port_to": _port(row.get("source_port_to")),
-            "destination_port_from": _port(row.get("destination_port_from")),
-            "destination_port_to": _port(row.get("destination_port_to")),
+            **ports,
             "tcp_rules": "" if tcp_rules.lower() == "unspecified" else tcp_rules[:64],
             "match_only_fragments": _coerce_bool(
                 row.get("match_only_fragments"), False
             ),
             "arp_opcode": "" if arp_opcode == "unspecified" else arp_opcode[:8],
             "stateful": _coerce_bool(row.get("stateful"), False),
-            "description": row.get("description") or "",
+            "description": description[:200],
         },
     )
     entry, _ = runner._upsert_values_from_defaults(

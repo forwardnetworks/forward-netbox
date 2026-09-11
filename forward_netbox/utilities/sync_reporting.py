@@ -90,6 +90,7 @@ SEQUENCE_OUT_OF_RANGE_REASON = "sequence-out-of-range"
 ACI_NODE_DEVICE_AMBIGUOUS_REASON = "aci-node-device-ambiguous"
 ACI_NODE_DEVICE_MISSING_REASON = "aci-node-device-missing"
 ACI_EPG_BRIDGE_DOMAIN_MISSING_REASON = "aci-epg-bridge-domain-missing"
+ACI_FILTER_ENTRY_PORT_RANGE_REASON = "aci-filter-entry-port-out-of-range"
 
 ROLLUP_SUMMARY_TEMPLATES = {
     ACI_NODE_DEVICE_MISSING_REASON: (
@@ -97,6 +98,11 @@ ROLLUP_SUMMARY_TEMPLATES = {
         "matches the node name exactly or case-insensitively. Import the "
         "fabric's switches (Forward Devices) before the ACI maps, or rename "
         "them to match. Nodes: {examples}{suffix}."
+    ),
+    ACI_FILTER_ENTRY_PORT_RANGE_REASON: (
+        "Stored {total} {model} row(s) without a port above 32767, the largest "
+        "netbox-cisco-aci stores; the verbatim range is kept in each entry's "
+        "description. Entries: {examples}{suffix}."
     ),
     ACI_EPG_BRIDGE_DOMAIN_MISSING_REASON: (
         "Skipped {total} {model} row(s) whose bridge domain is not imported: "
