@@ -539,3 +539,30 @@ class AcceptanceRunFindingsTest(TestCase):
         )
         self.assertEqual(_routing("CustomPrefix").objects.count(), 1)
         self.assertEqual(_routing("PrefixListEntry").objects.count(), 2)
+
+    def test_a_differently_cased_stored_name_is_renamed_not_duplicated(self):
+        # The catalogue's chosen spelling can change between runs; the
+        # plugin's uniqueness is case-insensitive, so the stored row must be
+        # found and renamed rather than collided with.
+        runner = self._runner()
+        row = {
+            "name": "PL-Out",
+            "device": "pol-a",
+            "device_count": 2,
+            "list_name": "PL-Out",
+            "family": 4,
+            "sequence": 5,
+            "action": "permit",
+            "prefix": "10.0.0.0/8",
+            "ge": None,
+            "le": None,
+            "eq": None,
+        }
+        apply_netbox_routing_prefixlistentry(runner, row)
+        apply_netbox_routing_prefixlistentry(
+            self._runner(), {**row, "name": "PL-OUT", "list_name": "PL-OUT"}
+        )
+        PrefixList = _routing("PrefixList")
+        self.assertEqual(PrefixList.objects.count(), 1)
+        self.assertEqual(PrefixList.objects.get().name, "PL-OUT")
+        self.assertEqual(_routing("PrefixListEntry").objects.count(), 1)

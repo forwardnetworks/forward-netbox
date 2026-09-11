@@ -153,6 +153,36 @@ def _int_or_none(value):
         return None
 
 
+def _policy_parent_coalesce(runner, model, name):
+    """The lookup that finds this parent even when its stored spelling differs.
+
+    netbox-routing's name uniqueness is case-insensitive and the catalogue's
+    chosen spelling can change between runs (the lexically smallest spelling
+    the fleet uses). An exact lookup then misses, the create collides with the
+    differently-cased row, and the row fails on every run. So a miss is
+    retried case-insensitively and a unique hit is renamed in place through
+    its pk; an ambiguous hit falls through to the exact lookup and its clear
+    validation error.
+    """
+    if runner._get_unique_or_raise(model, {"name": name}) is not None:
+        return [("name",)], {}
+    candidates = list(model.objects.filter(name__iexact=name)[:2])
+    if len(candidates) == 1:
+        return [("id",)], {"id": candidates[0].pk}
+    return [("name",)], {}
+
+
+def _ensure_policy_parent(runner, model_string, model, name, values):
+    coalesce_sets, extra = _policy_parent_coalesce(runner, model, name)
+    obj, _ = runner._upsert_values_from_defaults(
+        model_string,
+        model,
+        values={**values, **extra},
+        coalesce_sets=coalesce_sets,
+    )
+    return obj
+
+
 # --- prefix lists -----------------------------------------------------------
 
 
@@ -225,13 +255,9 @@ def ensure_prefix_list(runner, row):
             "description": policy_description(row, row.get("list_name")),
         },
     )
-    prefix_list, _ = runner._upsert_values_from_defaults(
-        "netbox_routing.prefixlist",
-        PrefixList,
-        values=values,
-        coalesce_sets=[("name",)],
+    return _ensure_policy_parent(
+        runner, "netbox_routing.prefixlist", PrefixList, name, values
     )
-    return prefix_list
 
 
 def ensure_prefix_list_entry(runner, row, *, preview=False):
@@ -387,13 +413,9 @@ def ensure_community_list(runner, row):
             "description": policy_description(row, row.get("list_name")),
         },
     )
-    community_list, _ = runner._upsert_values_from_defaults(
-        "netbox_routing.communitylist",
-        CommunityList,
-        values=values,
-        coalesce_sets=[("name",)],
+    return _ensure_policy_parent(
+        runner, "netbox_routing.communitylist", CommunityList, name, values
     )
-    return community_list
 
 
 def ensure_community_list_entry(runner, row, *, preview=False):
@@ -577,13 +599,9 @@ def ensure_route_map(runner, row):
             "description": policy_description(row, row.get("map_name")),
         },
     )
-    route_map, _ = runner._upsert_values_from_defaults(
-        "netbox_routing.routemap",
-        RouteMap,
-        values=values,
-        coalesce_sets=[("name",)],
+    return _ensure_policy_parent(
+        runner, "netbox_routing.routemap", RouteMap, name, values
     )
-    return route_map
 
 
 def ensure_route_map_entry(runner, row, *, preview=False):
