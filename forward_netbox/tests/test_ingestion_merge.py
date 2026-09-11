@@ -1222,7 +1222,9 @@ class MergeIssueRecorderTest(TestCase):
         # Four IntegrityError rows then blocked a customer's baseline for a day
         # with no way to learn which constraint they violated. It now carries a
         # diagnosis — schema identifiers only.
-        self.assertEqual(issue.raw_data, {"exception_type": "Exception"})
+        self.assertEqual(
+            issue.raw_data, {"exception_type": "Exception", "disposition": "failed"}
+        )
         # The exception's own text must still never be persisted or shown: it
         # can quote submitted values.
         self.assertNotIn("Save with update_fields", issue.message)

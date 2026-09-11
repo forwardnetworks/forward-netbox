@@ -859,10 +859,22 @@ def bulk_orm_apply_simple_models(
         )
 
     existing_by_lookup = {lookup_set: {} for lookup_set in lookup_sets}
+    # The lookup keys read the related object (`vlan.site`), not its id, so a
+    # bare fetch pays one query per existing row - per lookup field - to load
+    # it again. On one deployment's drift page that was 102,334 queries and
+    # 240 seconds for 7,902 converged `ipam.vlan` rows reporting In sync: Yes.
+    related_lookup_fields = [
+        field_name
+        for field_name in lookup_fields
+        if getattr(model._meta.get_field(field_name), "many_to_one", False)
+    ]
     if any(lookup_values.values()):
         for field_name, values in lookup_values.items():
             for batch in _chunks(list(values)):
-                for obj in model.objects.filter(**{f"{field_name}__in": batch}):
+                queryset = model.objects.filter(**{f"{field_name}__in": batch})
+                if related_lookup_fields:
+                    queryset = queryset.select_related(*related_lookup_fields)
+                for obj in queryset:
                     for lookup_set in lookup_sets:
                         key = lookup_key_from_object(
                             obj,
@@ -3323,7 +3335,19 @@ def bulk_orm_apply_tree_models(
             for field_name, values in lookup_values.items():
                 if values:
                     query |= Q(**{f"{field_name}__in": values})
-            for obj in model.objects.filter(query).order_by("pk"):
+            # The lookup keys read the related object (`vlan.site`), not its
+            # id, so a bare fetch pays one query per existing row to load it
+            # again - 102,334 queries for 7,902 converged VLANs on one
+            # deployment's drift page. Join the FKs the keys will read.
+            related = [
+                field_name
+                for field_name in fields
+                if getattr(model._meta.get_field(field_name), "many_to_one", False)
+            ]
+            queryset = model.objects.filter(query).order_by("pk")
+            if related:
+                queryset = queryset.select_related(*related)
+            for obj in queryset:
                 existing_objects[obj.pk] = obj
 
         lookup_cache = {lookup_set: {} for lookup_set in lookup_sets}

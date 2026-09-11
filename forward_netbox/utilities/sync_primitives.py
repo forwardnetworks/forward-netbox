@@ -1335,13 +1335,15 @@ def _dependency_tag_rows(model_string, rows):
     }
 
 
-# Models whose rows carry a site and resolve it once per row. Without priming,
-# each row costs a `dcim.site` lookup - two when the slug misses and the name is
-# tried. A deployment with 7,902 converged `ipam.vlan` rows across ~95 sites
-# spent 102,334 queries and 240 of the 766 seconds its whole drift comparison
-# took, on a model reporting In sync: Yes. 2.8.7 fixed this shape for the
-# dependency preview's own lookups and left these models out.
-_SITE_BEARING_MODELS = frozenset({"ipam.vlan", "ipam.prefix"})
+# Models whose rows carry a site, resolve it once per row, and have no primer
+# of their own. Without priming, each row costs a `dcim.site` lookup - two when
+# the slug misses and the name is tried. `ipam.vlan` is not here because its
+# pair primer (`_prime_vlan_cache`) already resolves its sites; what cost a
+# deployment 102,334 queries and 240 of its drift comparison's 766 seconds on
+# 7,902 converged `ipam.vlan` rows was that primer fetching VLANs WITHOUT their
+# site, so every row paid `vlan.site` again afterwards - see the
+# `select_related` there.
+_SITE_BEARING_MODELS = frozenset({"ipam.prefix"})
 
 
 def _prime_dcim_dependency_identity_cache(runner, model_string, rows):
@@ -1753,7 +1755,10 @@ def _prime_vlan_cache(runner, vlan_pairs):
         query = Q()
         for site_id, vids in grouped_by_site.items():
             query |= Q(site_id=site_id, vid__in=sorted(vids))
-        for obj in VLAN.objects.filter(query):
+        # `select_related`: the apply and the comparison both read `vlan.site`
+        # on the cached object, and a VLAN fetched bare re-queries its site on
+        # every row - which is one query per converged row, forever.
+        for obj in VLAN.objects.filter(query).select_related("site"):
             _remember_unique_lookup(
                 runner,
                 VLAN,

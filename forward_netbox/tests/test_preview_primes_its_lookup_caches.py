@@ -195,15 +195,15 @@ class PreviewPrimesItsLookupCachesTest(TestCase):
 class SiteBearingModelsArePrimedTest(TestCase):
     """A converged `ipam.vlan` comparison must not cost a query per row.
 
-    2.8.7 primed the parents the preview resolves and covered the models whose
-    rows name a device, an interface or a tag. `ipam.vlan` names a SITE, and
-    `apply_ipam_vlan` resolves it through `_ensure_site` once per row, so the
-    priming never reached it.
-
-    A deployment's drift page priced the result: 102,334 queries and 239,755 ms
-    for 7,902 `ipam.vlan` rows across ~95 sites - 31% of the whole comparison's
+    A deployment's drift page priced it: 102,334 queries and 239,755 ms for
+    7,902 `ipam.vlan` rows across ~95 sites - 31% of the whole comparison's
     766 seconds - on a model the same page reported as In sync: Yes. Thirteen
     queries per row to confirm nothing had changed.
+
+    The cause was not the priming 2.8.7 added (this path does its own bulk
+    fetch of existing rows). It was that fetch loading each VLAN WITHOUT its
+    site while the lookup key then read `vlan.site` - one query per existing
+    row, per lookup field. The fetch now joins the FKs its keys read.
 
     Both properties, as in the class above: the counts must not move, and a row
     matching something already in NetBox must cost no queries of its own.
@@ -272,15 +272,18 @@ class SiteBearingModelsArePrimedTest(TestCase):
             f"{len(many_queries)} for 4 -> 20 rows)",
         )
 
-    def test_priming_is_what_removes_the_per_row_queries(self):
-        # Pins the cause, not just the symptom: without priming the same rows
-        # must cost visibly more, or this test would keep passing if the
-        # priming were deleted.
+    def test_no_existing_row_reloads_its_site(self):
+        # Pins the cause, not just the symptom: the per-row cost was a
+        # `dcim_site ... WHERE id = N` for every existing VLAN, issued when the
+        # lookup key read `vlan.site` on an object fetched without it.
         rows = self._rows([1, 2, 3, 4, 5])
 
-        with CaptureQueriesContext(connection) as primed:
+        with CaptureQueriesContext(connection) as queries:
             compare_model_rows(None, "ipam.vlan", rows)
-        with CaptureQueriesContext(connection) as cold:
-            self._compare_without_priming(rows)
 
-        self.assertLess(len(primed), len(cold))
+        by_id = [
+            q["sql"]
+            for q in queries.captured_queries
+            if '"dcim_site"."id" =' in q["sql"]
+        ]
+        self.assertEqual(by_id, [], "an existing VLAN reloaded its site per row")
