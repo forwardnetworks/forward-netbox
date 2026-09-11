@@ -867,6 +867,47 @@ class ConfigBackupOverHttpTest(TestCase):
         self.assertNotIn(remote.url, message)
         self.assertNotIn("127.0.0.1", message)
 
+    def test_an_empty_remote_with_no_default_branch_is_refused_with_the_remedy(self):
+        # Over smart HTTP an empty repository advertises nothing; inventing
+        # `main` against a `master` default delivered a backup nobody reads.
+        from dulwich.repo import Repo
+
+        empty = tempfile.TemporaryDirectory(prefix="cfg-backup-empty-")
+        self.addCleanup(empty.cleanup)
+        Repo.init_bare(empty.name).close()
+        remote = _GitHttpRemote(
+            empty.name, username=self.USERNAME, password=self.PASSWORD
+        )
+        self.addCleanup(remote.close)
+        sync = self._sync(remote.url, password=self.PASSWORD)
+
+        with self.assertRaises(ForwardSyncError) as caught:
+            self._run(sync)
+
+        self.assertIn("advertises no default branch", str(caught.exception))
+        self.assertIn("`branch` parameter", str(caught.exception))
+
+    def test_an_explicit_branch_covers_an_empty_remote(self):
+        from dulwich.repo import Repo
+
+        empty = tempfile.TemporaryDirectory(prefix="cfg-backup-empty2-")
+        self.addCleanup(empty.cleanup)
+        Repo.init_bare(empty.name).close()
+        remote = _GitHttpRemote(
+            empty.name, username=self.USERNAME, password=self.PASSWORD
+        )
+        self.addCleanup(remote.close)
+        sync = self._sync(remote.url, password=self.PASSWORD)
+        data_source = DataSource.objects.get(name="http-config-backups")
+        data_source.parameters["branch"] = "configs"
+        data_source.save()
+
+        result = self._run(sync)
+
+        self.assertTrue(result.pushed)
+        with Repo(empty.name) as repo:
+            self.assertIn(b"refs/heads/configs", repo.refs.keys())
+
     def test_a_remote_that_refuses_the_push_is_reported_without_the_url(self):
         remote = self._remote(refuse_push=True)
         sync = self._sync(remote.url, password=self.PASSWORD)
