@@ -89,6 +89,7 @@ SEQUENCE_OUT_OF_RANGE_REASON = "sequence-out-of-range"
 # ACI node rows whose device link could not be made; see sync_aci.py.
 ACI_NODE_DEVICE_AMBIGUOUS_REASON = "aci-node-device-ambiguous"
 ACI_NODE_DEVICE_MISSING_REASON = "aci-node-device-missing"
+ACI_EPG_BRIDGE_DOMAIN_MISSING_REASON = "aci-epg-bridge-domain-missing"
 
 ROLLUP_SUMMARY_TEMPLATES = {
     ACI_NODE_DEVICE_MISSING_REASON: (
@@ -96,6 +97,12 @@ ROLLUP_SUMMARY_TEMPLATES = {
         "matches the node name exactly or case-insensitively. Import the "
         "fabric's switches (Forward Devices) before the ACI maps, or rename "
         "them to match. Nodes: {examples}{suffix}."
+    ),
+    ACI_EPG_BRIDGE_DOMAIN_MISSING_REASON: (
+        "Skipped {total} {model} row(s) whose bridge domain is not imported: "
+        "netbox-cisco-aci requires it. Enable Forward ACI Bridge Domains and "
+        "collect `moquery -c fvRsCtx` (the bridge domain to VRF binding) so the "
+        "bridge domains import first. EPGs: {examples}{suffix}."
     ),
     ACI_NODE_DEVICE_AMBIGUOUS_REASON: (
         "Stored {total} {model} row(s) without a device link: more than one "

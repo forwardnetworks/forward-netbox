@@ -1,6 +1,7 @@
 from django.core.exceptions import ValidationError
 
 from ..exceptions import ForwardQueryError
+from .sync_reporting import ACI_EPG_BRIDGE_DOMAIN_MISSING_REASON
 from .sync_reporting import ACI_NODE_DEVICE_AMBIGUOUS_REASON
 from .sync_reporting import ACI_NODE_DEVICE_MISSING_REASON
 
@@ -664,13 +665,38 @@ def delete_netbox_cisco_aci_acinode(runner, row):
 # from its own upsert (the leaf rule) and a parent the preview would create
 # makes the row uncomparable rather than double-counted.
 
-_QOS_CLASSES = {"level1", "level2", "level3", "level4", "level5", "level6", "unspecified"}
+_QOS_CLASSES = {
+    "level1",
+    "level2",
+    "level3",
+    "level4",
+    "level5",
+    "level6",
+    "unspecified",
+}
 _CONTRACT_SCOPES = {"global", "tenant", "context", "application-profile"}
 _ETHER_TYPES = {
-    "unspecified", "ip", "ipv4", "ipv6", "arp", "fcoe", "mac-security", "mpls-ucast", "trill",
+    "unspecified",
+    "ip",
+    "ipv4",
+    "ipv6",
+    "arp",
+    "fcoe",
+    "mac-security",
+    "mpls-ucast",
+    "trill",
 }
 _IP_PROTOCOLS = {
-    "unspecified", "tcp", "udp", "icmp", "icmpv6", "igmp", "eigrp", "ospfigp", "pim", "l2tp",
+    "unspecified",
+    "tcp",
+    "udp",
+    "icmp",
+    "icmpv6",
+    "igmp",
+    "eigrp",
+    "ospfigp",
+    "pim",
+    "l2tp",
 }
 
 
@@ -684,7 +710,16 @@ def _port(value):
     text = str(value or "").strip().lower()
     if not text or text == "unspecified":
         return None
-    named = {"http": 80, "https": 443, "ssh": 22, "dns": 53, "smtp": 25, "pop3": 110, "ftpdata": 20, "rtsp": 554}
+    named = {
+        "http": 80,
+        "https": 443,
+        "ssh": 22,
+        "dns": 53,
+        "smtp": 25,
+        "pop3": 110,
+        "ftpdata": 20,
+        "rtsp": 554,
+    }
     if text in named:
         return named[text]
     try:
@@ -699,7 +734,9 @@ def _dscp(value):
 
 
 def _ensure_aci_app_profile(runner, row):
-    ACIAppProfile = _aci_model(runner, "ACIAppProfile", "netbox_cisco_aci.aciappprofile")
+    ACIAppProfile = _aci_model(
+        runner, "ACIAppProfile", "netbox_cisco_aci.aciappprofile"
+    )
     tenant = _ensure_aci_tenant(
         runner, {"fabric_name": row["fabric_name"], "name": row["tenant_name"]}
     )
@@ -737,16 +774,35 @@ def _ensure_aci_endpoint_group(runner, row):
     )
     if _parent_absent(app_profile):
         return None
+    # netbox-cisco-aci requires the bridge domain. It is resolved, never
+    # created here (it has its own map and its own VRF requirement), so an
+    # EPG whose bridge domain is not imported is skipped with the reason
+    # rather than failing the merge 4,799 times, which is what a fabric with
+    # no `fvRsCtx` collected produced on the first acceptance run.
     bridge_domain = None
     if row.get("bridge_domain_name"):
         bridge_domain = _resolve_aci_bridge_domain(
             runner,
             {
                 "fabric_name": row["fabric_name"],
-                "tenant_name": row.get("bridge_domain_tenant_name") or row["tenant_name"],
+                "tenant_name": row.get("bridge_domain_tenant_name")
+                or row["tenant_name"],
                 "bridge_domain_name": row["bridge_domain_name"],
             },
         )
+    if bridge_domain is None:
+        warn = getattr(runner, "_record_aggregated_skip_warning", None)
+        if warn is not None:
+            warn(
+                model_string="netbox_cisco_aci.aciendpointgroup",
+                reason=ACI_EPG_BRIDGE_DOMAIN_MISSING_REASON,
+                warning_message=(
+                    f"Skipping EPG `{row['name']}`: its bridge domain "
+                    f"`{row.get('bridge_domain_name') or '?'}` is not imported."
+                ),
+                sample=f"{row['tenant_name']}/{row['name']}",
+            )
+        return False
     values = _aci_model_values(
         runner,
         ACIEndpointGroup,
@@ -821,7 +877,9 @@ def _ensure_aci_subject(runner, row):
             "aci_contract": contract,
             "name": row["name"],
             # vzInTerm/vzOutTerm are not collected; APIC's default is both.
-            "apply_both_directions": _coerce_bool(row.get("apply_both_directions"), True),
+            "apply_both_directions": _coerce_bool(
+                row.get("apply_both_directions"), True
+            ),
             "reverse_filter_ports": _coerce_bool(row.get("reverse_filter_ports"), True),
             "qos_class": _choice(row.get("qos_class"), _QOS_CLASSES, "unspecified"),
             "target_dscp": _dscp(row.get("target_dscp")),
@@ -860,13 +918,17 @@ def _ensure_aci_filter_entry(runner, row):
             "aci_filter": aci_filter,
             "name": row["name"],
             "ether_type": _choice(row.get("ether_type"), _ETHER_TYPES, "unspecified"),
-            "ip_protocol": _choice(row.get("ip_protocol"), _IP_PROTOCOLS, "unspecified"),
+            "ip_protocol": _choice(
+                row.get("ip_protocol"), _IP_PROTOCOLS, "unspecified"
+            ),
             "source_port_from": _port(row.get("source_port_from")),
             "source_port_to": _port(row.get("source_port_to")),
             "destination_port_from": _port(row.get("destination_port_from")),
             "destination_port_to": _port(row.get("destination_port_to")),
             "tcp_rules": "" if tcp_rules.lower() == "unspecified" else tcp_rules[:64],
-            "match_only_fragments": _coerce_bool(row.get("match_only_fragments"), False),
+            "match_only_fragments": _coerce_bool(
+                row.get("match_only_fragments"), False
+            ),
             "arp_opcode": "" if arp_opcode == "unspecified" else arp_opcode[:8],
             "stateful": _coerce_bool(row.get("stateful"), False),
             "description": row.get("description") or "",
@@ -907,7 +969,9 @@ def apply_netbox_cisco_aci_acifilterentry(runner, row, *, preview=False):
 
 
 def _resolve_aci_app_profile(runner, row):
-    ACIAppProfile = _aci_model(runner, "ACIAppProfile", "netbox_cisco_aci.aciappprofile")
+    ACIAppProfile = _aci_model(
+        runner, "ACIAppProfile", "netbox_cisco_aci.aciappprofile"
+    )
     tenant = _resolve_aci_tenant(runner, row)
     if tenant is None or not row.get("app_profile_name"):
         return None
@@ -937,7 +1001,9 @@ def _resolve_aci_filter(runner, row):
 
 
 def delete_netbox_cisco_aci_aciappprofile(runner, row):
-    ACIAppProfile = _aci_model(runner, "ACIAppProfile", "netbox_cisco_aci.aciappprofile")
+    ACIAppProfile = _aci_model(
+        runner, "ACIAppProfile", "netbox_cisco_aci.aciappprofile"
+    )
     tenant = _resolve_aci_tenant(runner, row)
     if tenant is None:
         return False

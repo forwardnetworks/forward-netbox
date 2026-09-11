@@ -1089,13 +1089,33 @@ class SyncACIAdapterTest(TestCase):
 class TenantPolicyAdapterTest(TestCase):
     """EPGs, application profiles, contracts, subjects and filter entries."""
 
+    def _bridge_domain(self, runner, name="BD-WEB"):
+        return apply_netbox_cisco_aci_acibridgedomain(
+            runner,
+            {
+                "fabric_name": "fabric-a",
+                "tenant_name": "TN-A",
+                "vrf_tenant_name": "TN-A",
+                "vrf_name": "VRF-A",
+                "name": name,
+                "unicast_routing_enabled": True,
+                "arp_flooding_enabled": False,
+                "limit_ip_learn_to_subnets": True,
+                "l2_unknown_unicast": "proxy",
+                "l3_unknown_multicast": "flood",
+                "multi_destination_flooding": "bd-flood",
+                "mac_address": "00:22:BD:F8:19:FF",
+                "description": "",
+            },
+        )
+
     def _epg_row(self, **extra):
         row = {
             "fabric_name": "fabric-a",
             "tenant_name": "TN-A",
             "app_profile_name": "AP-A",
             "name": "EPG-WEB",
-            "bridge_domain_name": "",
+            "bridge_domain_name": "BD-WEB",
             "admin_shutdown": False,
             "is_useg": False,
             "intra_epg_isolation": True,
@@ -1108,42 +1128,56 @@ class TenantPolicyAdapterTest(TestCase):
 
     def test_an_endpoint_group_creates_its_tenant_and_application_profile(self):
         runner = _ACIRunner()
+        self._bridge_domain(runner)
         apply_netbox_cisco_aci_aciendpointgroup(runner, self._epg_row())
 
         self.assertEqual(
-            [call["model_string"] for call in runner.upserts],
-            [
-                "netbox_cisco_aci.acifabric",
-                "netbox_cisco_aci.acitenant",
-                "netbox_cisco_aci.aciappprofile",
-                "netbox_cisco_aci.aciendpointgroup",
-            ],
+            [call["model_string"] for call in runner.upserts][-2:],
+            ["netbox_cisco_aci.aciappprofile", "netbox_cisco_aci.aciendpointgroup"],
         )
         values = runner.upserts[-1]["values"]
         self.assertEqual(values["name"], "EPG-WEB")
         self.assertTrue(values["intra_epg_isolation"])
         self.assertTrue(values["preferred_group_member"])
         self.assertEqual(values["qos_class"], "level3")
-        self.assertIsNone(values["aci_bridge_domain"])
         self.assertEqual(
             runner.upserts[-1]["coalesce_sets"], [("aci_app_profile", "name")]
         )
 
     def test_an_unknown_qos_class_falls_back_to_unspecified(self):
         runner = _ACIRunner()
+        self._bridge_domain(runner)
         apply_netbox_cisco_aci_aciendpointgroup(runner, self._epg_row(qos_class="gold"))
         self.assertEqual(runner.upserts[-1]["values"]["qos_class"], "unspecified")
 
-    def test_an_endpoint_group_resolves_but_never_creates_its_bridge_domain(self):
+    def test_an_endpoint_group_without_its_bridge_domain_is_skipped_not_failed(self):
+        # The plugin requires the bridge domain; it is resolved, never created
+        # here. 4,799 merge failures on the first acceptance run is what a
+        # silent None produced.
         runner = _ACIRunner()
-        apply_netbox_cisco_aci_aciendpointgroup(
+        outcome = apply_netbox_cisco_aci_aciendpointgroup(
             runner, self._epg_row(bridge_domain_name="BD-MISSING")
         )
+        self.assertIs(outcome, False)
         self.assertNotIn(
             "netbox_cisco_aci.acibridgedomain",
             [call["model_string"] for call in runner.upserts],
         )
-        self.assertIsNone(runner.upserts[-1]["values"]["aci_bridge_domain"])
+        self.assertNotIn(
+            "netbox_cisco_aci.aciendpointgroup",
+            [call["model_string"] for call in runner.upserts],
+        )
+        self.assertEqual(
+            [w["reason"] for w in runner.skip_warnings],
+            ["aci-epg-bridge-domain-missing"],
+        )
+
+    def test_an_endpoint_group_links_an_imported_bridge_domain(self):
+        runner = _ACIRunner()
+        bd = self._bridge_domain(runner)
+        entry = apply_netbox_cisco_aci_aciendpointgroup(runner, self._epg_row())
+        self.assertIs(runner.upserts[-1]["values"]["aci_bridge_domain"], bd)
+        self.assertEqual(entry.name, "EPG-WEB")
 
     def test_a_contract_maps_scope_and_dscp(self):
         runner = _ACIRunner()
