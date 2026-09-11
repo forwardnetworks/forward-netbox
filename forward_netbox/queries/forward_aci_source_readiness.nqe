@@ -43,5 +43,5 @@ where source != ""
 select distinct {
   source: source,
   device: device.name,
-  has_output: length(command.response) > 0
+  has_output: isPresent(command.response) && length(command.response) > 0
 }
