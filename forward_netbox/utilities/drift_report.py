@@ -33,16 +33,14 @@ def _unavailable_reason(result) -> str:
         return "error"
     query_name = str(result.get("query_name") or "")
     if query_name:
-        try:
-            from .query_registry import query_diff_ownership_mode_for_name
+        from .query_registry import query_diff_ownership_mode_for_name
 
-            if query_diff_ownership_mode_for_name(query_name) in (
-                "unsafe_contributor_reduction",
-                "feature_state_full_only",
-            ):
-                return "full_only_by_design"
-        except Exception:  # noqa: BLE001 - a label must not break the report
-            pass
+        # A pure registry lookup: "" for a name the registry does not know.
+        if query_diff_ownership_mode_for_name(query_name) in (
+            "unsafe_contributor_reduction",
+            "feature_state_full_only",
+        ):
+            return "full_only_by_design"
     return "no_exact_comparison"
 
 
