@@ -424,6 +424,15 @@
                 <span class="badge text-bg-info" title="{% trans 'Forward classifies the device as a custom-command source, which every bundled query filters out.' %}">{% blocktrans count counter=payload.unmanaged.owned_absence.vendor_excluded %}{{ counter }} custom-command source{% plural %}{{ counter }} custom-command source{% endblocktrans %}</span>
               {% endif %}
             </p>
+            {% if payload.unmanaged.owned_absence.endpoint_detail %}
+              <p class="text-muted small mb-2">
+                {% trans "Of those Forward still has, these are SNMP endpoints the endpoint scope excludes:" %}
+                {% for row in payload.unmanaged.owned_absence.endpoint_detail %}
+                  <span class="badge text-bg-light border" title="{{ row.sample|join:', ' }}">{{ row.count }} — {{ row.label }}</span>
+                {% endfor %}
+                {% trans "A console server in that list means its endpoint tags match none of the include tags; a generic endpoint or CIMC controller is excluded by design." %}
+              </p>
+            {% endif %}
           {% elif payload.unmanaged.owned_absence %}
             <p class="text-muted small mb-2">{% trans "The Forward census that classifies the cause did not run for this report." %}</p>
           {% endif %}

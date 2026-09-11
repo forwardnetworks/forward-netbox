@@ -82,7 +82,9 @@ class _Fixture(TestCase):
         client = Mock()
         responses = [scope_rows]
         if census_rows is not None:
-            responses.append(census_rows)
+            # The census is two halves - devices, then endpoints - and the
+            # endpoint half runs whether or not endpoint sync is on.
+            responses.extend([census_rows, []])
         client.run_nqe_query = Mock(side_effect=responses)
         with (
             patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),

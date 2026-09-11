@@ -57,6 +57,8 @@ def _uncovered_prune_offer(device, identities, foreign_blockers):
         "report_at": None,
         "required_runs": None,
         "required_hours": None,
+        "endpoint_detail": "",
+        "endpoint_detail_label": "",
     }
     sync_ids = {row.sync_id for row in identities}
     if len(sync_ids) != 1:
@@ -93,8 +95,16 @@ def _uncovered_prune_offer(device, identities, foreign_blockers):
         offer["offered"] = not foreign_blockers
     elif device.pk in uncovered_ids:
         # Uncovered, but Forward still reports it: a scoping decision, and the
-        # prune will never touch it. Say that instead of offering a button.
+        # prune will never touch it. Say that instead of offering a button -
+        # and for an endpoint-derived device, say WHICH endpoint-scope rule.
+        from .utilities.scope_reconciliation import ENDPOINT_ABSENCE_DETAILS
+
         offer["still_reported"] = True
+        detail = (unmanaged.get("owned_endpoint_detail_by_id") or {}).get(
+            str(device.pk), ""
+        )
+        offer["endpoint_detail"] = detail
+        offer["endpoint_detail_label"] = ENDPOINT_ABSENCE_DETAILS.get(detail, "")
     return offer
 
 

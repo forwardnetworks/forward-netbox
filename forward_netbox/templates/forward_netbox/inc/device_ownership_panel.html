@@ -96,6 +96,25 @@
           </p>
         {% endif %}
       </form>
+    {% elif ownership.prune.still_reported and ownership.prune.endpoint_detail %}
+      <p class="text-muted small mt-2 mb-0">
+        {% blocktrans trimmed with reason=ownership.prune.endpoint_detail_label %}
+          Forward still reports this device as an SNMP endpoint, but the
+          endpoint scope excludes it: {{ reason }}. That is a scoping decision,
+          not a removal, so the uncovered cleanup will never delete it.
+        {% endblocktrans %}
+        {% if ownership.prune.endpoint_detail == "endpoint_untagged" %}
+          {% trans "Add one of the endpoint's Forward tags to the sync's include tags, or tag the endpoint in Forward, to cover it again." %}
+        {% elif ownership.prune.endpoint_detail == "endpoint_generic" %}
+          {% trans "Enable generic endpoint import on the source to cover it again, or delete it by hand if it should not have been imported." %}
+        {% elif ownership.prune.endpoint_detail == "endpoint_scope_off" %}
+          {% trans "Enable endpoint import on the source to cover it again." %}
+        {% elif ownership.prune.endpoint_detail == "endpoint_cimc" %}
+          {% trans "CIMC controllers are imported as inventory items of their server; this standalone device predates that and can be deleted by hand." %}
+        {% elif ownership.prune.endpoint_detail == "endpoint_no_snmp" %}
+          {% trans "Restore SNMP collection for the endpoint in Forward to cover it again." %}
+        {% endif %}
+      </p>
     {% elif ownership.prune.still_reported %}
       <p class="text-muted small mt-2 mb-0">
         {% blocktrans trimmed %}

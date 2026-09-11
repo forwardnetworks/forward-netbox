@@ -84,7 +84,9 @@ class _Fixture(TestCase):
         client = Mock()
         responses = [scope_rows]
         if census_rows is not None:
-            responses.append(census_rows)
+            # The census is two halves - devices, then endpoints - and the
+            # endpoint half runs whether or not endpoint sync is on.
+            responses.extend([census_rows, []])
         client.run_nqe_query = Mock(side_effect=responses)
         with (
             patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
@@ -141,8 +143,9 @@ class OwnedAbsenceIsClassifiedTest(_Fixture):
             [{"name": "in-scope", "vendor": "Vendor.CISCO"}],
         )
 
-        # Scope query + ONE census, however many sets it classified.
-        self.assertEqual(client.run_nqe_query.call_count, 2)
+        # Scope query + ONE census (its device and endpoint halves), however
+        # many sets it classified.
+        self.assertEqual(client.run_nqe_query.call_count, 3)
         self.assertEqual(report["out_of_scope_absence"]["absent_from_snapshot"], 1)
         # The orphan is ALSO owned-uncovered: claiming it gave it an identity,
         # so it is in both sets, and both sets say the same thing about it.
@@ -164,7 +167,7 @@ class OwnedAbsenceIsClassifiedTest(_Fixture):
         )
 
         self.assertEqual(report["netbox_out_of_scope"], 0)
-        self.assertEqual(client.run_nqe_query.call_count, 2)
+        self.assertEqual(client.run_nqe_query.call_count, 3)
         self.assertEqual(
             report["unmanaged"]["owned_absence"]["absent_from_snapshot"], 1
         )
@@ -301,6 +304,7 @@ class UncoveredListPagesTest(_Fixture):
             side_effect=[
                 [{"name": "in-scope", "completed": True}],
                 [{"name": "in-scope", "vendor": "Vendor.CISCO"}],
+                [],  # the census's endpoint half
             ]
         )
         with (
@@ -413,6 +417,7 @@ class OrphanAndBackfilledListPagesTest(_Fixture):
                     },
                 ],
                 [],
+                [],  # the census's endpoint half
             ]
         )
         with (
