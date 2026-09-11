@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.9.4
+
+Release candidate; Fix: every operator diagnostic and remediation is now reachable in the NetBox GUI - the uncovered-device cleanup 2.9.3 shipped as a command flag is a gated button, a wedged sync has a recovery control, ingestion issues say which of them block the baseline, the two device sets the panel counted but would not list are listable in full, a device that refuses a manual delete explains which records refuse it and which of those this plugin can release, and the support bundle carries all of it so a problem we have to look at arrives with its evidence.
+
 ## v2.9.3
 
 Feature: **uncovered devices can be cleaned up**, not only counted - `forward_device_scope_reconciliation_audit --prune-uncovered` deletes devices this sync created that Forward no longer reports at all. The orphan prune never reached them: it acts on devices claimed by the run that produced the current result, so a deployment whose orphan count reads zero had no way to clear a growing uncovered count. Only devices the census marks absent are eligible, and only once their absence has outlasted the quarantine - a device Forward still reports without an include tag is a scoping decision and is never deleted, and neither is one this sync did not create. Dry run unless `--apply` is passed. Fix: **OSPF interface rows converge instead of drifting forever**, and the interface lookup behind MAC-address apply uses an index instead of scanning every interface in the estate. Feature: **netbox-dlm `0.10.0` is supported**. No migration; upgrade and re-run the sync.
