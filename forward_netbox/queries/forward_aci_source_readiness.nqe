@@ -21,6 +21,10 @@ sourceKey(command) =
   else if command.commandType == CommandType.CUSTOM
     && matches(toLowerCase(command.commandText), "moquery -c vzfilter*") then "moquery_vzfilter"
   else if command.commandType == CommandType.CUSTOM
+    && matches(toLowerCase(command.commandText), "moquery -c fvrsctx*") then "moquery_fvrsctx"
+  else if command.commandType == CommandType.CUSTOM
+    && matches(toLowerCase(command.commandText), "moquery -c l3extrsectx*") then "moquery_l3extrsectx"
+  else if command.commandType == CommandType.CUSTOM
     && matches(toLowerCase(command.commandText), "moquery -c fvaepg*") then "moquery_fvaepg"
   else if command.commandType == CommandType.CUSTOM
     && matches(toLowerCase(command.commandText), "moquery -c vzbrcp*") then "moquery_vzbrcp"

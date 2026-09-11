@@ -5,7 +5,7 @@
 
 import "netbox_utilities";
 
-entryRegex = re`(?:^|\R)#\s+vz\.Entry\s*\R(?:\s*[^\r\n]*\R)*?\s*applyToFrag\s*:\s*(?<apply_to_frag>\S+)\R\s*arpOpc\s*:\s*(?<arp_opc>\S+)\R\s*dFromPort\s*:\s*(?<d_from>\S+)\R\s*dToPort\s*:\s*(?<d_to>\S+)\R\s*dn\s*:\s*uni/tn-(?<tenant_name>[^/\s]+)/flt-(?<filter_name>[^/\s]+)/e-(?<name>[^\r\n/]+)\R\s*etherT\s*:\s*(?<ether_t>\S+)\R(?:\s*[^\r\n]*\R)*?\s*prot\s*:\s*(?<prot>\S+)\R\s*sFromPort\s*:\s*(?<s_from>\S+)\R\s*sToPort\s*:\s*(?<s_to>\S+)\R\s*stateful\s*:\s*(?<stateful>\S+)\R\s*tcpRules\s*:\s*(?<tcp_rules>[^\r\n]*)`;
+entryRegex = re`(?:^|\R)#\s+vz\.Entry\s*\R(?:\s*[^\r\n]*\R)*?\s*applyToFrag\s*:\s*(?<apply_to_frag>\S+)\R(?:\s*[^\r\n]*\R)*?\s*arpOpc\s*:\s*(?<arp_opc>\S+)\R(?:\s*[^\r\n]*\R)*?\s*dFromPort\s*:\s*(?<d_from>\S+)\R(?:\s*[^\r\n]*\R)*?\s*dToPort\s*:\s*(?<d_to>\S+)\R(?:\s*[^\r\n]*\R)*?\s*dn\s*:\s*uni/tn-(?<tenant_name>[^/\s]+)/flt-(?<filter_name>[^/\s]+)/e-(?<name>[^\r\n/]+)\R(?:\s*[^\r\n]*\R)*?\s*etherT\s*:\s*(?<ether_t>\S+)\R(?:\s*[^\r\n]*\R)*?\s*prot\s*:\s*(?<prot>\S+)\R(?:\s*[^\r\n]*\R)*?\s*sFromPort\s*:\s*(?<s_from>\S+)\R(?:\s*[^\r\n]*\R)*?\s*sToPort\s*:\s*(?<s_to>\S+)\R(?:\s*[^\r\n]*\R)*?\s*stateful\s*:\s*(?<stateful>\S+)\R(?:\s*[^\r\n]*\R)*?\s*tcpRules[ \t]*:[ \t]*(?<tcp_rules>[^\r\n]*)`;
 aciFabricName(device) =
   if isPresent(device.locationName) && length(device.locationName) > 0
   then slugify(toLowerCase(device.locationName))

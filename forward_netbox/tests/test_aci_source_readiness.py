@@ -96,7 +96,7 @@ class AciSourceReadinessTest(SimpleTestCase):
         self.assertEqual(diagnostic["sibling"], "Forward ACI APIC Pods")
 
     def test_a_present_source_that_parsed_nothing_points_at_the_regex(self):
-        rows = [{"source": "moquery_fvbd", "device": "apic-1", "has_output": True}]
+        rows = [{"source": "moquery_fvrsctx", "device": "apic-1", "has_output": True}]
         fetcher = _fetcher(
             [
                 _result(

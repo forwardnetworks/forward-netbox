@@ -2347,14 +2347,19 @@ select {name: "vendor", slug: "vendor"}
         self.assertIn("limit_ip_learn_to_subnets:", bd_row["query"])
         self.assertIn("mac_address:", bd_row["query"])
         self.assertIn("CISCO_ACI_ZONING_FILTER", filter_row["query"])
+        # The L3Out map reads the L3Out-to-VRF binding: netbox-cisco-aci
+        # requires the VRF and `l3extInstP` (the external EPG) never carried it.
         self.assertIn(
-            'matches(toLowerCase(command.commandText), "moquery -c l3extinstp*")',
+            'matches(toLowerCase(command.commandText), "moquery -c l3extrsectx*")',
             l3out_row["query"],
         )
-        self.assertIn("(?<matchT>", l3out_row["query"])
-        self.assertIn("(?<pcEnfPref>", l3out_row["query"])
-        self.assertIn("(?<prefGrMemb>", l3out_row["query"])
-        self.assertIn("(?<target_dscp>", l3out_row["query"])
+        self.assertIn("(?<vrf_name>", l3out_row["query"])
+        self.assertIn("(?<vrf_tenant_name>", l3out_row["query"])
+        # And the bridge-domain map joins its VRF from `fvRsCtx`.
+        self.assertIn(
+            'matches(toLowerCase(ctx_command.commandText), "moquery -c fvrsctx*")',
+            bd_row["query"],
+        )
         self.assertNotIn(
             "Forward ACI Nodes",
             {query_default["name"] for query_default in BUILTIN_QUERY_MAPS},
