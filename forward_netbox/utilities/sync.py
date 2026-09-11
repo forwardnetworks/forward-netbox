@@ -92,6 +92,7 @@ from .sync_reporting import (
     record_aggregated_skip_warning as sync_record_aggregated_skip_warning,
 )
 from .sync_reporting import record_issue as sync_record_issue
+from .sync_reporting import UNOWNED_PRIMARY_IP_HOLDER_REASON
 from .sync_routing import apply_netbox_peering_manager_peeringsession
 from .sync_routing import apply_netbox_routing_bgpaddressfamily
 from .sync_routing import apply_netbox_routing_bgppeer
@@ -280,7 +281,12 @@ class ForwardSyncRunner(ForwardSyncRunnerContractMixin, ForwardSyncRunnerAdapter
     # (total + a few examples + the forward_module_readiness remediation) at the
     # end of the model instead of logging a wall of near-identical per-row lines.
     SKIP_WARNING_ROLLUP_REASONS = frozenset(
-        {"missing-module-bay", "shared-vip", "component-claimed-by-another-module"}
+        {
+            "missing-module-bay",
+            "shared-vip",
+            "component-claimed-by-another-module",
+            UNOWNED_PRIMARY_IP_HOLDER_REASON,
+        }
     )
     # Cap on per-model ForwardDependencySkipError ISSUE ROWS (each distinct
     # missing parent is a unique message, so they are not deduped). Beyond this

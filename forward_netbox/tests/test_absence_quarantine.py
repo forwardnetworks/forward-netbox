@@ -23,6 +23,7 @@ from forward_netbox.utilities.scope_reconciliation import DEFAULT_PRUNE_ABSENCE_
 from forward_netbox.utilities.scope_reconciliation import partition_quarantined_orphans
 from forward_netbox.utilities.scope_reconciliation import prune_orphan_devices
 from forward_netbox.utilities.scope_reconciliation import record_device_absence
+from forward_netbox.utilities.scope_reconciliation import ScopeCensusUnavailableError
 from forward_netbox.utilities.scope_reconciliation import ScopeShrinkGuardError
 
 
@@ -62,13 +63,22 @@ class AbsenceQuarantineTestBase(TestCase):
             for index in range(3)
         ]
 
-    def _report(self, devices):
+    def _report(self, devices, *, kinds=None):
         names = {device.name for device in devices}
         return {
             "_out_of_scope": names,
             "_out_of_scope_pks": [device.pk for device in devices],
             "_tagged_names": {"still-here"},
             "_device_tagged_names": {"still-here"},
+            # The census verdict per name. The prune refuses to run without it,
+            # because "absent from the tag result" covers both a device Forward
+            # removed and one Forward still reports under other tags - only the
+            # first is a removal. This file is about the quarantine, so the
+            # default says every orphan is genuinely gone; the cause gate has
+            # its own tests.
+            "_absence_kinds": (
+                kinds if kinds is not None else {name: "absent" for name in names}
+            ),
             "netbox_out_of_scope": len(devices),
             # Large enough that the shrink guard never fires; this file is about
             # the quarantine, and one guard masking another proves nothing.
@@ -449,3 +459,90 @@ class AbsenceRowDoesNotPinItsDeviceTest(AbsenceQuarantineTestBase):
         self.devices[0].delete()
 
         self.assertFalse(ForwardDeviceAbsence.objects.filter(sync=self.sync).exists())
+
+
+class OrphanPruneGatesOnCauseTest(AbsenceQuarantineTestBase):
+    """Out of scope is not a reason to delete; gone from Forward is.
+
+    Membership in the orphan set is decided purely by absence from the current
+    tag-scope result, which covers three situations with opposite remedies. The
+    uncovered prune has gated on the cause since it shipped; this one did not,
+    so a Forward-side tag edit or a query that narrowed made live devices
+    prune-eligible. A customer's panel showed 63 gone from Forward and 2 still
+    in Forward while offering to delete all 65.
+    """
+
+    def _release_quarantine(self, *devices):
+        for device in devices:
+            self._set_absent(
+                device,
+                runs=DEFAULT_PRUNE_ABSENCE_RUNS,
+                hours_ago=DEFAULT_PRUNE_ABSENCE_HOURS + 1,
+            )
+
+    def test_an_untagged_orphan_is_never_pruned(self):
+        device = self.devices[0]
+        self._release_quarantine(device)
+
+        result = prune_orphan_devices(
+            self.sync,
+            report=self._report([device], kinds={device.name: "untagged"}),
+        )
+
+        self.assertEqual(result["pruned_device_count"], 0)
+        self.assertTrue(Device.objects.filter(pk=device.pk).exists())
+
+    def test_a_vendor_excluded_orphan_is_never_pruned(self):
+        device = self.devices[0]
+        self._release_quarantine(device)
+
+        result = prune_orphan_devices(
+            self.sync,
+            report=self._report([device], kinds={device.name: "vendor_excluded"}),
+        )
+
+        self.assertEqual(result["pruned_device_count"], 0)
+        self.assertTrue(Device.objects.filter(pk=device.pk).exists())
+
+    def test_the_override_does_not_reach_a_device_forward_still_reports(self):
+        # `include_quarantined` releases the absence streak, not the cause gate.
+        # Conflating them would let one checkbox delete live devices.
+        device = self.devices[0]
+
+        result = prune_orphan_devices(
+            self.sync,
+            report=self._report([device], kinds={device.name: "untagged"}),
+            include_quarantined=True,
+        )
+
+        self.assertEqual(result["pruned_device_count"], 0)
+        self.assertTrue(Device.objects.filter(pk=device.pk).exists())
+
+    def test_only_the_absent_half_of_a_mixed_set_is_pruned(self):
+        gone, still_there = self.devices[0], self.devices[1]
+        self._release_quarantine(gone, still_there)
+
+        result = prune_orphan_devices(
+            self.sync,
+            report=self._report(
+                [gone, still_there],
+                kinds={gone.name: "absent", still_there.name: "untagged"},
+            ),
+        )
+
+        self.assertEqual(result["pruned_device_count"], 1)
+        self.assertFalse(Device.objects.filter(pk=gone.pk).exists())
+        self.assertTrue(Device.objects.filter(pk=still_there.pk).exists())
+
+    def test_a_missing_census_refuses_the_prune(self):
+        # Fails closed: without the census the prune cannot tell a removed
+        # device from one Forward still reports, and guessing deletes.
+        device = self.devices[0]
+        self._release_quarantine(device)
+        report = self._report([device])
+        report.pop("_absence_kinds")
+
+        with self.assertRaises(ScopeCensusUnavailableError):
+            prune_orphan_devices(self.sync, report=report)
+
+        self.assertTrue(Device.objects.filter(pk=device.pk).exists())

@@ -27,7 +27,11 @@
           {% else %}
             <span class="badge text-bg-success">{% trans "Report ready" %}</span>
             <span class="ms-2 text-muted">
-              {% trans "Generated" %} {{ report_generated_at }}
+              {# Naming the producer as well as the time: every completed sync #}
+              {# now refreshes this, so "generated" three days ago means the   #}
+              {# post-sync job has been failing, not that nobody pressed a     #}
+              {# button. Without the source those two look identical.          #}
+              {% trans "Generated" %} {{ report_generated_at }}{% if report_source %} {% blocktrans %}by {{ report_source }}{% endblocktrans %}{% endif %}
             </span>
           {% endif %}
         </div>
@@ -84,6 +88,7 @@
               {% else %}
                 <span class="badge text-bg-success">0</span>
               {% endif %}
+              {% include 'forward_netbox/inc/count_trend.html' with trend=out_of_scope_trend %}
             </td>
           </tr>
           <tr>
@@ -111,6 +116,7 @@
                 {# card further down the page - which is the half a customer  #}
                 {# reading only the summary never reached.                    #}
                 <a href="#uncovered-owned" class="text-decoration-none small">{% trans "why? / clean up" %}</a>
+                {% include 'forward_netbox/inc/count_trend.html' with trend=uncovered_trend %}
               {% endif %}
               {% if payload.unmanaged.unclaimed %}
                 <a href="{{ unclaimed_devices_url }}" class="badge text-bg-secondary text-decoration-none">{% blocktrans with count=payload.unmanaged.unclaimed %}{{ count }} not claimed by this sync{% endblocktrans %}</a>
@@ -153,7 +159,11 @@
         {% if perms.dcim.delete_device %}
         <form method="post" class="d-inline"
               action="{% url 'plugins:forward_netbox:forwardsync_prune_orphans' pk=object.pk %}"
-              onsubmit="return confirm('{% blocktrans with dev_count=payload.netbox_out_of_scope site_count=payload.netbox_empty_orphan_site_count %}Delete {{ dev_count }} out-of-scope device(s) and {{ site_count }} empty site(s)? This also removes their interfaces and IP addresses.{% endblocktrans %}');">
+              {# Counts what the prune will act on - the devices Forward no    #}
+              {# longer reports - not every out-of-scope device. The ones      #}
+              {# Forward still has under different tags are a scoping          #}
+              {# decision and are never deleted.                               #}
+              onsubmit="return confirm('{% blocktrans with dev_count=payload.out_of_scope_absence.absent_from_snapshot|default:0 site_count=payload.netbox_empty_orphan_site_count %}Delete {{ dev_count }} device(s) Forward no longer reports, and {{ site_count }} empty site(s)? This also removes their interfaces and IP addresses.{% endblocktrans %}');">
           {% csrf_token %}
           {% comment %} The override is offered only when something is actually being
              held, and only here. A scheduled prune has no way to set it - that is
@@ -168,7 +178,7 @@
               </label>
             </div>
           {% endif %}
-          <button type="submit" class="btn btn-danger"{% if not payload.netbox_out_of_scope and not payload.netbox_empty_orphan_site_count %} disabled{% endif %}>
+          <button type="submit" class="btn btn-danger"{% if not payload.out_of_scope_absence.absent_from_snapshot and not payload.netbox_empty_orphan_site_count %} disabled{% endif %}>
             <i class="mdi mdi-trash-can-outline" aria-hidden="true"></i>&nbsp;{% trans "Prune orphans" %}
           </button>
         </form>
@@ -440,13 +450,22 @@
                   </label>
                 </div>
               {% endif %}
-              <button type="submit" class="btn btn-sm btn-danger"{% if not payload.unmanaged.owned_prune_candidates %} disabled{% endif %}>
-                <i class="mdi mdi-trash-can-outline" aria-hidden="true"></i>&nbsp;{% blocktrans with count=payload.unmanaged.owned_prune_candidates %}Delete {{ count }} gone from Forward{% endblocktrans %}
+              {# Counts what the button would actually delete, not what is of #}
+              {# the right kind. It used to read "Delete 105" while the       #}
+              {# quarantine held all 105, so pressing it deleted nothing.     #}
+              <button type="submit" class="btn btn-sm btn-danger"{% if not payload.unmanaged.owned_quarantine.prune_eligible %} disabled{% endif %}>
+                <i class="mdi mdi-trash-can-outline" aria-hidden="true"></i>&nbsp;{% blocktrans with count=payload.unmanaged.owned_quarantine.prune_eligible|default:0 %}Delete {{ count }} eligible now{% endblocktrans %}
               </button>
-              {% if payload.unmanaged.owned_quarantine.prune_eligible is not None %}
-                <span class="text-muted small ms-2">{% blocktrans with eligible=payload.unmanaged.owned_quarantine.prune_eligible runs=payload.unmanaged.owned_quarantine.required_runs hours=payload.unmanaged.owned_quarantine.required_hours %}{{ eligible }} past the quarantine ({{ runs }} runs and {{ hours }}h).{% endblocktrans %}</span>
+              {% if payload.unmanaged.owned_quarantine.held %}
+                <span class="text-muted small ms-2">{% blocktrans count counter=payload.unmanaged.owned_quarantine.held %}{{ counter }} more held by the quarantine{% plural %}{{ counter }} more held by the quarantine{% endblocktrans %}</span>
               {% endif %}
             </form>
+          {% endif %}
+          {# The orphan card has carried this sentence since the quarantine    #}
+          {# shipped; the uncovered card never did, so an operator watching a  #}
+          {# count that would not move had nothing on the page explaining why. #}
+          {% if payload.unmanaged.owned_quarantine.required_runs is not None %}
+            <p class="text-muted small mb-2">{% blocktrans with runs=payload.unmanaged.owned_quarantine.required_runs hours=payload.unmanaged.owned_quarantine.required_hours %}A device disabled in Forward disappears exactly as a removed one does, so an absence must persist for {{ runs }} consecutive syncs and {{ hours }} hours before the prune will delete it. Devices that reappear leave quarantine automatically.{% endblocktrans %}</p>
           {% endif %}
           <ul class="mb-0">
             {% for name in payload.unmanaged.owned_untagged_sample %}<li><code>{{ name }}</code></li>{% endfor %}

@@ -2596,7 +2596,8 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]], *, preview=Fals
 
     from ..exceptions import ForwardDependencySkipError
     from ..exceptions import ForwardSearchError
-    from .sync_ipam import release_owned_primary_ip_claims
+    from .sync_ipam import primary_ip_holder_release_plan
+    from .sync_ipam import record_unowned_primary_ip_holder_skip
 
     interface_ct = runner._content_type_for(Interface)
     update_field_names = [
@@ -2794,11 +2795,27 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]], *, preview=Fals
         # row. Snapshot only a persisted object that will actually change.
         if branch_active and ip.pk is not None:
             ip.snapshot()
-        for previous_owner, primary_fields in release_owned_primary_ip_claims(
+        primary_plan = primary_ip_holder_release_plan(
             runner,
             ip,
             destination_device_id=device.pk,
+        )
+        # Same gate as the row adapter, so the two engines cannot disagree about
+        # which rows are stageable. Only a move can trip the destination rule;
+        # a status- or address-only update must not be skipped.
+        if primary_plan["unowned_holder_ids"] and any(
+            field in ("assigned_object_type", "assigned_object_id")
+            for field, _value in changed_values
         ):
+            record_unowned_primary_ip_holder_skip(
+                runner,
+                ip_pk=ip.pk,
+                holder_pks=primary_plan["unowned_holder_ids"],
+                destination_device_pk=device.pk,
+            )
+            runner.logger.increment_statistics("ipam.ipaddress", outcome="skipped")
+            continue
+        for previous_owner, primary_fields in primary_plan["releases"]:
             tracked = released_primary_devices.get(previous_owner.pk)
             if tracked is None:
                 released_primary_devices[previous_owner.pk] = (

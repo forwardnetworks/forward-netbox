@@ -74,12 +74,14 @@ from .tables import ForwardSyncTable
 from .tables import ForwardValidationRunTable
 from .utilities.bulk_merge import describe_protecting_references
 from .utilities.change_explainability import change_explainability_summary
+from .utilities.config_backup import config_backup_data_source
 from .utilities.diagnostics import diff_fallback_summary
 from .utilities.diagnostics import model_failure_summary
 from .utilities.diagnostics import safe_job_error_summary
 from .utilities.diagnostics import sanitize_job_diagnostics
 from .utilities.direct_changes import object_changes_for_ingestion
 from .utilities.execution_telemetry import build_plan_preview
+from .utilities.health import _job_data_count_trend
 from .utilities.health import live_data_file_health_check
 from .utilities.health import live_source_health_check
 from .utilities.health import sync_health_summary
@@ -301,6 +303,8 @@ def _ingestion_issue_bundle_payload(ingestion):
     from .models import ForwardIngestionIssue
     from .utilities.ingestion_issues import blocking_issue_q
     from .utilities.ingestion_issues import is_blocking_issue
+    from .utilities.ingestion_issues import issue_blocking_disposition
+    from .utilities.ingestion_issues import row_disposition
 
     if ingestion is None:
         return {"total": 0, "returned": 0, "blocking_total": 0, "issues": []}
@@ -327,6 +331,13 @@ def _ingestion_issue_bundle_payload(ingestion):
                 "message": issue.message or "",
                 # Same predicate as baseline readiness and the Blocking column.
                 "blocking": is_blocking_issue(issue),
+                # And what the row actually did, which is a different question:
+                # a validation rejection is in the blocking CLASS but holds
+                # nothing back. Without this a bundle shows `blocking: true` on
+                # the row the panel labels Skipped, and we would read the file
+                # the way the customer's screenshot misread the page.
+                "disposition": issue_blocking_disposition(issue),
+                "row_disposition": row_disposition(issue),
                 "diagnosis": json_safe_value(issue.raw_data or {}),
             }
         )
@@ -1432,6 +1443,15 @@ class ForwardSyncView(generic.ObjectView):
                 "plugins:forward_netbox:forwardsync_health",
                 kwargs={"pk": instance.pk},
             ),
+            "config_backup_url": reverse(
+                "plugins:forward_netbox:forwardsync_config_backup",
+                kwargs={"pk": instance.pk},
+            ),
+            # Local read of a source parameter; no Forward call and no git
+            # contact, so it is safe on every page load.
+            "config_backup_configured": (
+                config_backup_data_source(instance) is not None
+            ),
             "support_bundle_url": reverse(
                 "plugins:forward_netbox:forwardsync_support_bundle",
                 kwargs={"pk": instance.pk},
@@ -1743,30 +1763,22 @@ class ForwardStartValidationView(BaseObjectView):
 
 
 def _latest_scope_reconciliation_job(sync):
-    """The most recent completed scope reconciliation job for this sync."""
-    from core.choices import JobStatusChoices
-    from core.models import Job
-    from django.contrib.contenttypes.models import ContentType
+    """See `scope_reconciliation.latest_scope_report_job`.
 
-    return (
-        Job.objects.filter(
-            object_type=ContentType.objects.get_for_model(ForwardSync),
-            object_id=sync.pk,
-            name__icontains="scope reconciliation",
-            status=JobStatusChoices.STATUS_COMPLETED,
-        )
-        .order_by("-created")
-        .first()
-    )
+    Kept as a name in this module because the views and their tests call it
+    here; the logic lives beside the report it reads so the device-page panel
+    can use it without importing views.
+    """
+    from .utilities.scope_reconciliation import latest_scope_report_job
+
+    return latest_scope_report_job(sync)
 
 
 def _scope_reconciliation_payload(job):
-    """Return (payload, generated_at, error) for a stored reconciliation job."""
-    if job is None or not isinstance(job.data, dict) or not job.data:
-        return {}, None, ""
-    if job.data.get("error"):
-        return {}, job.completed, str(job.data.get("error"))
-    return job.data, job.completed, ""
+    """See `scope_reconciliation.stored_scope_report`."""
+    from .utilities.scope_reconciliation import stored_scope_report
+
+    return stored_scope_report(job)
 
 
 @register_model_view(
@@ -1949,6 +1961,19 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
                 "report_generated_at": generated_at,
                 "report_error": report_error,
                 "report_pending": report_job is None,
+                # Which job produced the figures above, so "this is three days
+                # old" is on the page rather than inferred from their not
+                # having moved.
+                "report_source": getattr(report_job, "name", ""),
+                # Growing or static, answered from the page. Read from the
+                # post-sync jobs only - `_job_data_count_trend` filters on the
+                # key's presence, and the Refresh job does not record totals -
+                # so consecutive entries mean consecutive syncs.
+                "uncovered_trend": _job_data_count_trend(sync, "total_uncovered"),
+                "out_of_scope_trend": _job_data_count_trend(sync, "total_out_of_scope"),
+                "prune_candidate_trend": _job_data_count_trend(
+                    sync, "total_owned_prune_candidates"
+                ),
                 "refresh_report_url": reverse(
                     "plugins:forward_netbox:forwardsync_refresh_scope_reconciliation",
                     kwargs={"pk": sync.pk},
@@ -2233,6 +2258,133 @@ class ForwardSyncPruneUncoveredView(BaseObjectView):
                 "the result."
             )
             % {"pk": job.pk},
+        )
+        return redirect(sync.get_absolute_url())
+
+
+@register_model_view(ForwardSync, "config_backup", path="config-backup")
+class ForwardSyncConfigBackupView(BaseObjectView):
+    """Run the config backup on demand.
+
+    It shipped in 2.9.0 as a post-sync overlay only, so an operator could not
+    verify it without running a whole sync, and the health check could say no
+    more than "the data source has synced at some point". Non-destructive: it
+    writes device configurations to the git data source the operator chose.
+    """
+
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.run_forwardsync"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return redirect(sync.get_absolute_url())
+
+    def post(self, request, pk):
+        from .utilities.config_backup import config_backup_data_source
+        from .utilities.sync_facade import JobAlreadyActive, enqueue_button_job
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        # Refuse early rather than queue a job that can only skip: the work
+        # function's own "not configured" exit is correct but reads as a
+        # completed backup to anyone looking at the Jobs tab.
+        if config_backup_data_source(sync) is None:
+            messages.error(
+                request,
+                _(
+                    "This sync has no config backup data source set. Choose a "
+                    "git data source on the sync's edit form first."
+                ),
+            )
+            return redirect(sync.get_absolute_url())
+        try:
+            job = enqueue_button_job(sync, "config_backup", request.user)
+        except JobAlreadyActive:
+            messages.warning(
+                request, _("A config backup job is already running for this sync.")
+            )
+            return redirect(sync.get_absolute_url())
+        messages.success(
+            request,
+            _(
+                "Queued job #%(pk)d to back up device configurations. The job "
+                "records what it wrote; configuration text never reaches job "
+                "data or logs."
+            )
+            % {"pk": job.pk},
+        )
+        return redirect(sync.get_absolute_url())
+
+
+@register_model_view(
+    ForwardSync, "prune_uncovered_device", path="prune-uncovered/device"
+)
+class ForwardSyncPruneUncoveredDeviceView(BaseObjectView):
+    """Remove ONE uncovered device, from that device's own page.
+
+    Scoped to the sync rather than registered on `dcim.Device`, because every
+    destructive control in this plugin goes through `enqueue_button_job` on a
+    ForwardSync - same overlap guard, same active-sync block, same job name. A
+    view on the core Device model would be the first exception to that, and
+    would put a Forward URL under `/dcim/devices/`.
+
+    It enqueues the same job as the whole-set prune with the device named, so
+    there is one deletion path and one set of gates. The device page offers it
+    only for a device that prune would already delete.
+    """
+
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "dcim.delete_device"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return redirect(
+            reverse(
+                "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                kwargs={"pk": sync.pk},
+            )
+        )
+
+    def post(self, request, pk):
+        from .utilities.sync_facade import JobAlreadyActive, enqueue_button_job
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        try:
+            device_pk = int(request.POST.get("device") or "")
+        except (TypeError, ValueError):
+            messages.error(request, _("No device was named for removal."))
+            return redirect(sync.get_absolute_url())
+        include_quarantined = bool(request.POST.get("include_quarantined"))
+        try:
+            job = enqueue_button_job(
+                sync,
+                "prune_uncovered",
+                request.user,
+                job_kwargs={
+                    "include_quarantined": include_quarantined,
+                    "restrict_to_device_pks": [device_pk],
+                },
+            )
+        except JobAlreadyActive:
+            # A whole-set prune in flight blocks this, which is correct: it may
+            # already be deleting this very device.
+            messages.warning(
+                request,
+                _("An equivalent uncovered-device prune job is already running."),
+            )
+            return redirect(sync.get_absolute_url())
+        messages.success(
+            request,
+            _(
+                "Queued job #%(pk)d to remove device #%(device)d. It is deleted "
+                "only if this sync created it, Forward no longer reports it, and "
+                "its absence has outlasted the quarantine; the job records the "
+                "reason otherwise."
+            )
+            % {"pk": job.pk, "device": device_pk},
         )
         return redirect(sync.get_absolute_url())
 

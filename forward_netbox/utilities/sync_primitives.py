@@ -1335,12 +1335,37 @@ def _dependency_tag_rows(model_string, rows):
     }
 
 
+# Models whose rows carry a site and resolve it once per row. Without priming,
+# each row costs a `dcim.site` lookup - two when the slug misses and the name is
+# tried. A deployment with 7,902 converged `ipam.vlan` rows across ~95 sites
+# spent 102,334 queries and 240 of the 766 seconds its whole drift comparison
+# took, on a model reporting In sync: Yes. 2.8.7 fixed this shape for the
+# dependency preview's own lookups and left these models out.
+_SITE_BEARING_MODELS = frozenset({"ipam.vlan", "ipam.prefix"})
+
+
 def _prime_dcim_dependency_identity_cache(runner, model_string, rows):
     if model_string == "dcim.device":
         _prime_dcim_device_identity_cache(runner, rows)
         return
     if model_string in {"dcim.inventoryitem", "dcim.module"}:
         _prime_dcim_inventory_module_identity_cache(runner, model_string, rows)
+        return
+    if model_string in _SITE_BEARING_MODELS:
+        _prime_site_identity_cache(runner, rows)
+
+
+def _prime_site_identity_cache(runner, rows):
+    """Resolve every site these rows name in one pass, not one lookup per row."""
+    from dcim.models import Site
+
+    site_slugs, site_names = _slug_name_identity_inputs(rows, "site_slug", "site")
+    _prime_slug_name_identity_cache(
+        runner,
+        Site,
+        slugs=site_slugs,
+        names=site_names,
+    )
 
 
 def _prime_dcim_device_identity_cache(runner, rows):

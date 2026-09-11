@@ -71,6 +71,41 @@
       </tr>
       {% endif %}
     </table>
+    {# The remedy for this one device, when the whole-set prune would take it   #}
+    {# anyway. The button narrows that prune rather than deleting directly, so  #}
+    {# every gate still applies and the job records a reason if it declines.    #}
+    {% if ownership.prune.offered and perms.dcim.delete_device %}
+      <form method="post" action="{{ ownership.prune.url }}" class="mt-2"
+            onsubmit="return confirm('{% blocktrans %}Remove this device from NetBox via {{ ownership.prune.sync_name }}? This also removes its interfaces and IP addresses.{% endblocktrans %}');">
+        {% csrf_token %}
+        <input type="hidden" name="device" value="{{ object.pk }}">
+        {% if ownership.prune.held %}
+          <div class="form-check d-inline-block me-2 align-middle">
+            <input class="form-check-input" type="checkbox" name="include_quarantined" id="include_quarantined_device" value="1">
+            <label class="form-check-label small" for="include_quarantined_device">
+              {% blocktrans with runs=ownership.prune.required_runs hours=ownership.prune.required_hours %}Delete now, before the absence has persisted for {{ runs }} syncs and {{ hours }} hours{% endblocktrans %}
+            </label>
+          </div>
+        {% endif %}
+        <button type="submit" class="btn btn-sm btn-danger">
+          <i class="mdi mdi-trash-can-outline" aria-hidden="true"></i>&nbsp;{% blocktrans with sync=ownership.prune.sync_name %}Remove from NetBox via {{ sync }}{% endblocktrans %}
+        </button>
+        {% if ownership.prune.held %}
+          <p class="text-muted small mb-0 mt-1">
+            {% blocktrans with runs=ownership.prune.required_runs hours=ownership.prune.required_hours %}Forward no longer reports this device, but a device disabled in Forward looks exactly the same, so the absence must persist for {{ runs }} consecutive syncs and {{ hours }} hours before the prune will delete it.{% endblocktrans %}
+          </p>
+        {% endif %}
+      </form>
+    {% elif ownership.prune.still_reported %}
+      <p class="text-muted small mt-2 mb-0">
+        {% blocktrans trimmed %}
+          Forward still reports this device; it carries none of this sync's
+          include tags. That is a scoping decision, not a removal, so the
+          uncovered cleanup will never delete it. Change the tags in Forward or
+          the sync's include tags to bring it back into scope.
+        {% endblocktrans %}
+      </p>
+    {% endif %}
     {% if ownership.holders %}
       <p class="text-muted mb-0">
         {% blocktrans trimmed %}
