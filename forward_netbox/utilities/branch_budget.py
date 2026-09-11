@@ -37,6 +37,10 @@ DEFAULT_MODEL_CHANGE_DENSITY = {
     "netbox_routing.ospfinstance": 2.0,
     "netbox_routing.ospfarea": 1.0,
     "netbox_routing.ospfinterface": 3.0,
+    # Entry plus its list / map parent and, for prefix lists, a CustomPrefix.
+    "netbox_routing.prefixlistentry": 2.0,
+    "netbox_routing.communitylistentry": 2.0,
+    "netbox_routing.routemapentry": 2.0,
     "netbox_peering_manager.peeringsession": 2.0,
     "ipam.fhrpgroup": 3.0,
 }
@@ -76,6 +80,9 @@ APPLY_DEPENDENCY_MODEL_ORDER = (
     "netbox_routing.ospfarea",
     "netbox_routing.ospfinstance",
     "netbox_routing.ospfinterface",
+    "netbox_routing.prefixlistentry",
+    "netbox_routing.communitylistentry",
+    "netbox_routing.routemapentry",
     "netbox_routing.bgppeer",
     "netbox_routing.bgpaddressfamily",
     "netbox_routing.bgppeeraddressfamily",
@@ -122,6 +129,9 @@ APPLY_PARENT_MODEL_DEPENDENCIES = {
         "dcim.interface",
         "netbox_routing.ospfinstance",
     ),
+    "netbox_routing.prefixlistentry": ("dcim.device",),
+    "netbox_routing.communitylistentry": ("dcim.device",),
+    "netbox_routing.routemapentry": ("dcim.device",),
     "netbox_dlm.softwareversion": ("dcim.platform",),
     "netbox_dlm.hardwarenotice": ("dcim.devicetype",),
     # The adapter creates SoftwareVersion and DeviceSoftware atomically.
@@ -171,6 +181,9 @@ DELETE_DEPENDENCY_MODEL_ORDER = (
     "netbox_routing.bgppeer",
     "netbox_routing.bgpscope",
     "netbox_routing.bgprouter",
+    "netbox_routing.routemapentry",
+    "netbox_routing.communitylistentry",
+    "netbox_routing.prefixlistentry",
     "netbox_routing.ospfinterface",
     "netbox_routing.ospfinstance",
     "netbox_routing.ospfarea",
@@ -278,6 +291,9 @@ DEVICE_SHARD_MODELS = {
     "netbox_routing.bgppeeraddressfamily",
     "netbox_routing.ospfinstance",
     "netbox_routing.ospfinterface",
+    "netbox_routing.prefixlistentry",
+    "netbox_routing.communitylistentry",
+    "netbox_routing.routemapentry",
     "netbox_peering_manager.peeringsession",
 }
 

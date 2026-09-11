@@ -1,0 +1,36 @@
+/**
+ * @intent Forward Routing Community Lists
+ * @description Optional config-derived NQE for netbox-routing community-list entries. Parses
+ * `ip community-list` from device.files.config for the IOS / IOS-XE (`standard|expanded NAME`), NX-OS
+ * (`standard|expanded NAME seq N`) and Arista EOS (`NAME` / `regexp NAME`) dialects. Standard lists emit one
+ * row per community value; expanded (regex) lists emit one row carrying the pattern, which the adapter
+ * records and skips because netbox-routing communities are numeric values, not patterns. A community
+ * list is device-local configuration, and netbox-routing names them globally, so the adapter stores each
+ * one as `<device>:<list name>`.
+ */
+
+clRegex = re`^ip community-list(?: (?<form>standard|expanded|regexp))? (?<name>\S+)(?: seq (?<seq:Integer>\d+))? (?<action>permit|deny) (?<body>.+)$`;
+tokenRegex = re`(?<token>\S+)`;
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where device.platform.os in [OS.IOS, OS.IOS_XE, OS.NXOS, OS.ARISTA_EOS]
+where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
+where isPresent(device.files.config)
+foreach line in device.files.config
+where matches(line.text, "ip community-list *")
+foreach m in regexMatches(line.text, clRegex)
+let form = (if isPresent(m.data.form) then (if m.data.form == "standard" then "standard" else "expanded") else "unqualified")
+foreach community in (if form == "expanded" then [m.data.body] else (foreach t in regexMatches(m.data.body, tokenRegex) select t.data.token))
+select {
+  device: device.name,
+  list_name: m.data.name,
+  form: form,
+  sequence: m.data.seq,
+  action: m.data.action,
+  community: community,
+  os: toString(device.platform.os)
+};

@@ -1310,6 +1310,42 @@ The OSPF area map creates native NetBox routing areas from Forward structured OS
 
 The OSPF interface map binds native OSPF instances and areas to exact NetBox interfaces. It can import local OSPF interface rows even when a specific neighbor lacks remote-peer inference, provided Forward exposes enough reciprocal evidence elsewhere in the same process to infer a unique local router ID. Missing interfaces are recorded as row failures so the rest of the shard can continue.
 
+## Forward Routing Prefix Lists
+
+- `NetBox Model`: `netbox_routing.prefixlistentry`
+- Expected fields: `device`, `list_name`, `family`, `sequence`, `action`, `prefix`, `ge`, `le`, `eq`, `os`
+- Query file: [`forward_routing_prefix_lists.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_routing_prefix_lists.nqe)
+- Enabled: disabled by default (opt-in)
+- Feature flag: enabled unless `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = False`
+- Optional dependency: requires the `netbox-routing` NetBox plugin
+- Stability: supported
+
+Forward has no structured routing-policy model, so this map parses `ip prefix-list` and `ipv6 prefix-list` from `device.files.config` for Cisco IOS / IOS-XE / NX-OS (flat `seq` lines) and Arista EOS (nested `seq` children), one row per entry. Because `netbox-routing` names prefix lists globally and a prefix list is device-local configuration, each list is stored as `<device>:<list name>` with the configured name in its description; every prefix becomes a `netbox-routing` `CustomPrefix`. `eq N` is stored as `ge N le N`. A `ge X le Y` pair with `X < Y`, or a bound not longer than the prefix, is rejected by `netbox-routing` 0.4.3 validation, so those entries are stored without bounds, the verbatim modifiers are kept in the entry's description, and one rolled-up warning names them. Org-backed customers must run *Publish Bundled Queries* once after upgrading for this map to resolve.
+
+## Forward Routing Community Lists
+
+- `NetBox Model`: `netbox_routing.communitylistentry`
+- Expected fields: `device`, `list_name`, `form`, `sequence`, `action`, `community`, `os`
+- Query file: [`forward_routing_community_lists.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_routing_community_lists.nqe)
+- Enabled: disabled by default (opt-in)
+- Feature flag: enabled unless `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = False`
+- Optional dependency: requires the `netbox-routing` NetBox plugin
+- Stability: supported
+
+Parses `ip community-list` from `device.files.config` for the IOS / IOS-XE (`standard|expanded NAME`), NX-OS (`standard|expanded NAME seq N`) and Arista EOS (`NAME` / `regexp NAME`) dialects. Standard lists emit one row per community value, each stored as a `netbox-routing` `Community` (shared fleet-wide by value) under a `<device>:<list name>` list. Expanded (regex) lists and well-known community names (`internet`, `no-export`, ...) have no numeric destination in `netbox-routing` and are recorded and skipped under one rolled-up warning each. Org-backed customers must run *Publish Bundled Queries* once after upgrading for this map to resolve.
+
+## Forward Routing Route Maps
+
+- `NetBox Model`: `netbox_routing.routemapentry`
+- Expected fields: `device`, `map_name`, `sequence`, `action`, `clauses`, `os`
+- Query file: [`forward_routing_route_maps.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_routing_route_maps.nqe)
+- Enabled: disabled by default (opt-in)
+- Feature flag: enabled unless `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = False`
+- Optional dependency: requires the `netbox-routing` NetBox plugin
+- Stability: supported
+
+Parses `route-map NAME permit|deny SEQ` stanzas from `device.files.config` (IOS / IOS-XE / NX-OS / EOS share the syntax), one row per sequence, carrying the stanza's child lines. The adapter stores each map as `<device>:<map name>`, turns `match` and `set` clauses into the entry's `match` / `set` JSON (keyed by clause head, e.g. `ip_address_prefix_list: ["NAME"]`, `community_exact_match: true`, `as_path_prepend: ["65000", "65000"]`), `continue N` into `flow_control` and `description` into the description. The referenced prefix-list and community-list names are in the JSON verbatim; the `netbox-routing` many-to-many links are not written. Org-backed customers must run *Publish Bundled Queries* once after upgrading for this map to resolve.
+
 ## Forward Peering Sessions
 
 - `NetBox Model`: `netbox_peering_manager.peeringsession`

@@ -1,0 +1,31 @@
+/**
+ * @intent Forward Routing Route Maps
+ * @description Optional config-derived NQE for netbox-routing route-map entries. Parses
+ * `route-map NAME permit|deny SEQ` stanzas from device.files.config for the IOS / IOS-XE / NX-OS / Arista
+ * EOS dialects (identical stanza syntax) and emits one row per sequence with the stanza's child lines
+ * verbatim; the adapter turns `match`, `set`, `continue` and `description` clauses into the entry's fields.
+ * A route map is device-local configuration, and netbox-routing names them globally, so the adapter stores
+ * each one as `<device>:<map name>`.
+ */
+
+rmRegex = re`^route-map (?<name>\S+) (?<action>permit|deny) (?<seq:Integer>\d+)$`;
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where device.platform.os in [OS.IOS, OS.IOS_XE, OS.NXOS, OS.ARISTA_EOS]
+where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
+where isPresent(device.files.config)
+foreach line in device.files.config
+where matches(line.text, "route-map *")
+foreach m in regexMatches(line.text, rmRegex)
+select {
+  device: device.name,
+  map_name: m.data.name,
+  sequence: m.data.seq,
+  action: m.data.action,
+  clauses: (foreach c in line.children select c.text),
+  os: toString(device.platform.os)
+};

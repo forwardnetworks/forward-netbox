@@ -246,6 +246,21 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
         allowed_coalesce_fields=("area_id",),
         default_coalesce_fields=(("area_id",),),
     ),
+    "netbox_routing.prefixlistentry": ModelSyncContract(
+        required_fields=("device", "list_name", "sequence", "action", "prefix"),
+        allowed_coalesce_fields=("device", "list_name", "sequence"),
+        default_coalesce_fields=(("device", "list_name", "sequence"),),
+    ),
+    "netbox_routing.communitylistentry": ModelSyncContract(
+        required_fields=("device", "list_name", "action", "community"),
+        allowed_coalesce_fields=("device", "list_name", "community"),
+        default_coalesce_fields=(("device", "list_name", "community"),),
+    ),
+    "netbox_routing.routemapentry": ModelSyncContract(
+        required_fields=("device", "map_name", "sequence", "action"),
+        allowed_coalesce_fields=("device", "map_name", "sequence"),
+        default_coalesce_fields=(("device", "map_name", "sequence"),),
+    ),
     "netbox_routing.ospfinterface": ModelSyncContract(
         required_fields=(
             "device",

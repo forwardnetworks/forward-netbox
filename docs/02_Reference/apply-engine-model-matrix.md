@@ -68,9 +68,12 @@ These models remain adapter-required with explicit blocker codes:
 - `netbox_routing.bgpaddressfamily` | `plugin_model_dependencies`
 - `netbox_routing.bgppeer` | `plugin_model_dependencies`
 - `netbox_routing.bgppeeraddressfamily` | `plugin_model_dependencies`
+- `netbox_routing.communitylistentry` | `plugin_model_dependencies`
 - `netbox_routing.ospfarea` | `plugin_model_dependencies`
 - `netbox_routing.ospfinstance` | `plugin_model_dependencies`
 - `netbox_routing.ospfinterface` | `plugin_model_dependencies`
+- `netbox_routing.prefixlistentry` | `plugin_model_dependencies`
+- `netbox_routing.routemapentry` | `plugin_model_dependencies`
 
 ## Drift Guard
 

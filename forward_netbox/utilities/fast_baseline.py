@@ -58,6 +58,9 @@ FAST_BASELINE_MODEL_SPEC_VERSIONS = {
     "netbox_routing.ospfarea": 1,
     "netbox_routing.ospfinstance": 1,
     "netbox_routing.ospfinterface": 1,
+    "netbox_routing.prefixlistentry": 1,
+    "netbox_routing.communitylistentry": 1,
+    "netbox_routing.routemapentry": 1,
 }
 FAST_BASELINE_ALLOWED_MODELS = frozenset(FAST_BASELINE_MODEL_SPEC_VERSIONS)
 FAST_BASELINE_OMITTED_EVIDENCE = (
@@ -115,6 +118,9 @@ FAST_BASELINE_REQUIRED_FIELD_CONTRACT = {
     "netbox_routing.ospfarea": ("area_id",),
     "netbox_routing.ospfinstance": ("device", "name", "process_id", "router_id"),
     "netbox_routing.ospfinterface": ("area", "instance", "interface"),
+    "netbox_routing.prefixlistentry": ("action", "prefix_list", "sequence"),
+    "netbox_routing.communitylistentry": ("action", "community", "community_list"),
+    "netbox_routing.routemapentry": ("action", "route_map", "sequence"),
 }
 
 

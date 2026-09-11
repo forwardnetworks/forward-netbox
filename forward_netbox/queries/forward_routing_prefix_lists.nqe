@@ -1,0 +1,42 @@
+/**
+ * @intent Forward Routing Prefix Lists
+ * @description Optional config-derived NQE for netbox-routing prefix-list entries. Forward has no structured
+ * policy model, so this parses `ip prefix-list` / `ipv6 prefix-list` from device.files.config for the
+ * IOS / IOS-XE / NX-OS (flat `seq` lines) and Arista EOS (nested `seq` children) dialects. One row per entry.
+ * A prefix list is device-local configuration, and netbox-routing names them globally, so the adapter
+ * stores each one as `<device>:<list name>`.
+ */
+
+flatRegex = re`^(?<af>ipv6|ip) prefix-list (?<name>\S+) seq (?<seq:Integer>\d+) (?<action>permit|deny) (?<prefix>\S+)(?<mods>.*)$`;
+nestedRegex = re`^\s*seq (?<seq:Integer>\d+) (?<action>permit|deny) (?<prefix>\S+)(?<mods>.*)$`;
+headerRegex = re`^(?<af>ipv6|ip) prefix-list (?<name>\S+)$`;
+geRegex = re`\bge (?<value:Integer>\d+)`;
+leRegex = re`\ble (?<value:Integer>\d+)`;
+eqRegex = re`\beq (?<value:Integer>\d+)`;
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where device.platform.os in [OS.IOS, OS.IOS_XE, OS.NXOS, OS.ARISTA_EOS]
+where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
+where isPresent(device.files.config)
+foreach line in device.files.config
+where matches(line.text, "ip prefix-list *") || matches(line.text, "ipv6 prefix-list *")
+let header = (foreach h in regexMatches(line.text, headerRegex) select h)
+let nested = (foreach h in header foreach child in line.children foreach m in regexMatches(child.text, nestedRegex) select { af: h.data.af, name: h.data.name, seq: m.data.seq, action: m.data.action, prefix: m.data.prefix, mods: m.data.mods })
+let flat = (foreach m in regexMatches(line.text, flatRegex) select { af: m.data.af, name: m.data.name, seq: m.data.seq, action: m.data.action, prefix: m.data.prefix, mods: m.data.mods })
+foreach entry in (if length(nested) > 0 then nested else flat)
+select {
+  device: device.name,
+  list_name: entry.name,
+  family: (if entry.af == "ipv6" then 6 else 4),
+  sequence: entry.seq,
+  action: entry.action,
+  prefix: entry.prefix,
+  ge: max(foreach m in regexMatches(entry.mods, geRegex) select m.data.value),
+  le: max(foreach m in regexMatches(entry.mods, leRegex) select m.data.value),
+  eq: max(foreach m in regexMatches(entry.mods, eqRegex) select m.data.value),
+  os: toString(device.platform.os)
+};

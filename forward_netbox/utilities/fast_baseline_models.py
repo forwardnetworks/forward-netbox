@@ -39,6 +39,9 @@ FAST_BASELINE_ADAPTER_CONTRACT_MODELS = frozenset(
         "netbox_routing.ospfarea",
         "netbox_routing.ospfinstance",
         "netbox_routing.ospfinterface",
+        "netbox_routing.prefixlistentry",
+        "netbox_routing.communitylistentry",
+        "netbox_routing.routemapentry",
     }
 )
 MODULE_NATIVE_INVENTORY_PART_TYPES = frozenset(
@@ -755,6 +758,14 @@ def _adapter_workload_contract(rows_by_model):
     )
     if not ok:
         return ok, context
+    for model_string in (
+        "netbox_routing.prefixlistentry",
+        "netbox_routing.communitylistentry",
+        "netbox_routing.routemapentry",
+    ):
+        ok, context = parents(model_string, rows_by_model.get(model_string, []))
+        if not ok:
+            return ok, context
     return True, {}
 
 

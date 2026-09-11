@@ -645,6 +645,24 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "enabled": True,
     },
     {
+        "model_string": "netbox_routing.prefixlistentry",
+        "name": "Forward Routing Prefix Lists",
+        "filename": "forward_routing_prefix_lists.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_routing.communitylistentry",
+        "name": "Forward Routing Community Lists",
+        "filename": "forward_routing_community_lists.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_routing.routemapentry",
+        "name": "Forward Routing Route Maps",
+        "filename": "forward_routing_route_maps.nqe",
+        "enabled": False,
+    },
+    {
         "model_string": "netbox_peering_manager.peeringsession",
         "name": "Forward Peering Sessions",
         "filename": "forward_peering_sessions.nqe",
@@ -1079,6 +1097,9 @@ _TIER2_DEVICE_OWNED_QUERY_FILENAMES = {
     "forward_bgp_peer_address_families.nqe",
     "forward_ospf_instances.nqe",
     "forward_ospf_interfaces.nqe",
+    "forward_routing_prefix_lists.nqe",
+    "forward_routing_community_lists.nqe",
+    "forward_routing_route_maps.nqe",
 }
 
 _TIER3_REDUCERS_BY_QUERY_FILENAME = {

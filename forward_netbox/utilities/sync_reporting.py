@@ -78,8 +78,34 @@ SKIP_WARNING_ROLLUP_SAMPLES = 5
 # per-row anomaly: one unadopted device can hold many addresses, and each would
 # otherwise log its own warning.
 UNOWNED_PRIMARY_IP_HOLDER_REASON = "primary-ip-held-by-unowned-device"
+# Routing-policy rows the destination model cannot hold as written; see
+# sync_routing_policy.py for why each is a skip rather than a failure.
+UNREPRESENTABLE_PREFIX_BOUNDS_REASON = "prefix-list-bounds-not-representable"
+EXPANDED_COMMUNITY_LIST_REASON = "expanded-community-list"
+NON_NUMERIC_COMMUNITY_REASON = "non-numeric-community"
+POLICY_NAME_TOO_LONG_REASON = "policy-name-too-long"
 
 ROLLUP_SUMMARY_TEMPLATES = {
+    UNREPRESENTABLE_PREFIX_BOUNDS_REASON: (
+        "Stored {total} {model} row(s) without their `ge`/`le` bounds: "
+        "netbox-routing 0.4.3 validation rejects a `ge` below `le` and any "
+        "bound not longer than the prefix, so the verbatim modifiers are kept "
+        "in each entry's description instead. Examples: {examples}{suffix}."
+    ),
+    EXPANDED_COMMUNITY_LIST_REASON: (
+        "Skipped {total} {model} row(s) from expanded (regex) community "
+        "lists: netbox-routing communities are numeric values, so a pattern "
+        "has no destination. Examples: {examples}{suffix}."
+    ),
+    NON_NUMERIC_COMMUNITY_REASON: (
+        "Skipped {total} {model} row(s) whose community is a well-known name "
+        "or otherwise non-numeric, which netbox-routing does not accept as a "
+        "community value. Examples: {examples}{suffix}."
+    ),
+    POLICY_NAME_TOO_LONG_REASON: (
+        "Skipped {total} {model} row(s) whose `<device>:<name>` exceeds the "
+        "100-character name field. Examples: {examples}{suffix}."
+    ),
     UNOWNED_PRIMARY_IP_HOLDER_REASON: (
         "Did not move {total} {model} row(s): a device holds each address as a "
         "primary IP but carries no identity from this sync, so the pointer "
