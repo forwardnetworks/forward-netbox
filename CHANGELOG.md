@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v2.9.4
 
-Release candidate; Fix: every operator diagnostic and remediation is now reachable in the NetBox GUI - the uncovered-device cleanup 2.9.3 shipped as a command flag is a gated button, a wedged sync has a recovery control, ingestion issues say which of them block the baseline, the two device sets the panel counted but would not list are listable in full, a device that refuses a manual delete explains which records refuse it and which of those this plugin can release, and the support bundle carries all of it so a problem we have to look at arrives with its evidence.
+Fix: every operator diagnostic and remediation is now reachable in the NetBox GUI - the uncovered-device cleanup 2.9.3 shipped as a command flag is a gated button, a wedged sync has a recovery control, ingestion issues say which of them block the baseline, the two device sets the panel counted but would not list are listable in full, a device that refuses a manual delete explains which records refuse it and which of those this plugin can release, and the support bundle carries all of it so a problem we have to look at arrives with its evidence.
 
 ## v2.9.3
 
