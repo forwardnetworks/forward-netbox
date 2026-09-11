@@ -213,6 +213,25 @@ def _safe_file_name(device_name):
     return name + ".cfg"
 
 
+def _remote_failure_reason(exc):
+    """What to tell the operator about a failed git exchange.
+
+    Never the URL or anything derived from it: the url carries the data
+    source's credentials, and dulwich's own messages can echo it. The two
+    failures an operator can act on without us are named; everything else is
+    reduced to the exception type, which is what the support bundle needs.
+    """
+    name = type(exc).__name__
+    if name == "HTTPUnauthorized":
+        return "the data source credentials were refused, HTTP 401"
+    if name == "HTTPProxyUnauthorized":
+        return "the proxy refused the data source credentials, HTTP 407"
+    status = getattr(exc, "status", None) or getattr(exc, "code", None)
+    if isinstance(status, int):
+        return f"the remote answered HTTP {status}, {name}"
+    return name
+
+
 def _fetch_remote(repo, url):
     """Fetch the remote into `repo` and return what it advertised."""
     from dulwich import porcelain
@@ -223,8 +242,8 @@ def _fetch_remote(repo, url):
         raise
     except Exception as exc:
         raise ForwardSyncError(
-            f"config backup could not fetch the data source repository "
-            f"({type(exc).__name__})."
+            "config backup could not fetch the data source repository "
+            f"({_remote_failure_reason(exc)})."
         ) from exc
 
 
@@ -440,8 +459,8 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
                 raise
             except Exception as exc:
                 raise ForwardSyncError(
-                    f"config backup could not push to the data source "
-                    f"repository ({type(exc).__name__})."
+                    "config backup could not push to the data source "
+                    f"repository ({_remote_failure_reason(exc)})."
                 ) from exc
             result.pushed = True
         finally:
