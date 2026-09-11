@@ -458,3 +458,84 @@ class RoutingPolicyAdapterTest(TestCase):
     def test_the_stored_name_is_the_catalogue_name_the_query_decided(self):
         self.assertEqual(policy_object_name({"name": "TO-DMZ@leaf-1"}), "TO-DMZ@leaf-1")
         self.assertEqual(policy_object_name({}), "")
+
+
+class AcceptanceRunFindingsTest(TestCase):
+    """What the first live sync against a real fleet rejected, pinned."""
+
+    def setUp(self):
+        source = ForwardSource.objects.create(
+            name="pol2-source",
+            type="saas",
+            url="https://forward.example.com",
+            status="ready",
+            parameters={
+                "username": "u",
+                "password": "p",
+                "verify": True,
+                "network_id": "n",
+            },
+        )
+        self.sync = ForwardSync.objects.create(
+            name="pol2-sync",
+            source=source,
+            parameters={"snapshot_id": "latestProcessed"},
+        )
+
+    def _runner(self):
+        return ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+    def test_an_nx_os_65535_tail_is_skipped_with_a_reason_not_failed(self):
+        runner = self._runner()
+        outcome = apply_netbox_routing_routemapentry(
+            runner,
+            {
+                "name": "RM-OUT",
+                "device": "pol-a",
+                "device_count": 1,
+                "map_name": "RM-OUT",
+                "sequence": 65535,
+                "action": "deny",
+                "clauses": [],
+            },
+        )
+        self.assertIs(outcome, False)
+        self.assertEqual(
+            runner._aggregated_skip_warning_counts.get(
+                (ROUTE_MAP_MODEL, "sequence-out-of-range")
+            ),
+            1,
+        )
+        self.assertEqual(_routing("RouteMap").objects.count(), 0)
+
+    def test_an_upper_case_ipv6_prefix_resolves_the_same_custom_prefix(self):
+        # `CustomPrefix.prefix` is unique on the network value; the config
+        # text `2A04:9140::/36` must find the row stored as `2a04:9140::/36`.
+        runner = self._runner()
+        row = {
+            "name": "PL-V6",
+            "device": "pol-a",
+            "device_count": 1,
+            "list_name": "PL-V6",
+            "family": 6,
+            "sequence": 5,
+            "action": "permit",
+            "prefix": "2A04:9140::/36",
+            "ge": None,
+            "le": None,
+            "eq": None,
+        }
+        apply_netbox_routing_prefixlistentry(runner, row)
+        apply_netbox_routing_prefixlistentry(
+            runner,
+            {
+                **row,
+                "name": "PL-V6@pol-b",
+                "device": "pol-b",
+                "prefix": "2a04:9140::/36",
+            },
+        )
+        self.assertEqual(_routing("CustomPrefix").objects.count(), 1)
+        self.assertEqual(_routing("PrefixListEntry").objects.count(), 2)

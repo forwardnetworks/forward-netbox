@@ -35,6 +35,7 @@ from .sync_primitives import forget_lookup_object
 from .sync_reporting import EXPANDED_COMMUNITY_LIST_REASON
 from .sync_reporting import NON_NUMERIC_COMMUNITY_REASON
 from .sync_reporting import POLICY_NAME_TOO_LONG_REASON
+from .sync_reporting import SEQUENCE_OUT_OF_RANGE_REASON
 from .sync_reporting import UNREPRESENTABLE_PREFIX_BOUNDS_REASON
 from .sync_routing_impl import preview_leaf_outcome
 
@@ -55,11 +56,47 @@ ROUTING_POLICY_ROLLUP_REASONS = frozenset(
         EXPANDED_COMMUNITY_LIST_REASON,
         NON_NUMERIC_COMMUNITY_REASON,
         POLICY_NAME_TOO_LONG_REASON,
+        SEQUENCE_OUT_OF_RANGE_REASON,
     }
 )
 
 _NAME_MAX_LENGTH = 100
 _DESCRIPTION_MAX_LENGTH = 200
+# netbox-routing stores sequences in a PositiveSmallIntegerField; NX-OS's
+# customary `deny 65535` tail cannot be stored and is skipped with a reason.
+_SEQUENCE_MAX = 32767
+
+
+def _sequence_or_skip(runner, row, model_string, label):
+    sequence = _int_or_none(row.get("sequence"))
+    if sequence is None:
+        return None
+    if sequence > _SEQUENCE_MAX:
+        runner._record_aggregated_skip_warning(
+            model_string=model_string,
+            reason=SEQUENCE_OUT_OF_RANGE_REASON,
+            warning_message=(
+                f"Skipping `{label}` seq {sequence}: netbox-routing stores sequences "
+                f"up to {_SEQUENCE_MAX}."
+            ),
+            sample=f"{label} seq {sequence}",
+        )
+        return False
+    return sequence
+
+
+def normalized_prefix(value):
+    """The prefix as `CustomPrefix` will store it, so lookups match.
+
+    `CustomPrefix.prefix` is unique on the network value, and IPv6 text from
+    a device config (`2A04:9140::/36`) differs from the stored form
+    (`2a04:9140::/36`) - an exact lookup missed and the create then failed
+    on the unique constraint. Host bits are cleared for the same reason.
+    """
+    try:
+        return str(ip_network(str(value).strip(), strict=False))
+    except ValueError:
+        return str(value or "").strip()
 
 
 def policy_object_name(row):
@@ -201,8 +238,10 @@ def ensure_prefix_list_entry(runner, row, *, preview=False):
     PrefixListEntry = runner._optional_model(
         "netbox_routing", "PrefixListEntry", PREFIX_LIST_MODEL
     )
-    sequence = _int_or_none(row.get("sequence"))
-    prefix = str(row.get("prefix") or "").strip()
+    sequence = _sequence_or_skip(
+        runner, row, PREFIX_LIST_MODEL, policy_object_name(row)
+    )
+    prefix = normalized_prefix(row.get("prefix"))
     if sequence is None or not prefix or not row.get("list_name"):
         raise ForwardQueryError(
             "Prefix-list row did not include `list_name`, `sequence` and `prefix`.",
@@ -210,6 +249,8 @@ def ensure_prefix_list_entry(runner, row, *, preview=False):
             context={"device": row.get("device"), "list_name": row.get("list_name")},
             data=row,
         )
+    if sequence is False:
+        return False
     prefix_list = ensure_prefix_list(runner, row)
     if prefix_list is None:
         return False
@@ -549,7 +590,7 @@ def ensure_route_map_entry(runner, row, *, preview=False):
     RouteMapEntry = runner._optional_model(
         "netbox_routing", "RouteMapEntry", ROUTE_MAP_MODEL
     )
-    sequence = _int_or_none(row.get("sequence"))
+    sequence = _sequence_or_skip(runner, row, ROUTE_MAP_MODEL, policy_object_name(row))
     if sequence is None or not row.get("map_name"):
         raise ForwardQueryError(
             "Route-map row did not include `map_name` and `sequence`.",
@@ -557,6 +598,8 @@ def ensure_route_map_entry(runner, row, *, preview=False):
             context={"device": row.get("device"), "map_name": row.get("map_name")},
             data=row,
         )
+    if sequence is False:
+        return False
     route_map = ensure_route_map(runner, row)
     if route_map is None:
         return False
@@ -618,6 +661,8 @@ __all__ = (
     "ROUTE_MAP_MODEL",
     "ROUTING_POLICY_MODELS",
     "ROUTING_POLICY_ROLLUP_REASONS",
+    "SEQUENCE_OUT_OF_RANGE_REASON",
+    "normalized_prefix",
     "UNREPRESENTABLE_PREFIX_BOUNDS_REASON",
     "apply_netbox_routing_communitylistentry",
     "apply_netbox_routing_prefixlistentry",

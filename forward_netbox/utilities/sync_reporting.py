@@ -84,6 +84,7 @@ UNREPRESENTABLE_PREFIX_BOUNDS_REASON = "prefix-list-bounds-not-representable"
 EXPANDED_COMMUNITY_LIST_REASON = "expanded-community-list"
 NON_NUMERIC_COMMUNITY_REASON = "non-numeric-community"
 POLICY_NAME_TOO_LONG_REASON = "policy-name-too-long"
+SEQUENCE_OUT_OF_RANGE_REASON = "sequence-out-of-range"
 
 ROLLUP_SUMMARY_TEMPLATES = {
     UNREPRESENTABLE_PREFIX_BOUNDS_REASON: (
@@ -101,6 +102,11 @@ ROLLUP_SUMMARY_TEMPLATES = {
         "Skipped {total} {model} row(s) whose community is a well-known name "
         "or otherwise non-numeric, which netbox-routing does not accept as a "
         "community value. Examples: {examples}{suffix}."
+    ),
+    SEQUENCE_OUT_OF_RANGE_REASON: (
+        "Skipped {total} {model} row(s) whose sequence exceeds 32767, the "
+        "largest netbox-routing stores (NX-OS's customary `deny 65535` tail). "
+        "Examples: {examples}{suffix}."
     ),
     POLICY_NAME_TOO_LONG_REASON: (
         "Skipped {total} {model} row(s) whose catalogue name exceeds the "
