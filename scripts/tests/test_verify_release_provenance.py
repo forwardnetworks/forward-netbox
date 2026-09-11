@@ -22,6 +22,22 @@ provenance = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(provenance)
 
 
+def _next_patch_version(tag: str) -> str:
+    """The version after this tag, e.g. "v2.9.4" -> "2.9.5".
+
+    The tag under test has to be the NEXT release, never the anchor, and the
+    anchor advances every release. Hardcoding it meant the anchor-advance
+    commit silently collided with the fixture and left this lane's `invoke ci`
+    red until someone tried the following release. Deriving it removes the
+    manual step the tooling never knew to perform.
+    """
+    major, minor, patch = tag.lstrip("v").split(".")
+    return f"{major}.{minor}.{int(patch) + 1}"
+
+
+_NEXT_VERSION = _next_patch_version(provenance.PRIOR_RELEASE_TAG)
+
+
 class ReleaseProvenanceTest(unittest.TestCase):
     # The tag being verified must be the NEXT release, never the anchor. When
     # the anchor advanced to 2.9.3 this still said "v2.9.3", so the fixture's
@@ -32,8 +48,8 @@ class ReleaseProvenanceTest(unittest.TestCase):
     # missing `merge-base` response, which reads as a bug in the lane-lineage
     # check rather than in this fixture. `test_the_tag_under_test_is_not_the_anchor`
     # makes the next anchor advance fail loudly instead.
-    TAG_UNDER_TEST = "v2.9.4"
-    VERSION_UNDER_TEST = "2.9.4"
+    VERSION_UNDER_TEST = _NEXT_VERSION
+    TAG_UNDER_TEST = f"v{_NEXT_VERSION}"
 
     prior_release_commit = "1" * 40
     anchor_commit = "2" * 40
