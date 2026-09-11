@@ -60,6 +60,7 @@ serial onto the device.
 | Forward Inventory Items | `dcim.inventoryitem` | [`forward_inventory_items.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_inventory_items.nqe) |
 | Forward ACI Fabrics | `netbox_cisco_aci.acifabric` | [`forward_aci_fabrics.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_fabrics.nqe) |
 | Forward ACI Pods | `netbox_cisco_aci.acipod` | [`forward_aci_pods.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_pods.nqe) |
+| Forward ACI APIC Pods | `netbox_cisco_aci.acipod` | [`forward_aci_apic_pods.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_apic_pods.nqe) |
 | Forward ACI Nodes | `netbox_cisco_aci.acinode` | [`forward_aci_nodes.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_nodes.nqe) |
 | Forward ACI APIC Nodes | `netbox_cisco_aci.acinode` | [`forward_aci_apic_nodes.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_apic_nodes.nqe) |
 | Forward ACI APIC CIMC Inventory | `dcim.inventoryitem` | [`forward_aci_apic_cimc_inventory.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_apic_cimc_inventory.nqe) |
@@ -67,6 +68,7 @@ serial onto the device.
 | Forward ACI VRFs | `netbox_cisco_aci.acivrf` | [`forward_aci_vrfs.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_vrfs.nqe) |
 | Forward ACI Bridge Domains | `netbox_cisco_aci.acibridgedomain` | [`forward_aci_bridge_domains.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_bridge_domains.nqe) |
 | Forward ACI Filters | `netbox_cisco_aci.acifilter` | [`forward_aci_filters.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_filters.nqe) |
+| Forward ACI APIC Filters | `netbox_cisco_aci.acifilter` | [`forward_aci_apic_filters.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_apic_filters.nqe) |
 | Forward ACI L3Outs | `netbox_cisco_aci.acil3out` | [`forward_aci_l3outs.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_l3outs.nqe) |
 | Forward ACI Command Inventory | `dcim.device` | [`forward_aci_command_inventory.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_command_inventory.nqe) |
 
@@ -97,6 +99,7 @@ cleanly there rather than being hidden behind a broad APIC dump.
 | --- | --- |
 | Forward ACI Fabrics | `name`, `fabric_id`, `description` |
 | Forward ACI Pods | `fabric_name`, `name`, `pod_id`, `description` |
+| Forward ACI APIC Pods | `fabric_name`, `name`, `pod_id`, `description` |
 | Forward ACI Nodes | `fabric_name`, `pod_name`, `pod_id`, `node_id`, `name`, `role`, `node_type`, `serial_number`, `pod_tep_pool`, `firmware_version`, `node_object_name`, `description` |
 | Forward ACI APIC Nodes | `fabric_name`, `pod_name`, `pod_id`, `node_id`, `name`, `role`, `node_type`, `serial_number`, `pod_tep_pool`, `firmware_version`, `node_object_name`, `description` |
 | Forward ACI APIC CIMC Inventory | `device`, `manufacturer`, `manufacturer_slug`, `name`, `label`, `part_id`, `serial`, `asset_tag`, `role`, `role_slug`, `role_color`, `part_type`, `module_component`, `status`, `discovered`, `description` |
@@ -104,6 +107,7 @@ cleanly there rather than being hidden behind a broad APIC dump.
 | Forward ACI VRFs | `fabric_name`, `tenant_name`, `name`, `policy_enforcement_preference`, `policy_enforcement_direction`, `bd_enforcement_enabled`, `preferred_group_enabled`, `description` |
 | Forward ACI Bridge Domains | `fabric_name`, `tenant_name`, `vrf_tenant_name`, `vrf_name`, `name`, `unicast_routing_enabled`, `arp_flooding_enabled`, `limit_ip_learn_to_subnets`, `l2_unknown_unicast`, `l3_unknown_multicast`, `multi_destination_flooding`, `mac_address`, `description` |
 | Forward ACI Filters | `fabric_name`, `tenant_name`, `name`, `description` |
+| Forward ACI APIC Filters | `fabric_name`, `tenant_name`, `name`, `description` |
 | Forward ACI L3Outs | `fabric_name`, `tenant_name`, `vrf_name`, `name`, `protocol_bgp`, `protocol_ospf`, `protocol_eigrp`, `protocol_static`, `target_dscp`, `description` |
 
 ## Shared Module

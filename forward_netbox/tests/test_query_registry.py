@@ -1332,6 +1332,7 @@ class QueryRegistryTest(TestCase):
         excluded_filenames = {
             "forward_ip_addresses_unassignable_diagnostics.nqe",
             "forward_routing_import_diagnostics.nqe",
+            "forward_aci_source_readiness.nqe",
         }
         for filename in sorted(filenames):
             if filename in excluded_filenames:

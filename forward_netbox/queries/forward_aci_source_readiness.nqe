@@ -1,0 +1,35 @@
+/**
+ * @intent Forward ACI Source Readiness
+ * @description Which ACI/APIC source commands the snapshot's completed devices carry, per device, so an
+ * enabled ACI map that returned nothing can be told apart from a fabric that has nothing to return.
+ * Runs only when an enabled ACI map returned zero rows; bounded to one row per (source, device).
+ */
+
+sourceKey(command) =
+  if command.commandType == CommandType.CISCO_ACI_FABRIC_NODES then "fabric_nodes"
+  else if command.commandType == CommandType.CISCO_ACI_ZONING_FILTER then "zoning_filter"
+  else if command.commandType == CommandType.CISCO_APIC_SWITCH
+    || command.commandType == CommandType.CISCO_APIC_CONTROLLER_DETAIL then "apic_detail"
+  else if command.commandType == CommandType.CUSTOM
+    && matches(toLowerCase(command.commandText), "moquery -c fvctx*") then "moquery_fvctx"
+  else if command.commandType == CommandType.CUSTOM
+    && matches(toLowerCase(command.commandText), "moquery -c fvbd*") then "moquery_fvbd"
+  else if command.commandType == CommandType.CUSTOM
+    && matches(toLowerCase(command.commandText), "moquery -c l3extinstp*") then "moquery_l3extinstp"
+  else if command.commandType == CommandType.CUSTOM
+    && matches(toLowerCase(command.commandText), "moquery -c eqptch*") then "moquery_eqptch"
+  else if command.commandType == CommandType.CUSTOM
+    && matches(toLowerCase(command.commandText), "moquery -c vzfilter*") then "moquery_vzfilter"
+  else "";
+
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach command in device.outputs.commands
+let source = sourceKey(command)
+where source != ""
+select distinct {
+  source: source,
+  device: device.name,
+  has_output: length(command.response) > 0
+}

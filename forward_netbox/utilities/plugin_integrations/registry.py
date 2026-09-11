@@ -65,6 +65,7 @@ ACI_INTEGRATION = OptionalPluginIntegration(
     query_maps=(
         "Forward ACI Fabrics",
         "Forward ACI Pods",
+        "Forward ACI APIC Pods",
         "Forward ACI Nodes",
         "Forward ACI APIC Nodes",
         "Forward ACI APIC CIMC Inventory",
@@ -72,6 +73,7 @@ ACI_INTEGRATION = OptionalPluginIntegration(
         "Forward ACI VRFs",
         "Forward ACI Bridge Domains",
         "Forward ACI Filters",
+        "Forward ACI APIC Filters",
         "Forward ACI L3Outs",
     ),
     package_name="netbox-cisco-aci",

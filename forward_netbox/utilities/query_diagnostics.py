@@ -5,6 +5,8 @@ from ipaddress import ip_network
 
 from rq.timeouts import JobTimeoutException
 
+from .query_registry import aci_source_readiness_query
+from .query_registry import ACI_SOURCE_READINESS_QUERY_NAME
 from .query_registry import ipaddress_unassignable_diagnostic_query
 from .query_registry import IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_NAME
 from .query_registry import routing_import_diagnostic_query
@@ -368,3 +370,157 @@ def diagnostic_row_count(row: dict) -> int:
     except (TypeError, ValueError):
         return 1
     return max(count, 1)
+
+
+# Which source command each bundled ACI map reads, and the sibling map that
+# reads the same thing from the other side of the fabric. Every ACI map is a
+# regex over raw command text, so a map that returns nothing is either a
+# fabric with nothing to return, a snapshot whose collection lacks the command,
+# or output the regex no longer matches - three different remedies, which is
+# why zero rows must not be left to read as "no ACI hardware".
+ACI_SOURCE_LABELS = {
+    "fabric_nodes": "CISCO_ACI_FABRIC_NODES",
+    "zoning_filter": "CISCO_ACI_ZONING_FILTER",
+    "apic_detail": "CISCO_APIC_SWITCH / CISCO_APIC_CONTROLLER_DETAIL",
+    "moquery_fvctx": "`moquery -c fvCtx`",
+    "moquery_fvbd": "`moquery -c fvBD`",
+    "moquery_l3extinstp": "`moquery -c l3extInstP`",
+    "moquery_eqptch": "`moquery -c eqptCh -a all`",
+    "moquery_vzfilter": "`moquery -c vzFilter`",
+}
+ACI_MAP_SOURCES = {
+    "Forward ACI Pods": ("fabric_nodes", "Forward ACI APIC Pods"),
+    "Forward ACI APIC Pods": ("apic_detail", "Forward ACI Pods"),
+    "Forward ACI Nodes": ("fabric_nodes", "Forward ACI APIC Nodes"),
+    "Forward ACI APIC Nodes": ("apic_detail", "Forward ACI Nodes"),
+    "Forward ACI Filters": ("zoning_filter", "Forward ACI APIC Filters"),
+    "Forward ACI APIC Filters": ("moquery_vzfilter", "Forward ACI Filters"),
+    "Forward ACI Tenants": ("moquery_fvctx", ""),
+    "Forward ACI VRFs": ("moquery_fvctx", ""),
+    "Forward ACI Bridge Domains": ("moquery_fvbd", ""),
+    "Forward ACI L3Outs": ("moquery_l3extinstp", ""),
+    "Forward ACI APIC CIMC Inventory": ("moquery_eqptch", ""),
+    "Forward DLM APIC CIMC Inventory Item Software": ("moquery_eqptch", ""),
+}
+
+
+def append_aci_source_diagnostics(fetcher, context):
+    """Explain every enabled ACI map that returned nothing.
+
+    One bounded readiness query, run only when there is something to explain:
+    an ACI map that fetched cleanly and produced zero rows. Each such map gets
+    a warning that says which of the three causes applies, and a diagnostic on
+    its result so the support bundle carries the same answer.
+    """
+    empty = [
+        result
+        for result in fetcher.model_results
+        if result.query_name in ACI_MAP_SOURCES
+        and int(result.row_count or 0) == 0
+        and int(result.failure_count or 0) == 0
+    ]
+    if not empty:
+        return
+    presence = run_aci_source_readiness(fetcher, context)
+    if presence is None:
+        return
+    diagnostics_by_query = {}
+    for result in empty:
+        source, sibling = ACI_MAP_SOURCES[result.query_name]
+        devices, with_output = presence.get(source, (0, 0))
+        sibling_note = ""
+        if sibling:
+            sibling_source = ACI_MAP_SOURCES[sibling][0]
+            sibling_devices = presence.get(sibling_source, (0, 0))[1]
+            if sibling_devices:
+                sibling_note = (
+                    f" `{sibling}` reads {ACI_SOURCE_LABELS[sibling_source]}, "
+                    f"present on {sibling_devices} device(s)."
+                )
+        if with_output:
+            cause = "source_present_nothing_parsed"
+            message = (
+                f"`{result.query_name}` returned no rows although "
+                f"{ACI_SOURCE_LABELS[source]} is collected with output on "
+                f"{with_output} completed device(s): the output does not match "
+                "what the map parses. Compare the command output on one of those "
+                "devices with the map's regex."
+            )
+        elif devices:
+            cause = "source_present_empty_output"
+            message = (
+                f"`{result.query_name}` returned no rows: "
+                f"{ACI_SOURCE_LABELS[source]} is collected on {devices} completed "
+                "device(s) but its output is empty in this snapshot."
+            )
+        else:
+            cause = "source_not_collected"
+            message = (
+                f"`{result.query_name}` returned no rows because no completed "
+                f"device in this snapshot carries {ACI_SOURCE_LABELS[source]}."
+                f"{sibling_note} Zero rows here means the source is missing, not "
+                "that the fabric is empty."
+            )
+        fetcher.logger.log_warning(message, obj=fetcher.sync)
+        diagnostics_by_query[result.query_name] = {
+            "name": "aci_source_readiness",
+            "query_name": ACI_SOURCE_READINESS_QUERY_NAME,
+            "source": source,
+            "cause": cause,
+            "devices_with_source": devices,
+            "devices_with_output": with_output,
+            "sibling": sibling,
+        }
+    fetcher.model_results = [
+        (
+            replace(
+                result,
+                diagnostics=[
+                    *result.diagnostics,
+                    diagnostics_by_query[result.query_name],
+                ],
+            )
+            if result.query_name in diagnostics_by_query
+            else result
+        )
+        for result in fetcher.model_results
+    ]
+
+
+def run_aci_source_readiness(fetcher, context):
+    try:
+        rows = fetcher.client.run_nqe_query(
+            query=aci_source_readiness_query(),
+            network_id=context.network_id,
+            snapshot_id=context.snapshot_id,
+            parameters=context.query_parameters,
+            fetch_all=True,
+        )
+    except JobTimeoutException:
+        raise
+    except Exception as exc:
+        fetcher.logger.log_warning(
+            "Unable to run Forward ACI source readiness diagnostics; empty ACI "
+            f"maps will not be explained: {exc}",
+            obj=fetcher.sync,
+        )
+        return None
+    return summarize_aci_source_readiness_rows(rows)
+
+
+def summarize_aci_source_readiness_rows(rows):
+    """`{source: (devices carrying it, devices with non-empty output)}`."""
+    devices = {}
+    with_output = {}
+    for row in rows:
+        source = str(row.get("source") or "")
+        device = str(row.get("device") or "")
+        if not source or not device:
+            continue
+        devices.setdefault(source, set()).add(device)
+        if row.get("has_output"):
+            with_output.setdefault(source, set()).add(device)
+    return {
+        source: (len(names), len(with_output.get(source, ())))
+        for source, names in devices.items()
+    }
