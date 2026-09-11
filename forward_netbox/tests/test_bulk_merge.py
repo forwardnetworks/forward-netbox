@@ -745,6 +745,7 @@ class BulkMergeIntegrationTest(CleanTransactionTestCase):
             "_out_of_scope_pks": [device.pk],
             "_tagged_names": {"in-scope-control"},
             "_device_tagged_names": {"in-scope-control"},
+            "_absence_kinds": {device.name: "absent"},
         }
         barrier_acquired = threading.Event()
         allow_delete = threading.Event()
@@ -871,6 +872,10 @@ class BulkMergeIntegrationTest(CleanTransactionTestCase):
             "_out_of_scope_pks": [first_device.pk, second_device.pk],
             "_tagged_names": {"in-scope-control"},
             "_device_tagged_names": {"in-scope-control"},
+            "_absence_kinds": {
+                first_device.name: "absent",
+                second_device.name: "absent",
+            },
         }
         first_transaction_committed = threading.Event()
         allow_second_transaction = threading.Event()
@@ -981,6 +986,7 @@ class BulkMergeIntegrationTest(CleanTransactionTestCase):
                 "_out_of_scope_pks": [parent.pk, child.pk],
                 "_tagged_names": {"in-scope-control"},
                 "_device_tagged_names": {"in-scope-control"},
+                "_absence_kinds": {parent.name: "absent", child.name: "absent"},
             },
         )
 
