@@ -103,7 +103,7 @@ ROLLUP_SUMMARY_TEMPLATES = {
         "community value. Examples: {examples}{suffix}."
     ),
     POLICY_NAME_TOO_LONG_REASON: (
-        "Skipped {total} {model} row(s) whose `<device>:<name>` exceeds the "
+        "Skipped {total} {model} row(s) whose catalogue name exceeds the "
         "100-character name field. Examples: {examples}{suffix}."
     ),
     UNOWNED_PRIMARY_IP_HOLDER_REASON: (
