@@ -129,9 +129,6 @@ APPLY_PARENT_MODEL_DEPENDENCIES = {
         "dcim.interface",
         "netbox_routing.ospfinstance",
     ),
-    "netbox_routing.prefixlistentry": ("dcim.device",),
-    "netbox_routing.communitylistentry": ("dcim.device",),
-    "netbox_routing.routemapentry": ("dcim.device",),
     "netbox_dlm.softwareversion": ("dcim.platform",),
     "netbox_dlm.hardwarenotice": ("dcim.devicetype",),
     # The adapter creates SoftwareVersion and DeviceSoftware atomically.
@@ -291,9 +288,6 @@ DEVICE_SHARD_MODELS = {
     "netbox_routing.bgppeeraddressfamily",
     "netbox_routing.ospfinstance",
     "netbox_routing.ospfinterface",
-    "netbox_routing.prefixlistentry",
-    "netbox_routing.communitylistentry",
-    "netbox_routing.routemapentry",
     "netbox_peering_manager.peeringsession",
 }
 
@@ -311,6 +305,9 @@ STRUCTURED_SHARD_FILTER_FIELDS = {
     "dcim.device": ("name",),
     "dcim.virtualchassis": ("name",),
     "netbox_routing.ospfarea": ("area_id",),
+    "netbox_routing.prefixlistentry": ("name",),
+    "netbox_routing.communitylistentry": ("name",),
+    "netbox_routing.routemapentry": ("name",),
     "netbox_cisco_aci.acifabric": ("name",),
     "netbox_cisco_aci.acipod": ("fabric_name", "pod_id", "name"),
     "netbox_cisco_aci.acinode": ("fabric_name", "pod_id", "node_id", "name"),

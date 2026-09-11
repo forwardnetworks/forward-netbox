@@ -4,28 +4,63 @@
  * `route-map NAME permit|deny SEQ` stanzas from device.files.config for the IOS / IOS-XE / NX-OS / Arista
  * EOS dialects (identical stanza syntax) and emits one row per sequence with the stanza's child lines
  * verbatim; the adapter turns `match`, `set`, `continue` and `description` clauses into the entry's fields.
- * A route map is device-local configuration, and netbox-routing names them globally, so the adapter stores
- * each one as `<device>:<map name>`.
+ * netbox-routing names these objects globally and a fleet defines the same name differently on different
+ * devices, so this map builds a catalogue: per configured name, every device's definition is grouped by
+ * content; the definition shared by the most devices is stored under the bare name, and each other
+ * definition is stored as `<name>@<lowest device holding it>`. `device` is that representative device and
+ * `device_count` how many define it identically. Nothing is dropped and shared policy appears once.
  */
 
 rmRegex = re`^route-map (?<name>\S+) (?<action>permit|deny) (?<seq:Integer>\d+)$`;
 
+entries =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where device.platform.os in [OS.IOS, OS.IOS_XE, OS.NXOS, OS.ARISTA_EOS]
+  where isPresent(device.files.config)
+  foreach line in device.files.config
+  where matches(line.text, "route-map *")
+  foreach m in regexMatches(line.text, rmRegex)
+  let clauses = (foreach c in line.children select c.text)
+  select {
+    device: device.name,
+    name: m.data.name,
+    seq: m.data.seq,
+    action: m.data.action,
+    clauses: clauses,
+    sigtext: line.text + toString(clauses)
+  };
+defs =
+  foreach e in entries
+  group e as es by { device: e.device, name: e.name } as k
+  select { device: k.device, name: k.name, sig: (foreach x in es select x.sigtext) };
+
+variants =
+  foreach d in defs
+  group d as ds by { name: d.name, sig: d.sig } as k
+  select { name: k.name, count: length(ds), rep: min(foreach x in ds select x.device) };
+
+ranked =
+  foreach v in variants
+  group v as vs by v.name as name
+  let bestCount = max(foreach x in vs select x.count)
+  let bestRep = min(foreach x in vs where x.count == bestCount select x.rep)
+  foreach v2 in vs
+  select { name: name, rep: v2.rep, count: v2.count, object_name: (if v2.rep == bestRep then name else name + "@" + v2.rep) };
+
 @query
 f(forward_netbox_shard_keys: List<String>) =
-foreach device in network.devices
-where device.snapshotInfo.result == DeviceSnapshotResult.completed
-where device.platform.vendor != Vendor.FORWARD_CUSTOM
-where device.platform.os in [OS.IOS, OS.IOS_XE, OS.NXOS, OS.ARISTA_EOS]
-where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
-where isPresent(device.files.config)
-foreach line in device.files.config
-where matches(line.text, "route-map *")
-foreach m in regexMatches(line.text, rmRegex)
+foreach r in ranked
+where isEmpty(forward_netbox_shard_keys) || r.object_name in forward_netbox_shard_keys
+foreach e in entries
+where e.device == r.rep && e.name == r.name
 select {
-  device: device.name,
-  map_name: m.data.name,
-  sequence: m.data.seq,
-  action: m.data.action,
-  clauses: (foreach c in line.children select c.text),
-  os: toString(device.platform.os)
+  name: r.object_name,
+  map_name: r.name,
+  device: r.rep,
+  device_count: r.count,
+  sequence: e.seq,
+  action: e.action,
+  clauses: e.clauses
 };

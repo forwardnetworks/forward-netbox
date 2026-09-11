@@ -11,13 +11,16 @@
 #   `CommunityList.name` and `RouteMap.name` are each unique, case-insensitively)
 #   and gives them no device. A prefix list is device-local configuration, and
 #   on a real fleet a third of the names are defined differently on different
-#   devices - mostly disjointly, not as near-copies. Collapsing by name would
-#   keep one device's version and silently drop the rest (measured: over half
-#   the route-map entries and most of the community-list entries), so each
-#   object is named `<device>:<name>` and the real name lives in `description`.
-#   The route-map M2M links (`match_prefix_list`, `match_community_list`) are
-#   not written: the staging engine stages concrete fields only, and the JSON
-#   `match`/`set` blobs carry the referenced names verbatim.
+#   devices - mostly disjointly. So the three maps build a CATALOGUE in NQE:
+#   per configured name, every device's definition is grouped by content, the
+#   definition shared by the most devices owns the bare name, and each other
+#   definition is stored as `<name>@<lowest device holding it>`. Rows arrive
+#   here already carrying the stored `name`, the configured `list_name` /
+#   `map_name`, the representative `device` and `device_count`. Shared policy
+#   appears once under its real name and nothing is dropped. The route-map M2M
+#   links (`match_prefix_list`, `match_community_list`) are not written: the
+#   staging engine stages concrete fields only, and the JSON `match`/`set`
+#   blobs carry the referenced names verbatim.
 # - **Entries are validated by the plugin's own `clean()`**, which the merge
 #   runs. `PrefixListEntry.clean()` in 0.4.3 rejects the normal `ge X le Y`
 #   pair (it raises when `ge < le`) and any bound not longer than the prefix.
@@ -33,7 +36,6 @@ from .sync_reporting import EXPANDED_COMMUNITY_LIST_REASON
 from .sync_reporting import NON_NUMERIC_COMMUNITY_REASON
 from .sync_reporting import POLICY_NAME_TOO_LONG_REASON
 from .sync_reporting import UNREPRESENTABLE_PREFIX_BOUNDS_REASON
-from .sync_routing_impl import lookup_device_for_routing
 from .sync_routing_impl import preview_leaf_outcome
 
 PREFIX_LIST_MODEL = "netbox_routing.prefixlistentry"
@@ -60,13 +62,33 @@ _NAME_MAX_LENGTH = 100
 _DESCRIPTION_MAX_LENGTH = 200
 
 
-def policy_object_name(device_name, policy_name):
-    """The stored name: device-qualified, because the destination is global."""
-    return f"{device_name}:{policy_name}"
+def policy_object_name(row):
+    """The stored name, decided by the query's catalogue grouping."""
+    return str(row.get("name") or "").strip()
+
+
+def policy_description(row, configured_name):
+    """What the catalogue knows about this object, for its description."""
+    count = _int_or_none(row.get("device_count")) or 1
+    device = str(row.get("device") or "").strip()
+    if "@" in policy_object_name(row):
+        head = f"{configured_name}: variant"
+    else:
+        head = f"{configured_name}"
+    return _description(
+        f"{head} defined identically on {count} device(s), e.g. {device} (Forward)"
+    )
 
 
 def _policy_name_or_skip(runner, row, model_string, policy_name):
-    name = policy_object_name(row.get("device"), policy_name)
+    name = policy_object_name(row)
+    if not name:
+        raise ForwardQueryError(
+            "Policy row did not include its catalogue `name`.",
+            model_string=model_string,
+            context={"device": row.get("device"), "configured_name": policy_name},
+            data=row,
+        )
     if len(name) > _NAME_MAX_LENGTH:
         runner._record_aggregated_skip_warning(
             model_string=model_string,
@@ -163,9 +185,7 @@ def ensure_prefix_list(runner, row):
         {
             "name": name,
             "family": family,
-            "description": _description(
-                f"{row.get('list_name')} on {row.get('device')} (Forward)"
-            ),
+            "description": policy_description(row, row.get("list_name")),
         },
     )
     prefix_list, _ = runner._upsert_values_from_defaults(
@@ -181,7 +201,6 @@ def ensure_prefix_list_entry(runner, row, *, preview=False):
     PrefixListEntry = runner._optional_model(
         "netbox_routing", "PrefixListEntry", PREFIX_LIST_MODEL
     )
-    lookup_device_for_routing(runner, row, PREFIX_LIST_MODEL, "prefix-list entry")
     sequence = _int_or_none(row.get("sequence"))
     prefix = str(row.get("prefix") or "").strip()
     if sequence is None or not prefix or not row.get("list_name"):
@@ -262,7 +281,9 @@ def _delete_parent_if_empty(runner, parent, related_name):
 
 def _resolve_policy_parent(runner, model, row, policy_name):
     # `_get_unique_or_raise` raises only on ambiguity; a miss is None.
-    name = policy_object_name(row.get("device"), policy_name)
+    name = policy_object_name(row)
+    if not name:
+        return None
     return runner._get_unique_or_raise(model, {"name": name})
 
 
@@ -322,9 +343,7 @@ def ensure_community_list(runner, row):
         CommunityList,
         {
             "name": name,
-            "description": _description(
-                f"{row.get('list_name')} on {row.get('device')} (Forward)"
-            ),
+            "description": policy_description(row, row.get("list_name")),
         },
     )
     community_list, _ = runner._upsert_values_from_defaults(
@@ -340,7 +359,6 @@ def ensure_community_list_entry(runner, row, *, preview=False):
     CommunityListEntry = runner._optional_model(
         "netbox_routing", "CommunityListEntry", COMMUNITY_LIST_MODEL
     )
-    lookup_device_for_routing(runner, row, COMMUNITY_LIST_MODEL, "community-list entry")
     if not row.get("list_name"):
         raise ForwardQueryError(
             "Community-list row did not include `list_name`.",
@@ -348,7 +366,7 @@ def ensure_community_list_entry(runner, row, *, preview=False):
             context={"device": row.get("device")},
             data=row,
         )
-    label = policy_object_name(row.get("device"), row.get("list_name"))
+    label = policy_object_name(row)
     if str(row.get("form") or "").lower() == "expanded":
         runner._record_aggregated_skip_warning(
             model_string=COMMUNITY_LIST_MODEL,
@@ -515,9 +533,7 @@ def ensure_route_map(runner, row):
         RouteMap,
         {
             "name": name,
-            "description": _description(
-                f"{row.get('map_name')} on {row.get('device')} (Forward)"
-            ),
+            "description": policy_description(row, row.get("map_name")),
         },
     )
     route_map, _ = runner._upsert_values_from_defaults(
@@ -533,7 +549,6 @@ def ensure_route_map_entry(runner, row, *, preview=False):
     RouteMapEntry = runner._optional_model(
         "netbox_routing", "RouteMapEntry", ROUTE_MAP_MODEL
     )
-    lookup_device_for_routing(runner, row, ROUTE_MAP_MODEL, "route-map entry")
     sequence = _int_or_none(row.get("sequence"))
     if sequence is None or not row.get("map_name"):
         raise ForwardQueryError(
@@ -620,6 +635,7 @@ __all__ = (
     "ensure_route_map",
     "ensure_route_map_entry",
     "parse_route_map_clauses",
+    "policy_description",
     "policy_object_name",
     "prefix_length_bounds",
     "prefix_list_modifiers_text",

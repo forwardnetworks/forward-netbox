@@ -4,33 +4,68 @@
  * `ip community-list` from device.files.config for the IOS / IOS-XE (`standard|expanded NAME`), NX-OS
  * (`standard|expanded NAME seq N`) and Arista EOS (`NAME` / `regexp NAME`) dialects. Standard lists emit one
  * row per community value; expanded (regex) lists emit one row carrying the pattern, which the adapter
- * records and skips because netbox-routing communities are numeric values, not patterns. A community
- * list is device-local configuration, and netbox-routing names them globally, so the adapter stores each
- * one as `<device>:<list name>`.
+ * records and skips because netbox-routing communities are numeric values, not patterns.
+ * netbox-routing names these objects globally and a fleet defines the same name differently on different
+ * devices, so this map builds a catalogue: per configured name, every device's definition is grouped by
+ * content; the definition shared by the most devices is stored under the bare name, and each other
+ * definition is stored as `<name>@<lowest device holding it>`. `device` is that representative device and
+ * `device_count` how many define it identically. Nothing is dropped and shared policy appears once.
  */
 
 clRegex = re`^ip community-list(?: (?<form>standard|expanded|regexp))? (?<name>\S+)(?: seq (?<seq:Integer>\d+))? (?<action>permit|deny) (?<body>.+)$`;
 tokenRegex = re`(?<token>\S+)`;
 
+entries =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where device.platform.os in [OS.IOS, OS.IOS_XE, OS.NXOS, OS.ARISTA_EOS]
+  where isPresent(device.files.config)
+  foreach line in device.files.config
+  where matches(line.text, "ip community-list *")
+  foreach m in regexMatches(line.text, clRegex)
+  let form = (if isPresent(m.data.form) then (if m.data.form == "standard" then "standard" else "expanded") else "unqualified")
+  foreach community in (if form == "expanded" then [m.data.body] else (foreach t in regexMatches(m.data.body, tokenRegex) select t.data.token))
+  select {
+    device: device.name,
+    name: m.data.name,
+    form: form,
+    seq: m.data.seq,
+    action: m.data.action,
+    community: community,
+    sigtext: form + " " + m.data.action + " " + community
+  };
+defs =
+  foreach e in entries
+  group e as es by { device: e.device, name: e.name } as k
+  select { device: k.device, name: k.name, sig: (foreach x in es select x.sigtext) };
+
+variants =
+  foreach d in defs
+  group d as ds by { name: d.name, sig: d.sig } as k
+  select { name: k.name, count: length(ds), rep: min(foreach x in ds select x.device) };
+
+ranked =
+  foreach v in variants
+  group v as vs by v.name as name
+  let bestCount = max(foreach x in vs select x.count)
+  let bestRep = min(foreach x in vs where x.count == bestCount select x.rep)
+  foreach v2 in vs
+  select { name: name, rep: v2.rep, count: v2.count, object_name: (if v2.rep == bestRep then name else name + "@" + v2.rep) };
+
 @query
 f(forward_netbox_shard_keys: List<String>) =
-foreach device in network.devices
-where device.snapshotInfo.result == DeviceSnapshotResult.completed
-where device.platform.vendor != Vendor.FORWARD_CUSTOM
-where device.platform.os in [OS.IOS, OS.IOS_XE, OS.NXOS, OS.ARISTA_EOS]
-where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
-where isPresent(device.files.config)
-foreach line in device.files.config
-where matches(line.text, "ip community-list *")
-foreach m in regexMatches(line.text, clRegex)
-let form = (if isPresent(m.data.form) then (if m.data.form == "standard" then "standard" else "expanded") else "unqualified")
-foreach community in (if form == "expanded" then [m.data.body] else (foreach t in regexMatches(m.data.body, tokenRegex) select t.data.token))
+foreach r in ranked
+where isEmpty(forward_netbox_shard_keys) || r.object_name in forward_netbox_shard_keys
+foreach e in entries
+where e.device == r.rep && e.name == r.name
 select {
-  device: device.name,
-  list_name: m.data.name,
-  form: form,
-  sequence: m.data.seq,
-  action: m.data.action,
-  community: community,
-  os: toString(device.platform.os)
+  name: r.object_name,
+  list_name: r.name,
+  device: r.rep,
+  device_count: r.count,
+  form: e.form,
+  sequence: e.seq,
+  action: e.action,
+  community: e.community
 };

@@ -1097,9 +1097,6 @@ _TIER2_DEVICE_OWNED_QUERY_FILENAMES = {
     "forward_bgp_peer_address_families.nqe",
     "forward_ospf_instances.nqe",
     "forward_ospf_interfaces.nqe",
-    "forward_routing_prefix_lists.nqe",
-    "forward_routing_community_lists.nqe",
-    "forward_routing_route_maps.nqe",
 }
 
 _TIER3_REDUCERS_BY_QUERY_FILENAME = {

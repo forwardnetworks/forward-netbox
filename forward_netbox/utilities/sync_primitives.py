@@ -870,9 +870,6 @@ DEPENDENCY_PARENT_DEVICE_FIELDS = {
     "netbox_routing.bgppeeraddressfamily": ("device",),
     "netbox_routing.ospfinstance": ("device",),
     "netbox_routing.ospfinterface": ("device",),
-    "netbox_routing.prefixlistentry": ("device",),
-    "netbox_routing.communitylistentry": ("device",),
-    "netbox_routing.routemapentry": ("device",),
     "netbox_dlm.devicesoftware": ("name",),
 }
 DEPENDENCY_PARENT_DEVICE_MODELS = tuple(DEPENDENCY_PARENT_DEVICE_FIELDS)
@@ -990,9 +987,6 @@ def _dependency_device_names(model_string, rows):
         "netbox_routing.bgppeeraddressfamily": ("device",),
         "netbox_routing.ospfinstance": ("device",),
         "netbox_routing.ospfinterface": ("device",),
-        "netbox_routing.prefixlistentry": ("device",),
-        "netbox_routing.communitylistentry": ("device",),
-        "netbox_routing.routemapentry": ("device",),
         "netbox_dlm.devicesoftware": ("name",),
     }.get(model_string, ())
     return {
@@ -1398,9 +1392,9 @@ def _prime_routing_policy_identity_cache(runner, model_string, rows):
     from .sync_routing_policy import policy_object_name
 
     parent_by_model = {
-        PREFIX_LIST_MODEL: ("PrefixList", "list_name"),
-        COMMUNITY_LIST_MODEL: ("CommunityList", "list_name"),
-        ROUTE_MAP_MODEL: ("RouteMap", "map_name"),
+        PREFIX_LIST_MODEL: "PrefixList",
+        COMMUNITY_LIST_MODEL: "CommunityList",
+        ROUTE_MAP_MODEL: "RouteMap",
     }
     if model_string not in parent_by_model:
         return {}
@@ -1410,17 +1404,11 @@ def _prime_routing_policy_identity_cache(runner, model_string, rows):
     if not apps.is_installed("netbox_routing"):
         return {}
 
-    parent_model_name, name_field = parent_by_model[model_string]
+    parent_model_name = parent_by_model[model_string]
     Parent = runner._optional_model("netbox_routing", parent_model_name, model_string)
     if Parent is None:
         return {}
-    names = {
-        policy_object_name(
-            str(row.get("device") or "").strip(), str(row.get(name_field) or "").strip()
-        )
-        for row in rows
-        if row.get("device") not in ("", None) and row.get(name_field) not in ("", None)
-    }
+    names = {policy_object_name(row) for row in rows if policy_object_name(row)}
     _prime_slug_name_identity_cache(runner, Parent, slugs=set(), names=names)
 
     if model_string == PREFIX_LIST_MODEL:

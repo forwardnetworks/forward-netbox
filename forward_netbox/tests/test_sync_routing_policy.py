@@ -2,8 +2,10 @@
 # device configuration because Forward has no structured policy model.
 #
 # Two things are pinned here that the destination model forces. netbox-routing
-# names policy objects globally, so every object is stored `<device>:<name>`
-# and two devices defining `TO-DMZ` differently never overwrite each other.
+# names policy objects globally, so the queries build a catalogue: the
+# definition most devices share owns the bare name and each divergent one is
+# `<name>@<device>`; rows arrive carrying that stored `name`, and two devices
+# defining `TO-DMZ` differently never overwrite each other.
 # And netbox-routing 0.4.3's `PrefixListEntry.clean()` rejects the normal
 # `ge X le Y` pair, so the adapter predicts that and stores the entry without
 # bounds rather than letting the merge reject it on every run.
@@ -192,7 +194,9 @@ class RoutingPolicyAdapterTest(TestCase):
 
     def _pl_row(self, **extra):
         row = {
+            "name": "PL-OUT",
             "device": "pol-a",
+            "device_count": 3,
             "list_name": "PL-OUT",
             "family": 4,
             "sequence": 10,
@@ -211,24 +215,40 @@ class RoutingPolicyAdapterTest(TestCase):
             self._runner(), self._pl_row(le=32)
         )
 
-        self.assertEqual(entry.prefix_list.name, "pol-a:PL-OUT")
+        self.assertEqual(entry.prefix_list.name, "PL-OUT")
         self.assertEqual(entry.prefix_list.family, 4)
-        self.assertIn("PL-OUT on pol-a", entry.prefix_list.description)
+        self.assertEqual(
+            entry.prefix_list.description,
+            "PL-OUT defined identically on 3 device(s), e.g. pol-a (Forward)",
+        )
         self.assertEqual(str(entry.assigned_prefix.prefix), "10.0.0.0/8")
         self.assertEqual((entry.ge, entry.le), (None, 32))
         self.assertEqual(entry.action, "permit")
 
-    def test_the_same_list_name_on_two_devices_is_two_lists(self):
+    def test_a_divergent_variant_is_its_own_list_with_a_variant_description(self):
+        # The query names the variant `PL-OUT@pol-b`; the adapter stores it
+        # beside the canonical `PL-OUT` rather than over it.
         runner = self._runner()
         apply_netbox_routing_prefixlistentry(runner, self._pl_row(prefix="10.0.0.0/8"))
         apply_netbox_routing_prefixlistentry(
-            runner, self._pl_row(device="pol-b", prefix="192.168.0.0/16")
+            runner,
+            self._pl_row(
+                name="PL-OUT@pol-b",
+                device="pol-b",
+                device_count=1,
+                prefix="192.168.0.0/16",
+            ),
         )
 
         PrefixList = _routing("PrefixList")
         self.assertEqual(
             sorted(PrefixList.objects.values_list("name", flat=True)),
-            ["pol-a:PL-OUT", "pol-b:PL-OUT"],
+            ["PL-OUT", "PL-OUT@pol-b"],
+        )
+        variant = PrefixList.objects.get(name="PL-OUT@pol-b")
+        self.assertEqual(
+            variant.description,
+            "PL-OUT: variant defined identically on 1 device(s), e.g. pol-b (Forward)",
         )
         # A shared prefix value is one CustomPrefix; a different one is another.
         self.assertEqual(_routing("CustomPrefix").objects.count(), 2)
@@ -287,7 +307,9 @@ class RoutingPolicyAdapterTest(TestCase):
 
     def _cl_row(self, **extra):
         row = {
+            "name": "CL-A",
             "device": "pol-a",
+            "device_count": 2,
             "list_name": "CL-A",
             "form": "standard",
             "sequence": None,
@@ -301,14 +323,16 @@ class RoutingPolicyAdapterTest(TestCase):
     def test_a_community_list_entry_creates_its_list_and_community(self):
         entry = apply_netbox_routing_communitylistentry(self._runner(), self._cl_row())
 
-        self.assertEqual(entry.community_list.name, "pol-a:CL-A")
+        self.assertEqual(entry.community_list.name, "CL-A")
         self.assertEqual(entry.community.community, "64101:102")
         self.assertEqual(entry.action, "permit")
 
     def test_a_community_value_is_shared_across_lists(self):
         runner = self._runner()
         apply_netbox_routing_communitylistentry(runner, self._cl_row())
-        apply_netbox_routing_communitylistentry(runner, self._cl_row(device="pol-b"))
+        apply_netbox_routing_communitylistentry(
+            runner, self._cl_row(name="CL-A@pol-b", device="pol-b", device_count=1)
+        )
 
         self.assertEqual(_routing("Community").objects.count(), 1)
         self.assertEqual(_routing("CommunityList").objects.count(), 2)
@@ -368,7 +392,9 @@ class RoutingPolicyAdapterTest(TestCase):
 
     def _rm_row(self, **extra):
         row = {
+            "name": "RM-OUT",
             "device": "pol-a",
+            "device_count": 5,
             "map_name": "RM-OUT",
             "sequence": 10,
             "action": "permit",
@@ -384,7 +410,7 @@ class RoutingPolicyAdapterTest(TestCase):
     def test_a_route_map_entry_creates_its_map_and_carries_the_clauses(self):
         entry = apply_netbox_routing_routemapentry(self._runner(), self._rm_row())
 
-        self.assertEqual(entry.route_map.name, "pol-a:RM-OUT")
+        self.assertEqual(entry.route_map.name, "RM-OUT")
         self.assertEqual(entry.sequence, 10)
         self.assertEqual(entry.match, {"ip_address_prefix_list": ["PL-OUT"]})
         self.assertEqual(
@@ -429,5 +455,6 @@ class RoutingPolicyAdapterTest(TestCase):
         self.assertTrue(delete_netbox_routing_routemapentry(runner, self._rm_row()))
         self.assertEqual(_routing("RouteMap").objects.count(), 0)
 
-    def test_the_stored_name_is_device_qualified(self):
-        self.assertEqual(policy_object_name("leaf-1", "TO-DMZ"), "leaf-1:TO-DMZ")
+    def test_the_stored_name_is_the_catalogue_name_the_query_decided(self):
+        self.assertEqual(policy_object_name({"name": "TO-DMZ@leaf-1"}), "TO-DMZ@leaf-1")
+        self.assertEqual(policy_object_name({}), "")

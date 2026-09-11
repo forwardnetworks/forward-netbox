@@ -246,20 +246,23 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
         allowed_coalesce_fields=("area_id",),
         default_coalesce_fields=(("area_id",),),
     ),
+    # Catalogue rows: `name` is the stored object name the query decided
+    # (bare, or `<name>@<device>` for a divergent variant); `list_name` /
+    # `map_name` is the configured name and `device` a representative.
     "netbox_routing.prefixlistentry": ModelSyncContract(
-        required_fields=("device", "list_name", "sequence", "action", "prefix"),
-        allowed_coalesce_fields=("device", "list_name", "sequence"),
-        default_coalesce_fields=(("device", "list_name", "sequence"),),
+        required_fields=("name", "list_name", "sequence", "action", "prefix"),
+        allowed_coalesce_fields=("name", "sequence"),
+        default_coalesce_fields=(("name", "sequence"),),
     ),
     "netbox_routing.communitylistentry": ModelSyncContract(
-        required_fields=("device", "list_name", "action", "community"),
-        allowed_coalesce_fields=("device", "list_name", "community"),
-        default_coalesce_fields=(("device", "list_name", "community"),),
+        required_fields=("name", "list_name", "action", "community"),
+        allowed_coalesce_fields=("name", "community"),
+        default_coalesce_fields=(("name", "community"),),
     ),
     "netbox_routing.routemapentry": ModelSyncContract(
-        required_fields=("device", "map_name", "sequence", "action"),
-        allowed_coalesce_fields=("device", "map_name", "sequence"),
-        default_coalesce_fields=(("device", "map_name", "sequence"),),
+        required_fields=("name", "map_name", "sequence", "action"),
+        allowed_coalesce_fields=("name", "sequence"),
+        default_coalesce_fields=(("name", "sequence"),),
     ),
     "netbox_routing.ospfinterface": ModelSyncContract(
         required_fields=(
