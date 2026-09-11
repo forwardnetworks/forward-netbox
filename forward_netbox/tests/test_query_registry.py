@@ -1412,7 +1412,7 @@ class QueryRegistryTest(TestCase):
         self.assertTrue(cimc_queries[0]["seeds_empty_shard_parameter"])
         self.assertTrue(cimc_queries[0]["has_empty_shard_guard"])
         self.assertTrue(cimc_queries[0]["has_positive_shard_predicate"])
-        self.assertNotIn("netbox_cisco_aci.acicontract", aci_summary["models"])
+        self.assertIn("netbox_cisco_aci.acicontract", aci_summary["models"])
         self.assertIn("routing.netbox_routing", summary)
         routing_summary = summary["routing.netbox_routing"]
         self.assertEqual(routing_summary["status"], "pass")
@@ -2359,16 +2359,21 @@ select {name: "vendor", slug: "vendor"}
             "Forward ACI Nodes",
             {query_default["name"] for query_default in BUILTIN_QUERY_MAPS},
         )
-        self.assertTrue(
-            {
-                "Forward ACI Application Profiles",
-                "Forward ACI Endpoint Groups",
-                "Forward ACI Contracts",
-                "Forward ACI Static Port Bindings",
-            }.isdisjoint(
-                {query_default["name"] for query_default in BUILTIN_OPTIONAL_QUERY_MAPS}
-            )
-        )
+        optional_names = {
+            query_default["name"] for query_default in BUILTIN_OPTIONAL_QUERY_MAPS
+        }
+        # The tenant-policy maps joined in 2.9.5, seeded disabled like the rest
+        # of ACI; static port bindings are still not modelled.
+        for name in (
+            "Forward ACI Application Profiles",
+            "Forward ACI Endpoint Groups",
+            "Forward ACI Contracts",
+            "Forward ACI Contract Subjects",
+            "Forward ACI Filter Entries",
+        ):
+            self.assertIn(name, optional_names)
+            self.assertFalse(rows[next(k for k in rows if k[1] == name)]["enabled"])
+        self.assertNotIn("Forward ACI Static Port Bindings", optional_names)
 
     def test_seeded_builtin_query_spec_resolves_optional_module_query(self):
         spec = get_seeded_builtin_query_spec("dcim.module", "Forward Modules")

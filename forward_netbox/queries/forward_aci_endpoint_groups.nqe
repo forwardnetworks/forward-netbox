@@ -1,0 +1,50 @@
+/**
+ * @intent Forward ACI Endpoint Groups
+ * @description Discovers ACI endpoint groups from the APIC `moquery -c fvAEPg` custom command, with each EPG's bridge domain from `moquery -c fvRsBd` on the same controller.
+ */
+
+import "netbox_utilities";
+
+epgRegex = re`(?:^|\R)#\s+fv\.AEPg\s*\R(?:\s*[^\r\n]*\R)*?\s*dn\s*:\s*(?<dn>uni/tn-(?<tenant_name>[^/\s]+)/ap-(?<ap_name>[^/\s]+)/epg-(?<name>[^\r\n/]+))\R(?:\s*[^\r\n]*\R)*?\s*isAttrBasedEPg\s*:\s*(?<is_useg>\S+)\R(?:\s*[^\r\n]*\R)*?\s*pcEnfPref\s*:\s*(?<pc_enf_pref>\S+)\R(?:\s*[^\r\n]*\R)*?\s*prefGrMemb\s*:\s*(?<pref_gr_memb>\S+)\R(?:\s*[^\r\n]*\R)*?\s*prio\s*:\s*(?<prio>\S+)\R(?:\s*[^\r\n]*\R)*?\s*shutdown\s*:\s*(?<shutdown>\S+)`;
+rsBdRegex = re`(?:^|\R)#\s+fv\.RsBd\s*\R(?:\s*[^\r\n]*\R)*?\s*dn\s*:\s*(?<epg_dn>uni/tn-[^/\s]+/ap-[^/\s]+/epg-[^\r\n/]+)/rsbd\R(?:\s*[^\r\n]*\R)*?\s*tnFvBDName\s*:\s*(?<bd_name>\S*)`;
+aciFabricName(device) =
+  if isPresent(device.locationName) && length(device.locationName) > 0
+  then slugify(toLowerCase(device.locationName))
+  else "forward-aci-fabric";
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach command in device.outputs.commands
+where command.commandType == CommandType.CUSTOM
+where matches(toLowerCase(command.commandText), "moquery -c fvaepg*")
+let bridge_domains = (
+  foreach bd_command in device.outputs.commands
+  where bd_command.commandType == CommandType.CUSTOM
+  where matches(toLowerCase(bd_command.commandText), "moquery -c fvrsbd*")
+  foreach bd_match in regexMatches(bd_command.response, rsBdRegex)
+  select { epg_dn: bd_match.data.epg_dn, bd_name: bd_match.data.bd_name }
+)
+foreach epg_match in regexMatches(command.response, epgRegex)
+let epg = epg_match.data
+let fabric_name = aciFabricName(device)
+let bd_name = max(foreach bd in bridge_domains where bd.epg_dn == epg.dn select bd.bd_name)
+where isEmpty(forward_netbox_shard_keys)
+  || fabric_name in forward_netbox_shard_keys
+  || epg.tenant_name in forward_netbox_shard_keys
+  || epg.name in forward_netbox_shard_keys
+select distinct {
+  fabric_name: fabric_name,
+  tenant_name: epg.tenant_name,
+  app_profile_name: epg.ap_name,
+  name: epg.name,
+  bridge_domain_name: (if isPresent(bd_name) then bd_name else ""),
+  admin_shutdown: epg.shutdown == "yes",
+  is_useg: epg.is_useg == "yes",
+  intra_epg_isolation: epg.pc_enf_pref == "enforced",
+  preferred_group_member: epg.pref_gr_memb == "include",
+  qos_class: epg.prio,
+  description: "Forward observed ACI endpoint group"
+};

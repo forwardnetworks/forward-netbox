@@ -70,6 +70,11 @@ serial onto the device.
 | Forward ACI Filters | `netbox_cisco_aci.acifilter` | [`forward_aci_filters.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_filters.nqe) |
 | Forward ACI APIC Filters | `netbox_cisco_aci.acifilter` | [`forward_aci_apic_filters.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_apic_filters.nqe) |
 | Forward ACI L3Outs | `netbox_cisco_aci.acil3out` | [`forward_aci_l3outs.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_l3outs.nqe) |
+| Forward ACI Application Profiles | `netbox_cisco_aci.aciappprofile` | [`forward_aci_app_profiles.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_app_profiles.nqe) |
+| Forward ACI Endpoint Groups | `netbox_cisco_aci.aciendpointgroup` | [`forward_aci_endpoint_groups.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_endpoint_groups.nqe) |
+| Forward ACI Contracts | `netbox_cisco_aci.acicontract` | [`forward_aci_contracts.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_contracts.nqe) |
+| Forward ACI Contract Subjects | `netbox_cisco_aci.acisubject` | [`forward_aci_subjects.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_subjects.nqe) |
+| Forward ACI Filter Entries | `netbox_cisco_aci.acifilterentry` | [`forward_aci_filter_entries.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_filter_entries.nqe) |
 | Forward ACI Command Inventory | `dcim.device` | [`forward_aci_command_inventory.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_aci_command_inventory.nqe) |
 
 ## Optional Cisco ACI Plugin Maps
@@ -109,6 +114,11 @@ cleanly there rather than being hidden behind a broad APIC dump.
 | Forward ACI Filters | `fabric_name`, `tenant_name`, `name`, `description` |
 | Forward ACI APIC Filters | `fabric_name`, `tenant_name`, `name`, `description` |
 | Forward ACI L3Outs | `fabric_name`, `tenant_name`, `vrf_name`, `name`, `protocol_bgp`, `protocol_ospf`, `protocol_eigrp`, `protocol_static`, `target_dscp`, `description` |
+| Forward ACI Application Profiles | `fabric_name`, `tenant_name`, `name`, `description` |
+| Forward ACI Endpoint Groups | `fabric_name`, `tenant_name`, `app_profile_name`, `name`, `bridge_domain_name`, `admin_shutdown`, `is_useg`, `intra_epg_isolation`, `preferred_group_member`, `qos_class`, `description` |
+| Forward ACI Contracts | `fabric_name`, `tenant_name`, `name`, `scope`, `qos_class`, `target_dscp`, `description` |
+| Forward ACI Contract Subjects | `fabric_name`, `tenant_name`, `contract_name`, `name`, `reverse_filter_ports`, `qos_class`, `target_dscp`, `description` |
+| Forward ACI Filter Entries | `fabric_name`, `tenant_name`, `filter_name`, `name`, `ether_type`, `ip_protocol`, `source_port_from`, `source_port_to`, `destination_port_from`, `destination_port_to`, `tcp_rules`, `match_only_fragments`, `arp_opcode`, `stateful`, `description` |
 
 ## Shared Module
 

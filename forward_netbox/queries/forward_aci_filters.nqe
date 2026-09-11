@@ -12,6 +12,35 @@ aciFabricName(device) =
   then slugify(toLowerCase(device.locationName))
   else "forward-aci-fabric";
 
+// The fabric a node belongs to is the fabric of the APIC that lists it, not
+// the Forward location of whichever switch reported the fabric-node table:
+// one fabric whose leaves sit in several locations was being filed as several
+// fabrics (719 node rows for 611 serials on a real fabric). The APIC's switch
+// and controller detail carries every node's serial, so a node is joined to
+// its APIC by serial and falls back to the reporter's location only when no
+// APIC in the snapshot lists it.
+apicNodeSerialRegex = re`(?:^|\R)\s*ID\s*:\s*(?<node_id:Integer>\d+)(?:\*)?\s*\R(?:\s*Role\s*:\s*(?<role>\S+)\s*\R)?\s*Name\s*:\s*(?<node_name>\S+)\s*\R\s*Pod I[Dd]\s*:\s*(?<pod_id:Integer>\d+)\s*\R(?:\s*[^\r\n]*\R)*?\s*Serial Number\s*:\s*(?<serial_number>\S+)`;
+
+apicFabricByNode =
+  foreach apic in network.devices
+  where apic.snapshotInfo.result == DeviceSnapshotResult.completed
+  where apic.platform.vendor != Vendor.FORWARD_CUSTOM
+  foreach command in apic.outputs.commands
+  where command.commandType == CommandType.CISCO_APIC_SWITCH
+    || command.commandType == CommandType.CISCO_APIC_CONTROLLER_DETAIL
+  foreach m in regexMatches(command.response, apicNodeSerialRegex)
+  select distinct { serial: m.data.serial_number, node: toLowerCase(m.data.node_name), fabric: aciFabricName(apic) };
+
+fabricForSerial(serial: String, fallback: String) =
+  if isEmpty(foreach a in apicFabricByNode where a.serial == serial select a.fabric)
+  then fallback
+  else min(foreach a in apicFabricByNode where a.serial == serial select a.fabric);
+
+fabricForNodeName(node: String, fallback: String) =
+  if isEmpty(foreach a in apicFabricByNode where a.node == toLowerCase(node) select a.fabric)
+  then fallback
+  else min(foreach a in apicFabricByNode where a.node == toLowerCase(node) select a.fabric);
+
 @query
 f(forward_netbox_shard_keys: List<String>) =
 foreach device in network.devices
@@ -21,7 +50,7 @@ foreach command in device.outputs.commands
 where command.commandType == CommandType.CISCO_ACI_ZONING_FILTER
 foreach filter_match in regexMatches(command.response, filterRegex)
 let aci_filter = filter_match.data
-let fabric_name = aciFabricName(device)
+let fabric_name = fabricForNodeName(device.name, aciFabricName(device))
 where aci_filter.filter_id != "FilterId"
 where aci_filter.filter_id != "----------+----------+-------------+-------------+-------------+-------------+----------+-------------+-------------+-------------+-------------+----------+-------------+-------------+----------+"
 where isEmpty(forward_netbox_shard_keys)

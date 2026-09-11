@@ -1,0 +1,34 @@
+/**
+ * @intent Forward ACI Application Profiles
+ * @description Discovers ACI application profiles from the APIC `moquery -c fvAEPg` custom command: every EPG's distinguished name carries its application profile, so the profiles are the distinct `ap-` segments per tenant.
+ */
+
+import "netbox_utilities";
+
+epgDnRegex = re`(?:^|\R)#\s+fv\.AEPg\s*\R(?:\s*[^\r\n]*\R)*?\s*dn\s*:\s*uni/tn-(?<tenant_name>[^/\s]+)/ap-(?<ap_name>[^/\s]+)/epg-(?<epg_name>[^\r\n/]+)`;
+aciFabricName(device) =
+  if isPresent(device.locationName) && length(device.locationName) > 0
+  then slugify(toLowerCase(device.locationName))
+  else "forward-aci-fabric";
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach command in device.outputs.commands
+where command.commandType == CommandType.CUSTOM
+where matches(toLowerCase(command.commandText), "moquery -c fvaepg*")
+foreach epg_match in regexMatches(command.response, epgDnRegex)
+let epg = epg_match.data
+let fabric_name = aciFabricName(device)
+where isEmpty(forward_netbox_shard_keys)
+  || fabric_name in forward_netbox_shard_keys
+  || epg.tenant_name in forward_netbox_shard_keys
+  || epg.ap_name in forward_netbox_shard_keys
+select distinct {
+  fabric_name: fabric_name,
+  tenant_name: epg.tenant_name,
+  name: epg.ap_name,
+  description: "Forward observed ACI application profile"
+};

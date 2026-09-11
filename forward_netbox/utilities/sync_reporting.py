@@ -86,7 +86,22 @@ NON_NUMERIC_COMMUNITY_REASON = "non-numeric-community"
 POLICY_NAME_TOO_LONG_REASON = "policy-name-too-long"
 SEQUENCE_OUT_OF_RANGE_REASON = "sequence-out-of-range"
 
+# ACI node rows whose device link could not be made; see sync_aci.py.
+ACI_NODE_DEVICE_AMBIGUOUS_REASON = "aci-node-device-ambiguous"
+ACI_NODE_DEVICE_MISSING_REASON = "aci-node-device-missing"
+
 ROLLUP_SUMMARY_TEMPLATES = {
+    ACI_NODE_DEVICE_MISSING_REASON: (
+        "Stored {total} {model} row(s) without a device link: no NetBox device "
+        "matches the node name exactly or case-insensitively. Import the "
+        "fabric's switches (Forward Devices) before the ACI maps, or rename "
+        "them to match. Nodes: {examples}{suffix}."
+    ),
+    ACI_NODE_DEVICE_AMBIGUOUS_REASON: (
+        "Stored {total} {model} row(s) without a device link: more than one "
+        "NetBox device matches the node name case-insensitively, and the link "
+        "is never guessed. Nodes: {examples}{suffix}."
+    ),
     UNREPRESENTABLE_PREFIX_BOUNDS_REASON: (
         "Stored {total} {model} row(s) without their `ge`/`le` bounds: "
         "netbox-routing 0.4.3 validation rejects a `ge` below `le` and any "

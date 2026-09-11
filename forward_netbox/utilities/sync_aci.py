@@ -1,6 +1,8 @@
 from django.core.exceptions import ValidationError
 
 from ..exceptions import ForwardQueryError
+from .sync_reporting import ACI_NODE_DEVICE_AMBIGUOUS_REASON
+from .sync_reporting import ACI_NODE_DEVICE_MISSING_REASON
 
 
 ACI_APP_LABEL = "netbox_cisco_aci"
@@ -386,11 +388,51 @@ def _node_type(value):
 
 
 def _lookup_aci_node_device(runner, row):
+    """The NetBox device an ACI node row describes, or ``(None, None)``.
+
+    APIC output names nodes the way the fabric was configured
+    (``DC01LEAF101``) while Forward - and so NetBox - carries the device name
+    as collected (``dc01leaf101``); on a real fabric 0 of 667 nodes matched
+    exactly and 614 matched case-insensitively. So the exact lookup is tried
+    first and a case-insensitive one second, and only a UNIQUE match links.
+    Two devices differing only by case is held, not guessed - a wrong link is
+    worse than none. A miss is recorded once per run rather than silently
+    leaving the link empty, which is how the unlinked nodes went unnoticed.
+    """
     device_name = row.get("node_object_name") or row.get("name")
     if not device_name:
         return None, None
+    warn = getattr(runner, "_record_aggregated_skip_warning", None)
     device = runner._lookup_device_by_name(device_name)
     if device is None:
+        insensitive = getattr(runner, "_lookup_device_by_name_insensitive", None)
+        outcome = insensitive(device_name) if insensitive is not None else None
+        if outcome == "ambiguous":
+            if warn is not None:
+                warn(
+                    model_string="netbox_cisco_aci.acinode",
+                    reason=ACI_NODE_DEVICE_AMBIGUOUS_REASON,
+                    warning_message=(
+                        f"ACI node `{device_name}` matches more than one NetBox "
+                        "device case-insensitively; the node is stored without a "
+                        "device link."
+                    ),
+                    sample=str(device_name),
+                )
+            return None, None
+        device = outcome
+    if device is None:
+        if warn is not None:
+            warn(
+                model_string="netbox_cisco_aci.acinode",
+                reason=ACI_NODE_DEVICE_MISSING_REASON,
+                warning_message=(
+                    f"ACI node `{device_name}` has no NetBox device by that name "
+                    "(exact or case-insensitive); the node is stored without a "
+                    "device link."
+                ),
+                sample=str(device_name),
+            )
         return None, None
     return runner._content_type_for(device.__class__), device.pk
 
@@ -611,4 +653,338 @@ def delete_netbox_cisco_aci_acinode(runner, row):
     return runner._delete_by_coalesce(
         ACINode,
         [{"aci_pod": pod, "node_id": node_id}],
+    )
+
+
+# --- application profiles, endpoint groups, contracts, subjects, filter entries
+#
+# The tenant-policy half of the fabric, from the APIC `moquery` classes a
+# real fabric was found to collect (fvAEPg, fvRsBd, vzBrCP, vzSubj, vzEntry).
+# Every parent is a separately measured model, so each of these classifies
+# from its own upsert (the leaf rule) and a parent the preview would create
+# makes the row uncomparable rather than double-counted.
+
+_QOS_CLASSES = {"level1", "level2", "level3", "level4", "level5", "level6", "unspecified"}
+_CONTRACT_SCOPES = {"global", "tenant", "context", "application-profile"}
+_ETHER_TYPES = {
+    "unspecified", "ip", "ipv4", "ipv6", "arp", "fcoe", "mac-security", "mpls-ucast", "trill",
+}
+_IP_PROTOCOLS = {
+    "unspecified", "tcp", "udp", "icmp", "icmpv6", "igmp", "eigrp", "ospfigp", "pim", "l2tp",
+}
+
+
+def _choice(value, allowed, default):
+    text = str(value or "").strip().lower()
+    return text if text in allowed else default
+
+
+def _port(value):
+    """An APIC port field: a number, a well-known name, or `unspecified`."""
+    text = str(value or "").strip().lower()
+    if not text or text == "unspecified":
+        return None
+    named = {"http": 80, "https": 443, "ssh": 22, "dns": 53, "smtp": 25, "pop3": 110, "ftpdata": 20, "rtsp": 554}
+    if text in named:
+        return named[text]
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def _dscp(value):
+    text = str(value or "").strip()
+    return "" if text.lower() == "unspecified" else text
+
+
+def _ensure_aci_app_profile(runner, row):
+    ACIAppProfile = _aci_model(runner, "ACIAppProfile", "netbox_cisco_aci.aciappprofile")
+    tenant = _ensure_aci_tenant(
+        runner, {"fabric_name": row["fabric_name"], "name": row["tenant_name"]}
+    )
+    if _parent_absent(tenant):
+        return None
+    values = _aci_model_values(
+        runner,
+        ACIAppProfile,
+        {
+            "aci_tenant": tenant,
+            "name": row["name"],
+            "description": row.get("description") or "",
+        },
+    )
+    app_profile, _ = runner._upsert_values_from_defaults(
+        "netbox_cisco_aci.aciappprofile",
+        ACIAppProfile,
+        values=values,
+        coalesce_sets=[("aci_tenant", "name")],
+    )
+    return app_profile
+
+
+def _ensure_aci_endpoint_group(runner, row):
+    ACIEndpointGroup = _aci_model(
+        runner, "ACIEndpointGroup", "netbox_cisco_aci.aciendpointgroup"
+    )
+    app_profile = _ensure_aci_app_profile(
+        runner,
+        {
+            "fabric_name": row["fabric_name"],
+            "tenant_name": row["tenant_name"],
+            "name": row["app_profile_name"],
+        },
+    )
+    if _parent_absent(app_profile):
+        return None
+    bridge_domain = None
+    if row.get("bridge_domain_name"):
+        bridge_domain = _resolve_aci_bridge_domain(
+            runner,
+            {
+                "fabric_name": row["fabric_name"],
+                "tenant_name": row.get("bridge_domain_tenant_name") or row["tenant_name"],
+                "bridge_domain_name": row["bridge_domain_name"],
+            },
+        )
+    values = _aci_model_values(
+        runner,
+        ACIEndpointGroup,
+        {
+            "aci_tenant": app_profile.aci_tenant,
+            "aci_app_profile": app_profile,
+            "aci_bridge_domain": bridge_domain,
+            "name": row["name"],
+            "admin_shutdown": _coerce_bool(row.get("admin_shutdown"), False),
+            "is_useg": _coerce_bool(row.get("is_useg"), False),
+            "intra_epg_isolation": _coerce_bool(row.get("intra_epg_isolation"), False),
+            "preferred_group_member": _coerce_bool(
+                row.get("preferred_group_member"), False
+            ),
+            "qos_class": _choice(row.get("qos_class"), _QOS_CLASSES, "unspecified"),
+            "description": row.get("description") or "",
+        },
+    )
+    epg, _ = runner._upsert_values_from_defaults(
+        "netbox_cisco_aci.aciendpointgroup",
+        ACIEndpointGroup,
+        values=values,
+        coalesce_sets=[("aci_app_profile", "name")],
+    )
+    return epg
+
+
+def _ensure_aci_contract(runner, row):
+    ACIContract = _aci_model(runner, "ACIContract", "netbox_cisco_aci.acicontract")
+    tenant = _ensure_aci_tenant(
+        runner, {"fabric_name": row["fabric_name"], "name": row["tenant_name"]}
+    )
+    if _parent_absent(tenant):
+        return None
+    values = _aci_model_values(
+        runner,
+        ACIContract,
+        {
+            "aci_tenant": tenant,
+            "name": row["name"],
+            "scope": _choice(row.get("scope"), _CONTRACT_SCOPES, "context"),
+            "qos_class": _choice(row.get("qos_class"), _QOS_CLASSES, "unspecified"),
+            "target_dscp": _dscp(row.get("target_dscp")),
+            "description": row.get("description") or "",
+        },
+    )
+    contract, _ = runner._upsert_values_from_defaults(
+        "netbox_cisco_aci.acicontract",
+        ACIContract,
+        values=values,
+        coalesce_sets=[("aci_tenant", "name")],
+    )
+    return contract
+
+
+def _ensure_aci_subject(runner, row):
+    ACISubject = _aci_model(runner, "ACISubject", "netbox_cisco_aci.acisubject")
+    contract = _ensure_aci_contract(
+        runner,
+        {
+            "fabric_name": row["fabric_name"],
+            "tenant_name": row["tenant_name"],
+            "name": row["contract_name"],
+        },
+    )
+    if _parent_absent(contract):
+        return None
+    values = _aci_model_values(
+        runner,
+        ACISubject,
+        {
+            "aci_contract": contract,
+            "name": row["name"],
+            # vzInTerm/vzOutTerm are not collected; APIC's default is both.
+            "apply_both_directions": _coerce_bool(row.get("apply_both_directions"), True),
+            "reverse_filter_ports": _coerce_bool(row.get("reverse_filter_ports"), True),
+            "qos_class": _choice(row.get("qos_class"), _QOS_CLASSES, "unspecified"),
+            "target_dscp": _dscp(row.get("target_dscp")),
+            "description": row.get("description") or "",
+        },
+    )
+    subject, _ = runner._upsert_values_from_defaults(
+        "netbox_cisco_aci.acisubject",
+        ACISubject,
+        values=values,
+        coalesce_sets=[("aci_contract", "name")],
+    )
+    return subject
+
+
+def _ensure_aci_filter_entry(runner, row):
+    ACIFilterEntry = _aci_model(
+        runner, "ACIFilterEntry", "netbox_cisco_aci.acifilterentry"
+    )
+    aci_filter = _ensure_aci_filter(
+        runner,
+        {
+            "fabric_name": row["fabric_name"],
+            "tenant_name": row["tenant_name"],
+            "name": row["filter_name"],
+        },
+    )
+    if _parent_absent(aci_filter):
+        return None
+    tcp_rules = str(row.get("tcp_rules") or "").strip()
+    arp_opcode = str(row.get("arp_opcode") or "").strip().lower()
+    values = _aci_model_values(
+        runner,
+        ACIFilterEntry,
+        {
+            "aci_filter": aci_filter,
+            "name": row["name"],
+            "ether_type": _choice(row.get("ether_type"), _ETHER_TYPES, "unspecified"),
+            "ip_protocol": _choice(row.get("ip_protocol"), _IP_PROTOCOLS, "unspecified"),
+            "source_port_from": _port(row.get("source_port_from")),
+            "source_port_to": _port(row.get("source_port_to")),
+            "destination_port_from": _port(row.get("destination_port_from")),
+            "destination_port_to": _port(row.get("destination_port_to")),
+            "tcp_rules": "" if tcp_rules.lower() == "unspecified" else tcp_rules[:64],
+            "match_only_fragments": _coerce_bool(row.get("match_only_fragments"), False),
+            "arp_opcode": "" if arp_opcode == "unspecified" else arp_opcode[:8],
+            "stateful": _coerce_bool(row.get("stateful"), False),
+            "description": row.get("description") or "",
+        },
+    )
+    entry, _ = runner._upsert_values_from_defaults(
+        "netbox_cisco_aci.acifilterentry",
+        ACIFilterEntry,
+        values=values,
+        coalesce_sets=[("aci_filter", "name")],
+    )
+    return entry
+
+
+def apply_netbox_cisco_aci_aciappprofile(runner, row, *, preview=False):
+    app_profile = _ensure_aci_app_profile(runner, row)
+    return _preview_verdict(runner, app_profile) if preview else app_profile
+
+
+def apply_netbox_cisco_aci_aciendpointgroup(runner, row, *, preview=False):
+    epg = _ensure_aci_endpoint_group(runner, row)
+    return _preview_verdict(runner, epg) if preview else epg
+
+
+def apply_netbox_cisco_aci_acicontract(runner, row, *, preview=False):
+    contract = _ensure_aci_contract(runner, row)
+    return _preview_verdict(runner, contract) if preview else contract
+
+
+def apply_netbox_cisco_aci_acisubject(runner, row, *, preview=False):
+    subject = _ensure_aci_subject(runner, row)
+    return _preview_verdict(runner, subject) if preview else subject
+
+
+def apply_netbox_cisco_aci_acifilterentry(runner, row, *, preview=False):
+    entry = _ensure_aci_filter_entry(runner, row)
+    return _preview_verdict(runner, entry) if preview else entry
+
+
+def _resolve_aci_app_profile(runner, row):
+    ACIAppProfile = _aci_model(runner, "ACIAppProfile", "netbox_cisco_aci.aciappprofile")
+    tenant = _resolve_aci_tenant(runner, row)
+    if tenant is None or not row.get("app_profile_name"):
+        return None
+    return runner._get_unique_or_raise(
+        ACIAppProfile, {"aci_tenant": tenant, "name": row["app_profile_name"]}
+    )
+
+
+def _resolve_aci_contract(runner, row):
+    ACIContract = _aci_model(runner, "ACIContract", "netbox_cisco_aci.acicontract")
+    tenant = _resolve_aci_tenant(runner, row)
+    if tenant is None or not row.get("contract_name"):
+        return None
+    return runner._get_unique_or_raise(
+        ACIContract, {"aci_tenant": tenant, "name": row["contract_name"]}
+    )
+
+
+def _resolve_aci_filter(runner, row):
+    ACIFilter = _aci_model(runner, "ACIFilter", "netbox_cisco_aci.acifilter")
+    tenant = _resolve_aci_tenant(runner, row)
+    if tenant is None or not row.get("filter_name"):
+        return None
+    return runner._get_unique_or_raise(
+        ACIFilter, {"aci_tenant": tenant, "name": row["filter_name"]}
+    )
+
+
+def delete_netbox_cisco_aci_aciappprofile(runner, row):
+    ACIAppProfile = _aci_model(runner, "ACIAppProfile", "netbox_cisco_aci.aciappprofile")
+    tenant = _resolve_aci_tenant(runner, row)
+    if tenant is None:
+        return False
+    return runner._delete_by_coalesce(
+        ACIAppProfile, [{"aci_tenant": tenant, "name": row.get("name")}]
+    )
+
+
+def delete_netbox_cisco_aci_aciendpointgroup(runner, row):
+    ACIEndpointGroup = _aci_model(
+        runner, "ACIEndpointGroup", "netbox_cisco_aci.aciendpointgroup"
+    )
+    app_profile = _resolve_aci_app_profile(runner, row)
+    if app_profile is None:
+        return False
+    return runner._delete_by_coalesce(
+        ACIEndpointGroup, [{"aci_app_profile": app_profile, "name": row.get("name")}]
+    )
+
+
+def delete_netbox_cisco_aci_acicontract(runner, row):
+    ACIContract = _aci_model(runner, "ACIContract", "netbox_cisco_aci.acicontract")
+    tenant = _resolve_aci_tenant(runner, row)
+    if tenant is None:
+        return False
+    return runner._delete_by_coalesce(
+        ACIContract, [{"aci_tenant": tenant, "name": row.get("name")}]
+    )
+
+
+def delete_netbox_cisco_aci_acisubject(runner, row):
+    ACISubject = _aci_model(runner, "ACISubject", "netbox_cisco_aci.acisubject")
+    contract = _resolve_aci_contract(runner, row)
+    if contract is None:
+        return False
+    return runner._delete_by_coalesce(
+        ACISubject, [{"aci_contract": contract, "name": row.get("name")}]
+    )
+
+
+def delete_netbox_cisco_aci_acifilterentry(runner, row):
+    ACIFilterEntry = _aci_model(
+        runner, "ACIFilterEntry", "netbox_cisco_aci.acifilterentry"
+    )
+    aci_filter = _resolve_aci_filter(runner, row)
+    if aci_filter is None:
+        return False
+    return runner._delete_by_coalesce(
+        ACIFilterEntry, [{"aci_filter": aci_filter, "name": row.get("name")}]
     )

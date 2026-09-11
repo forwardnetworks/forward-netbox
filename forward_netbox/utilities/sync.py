@@ -71,6 +71,8 @@ from .sync_primitives import upsert_row_from_defaults as sync_upsert_row_from_de
 from .sync_primitives import (
     upsert_values_from_defaults as sync_upsert_values_from_defaults,
 )
+from .sync_reporting import ACI_NODE_DEVICE_AMBIGUOUS_REASON
+from .sync_reporting import ACI_NODE_DEVICE_MISSING_REASON
 from .sync_reporting import apply_model_rows as apply_sync_model_rows
 from .sync_reporting import delete_model_rows as delete_sync_model_rows
 from .sync_reporting import dependency_failed as sync_dependency_failed
@@ -300,6 +302,8 @@ class ForwardSyncRunner(ForwardSyncRunnerContractMixin, ForwardSyncRunnerAdapter
             "component-claimed-by-another-module",
             UNOWNED_PRIMARY_IP_HOLDER_REASON,
             *ROUTING_POLICY_ROLLUP_REASONS,
+            ACI_NODE_DEVICE_AMBIGUOUS_REASON,
+            ACI_NODE_DEVICE_MISSING_REASON,
         }
     )
     # Cap on per-model ForwardDependencySkipError ISSUE ROWS (each distinct

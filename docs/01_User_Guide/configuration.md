@@ -248,7 +248,9 @@ plugin is installed and migrated, the map list exposes disabled `Forward ACI
 Fabrics`, `Forward ACI Pods`, `Forward ACI APIC Pods`, `Forward ACI Nodes`,
 `Forward ACI Tenants`, `Forward ACI APIC Nodes`, `Forward ACI APIC CIMC
 Inventory`, `Forward ACI VRFs`, `Forward ACI Bridge Domains`, `Forward ACI
-Filters`, `Forward ACI APIC Filters`, and `Forward ACI L3Outs` maps. The
+Filters`, `Forward ACI APIC Filters`, `Forward ACI L3Outs`, `Forward ACI
+Application Profiles`, `Forward ACI Endpoint Groups`, `Forward ACI Contracts`,
+`Forward ACI Contract Subjects`, and `Forward ACI Filter Entries` maps. The
 `APIC` siblings read APIC-side output (`CISCO_APIC_SWITCH` /
 `CISCO_APIC_CONTROLLER_DETAIL`, `moquery -c vzFilter`) for fabrics where
 Forward does not collect the leaf-side `CISCO_ACI_FABRIC_NODES` or
@@ -307,6 +309,11 @@ The current built-in map set is:
 - `Forward ACI Filters` (optional `netbox_cisco_aci.acifilter`)
 - `Forward ACI APIC Filters` (optional `netbox_cisco_aci.acifilter`)
 - `Forward ACI L3Outs` (optional `netbox_cisco_aci.acil3out`)
+- `Forward ACI Application Profiles` (optional `netbox_cisco_aci.aciappprofile`)
+- `Forward ACI Endpoint Groups` (optional `netbox_cisco_aci.aciendpointgroup`)
+- `Forward ACI Contracts` (optional `netbox_cisco_aci.acicontract`)
+- `Forward ACI Contract Subjects` (optional `netbox_cisco_aci.acisubject`)
+- `Forward ACI Filter Entries` (optional `netbox_cisco_aci.acifilterentry`)
 
 `Forward HSRP Groups` is optional and disabled unless `ipam.fhrpgroup` is selected
 for a sync. It imports Forward native HSRP and VRRP group state into NetBox

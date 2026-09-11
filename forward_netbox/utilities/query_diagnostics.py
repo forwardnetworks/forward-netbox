@@ -387,6 +387,10 @@ ACI_SOURCE_LABELS = {
     "moquery_l3extinstp": "`moquery -c l3extInstP`",
     "moquery_eqptch": "`moquery -c eqptCh -a all`",
     "moquery_vzfilter": "`moquery -c vzFilter`",
+    "moquery_fvaepg": "`moquery -c fvAEPg`",
+    "moquery_vzbrcp": "`moquery -c vzBrCP`",
+    "moquery_vzsubj": "`moquery -c vzSubj`",
+    "moquery_vzentry": "`moquery -c vzEntry`",
 }
 ACI_MAP_SOURCES = {
     "Forward ACI Pods": ("fabric_nodes", "Forward ACI APIC Pods"),
@@ -399,6 +403,11 @@ ACI_MAP_SOURCES = {
     "Forward ACI VRFs": ("moquery_fvctx", ""),
     "Forward ACI Bridge Domains": ("moquery_fvbd", ""),
     "Forward ACI L3Outs": ("moquery_l3extinstp", ""),
+    "Forward ACI Application Profiles": ("moquery_fvaepg", ""),
+    "Forward ACI Endpoint Groups": ("moquery_fvaepg", ""),
+    "Forward ACI Contracts": ("moquery_vzbrcp", ""),
+    "Forward ACI Contract Subjects": ("moquery_vzsubj", ""),
+    "Forward ACI Filter Entries": ("moquery_vzentry", ""),
     "Forward ACI APIC CIMC Inventory": ("moquery_eqptch", ""),
     "Forward DLM APIC CIMC Inventory Item Software": ("moquery_eqptch", ""),
 }

@@ -746,6 +746,36 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "filename": "forward_aci_l3outs.nqe",
         "enabled": False,
     },
+    {
+        "model_string": "netbox_cisco_aci.aciappprofile",
+        "name": "Forward ACI Application Profiles",
+        "filename": "forward_aci_app_profiles.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_cisco_aci.aciendpointgroup",
+        "name": "Forward ACI Endpoint Groups",
+        "filename": "forward_aci_endpoint_groups.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_cisco_aci.acicontract",
+        "name": "Forward ACI Contracts",
+        "filename": "forward_aci_contracts.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_cisco_aci.acisubject",
+        "name": "Forward ACI Contract Subjects",
+        "filename": "forward_aci_subjects.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_cisco_aci.acifilterentry",
+        "name": "Forward ACI Filter Entries",
+        "filename": "forward_aci_filter_entries.nqe",
+        "enabled": False,
+    },
 ]
 
 BUILTIN_SEEDED_QUERY_MAPS = [

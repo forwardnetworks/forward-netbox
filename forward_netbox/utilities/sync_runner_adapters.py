@@ -1,20 +1,30 @@
 import logging
 
 from ..exceptions import ForwardQueryError
+from .sync_aci import apply_netbox_cisco_aci_aciappprofile
 from .sync_aci import apply_netbox_cisco_aci_acibridgedomain
+from .sync_aci import apply_netbox_cisco_aci_acicontract
+from .sync_aci import apply_netbox_cisco_aci_aciendpointgroup
 from .sync_aci import apply_netbox_cisco_aci_acifabric
 from .sync_aci import apply_netbox_cisco_aci_acifilter
+from .sync_aci import apply_netbox_cisco_aci_acifilterentry
 from .sync_aci import apply_netbox_cisco_aci_acil3out
 from .sync_aci import apply_netbox_cisco_aci_acinode
 from .sync_aci import apply_netbox_cisco_aci_acipod
+from .sync_aci import apply_netbox_cisco_aci_acisubject
 from .sync_aci import apply_netbox_cisco_aci_acitenant
 from .sync_aci import apply_netbox_cisco_aci_acivrf
+from .sync_aci import delete_netbox_cisco_aci_aciappprofile
 from .sync_aci import delete_netbox_cisco_aci_acibridgedomain
+from .sync_aci import delete_netbox_cisco_aci_acicontract
+from .sync_aci import delete_netbox_cisco_aci_aciendpointgroup
 from .sync_aci import delete_netbox_cisco_aci_acifabric
 from .sync_aci import delete_netbox_cisco_aci_acifilter
+from .sync_aci import delete_netbox_cisco_aci_acifilterentry
 from .sync_aci import delete_netbox_cisco_aci_acil3out
 from .sync_aci import delete_netbox_cisco_aci_acinode
 from .sync_aci import delete_netbox_cisco_aci_acipod
+from .sync_aci import delete_netbox_cisco_aci_acisubject
 from .sync_aci import delete_netbox_cisco_aci_acitenant
 from .sync_aci import delete_netbox_cisco_aci_acivrf
 from .sync_cable import apply_dcim_cable
@@ -79,6 +89,7 @@ from .sync_primitives import lookup_interface as sync_lookup_interface
 from .sync_primitives import lookup_module_bay as sync_lookup_module_bay
 from .sync_primitives import model_field_values as sync_model_field_values
 from .sync_primitives import optional_model as sync_optional_model
+from .sync_primitives import remember_lookup_object as sync_remember_lookup_object
 from .sync_primitives import update_existing_or_create as sync_update_existing_or_create
 from .sync_primitives import upsert_row as sync_upsert_row
 from .sync_primitives import upsert_row_from_defaults as sync_upsert_row_from_defaults
@@ -231,6 +242,25 @@ class ForwardSyncRunnerAdapterMixin:
 
     def _lookup_device_by_name(self, device_name):
         return sync_lookup_device_by_name(self, device_name)
+
+    def _lookup_device_by_name_insensitive(self, device_name):
+        """A unique case-insensitive match, ``"ambiguous"`` for several, else None.
+
+        For sources whose object names differ from the collected device name
+        only by case (APIC node names). The exact lookup runs first, always;
+        this is the second stage, and it never guesses between two devices.
+        """
+        from dcim.models import Device
+
+        if not device_name:
+            return None
+        candidates = list(Device.objects.filter(name__iexact=str(device_name))[:2])
+        if len(candidates) == 1:
+            sync_remember_lookup_object(self, candidates[0])
+            return candidates[0]
+        if len(candidates) > 1:
+            return "ambiguous"
+        return None
 
     def _coalesce_lookup(self, row, *fields):
         return sync_coalesce_lookup(row, *fields)
@@ -896,6 +926,21 @@ class ForwardSyncRunnerAdapterMixin:
     def _delete_netbox_cisco_aci_acil3out(self, row):
         return delete_netbox_cisco_aci_acil3out(self, row)
 
+    def _delete_netbox_cisco_aci_aciappprofile(self, row):
+        return delete_netbox_cisco_aci_aciappprofile(self, row)
+
+    def _delete_netbox_cisco_aci_aciendpointgroup(self, row):
+        return delete_netbox_cisco_aci_aciendpointgroup(self, row)
+
+    def _delete_netbox_cisco_aci_acicontract(self, row):
+        return delete_netbox_cisco_aci_acicontract(self, row)
+
+    def _delete_netbox_cisco_aci_acisubject(self, row):
+        return delete_netbox_cisco_aci_acisubject(self, row)
+
+    def _delete_netbox_cisco_aci_acifilterentry(self, row):
+        return delete_netbox_cisco_aci_acifilterentry(self, row)
+
     def _apply_dcim_site(self, row):
         return apply_dcim_site(self, row)
 
@@ -1042,3 +1087,18 @@ class ForwardSyncRunnerAdapterMixin:
 
     def _apply_netbox_cisco_aci_acil3out(self, row):
         return apply_netbox_cisco_aci_acil3out(self, row)
+
+    def _apply_netbox_cisco_aci_aciappprofile(self, row):
+        return apply_netbox_cisco_aci_aciappprofile(self, row)
+
+    def _apply_netbox_cisco_aci_aciendpointgroup(self, row):
+        return apply_netbox_cisco_aci_aciendpointgroup(self, row)
+
+    def _apply_netbox_cisco_aci_acicontract(self, row):
+        return apply_netbox_cisco_aci_acicontract(self, row)
+
+    def _apply_netbox_cisco_aci_acisubject(self, row):
+        return apply_netbox_cisco_aci_acisubject(self, row)
+
+    def _apply_netbox_cisco_aci_acifilterentry(self, row):
+        return apply_netbox_cisco_aci_acifilterentry(self, row)
