@@ -366,6 +366,24 @@ class ForwardSyncRunnerAdapterMixin:
     def _ensure_platform(self, row, *, manufacturer_authoritative=False):
         from dcim.models import Platform
 
+        lookups, create_values, update_values = self._platform_upsert_plan(
+            row, manufacturer_authoritative=manufacturer_authoritative
+        )
+        # Through the runner method, not the module function: the preview
+        # runner overrides the method to classify without writing, and the
+        # module call was the one write on this path it could not intercept -
+        # which is why dcim.platform reported "Not measured".
+        platform, _ = self._coalesce_upsert(
+            "dcim.platform",
+            Platform,
+            coalesce_lookups=lookups,
+            create_values=create_values,
+            update_values=update_values,
+        )
+        return platform
+
+    def _platform_upsert_plan(self, row, *, manufacturer_authoritative=False):
+        """What `_ensure_platform` would look up and write, without writing."""
         coalesce_sets = self._coalesce_sets_for(
             "dcim.platform",
             [("slug",), ("name",)],
@@ -398,15 +416,7 @@ class ForwardSyncRunnerAdapterMixin:
             # rows preserve it; they only supply manufacturer on fallback create
             # for endpoint-only platforms absent from the Platform map.
             update_values["manufacturer"] = manufacturer
-        platform, _ = sync_coalesce_upsert(
-            self,
-            "dcim.platform",
-            Platform,
-            coalesce_lookups=lookups,
-            create_values=create_values,
-            update_values=update_values,
-        )
-        return platform
+        return lookups, create_values, update_values
 
     def _ensure_device_type(self, row):
         from dcim.models import DeviceType

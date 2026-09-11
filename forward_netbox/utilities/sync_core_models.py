@@ -83,12 +83,39 @@ def apply_dcim_manufacturer(runner, row):
     runner._ensure_manufacturer(row)
 
 
-def apply_dcim_platform(runner, row):
+def _leaf_outcome(runner, obj):
+    """One flat row, one object: created, changed, or unchanged."""
+    if obj is None:
+        return "creates"
+    return "updates" if runner.last_upsert_would_change else "unchanged"
+
+
+def apply_dcim_platform(runner, row, *, preview=False):
+    if preview:
+        # The preview runner's `_ensure_platform` is a bare lookup (the device
+        # classification must never create a platform), so classify through
+        # the plan and the runner's read-only upsert instead.
+        from dcim.models import Platform
+
+        lookups, create_values, update_values = runner._platform_upsert_plan(
+            row, manufacturer_authoritative=True
+        )
+        platform, _ = runner._coalesce_upsert(
+            "dcim.platform",
+            Platform,
+            coalesce_lookups=lookups,
+            create_values=create_values,
+            update_values=update_values,
+        )
+        return _leaf_outcome(runner, platform)
     return runner._ensure_platform(row, manufacturer_authoritative=True)
 
 
-def apply_dcim_devicerole(runner, row):
-    runner._ensure_role(row)
+def apply_dcim_devicerole(runner, row, *, preview=False):
+    role = runner._ensure_role(row)
+    if preview:
+        return _leaf_outcome(runner, role)
+    return role
 
 
 def apply_dcim_devicetype(runner, row):
