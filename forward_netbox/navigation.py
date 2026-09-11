@@ -38,6 +38,15 @@ ingestion = PluginMenuItem(
     permissions=["forward_netbox.view_forwardingestion"],
 )
 
+# The route existed and nothing reached it: issues were visible only through
+# the ingestion that produced them, so "which failures are blocking anything,
+# anywhere" had no page at all and was answered by a command.
+ingestion_issue = PluginMenuItem(
+    link="plugins:forward_netbox:forwardingestionissue_list",
+    link_text=_("Ingestion Issues"),
+    permissions=["forward_netbox.view_forwardingestionissue"],
+)
+
 validation_run = PluginMenuItem(
     link="plugins:forward_netbox:forwardvalidationrun_list",
     link_text=_("Validation Runs"),
@@ -82,7 +91,7 @@ menu = PluginMenu(
     label="Forward",
     icon_class="mdi mdi-cloud-sync",
     groups=(
-        ("Data Sync", (source, sync, ingestion, validation_run)),
+        ("Data Sync", (source, sync, ingestion, ingestion_issue, validation_run)),
         ("Analysis", (device_analysis,)),
         ("Configuration", (nqe_map, drift_policy)),
     ),

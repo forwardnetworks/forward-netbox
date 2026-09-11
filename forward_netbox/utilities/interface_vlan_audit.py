@@ -120,8 +120,11 @@ def clear_cross_site_untagged_vlans(runner, device_ids, *, using=None):
             f"{total} interface(s) on {len(by_device)} device(s) this sync wrote "
             f"carry an untagged VLAN from a different site ({devices}). NetBox "
             "will refuse writes to those interfaces. Left in place because this "
-            "sync does not manage dcim.interface; see "
-            "forward_interface_vlan_audit for the rows and the remedy."
+            "sync does not manage dcim.interface. The remedy is to correct the "
+            "VLAN's site in NetBox or the device's site in Forward so the two "
+            "agree; enabling the interface model lets the next sync clear the "
+            "mismatched VLAN itself. Export the support bundle for the per-row "
+            "detail."
         )
     record = getattr(runner, "_record_aggregated_skip_warning", None)
     if callable(record):
@@ -134,6 +137,73 @@ def clear_cross_site_untagged_vlans(runner, device_ids, *, using=None):
         "cleared": total if manages_interfaces else 0,
         "reported": 0 if manages_interfaces else total,
         "devices": sorted(by_device),
+    }
+
+
+def interface_untagged_vlan_keys(*, sample_limit=50):
+    """The refused interfaces as PRIMARY KEYS, for the support bundle.
+
+    `audit_interface_untagged_vlans` reports names, which is right for a report
+    an operator asked for about their own estate and wrong for a file they send
+    us: persisted and exported diagnostics in this plugin carry schema
+    identifiers and keys, never collected values.
+
+    This exists because the skip warning tells the operator to export the
+    support bundle for the per-row detail, and the bundle did not carry it -
+    a warning-level log row is redacted to a fixed sentence, so the interface
+    keys the warning names never survived the export. A message that promises
+    evidence the file does not contain is worse than one that names a command.
+
+    Restricted to devices a Forward sync created, so the counts read as "rows a
+    sync will refuse" rather than every interface in NetBox, and computed from
+    the local database only - no Forward call.
+    """
+    from dcim.models import Interface
+    from django.db.models import F
+    from django.db.models import Q
+
+    from ..models import ForwardDeviceIdentity
+
+    assigned = Interface.objects.filter(
+        untagged_vlan__isnull=False,
+        device_id__in=ForwardDeviceIdentity.objects.values("device_id"),
+    )
+    cross_site = assigned.filter(untagged_vlan__site__isnull=False).exclude(
+        untagged_vlan__site_id=F("device__site_id")
+    )
+    no_mode = assigned.filter(Q(mode="") | Q(mode__isnull=True))
+
+    limit = max(int(sample_limit or 0), 0)
+
+    def _keys(queryset):
+        return [
+            {
+                "interface": row[0],
+                "device": row[1],
+                "device_site": row[2],
+                "untagged_vlan": row[3],
+                "untagged_vlan_site": row[4],
+                "mode": row[5] or None,
+            }
+            for row in queryset.order_by("pk").values_list(
+                "pk",
+                "device_id",
+                "device__site_id",
+                "untagged_vlan_id",
+                "untagged_vlan__site_id",
+                "mode",
+            )[:limit]
+        ]
+
+    cross_site_total = cross_site.count()
+    no_mode_total = no_mode.count()
+    return {
+        "cross_site_count": cross_site_total,
+        "no_mode_count": no_mode_total,
+        "sample_limit": limit,
+        "truncated": max(cross_site_total, no_mode_total) > limit,
+        "cross_site": _keys(cross_site) if limit else [],
+        "no_mode": _keys(no_mode) if limit else [],
     }
 
 

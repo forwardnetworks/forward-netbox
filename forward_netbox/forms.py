@@ -6,6 +6,7 @@ from netbox.forms import NetBoxModelForm
 from utilities.datetime import local_now
 from utilities.forms import add_blank_choice
 from utilities.forms import ConfirmationForm
+from utilities.forms import FilterForm
 from utilities.forms import get_field_value
 from utilities.forms.fields import CommentField
 from utilities.forms.rendering import FieldSet
@@ -18,12 +19,14 @@ from utilities.forms.widgets import NumberWithOptions
 from .choices import forward_configured_models
 from .choices import FORWARD_OPTIONAL_MODELS
 from .choices import ForwardDiffFallbackModeChoices
+from .choices import ForwardIngestionPhaseChoices
 from .choices import ForwardSourceDeploymentChoices
 from .choices import ForwardSourceStatusChoices
 from .choices import ForwardSyncStatusChoices
 from .exceptions import ForwardConnectivityError
 from .exceptions import ForwardSyncError
 from .models import ForwardDriftPolicy
+from .models import ForwardIngestionIssue
 from .models import ForwardNQEMap
 from .models import ForwardSource
 from .models import ForwardSync
@@ -1210,9 +1213,11 @@ class ForwardSyncForm(NetBoxModelForm):
         label="Use fast first-baseline load",
         help_text=(
             "Exact-version, first-full-snapshot opt-in for an empty NetBox. "
-            "It omits branch review, per-row audit evidence, and branch rollback; "
-            "run `python manage.py forward_fast_baseline_preflight --sync <id>` "
-            "and verify a database backup before enabling it."
+            "It omits branch review, per-row audit evidence, and branch "
+            "rollback, so a bad first load cannot be unwound - verify a "
+            "database backup before enabling it. Only use it on a NetBox with "
+            "no inventory of its own, and leave it off for every run after the "
+            "first."
         ),
     )
     require_fast_baseline_eligibility = forms.BooleanField(
@@ -2065,3 +2070,40 @@ class ForwardDriftPolicyBulkEditForm(NetBoxModelBulkEditForm):
     enabled = forms.NullBooleanField(required=False, label="Enabled")
     model = ForwardDriftPolicy
     fields = ("enabled",)
+
+
+class ForwardIngestionIssueFilterForm(FilterForm):
+    """Filter tab for the ingestion-issue list.
+
+    The plugin's other list views carry no filter form, so this one is here for
+    a specific reason: `blocking` is the only field on the page that separates
+    the handful of rows holding a baseline back from the several hundred that
+    are noise, and a filter reachable only by hand-editing the query string is
+    not reachable. `forward_blocker_audit` was the previous answer.
+    """
+
+    model = ForwardIngestionIssue
+    fieldsets = (
+        FieldSet("q", "blocking"),
+        FieldSet("phase", "exception", name="Failure"),
+    )
+    q = forms.CharField(required=False, label="Search")
+    blocking = forms.NullBooleanField(
+        required=False,
+        label="Blocks baseline readiness",
+        widget=forms.Select(
+            choices=(
+                ("", "---------"),
+                ("true", "Blocking only"),
+                ("false", "Non-blocking only"),
+            )
+        ),
+    )
+    phase = forms.MultipleChoiceField(
+        choices=ForwardIngestionPhaseChoices,
+        required=False,
+    )
+    # No field for the NetBox model: `model` is FilterForm's own attribute for
+    # the model being filtered, and a form field of that name shadows it. The
+    # search box already matches `model` (see the filterset's `search`).
+    exception = forms.CharField(required=False, label="Exception")

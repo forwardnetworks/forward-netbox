@@ -61,7 +61,57 @@ MENU_ROUTES = (
         "plugins:forward_netbox:forwarddriftpolicy_list",
         "Artifact route smoke policy",
     ),
+    (
+        "plugins:forward_netbox:forwardingestionissue_list",
+        # The exception class, not the message: the list truncates `message`
+        # by design, so asserting on it would be asserting on the truncation.
+        "ArtifactRouteSmoke",
+    ),
 )
+
+
+def _menu_route_names():
+    """Every list route the plugin's own menu links to.
+
+    `MENU_ROUTES` is hand-written, because each entry also asserts that a
+    fixture row rendered - which cannot be derived. What CAN be derived is
+    the set of routes the menu offers, and the two drifting apart is exactly
+    what this file's docstring promises does not happen: a menu item was added
+    for the ingestion-issue list and this probe went on rendering the same
+    seven destinations, so an artifact could ship a menu entry no one had ever
+    loaded. The fixture for that list was already here, unused.
+    """
+    from forward_netbox.navigation import menu
+
+    names = []
+    for group in menu.groups:
+        # NetBox normalises the (label, items) tuples a plugin declares into
+        # `MenuGroup` objects, so this reads the attribute and falls back to
+        # unpacking rather than assuming either shape. Assuming the declared
+        # one is what made this raise TypeError inside the artifact.
+        items = getattr(group, "items", None)
+        if items is None:
+            _label, items = group
+        for item in items:
+            link = getattr(item, "link", None)
+            if link:
+                names.append(link)
+    return names
+
+
+def _require_menu_coverage():
+    declared = set(_menu_route_names())
+    probed = {route for route, _text in MENU_ROUTES}
+    missing = sorted(declared - probed)
+    if missing:
+        raise SystemExit(
+            "the plugin menu offers destinations this probe never renders: "
+            f"{missing}. Add each to MENU_ROUTES with a fixture row, so an "
+            "artifact cannot ship a menu entry that has never been loaded."
+        )
+    stale = sorted(probed - declared)
+    if stale:
+        raise SystemExit(f"MENU_ROUTES names routes the menu no longer offers: {stale}")
 
 
 def main():
@@ -133,6 +183,8 @@ def main():
         message="artifact route smoke issue",
         exception="ArtifactRouteSmoke",
     )
+
+    _require_menu_coverage()
 
     client = Client()
     client.force_login(user)

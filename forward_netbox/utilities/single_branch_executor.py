@@ -53,9 +53,9 @@ class ForwardSingleBranchExecutor(ForwardExecutorBase):
             )
             raise SyncError(
                 "Cannot provision a branch: database tables are missing for "
-                f"installed apps ({detail}). Apply their migrations "
-                "(python manage.py migrate) or remove the plugin from PLUGINS, "
-                "then re-run the sync."
+                f"installed apps ({detail}). Ask an administrator to apply "
+                "the migrations for those apps, or to remove the plugin from "
+                "PLUGINS, then re-run the sync."
             )
         fetcher = ForwardQueryFetcher(self.sync, self.client, self.logger)
         context = fetcher.resolve_context()

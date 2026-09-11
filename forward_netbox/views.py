@@ -45,6 +45,7 @@ from .filtersets import ForwardSyncFilterSet
 from .filtersets import ForwardValidationRunFilterSet
 from .forms import ForwardDriftPolicyBulkEditForm
 from .forms import ForwardDriftPolicyForm
+from .forms import ForwardIngestionIssueFilterForm
 from .forms import ForwardIngestionMergeForm
 from .forms import ForwardNQEMapBulkEditForm
 from .forms import ForwardNQEMapForm
@@ -298,14 +299,24 @@ def _ingestion_issue_bundle_payload(ingestion):
     what the bundle discloses beyond what the issue list already shows.
     """
     from .models import ForwardIngestionIssue
+    from .utilities.ingestion_issues import blocking_issue_q
+    from .utilities.ingestion_issues import is_blocking_issue
 
     if ingestion is None:
-        return {"total": 0, "returned": 0, "issues": []}
+        return {"total": 0, "returned": 0, "blocking_total": 0, "issues": []}
 
     queryset = ForwardIngestionIssue.objects.filter(ingestion=ingestion).order_by("pk")
     total = queryset.count()
+    # Blocking rows first, so the 200-row cap cannot spend itself on
+    # non-blocking noise and truncate away the handful actually holding the
+    # baseline back - which is the only reason the bundle carries issues.
+    blocking_total = queryset.filter(blocking_issue_q()).count()
+    ordered = list(queryset.filter(blocking_issue_q())[:_SUPPORT_BUNDLE_ISSUE_LIMIT])
+    remaining = _SUPPORT_BUNDLE_ISSUE_LIMIT - len(ordered)
+    if remaining > 0:
+        ordered.extend(queryset.exclude(blocking_issue_q())[:remaining])
     rows = []
-    for issue in queryset[:_SUPPORT_BUNDLE_ISSUE_LIMIT]:
+    for issue in ordered:
         rows.append(
             {
                 "pk": issue.pk,
@@ -314,6 +325,8 @@ def _ingestion_issue_bundle_payload(ingestion):
                 "model": issue.model or "",
                 "exception": issue.exception or "",
                 "message": issue.message or "",
+                # Same predicate as baseline readiness and the Blocking column.
+                "blocking": is_blocking_issue(issue),
                 "diagnosis": json_safe_value(issue.raw_data or {}),
             }
         )
@@ -322,10 +335,299 @@ def _ingestion_issue_bundle_payload(ingestion):
     # first 200 would read as "these are all of them".
     return {
         "total": total,
+        "blocking_total": blocking_total,
         "returned": len(rows),
         "truncated": total > len(rows),
         "issues": rows,
     }
+
+
+# Keys whose values are device names, or lists too large to export. Matched by
+# suffix rather than enumerated: the reconciliation report gains a sample or an
+# id list most releases, and an allowlist that has to be extended each time is
+# an allowlist that silently exports names the release after it is forgotten.
+_BUNDLE_DROP_KEY_SUFFIXES = (
+    "_sample",
+    "_detail",
+    "_names",
+    "_by_name",
+)
+_BUNDLE_COUNT_KEY_SUFFIXES = ("_device_ids", "_pks")
+
+
+def _bundle_safe_report(value):
+    """Strip names and bulk id lists from a stored report, keep the numbers.
+
+    The scope-reconciliation report is the single most useful thing we can be
+    sent when an operator cannot fix something themselves - it is the panel
+    they are looking at - and it was not in the bundle at all. It does carry
+    device names in its samples, which persisted diagnostics elsewhere in this
+    plugin deliberately do not, so the samples are dropped and the id lists
+    become counts. Everything that explains the numbers - the absence causes,
+    the quarantine state, the prune candidate count, the backfill reason
+    breakdown - is counts and slugs and survives.
+    """
+    if isinstance(value, dict):
+        cleaned = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                continue
+            if key.endswith(_BUNDLE_COUNT_KEY_SUFFIXES):
+                cleaned[f"{key}_count"] = (
+                    len(item) if isinstance(item, (list, tuple, set)) else None
+                )
+                continue
+            if key.endswith(_BUNDLE_DROP_KEY_SUFFIXES):
+                continue
+            cleaned[key] = _bundle_safe_report(item)
+        return cleaned
+    if isinstance(value, (list, tuple)):
+        return [_bundle_safe_report(item) for item in value]
+    return value
+
+
+def _scope_reconciliation_bundle_payload(sync):
+    """The stored scope-reconciliation report, name-free.
+
+    Answers "why is this count what it is" without a shell: the same absence
+    causes, quarantine thresholds and prune-candidate count the panel shows.
+    Never computes - it reads the last completed job, exactly like the panel.
+    """
+    job = _latest_scope_reconciliation_job(sync)
+    payload, generated_at, report_error = _scope_reconciliation_payload(job)
+    return {
+        "job_pk": getattr(job, "pk", None),
+        "generated_at": generated_at.isoformat() if generated_at else None,
+        "error": report_error,
+        "report": json_safe_value(_bundle_safe_report(payload)),
+    }
+
+
+def _operator_action_jobs_bundle_payload(sync):
+    """The last run of every operator button, with its diagnostics.
+
+    A prune that refused carries the reason in its job data - the per-model
+    protected tally, the ownership-blocked ids, the shrink refusal - and none
+    of the button jobs were exported, only the ingestion and merge jobs. So a
+    customer whose cleanup did nothing could send a bundle that did not contain
+    the run that did nothing.
+    """
+    from core.models import Job
+    from django.contrib.contenttypes.models import ContentType
+
+    from .utilities.sync_facade import BUTTON_JOB_SPECS
+
+    object_type = ContentType.objects.get_for_model(ForwardSync)
+    actions = {}
+    for kind, (_path, suffix, _permission) in sorted(BUTTON_JOB_SPECS.items()):
+        job = (
+            Job.objects.filter(
+                object_type=object_type,
+                object_id=sync.pk,
+                name__icontains=suffix,
+            )
+            .order_by("-created")
+            .first()
+        )
+        actions[kind] = _job_export_payload(job)
+    return actions
+
+
+def _ownership_records_bundle_payload(sync):
+    """How much ownership bookkeeping points at this sync's devices.
+
+    These are the rows that make a device refuse a manual delete, and the
+    absence streaks are what the prune quarantine reads. A customer hit the
+    raw ProtectedError and the bundle could say nothing about why. Counts and
+    claim types only - no device names.
+    """
+    from django.db.models import Count
+    from django.db.models import Max
+
+    from .models import ForwardDeviceAbsence
+    from .models import ForwardDeviceIdentity
+    from .models import ForwardDeviceTagClaim
+    from .models import ForwardPreservedDeviceTagAssignment
+    from .models import ForwardVirtualParentClaim
+
+    absence = ForwardDeviceAbsence.objects.filter(sync=sync).aggregate(
+        rows=Count("pk"),
+        longest_streak=Max("consecutive_absent_runs"),
+    )
+    return {
+        "device_identities": ForwardDeviceIdentity.objects.filter(sync=sync).count(),
+        "device_tag_claims_by_type": {
+            row["claim_type"]: row["rows"]
+            for row in ForwardDeviceTagClaim.objects.filter(sync=sync)
+            .values("claim_type")
+            .annotate(rows=Count("pk"))
+            .order_by("claim_type")
+        },
+        "virtual_parent_claims": ForwardVirtualParentClaim.objects.filter(
+            sync=sync
+        ).count(),
+        # Not sync-scoped: the model records a tag an operator set themselves,
+        # so it has no sync column. Exported as an estate-wide count.
+        "preserved_operator_tag_assignments": (
+            ForwardPreservedDeviceTagAssignment.objects.count()
+        ),
+        "device_absences": absence["rows"] or 0,
+        "longest_absence_streak": absence["longest_streak"] or 0,
+    }
+
+
+# A delete-blocker survey walks the cascade per device, so it is capped. 25 is
+# the panel's own sample size and is enough to tell one systemic blocker from a
+# handful of unrelated ones - which is the only question the survey answers.
+_SUPPORT_BUNDLE_BLOCKER_SAMPLE = 25
+# And bounded in time as well as in count, because the cost per device is the
+# size of its cascade, not a constant. The bundle is a synchronous GET, and the
+# deployments that need it most are the largest ones - the scope panel already
+# learned this the expensive way, returning 504 with its queries still running.
+# A partial survey that says it is partial beats a bundle that never downloads.
+_SUPPORT_BUNDLE_BLOCKER_BUDGET_SECONDS = 5.0
+
+
+def _delete_blocker_survey_bundle_payload(sync):
+    """Why the devices the cleanup targets cannot be deleted.
+
+    The prune records what refused it, but only if somebody ran the prune. An
+    operator who tried a manual delete and got NetBox's dialog has evidence in
+    a screenshot and nowhere else, and "the uncovered count is not going down"
+    is answered by exactly this: whether the blockers are our own ownership
+    rows (which the prune releases) or another plugin's (which it does not).
+
+    Model labels and counts only - no device names. Capped, and it says what it
+    sampled out of what, because a survey that looks exhaustive and is not is
+    worse than one that admits its bounds.
+    """
+    from dcim.models import Device
+
+    from .utilities.workload_state import describe_delete_blockers
+
+    report, _generated_at, _error = _scope_reconciliation_payload(
+        _latest_scope_reconciliation_job(sync)
+    )
+    unmanaged = report.get("unmanaged") or {}
+    target_pks = []
+    seen = set()
+    for pks in (
+        report.get("out_of_scope_device_ids") or (),
+        unmanaged.get("owned_untagged_device_ids") or (),
+    ):
+        for pk in pks:
+            if isinstance(pk, int) and pk not in seen:
+                seen.add(pk)
+                target_pks.append(pk)
+
+    candidates = list(
+        Device.objects.filter(pk__in=target_pks[:_SUPPORT_BUNDLE_BLOCKER_SAMPLE])
+    )
+    by_label = {}
+    blocked_devices = 0
+    surveyed = 0
+    deadline = time.monotonic() + _SUPPORT_BUNDLE_BLOCKER_BUDGET_SECONDS
+    exhausted_budget = False
+    for device in candidates:
+        if time.monotonic() > deadline:
+            exhausted_budget = True
+            break
+        surveyed += 1
+        blockers = describe_delete_blockers(device)
+        if not blockers:
+            continue
+        blocked_devices += 1
+        for label, count in blockers:
+            entry = by_label.setdefault(label, {"rows": 0, "devices": 0})
+            entry["rows"] += count
+            entry["devices"] += 1
+    return {
+        "target_total": len(target_pks),
+        "sampled": surveyed,
+        "truncated": len(target_pks) > surveyed,
+        "stopped_on_time_budget": exhausted_budget,
+        "devices_with_blockers": blocked_devices,
+        # Split the way the remedy splits: ours the prune releases itself, and
+        # anything else has to be removed before the prune can take the device.
+        "forward_owned": {
+            label: value
+            for label, value in sorted(by_label.items())
+            if label.startswith("forward_netbox.")
+        },
+        "other_plugins": {
+            label: value
+            for label, value in sorted(by_label.items())
+            if not label.startswith("forward_netbox.")
+        },
+    }
+
+
+def _environment_bundle_payload():
+    """Which versions produced everything else in this bundle.
+
+    Without it every bundle costs a round trip to ask what is installed, and
+    the answer changes what the rest of the file means - an optional plugin
+    absent or at an unvalidated version silently disables whole integrations.
+    """
+    import platform
+
+    from django.conf import settings
+
+    from . import _resolved_branching_version
+    from . import NetboxForwardConfig
+    from .utilities.plugin_integrations.registry import OPTIONAL_PLUGIN_INTEGRATIONS
+    from .utilities.validated_runtime import missing_plugin_apps
+    from .utilities.validated_runtime import unexpected_plugin_apps
+
+    def _installed_version(package_name, app_label):
+        from importlib.metadata import PackageNotFoundError
+        from importlib.metadata import version
+
+        if not apps.is_installed(app_label):
+            return None
+        try:
+            return version(package_name) if package_name else "installed"
+        except PackageNotFoundError:
+            return "installed (version unreadable)"
+        except Exception:  # noqa: BLE001 - a bundle must not fail on metadata
+            return "installed (version unreadable)"
+
+    installed_apps = list(getattr(settings, "INSTALLED_APPS", ()) or ())
+    return {
+        "plugin_version": NetboxForwardConfig.version,
+        "netbox_version": str(getattr(settings, "VERSION", "") or ""),
+        "branching_version": _resolved_branching_version(),
+        "python_version": platform.python_version(),
+        "optional_plugins": {
+            integration.app_label: _installed_version(
+                integration.package_name,
+                integration.app_label,
+            )
+            for integration in OPTIONAL_PLUGIN_INTEGRATIONS
+        },
+        "optional_plugin_versions_validated_against": {
+            integration.app_label: integration.required_package_version
+            for integration in OPTIONAL_PLUGIN_INTEGRATIONS
+        },
+        # The exact app set matters: an unlisted plugin disables COPY/SQL,
+        # set-based merge and the fast baseline with no error at all.
+        "unexpected_plugin_apps": list(unexpected_plugin_apps(installed_apps)),
+        "missing_plugin_apps": list(missing_plugin_apps(installed_apps)),
+    }
+
+
+def _stuck_verdict_bundle_payload(sync):
+    """The recovery classification, or why it could not be produced.
+
+    The Recover-stuck-sync button is offered on this verdict; if an operator
+    says the button never appeared, this is the field that says why.
+    """
+    from .utilities.stuck_recovery import classify_stuck_sync
+
+    try:
+        return {"verdict": json_safe_value(classify_stuck_sync(sync))}
+    except Exception as exc:
+        return {"verdict": None, "classification_error": type(exc).__name__}
 
 
 def _sync_support_bundle_payload(sync):
@@ -333,6 +635,7 @@ def _sync_support_bundle_payload(sync):
         ownership_finalization_summary,
         ownership_integrity_summary,
     )
+    from .utilities.interface_vlan_audit import interface_untagged_vlan_keys
     from .utilities.sync_facade import effective_scope_endpoints_by_include_tags
     from .utilities.upgrade_reconciliation import compute_upgrade_reconciliation
 
@@ -395,6 +698,22 @@ def _sync_support_bundle_payload(sync):
             latest_ingestion,
         ),
         "latest_ingestion_issues": _ingestion_issue_bundle_payload(latest_ingestion),
+        # Everything the operator can see on the scope panel and the sync page,
+        # so a problem they cannot fix themselves arrives with its evidence.
+        "environment": _environment_bundle_payload(),
+        # The interfaces NetBox will refuse on their untagged VLAN, by key.
+        # The sync's skip warning tells the operator to export this file for
+        # the per-row detail, and a warning-level log row is redacted to a
+        # fixed sentence - so without this section that instruction pointed at
+        # nothing.
+        "interface_untagged_vlans": json_safe_value(interface_untagged_vlan_keys()),
+        "scope_reconciliation": _scope_reconciliation_bundle_payload(sync),
+        "operator_action_jobs": _operator_action_jobs_bundle_payload(sync),
+        "ownership_records": _ownership_records_bundle_payload(sync),
+        # Why the cleanup targets cannot be deleted - the question a screenshot
+        # of NetBox's delete dialog was the only evidence for.
+        "delete_blockers": _delete_blocker_survey_bundle_payload(sync),
+        "stuck_sync": _stuck_verdict_bundle_payload(sync),
         "latest_ingestion": (
             {
                 "pk": latest_ingestion.pk,
@@ -1086,7 +1405,20 @@ class ForwardSyncView(generic.ObjectView):
 
     def get_extra_context(self, request, instance):
         health = sync_health_summary(instance)
+        # Local job state only - no Forward call, per the report-view rule. The
+        # button this feeds is offered only while something is genuinely
+        # wedged, so a healthy sync never shows a recovery control.
+        from .utilities.stuck_recovery import classify_stuck_sync
+
+        try:
+            stuck_verdict = classify_stuck_sync(instance)
+        except Exception:
+            # A classification failure must not take the whole sync page with
+            # it; the page's job is to show the sync, not to diagnose itself.
+            logger.warning("Stuck-sync classification failed", exc_info=True)
+            stuck_verdict = None
         data = {
+            "stuck_verdict": stuck_verdict,
             "last_ingestion": instance.last_ingestion,
             "latest_validation_run": instance.latest_validation_run,
             "enabled_models": instance.enabled_models(),
@@ -1501,6 +1833,10 @@ class _ForwardSyncUncoveredDevicesView(BaseObjectView):
     template_name = "forward_netbox/forwardsync_uncovered_devices.html"
     half = ""
     title = ""
+    # Which part of the payload holds `<half>_device_ids`. The two uncovered
+    # halves live under "unmanaged"; the orphan and backfilled lists are
+    # top-level, so the section is a class attribute rather than assumed.
+    section = "unmanaged"
 
     def get_required_permission(self):
         return "forward_netbox.view_forwardsync"
@@ -1512,10 +1848,10 @@ class _ForwardSyncUncoveredDevicesView(BaseObjectView):
         sync = get_object_or_404(self.queryset, pk=pk)
         report_job = _latest_scope_reconciliation_job(sync)
         payload, generated_at, report_error = _scope_reconciliation_payload(report_job)
-        unmanaged = payload.get("unmanaged") or {}
+        section = payload.get(self.section) or {} if self.section else payload
         device_ids = [
             device_id
-            for device_id in unmanaged.get(f"{self.half}_device_ids") or []
+            for device_id in section.get(f"{self.half}_device_ids") or []
             if isinstance(device_id, int)
         ]
         table = DeviceTable(
@@ -1552,6 +1888,29 @@ class ForwardSyncUncoveredDevicesView(_ForwardSyncUncoveredDevicesView):
 class ForwardSyncUnclaimedDevicesView(_ForwardSyncUncoveredDevicesView):
     half = "unclaimed"
     title = "Uncovered devices not claimed by this sync"
+
+
+@register_model_view(ForwardSync, "out_of_scope_devices", path="out-of-scope-devices")
+class ForwardSyncOutOfScopeDevicesView(_ForwardSyncUncoveredDevicesView):
+    """The full set Prune orphans deletes.
+
+    The panel showed a count and a 25-name sample next to a red button that
+    deletes all of them, so the one list an operator most needs before
+    clicking was the one the product would not show.
+    """
+
+    half = "out_of_scope"
+    section = ""
+    title = "Out-of-scope devices (Prune orphans deletes these)"
+
+
+@register_model_view(
+    ForwardSync, "present_backfilled_devices", path="present-backfilled-devices"
+)
+class ForwardSyncPresentBackfilledDevicesView(_ForwardSyncUncoveredDevicesView):
+    half = "present_backfilled"
+    section = ""
+    title = "Backfilled devices present in NetBox"
 
 
 @register_model_view(ForwardSync, "scope_reconciliation", path="scope-reconciliation")
@@ -1605,6 +1964,14 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
                 ),
                 "unclaimed_devices_url": reverse(
                     "plugins:forward_netbox:forwardsync_unclaimed_devices",
+                    kwargs={"pk": sync.pk},
+                ),
+                "out_of_scope_devices_url": reverse(
+                    "plugins:forward_netbox:forwardsync_out_of_scope_devices",
+                    kwargs={"pk": sync.pk},
+                ),
+                "present_backfilled_devices_url": reverse(
+                    "plugins:forward_netbox:forwardsync_present_backfilled_devices",
                     kwargs={"pk": sync.pk},
                 ),
                 "tag_backfilled_url": reverse(
@@ -1766,6 +2133,108 @@ class ForwardSyncPruneStaleHardwareNoticesView(BaseObjectView):
                 kwargs={"pk": sync.pk},
             )
         )
+
+
+@register_model_view(ForwardSync, "recover_stuck_sync", path="recover-stuck-sync")
+class ForwardSyncRecoverStuckSyncView(BaseObjectView):
+    """Recover a sync wedged by a worker that died mid-run.
+
+    Deliberately not offered permanently: the button appears only while the
+    classification says something is actually stuck, so it is a remedy at the
+    moment it is needed rather than a control an operator is invited to try.
+    """
+
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.run_forwardsync"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return redirect(sync.get_absolute_url())
+
+    def post(self, request, pk):
+        # Recovery re-enqueues a merge and rewrites job state, which is the
+        # same profile as the other button jobs. It deliberately does NOT take
+        # the active-sync block the prunes take: the whole point is that the
+        # sync looks active and is not.
+        from .utilities.sync_facade import JobAlreadyActive, enqueue_button_job
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        try:
+            job = enqueue_button_job(sync, "recover_stuck_sync", request.user)
+        except JobAlreadyActive:
+            messages.warning(
+                request, _("An equivalent recovery job is already running.")
+            )
+            return redirect(sync.get_absolute_url())
+        messages.success(
+            request,
+            _(
+                "Queued job #%(pk)d to recover this sync. Watch the Jobs tab for "
+                "what it did."
+            )
+            % {"pk": job.pk},
+        )
+        return redirect(sync.get_absolute_url())
+
+
+@register_model_view(ForwardSync, "prune_uncovered", path="prune-uncovered")
+class ForwardSyncPruneUncoveredView(BaseObjectView):
+    """Delete devices this sync created that Forward no longer reports.
+
+    Separate from the orphan prune because it acts on a different set. The
+    orphan prune reaches devices claimed by the run that produced the current
+    result; this reaches devices created by an earlier run that the current
+    scope no longer covers, which that prune can never see.
+    """
+
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "dcim.delete_device"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return redirect(
+            reverse(
+                "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                kwargs={"pk": sync.pk},
+            )
+        )
+
+    def post(self, request, pk):
+        # Same reasoning as the orphan prune: device deletes cascade and can
+        # outlast an HTTP gateway timeout on a large estate.
+        from .utilities.sync_facade import JobAlreadyActive, enqueue_button_job
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        # Only ever true when an operator ticked the box beside a named list of
+        # held devices. Nothing schedules this action.
+        include_quarantined = bool(request.POST.get("include_quarantined"))
+        try:
+            job = enqueue_button_job(
+                sync,
+                "prune_uncovered",
+                request.user,
+                job_kwargs={"include_quarantined": include_quarantined},
+            )
+        except JobAlreadyActive:
+            messages.warning(
+                request,
+                _("An equivalent uncovered-device prune job is already running."),
+            )
+            return redirect(sync.get_absolute_url())
+        messages.success(
+            request,
+            _(
+                "Queued job #%(pk)d to prune uncovered devices. Only devices "
+                "Forward no longer reports are eligible; watch the Jobs tab for "
+                "the result."
+            )
+            % {"pk": job.pk},
+        )
+        return redirect(sync.get_absolute_url())
 
 
 @register_model_view(ForwardSync, "prune_orphans", path="prune-orphans")
@@ -2515,6 +2984,9 @@ class ForwardIngestionIssuesView(generic.ObjectChildrenView):
     table = ForwardIngestionIssueTable
     template_name = "generic/object_children.html"
     filterset = ForwardIngestionIssueFilterSet
+    # The blocking filter is most useful here, on the ingestion whose baseline
+    # is being held back, so the tab gets the same filter form as the list.
+    filterset_form = ForwardIngestionIssueFilterForm
     tab = ViewTab(
         label=_("Ingestion Issues"),
         badge=lambda obj: ForwardIngestionIssue.objects.filter(ingestion=obj).count(),
@@ -2738,6 +3210,7 @@ class ForwardIngestionIssueListView(generic.ObjectListView):
 
     queryset = ForwardIngestionIssue.objects.all()
     filterset = ForwardIngestionIssueFilterSet
+    filterset_form = ForwardIngestionIssueFilterForm
     table = ForwardIngestionIssueTable
     # Read-only diagnostic evidence: written by a sync, never hand-edited.
     actions = (BulkExport,)
