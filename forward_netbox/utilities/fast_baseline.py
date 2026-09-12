@@ -61,8 +61,44 @@ FAST_BASELINE_MODEL_SPEC_VERSIONS = {
     "netbox_routing.prefixlistentry": 1,
     "netbox_routing.communitylistentry": 1,
     "netbox_routing.routemapentry": 1,
+    # Cisco ACI models are adapter-written like the netbox_routing entries
+    # above: the fast baseline proves their required fields up front and the
+    # adapter resolves fabric/tenant/VRF parents with recorded skips. Before
+    # 2.9.6 one enabled ACI map disabled the fast baseline for the whole sync.
+    "netbox_cisco_aci.acifabric": 1,
+    "netbox_cisco_aci.acipod": 1,
+    "netbox_cisco_aci.acinode": 1,
+    "netbox_cisco_aci.acitenant": 1,
+    "netbox_cisco_aci.acivrf": 1,
+    "netbox_cisco_aci.acibridgedomain": 1,
+    "netbox_cisco_aci.acifilter": 1,
+    "netbox_cisco_aci.acil3out": 1,
+    "netbox_cisco_aci.aciappprofile": 1,
+    "netbox_cisco_aci.aciendpointgroup": 1,
+    "netbox_cisco_aci.acicontract": 1,
+    "netbox_cisco_aci.acisubject": 1,
+    "netbox_cisco_aci.acifilterentry": 1,
 }
 FAST_BASELINE_ALLOWED_MODELS = frozenset(FAST_BASELINE_MODEL_SPEC_VERSIONS)
+# Every registered NQE map model is either allowlisted above or named here
+# with the reason it still turns the fast baseline off. A test pins the union
+# so a new map cannot silently reintroduce the `model_not_allowlisted`
+# fallback for the whole sync.
+FAST_BASELINE_EXCLUDED_MODELS = {
+    "dcim.virtualchassis": (
+        "virtual-chassis membership is sequenced against device rows by the "
+        "adapter and has no fast-baseline row contract yet"
+    ),
+    "netbox_dlm.inventoryitemsoftware": (
+        "four dependent writes (inventory item, role-platform mapping, "
+        "software version, assignment) must agree; no row contract proves "
+        "that up front"
+    ),
+    "netbox_peering_manager.peeringsession": (
+        "peering sessions rely on tolerant row-level error handling the fast "
+        "baseline does not provide"
+    ),
+}
 FAST_BASELINE_OMITTED_EVIDENCE = (
     "branch",
     "branch_event",
