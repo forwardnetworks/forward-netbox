@@ -577,11 +577,11 @@ class SyncACIAdapterTest(TestCase):
         )
 
     def test_acinode_links_its_device_case_insensitively(self):
-        # APIC names nodes as configured (DC01LEAF101); Forward collected the
-        # device as dc01leaf101. 0 of 667 nodes matched exactly on a real fabric.
+        # APIC names nodes as configured (FAB1LEAF101); Forward collected the
+        # device as fab1leaf101. 0 of 667 nodes matched exactly on a real fabric.
         runner = _ACIRunner()
         device = SimpleNamespace(pk=7, __class__=type("Device", (), {}))
-        runner.devices["dc01leaf101"] = device
+        runner.devices["fab1leaf101"] = device
 
         apply_netbox_cisco_aci_acinode(
             runner,
@@ -590,13 +590,13 @@ class SyncACIAdapterTest(TestCase):
                 "pod_name": "pod-1",
                 "pod_id": "1",
                 "node_id": "101",
-                "name": "DC01LEAF101",
+                "name": "FAB1LEAF101",
                 "role": "leaf",
                 "node_type": "physical",
                 "serial_number": "SERIAL1",
                 "pod_tep_pool": "10.0.0.1",
                 "firmware_version": "",
-                "node_object_name": "DC01LEAF101",
+                "node_object_name": "FAB1LEAF101",
                 "description": "Forward observed ACI node.",
             },
         )

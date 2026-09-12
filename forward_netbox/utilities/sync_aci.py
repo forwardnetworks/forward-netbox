@@ -393,8 +393,8 @@ def _lookup_aci_node_device(runner, row):
     """The NetBox device an ACI node row describes, or ``(None, None)``.
 
     APIC output names nodes the way the fabric was configured
-    (``DC01LEAF101``) while Forward - and so NetBox - carries the device name
-    as collected (``dc01leaf101``); on a real fabric 0 of 667 nodes matched
+    (``FAB1LEAF101``) while Forward - and so NetBox - carries the device name
+    as collected (``fab1leaf101``); on a real fabric 0 of 667 nodes matched
     exactly and 614 matched case-insensitively. So the exact lookup is tried
     first and a case-insensitive one second, and only a UNIQUE match links.
     Two devices differing only by case is held, not guessed - a wrong link is
