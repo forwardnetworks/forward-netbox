@@ -186,7 +186,7 @@ too, by command.
 
 ## Open
 
-- Phase 2: read-only report views for the eight audits with no GUI surface at
+- Phase 2 (done in 2.9.6, see `2026-09-12-release-2.9.6.md`): the nine audits are pages under the sync's **Audits** entry; the six that ask Forward run as button jobs, the three that read only NetBox compute on open. `forward_interface_vlan_audit` carries the interface and device primary keys in its rows for the links and persists nothing.
   all - primary-IP resolution, stale global IPAM counts, stale DLM notice count,
   apply-identity churn, ambiguous device names, dangling netbox-routing rows,
   APIC CIMC readiness and fast-baseline eligibility. `forward_interface_vlan_audit`

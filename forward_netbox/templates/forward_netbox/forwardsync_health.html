@@ -17,6 +17,14 @@
             {% trans "Export source reachability diagnostics." %}
           </span>
         </div>
+        <div class="mb-3">
+          <a class="btn btn-sm btn-outline-secondary" href="{% url 'plugins:forward_netbox:forwardsync_audits' pk=object.pk %}">
+            {% trans "Audits" %}
+          </a>
+          <span class="text-muted ms-2">
+            {% trans "Read-only checks behind a symptom: primary-IP resolution, stale IPAM and hardware notices, identity churn, ambiguous names, dangling routing rows, interface VLANs, APIC readiness, fast-baseline eligibility." %}
+          </span>
+        </div>
         <table class="table table-hover attr-table">
           <tr>
             <th scope="row">{% trans "Source" %}</th>
