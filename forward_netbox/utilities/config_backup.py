@@ -168,9 +168,10 @@ def _branch_ref(data_source, remote_refs=None):
     backup that reports success and delivers nothing.
 
     So when the operator has not named a branch, follow the remote's ``HEAD``
-    and write where the remote itself says its default is. Only when the remote
-    offers no opinion at all - a genuinely empty repository - is a default
-    invented, and then it matches the initial branch git and dulwich create.
+    and write where the remote itself says its default is. When the remote
+    offers no opinion at all - an empty repository over smart HTTP advertises
+    nothing - return None and let the caller refuse: guessing `main` against a
+    `master` default is the silent no-delivery this function exists to stop.
     """
     branch = (data_source.parameters or {}).get("branch")
     if branch:
@@ -185,7 +186,11 @@ def _branch_ref(data_source, remote_refs=None):
         for name, value in refs.items():
             if name.startswith(b"refs/heads/") and value == head:
                 return name
-    return b"refs/heads/main"
+    # Nothing advertised at all. Over smart HTTP an empty repository sends no
+    # refs and no HEAD symref, and this used to invent `main` - a server whose
+    # default is `master` then received a branch NetBox never reads, a backup
+    # that reports success and delivers nothing. Refuse with the remedy.
+    return None
 
 
 def _identity_name_map(sync):
@@ -213,6 +218,25 @@ def _safe_file_name(device_name):
     return name + ".cfg"
 
 
+def _remote_failure_reason(exc):
+    """What to tell the operator about a failed git exchange.
+
+    Never the URL or anything derived from it: the url carries the data
+    source's credentials, and dulwich's own messages can echo it. The two
+    failures an operator can act on without us are named; everything else is
+    reduced to the exception type, which is what the support bundle needs.
+    """
+    name = type(exc).__name__
+    if name == "HTTPUnauthorized":
+        return "the data source credentials were refused, HTTP 401"
+    if name == "HTTPProxyUnauthorized":
+        return "the proxy refused the data source credentials, HTTP 407"
+    status = getattr(exc, "status", None) or getattr(exc, "code", None)
+    if isinstance(status, int):
+        return f"the remote answered HTTP {status}, {name}"
+    return name
+
+
 def _fetch_remote(repo, url):
     """Fetch the remote into `repo` and return what it advertised."""
     from dulwich import porcelain
@@ -223,8 +247,8 @@ def _fetch_remote(repo, url):
         raise
     except Exception as exc:
         raise ForwardSyncError(
-            f"config backup could not fetch the data source repository "
-            f"({type(exc).__name__})."
+            "config backup could not fetch the data source repository "
+            f"({_remote_failure_reason(exc)})."
         ) from exc
 
 
@@ -276,6 +300,13 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
         try:
             remote_refs = _fetch_remote(repo, url)
             branch_ref = _branch_ref(data_source, remote_refs)
+            if branch_ref is None:
+                raise ForwardSyncError(
+                    "config backup cannot choose a branch: the data source "
+                    "repository is empty and advertises no default branch. Set "
+                    "the data source's `branch` parameter, or make an initial "
+                    "commit on the branch NetBox should read."
+                )
             head = _remote_head(remote_refs, branch_ref)
 
             # Fast path: the head commit says it already holds this snapshot.
@@ -440,8 +471,8 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
                 raise
             except Exception as exc:
                 raise ForwardSyncError(
-                    f"config backup could not push to the data source "
-                    f"repository ({type(exc).__name__})."
+                    "config backup could not push to the data source "
+                    f"repository ({_remote_failure_reason(exc)})."
                 ) from exc
             result.pushed = True
         finally:
