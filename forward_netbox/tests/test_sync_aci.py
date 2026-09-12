@@ -11,7 +11,11 @@ from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acifilteren
 from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acil3out
 from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acinode
 from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acipod
+from forward_netbox.utilities.sync_aci import (
+    apply_netbox_cisco_aci_acistaticportbinding,
+)
 from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acisubject
+from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acisubjectfilter
 from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acitenant
 from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acivrf
 from forward_netbox.utilities.sync_aci import delete_netbox_cisco_aci_acibridgedomain
@@ -20,6 +24,10 @@ from forward_netbox.utilities.sync_aci import delete_netbox_cisco_aci_acifilter
 from forward_netbox.utilities.sync_aci import delete_netbox_cisco_aci_acil3out
 from forward_netbox.utilities.sync_aci import delete_netbox_cisco_aci_acinode
 from forward_netbox.utilities.sync_aci import delete_netbox_cisco_aci_acipod
+from forward_netbox.utilities.sync_aci import (
+    delete_netbox_cisco_aci_acistaticportbinding,
+)
+from forward_netbox.utilities.sync_aci import delete_netbox_cisco_aci_acisubjectfilter
 from forward_netbox.utilities.sync_aci import delete_netbox_cisco_aci_acitenant
 from forward_netbox.utilities.sync_aci import delete_netbox_cisco_aci_acivrf
 
@@ -118,6 +126,32 @@ class _ACIRunner:
                     "reverse_filter_ports",
                     "qos_class",
                     "target_dscp",
+                    "description",
+                ),
+            ),
+            "ACISubjectFilter": _fake_model(
+                "netbox_cisco_aci.acisubjectfilter",
+                (
+                    "aci_subject",
+                    "aci_filter",
+                    "direction",
+                    "name",
+                    "action",
+                    "priority",
+                    "description",
+                ),
+            ),
+            "ACIStaticPortBinding": _fake_model(
+                "netbox_cisco_aci.acistaticportbinding",
+                (
+                    "aci_endpoint_group",
+                    "dcim_interface",
+                    "binding_type",
+                    "encap_vlan",
+                    "mode",
+                    "primary_encap_vlan",
+                    "deployment_immediacy",
+                    "name",
                     "description",
                 ),
             ),
@@ -292,7 +326,36 @@ class _ACIRunner:
                     ),
                 )
             ] = obj
+        elif model_string in {
+            "netbox_cisco_aci.aciendpointgroup",
+            "netbox_cisco_aci.acisubject",
+        }:
+            parent_field = (
+                "aci_app_profile"
+                if model_string == "netbox_cisco_aci.aciendpointgroup"
+                else "aci_contract"
+            )
+            self.lookups[
+                (
+                    model,
+                    (
+                        parent_field,
+                        self._parent_key(values[parent_field]),
+                        "name",
+                        values["name"],
+                    ),
+                )
+            ] = obj
         elif model_string == "netbox_cisco_aci.acinode":
+            # The generic link the real model exposes as `node_object`.
+            obj.node_object = next(
+                (
+                    device
+                    for device in self.devices.values()
+                    if device.pk == values.get("node_object_id")
+                ),
+                None,
+            )
             self.lookups[
                 (
                     model,
@@ -465,6 +528,20 @@ class _ACIRunner:
                         self._parent_key(lookup["aci_fabric"]),
                         "name",
                         lookup["name"],
+                    ),
+                )
+            )
+        if set(lookup) == {"aci_subject", "aci_filter", "direction"}:
+            return self.lookups.get(
+                (
+                    model,
+                    (
+                        "aci_subject",
+                        self._parent_key(lookup["aci_subject"]),
+                        "aci_filter",
+                        self._parent_key(lookup["aci_filter"]),
+                        "direction",
+                        lookup["direction"],
                     ),
                 )
             )
@@ -1290,6 +1367,40 @@ class TenantPolicyAdapterTest(TestCase):
             ["aci-filter-entry-port-out-of-range"],
         )
 
+    def test_a_half_storable_port_range_is_dropped_whole(self):
+        # 1024-65535: the plugin requires both ends of a range together, so
+        # keeping the storable end alone failed the row on the merge.
+        runner = _ACIRunner()
+        apply_netbox_cisco_aci_acifilterentry(
+            runner,
+            {
+                "fabric_name": "fabric-a",
+                "tenant_name": "TN-A",
+                "filter_name": "FT-HALF",
+                "name": "e-half",
+                "ether_type": "ip",
+                "ip_protocol": "udp",
+                "source_port_from": "1024",
+                "source_port_to": "65535",
+                "destination_port_from": "514",
+                "destination_port_to": "514",
+                "tcp_rules": "",
+                "match_only_fragments": False,
+                "arp_opcode": "unspecified",
+                "stateful": False,
+                "description": "",
+            },
+        )
+        values = runner.upserts[-1]["values"]
+        self.assertEqual(
+            (values["source_port_from"], values["source_port_to"]), (None, None)
+        )
+        self.assertEqual(
+            (values["destination_port_from"], values["destination_port_to"]),
+            (514, 514),
+        )
+        self.assertIn("src 1024-65535", values["description"])
+
     def test_previews_classify_from_the_leaf_upsert(self):
         runner = _ACIRunner()
         runner.last_upsert_would_change = False
@@ -1299,6 +1410,407 @@ class TenantPolicyAdapterTest(TestCase):
             preview=True,
         )
         self.assertEqual(outcome, "unchanged")
+
+
+class SyncACIAttachmentTest(TestCase):
+    """Subject filters (vzRsSubjFiltAtt) and static port bindings (fvRsPathAtt)."""
+
+    def _subject(self, runner, tenant="TN-A", contract="CT-WEB", name="SUBJ-HTTP"):
+        return apply_netbox_cisco_aci_acisubject(
+            runner,
+            {
+                "fabric_name": "fabric-a",
+                "tenant_name": tenant,
+                "contract_name": contract,
+                "name": name,
+                "apply_both_directions": True,
+                "reverse_filter_ports": True,
+                "qos_class": "unspecified",
+                "target_dscp": "unspecified",
+                "description": "",
+            },
+        )
+
+    def _filter(self, runner, tenant="TN-A", name="FLT-HTTP"):
+        return apply_netbox_cisco_aci_acifilter(
+            runner,
+            {
+                "fabric_name": "fabric-a",
+                "tenant_name": tenant,
+                "name": name,
+                "description": "",
+            },
+        )
+
+    def _subject_filter_row(self, **extra):
+        row = {
+            "fabric_name": "fabric-a",
+            "tenant_name": "TN-A",
+            "contract_name": "CT-WEB",
+            "subject_name": "SUBJ-HTTP",
+            "filter_name": "FLT-HTTP",
+            "direction": "both",
+            "action": "permit",
+            "priority": "default",
+            "description": "",
+        }
+        row.update(extra)
+        return row
+
+    def test_a_subject_filter_links_subject_and_tenant_filter(self):
+        runner = _ACIRunner()
+        subject = self._subject(runner)
+        aci_filter = self._filter(runner)
+        attachment = apply_netbox_cisco_aci_acisubjectfilter(
+            runner, self._subject_filter_row(action="deny", priority="level2")
+        )
+        values = runner.upserts[-1]["values"]
+        self.assertEqual(
+            runner.upserts[-1]["model_string"], "netbox_cisco_aci.acisubjectfilter"
+        )
+        self.assertIs(values["aci_subject"], subject)
+        self.assertIs(values["aci_filter"], aci_filter)
+        self.assertEqual(values["direction"], "both")
+        self.assertEqual(values["action"], "deny")
+        self.assertEqual(values["priority"], "level2")
+        self.assertEqual(values["name"], "FLT-HTTP")
+        self.assertEqual(
+            runner.upserts[-1]["coalesce_sets"],
+            [("aci_subject", "aci_filter", "direction")],
+        )
+        self.assertEqual(attachment.name, "FLT-HTTP")
+
+    def test_a_filter_missing_from_the_tenant_resolves_in_common(self):
+        # APIC resolves tnVzFilterName in the subject's tenant, then common.
+        runner = _ACIRunner()
+        self._subject(runner)
+        common = self._filter(runner, tenant="common")
+        apply_netbox_cisco_aci_acisubjectfilter(runner, self._subject_filter_row())
+        self.assertIs(runner.upserts[-1]["values"]["aci_filter"], common)
+
+    def test_a_directional_attachment_is_named_by_direction(self):
+        runner = _ACIRunner()
+        self._subject(runner)
+        self._filter(runner)
+        apply_netbox_cisco_aci_acisubjectfilter(
+            runner, self._subject_filter_row(direction="in")
+        )
+        values = runner.upserts[-1]["values"]
+        self.assertEqual(values["direction"], "in")
+        self.assertEqual(values["name"], "FLT-HTTP-in")
+
+    def test_unknown_action_and_priority_fall_back_to_apic_defaults(self):
+        runner = _ACIRunner()
+        self._subject(runner)
+        self._filter(runner)
+        apply_netbox_cisco_aci_acisubjectfilter(
+            runner, self._subject_filter_row(action="mirror", priority="level9")
+        )
+        values = runner.upserts[-1]["values"]
+        self.assertEqual(values["action"], "permit")
+        self.assertEqual(values["priority"], "default")
+
+    def test_a_subject_filter_without_its_subject_is_skipped_with_the_reason(self):
+        runner = _ACIRunner()
+        self._filter(runner)
+        outcome = apply_netbox_cisco_aci_acisubjectfilter(
+            runner, self._subject_filter_row()
+        )
+        self.assertIs(outcome, False)
+        self.assertNotIn(
+            "netbox_cisco_aci.acisubjectfilter",
+            [call["model_string"] for call in runner.upserts],
+        )
+        self.assertEqual(
+            [w["reason"] for w in runner.skip_warnings],
+            ["aci-subject-filter-subject-missing"],
+        )
+
+    def test_a_subject_filter_without_its_filter_is_skipped_with_the_reason(self):
+        runner = _ACIRunner()
+        self._subject(runner)
+        outcome = apply_netbox_cisco_aci_acisubjectfilter(
+            runner, self._subject_filter_row()
+        )
+        self.assertIs(outcome, False)
+        self.assertEqual(
+            [w["reason"] for w in runner.skip_warnings],
+            ["aci-subject-filter-filter-missing"],
+        )
+
+    def test_a_directional_subject_drops_reverse_filter_ports(self):
+        # netbox-cisco-aci rejects reverse_filter_ports on a directional subject.
+        runner = _ACIRunner()
+        apply_netbox_cisco_aci_acisubject(
+            runner,
+            {
+                "fabric_name": "fabric-a",
+                "tenant_name": "TN-A",
+                "contract_name": "CT-WEB",
+                "name": "SUBJ-ONEWAY",
+                "apply_both_directions": False,
+                "reverse_filter_ports": True,
+                "qos_class": "unspecified",
+                "target_dscp": "unspecified",
+                "description": "",
+            },
+        )
+        values = runner.upserts[-1]["values"]
+        self.assertFalse(values["apply_both_directions"])
+        self.assertFalse(values["reverse_filter_ports"])
+
+    def test_subject_filter_delete_resolves_the_same_triple(self):
+        runner = _ACIRunner()
+        subject = self._subject(runner)
+        aci_filter = self._filter(runner)
+        self.assertTrue(
+            delete_netbox_cisco_aci_acisubjectfilter(
+                runner, self._subject_filter_row(direction="out")
+            )
+        )
+        self.assertEqual(
+            runner.deletes[-1]["lookups"],
+            [{"aci_subject": subject, "aci_filter": aci_filter, "direction": "out"}],
+        )
+        runner.deletes.clear()
+        self.assertFalse(
+            delete_netbox_cisco_aci_acisubjectfilter(
+                runner, self._subject_filter_row(subject_name="SUBJ-MISSING")
+            )
+        )
+        self.assertEqual(runner.deletes, [])
+
+    # --- static port bindings
+
+    def _fabric_with_leaf(self, runner, *, is_useg=False, link_device=True):
+        leaf = SimpleNamespace(pk=7, name="fab1leaf101", interfaces=())
+        if link_device:
+            runner.devices["fab1leaf101"] = leaf
+        runner.interfaces[(7, "eth1/1")] = SimpleNamespace(pk=70, name="Ethernet1/1")
+        runner.interfaces[(7, "eth101/1/1")] = SimpleNamespace(
+            pk=71, name="Ethernet101/1/1"
+        )
+        apply_netbox_cisco_aci_acinode(
+            runner,
+            {
+                "fabric_name": "fabric-a",
+                "pod_name": "pod-1",
+                "pod_id": "1",
+                "node_id": "101",
+                "name": "FAB1LEAF101",
+                "role": "leaf",
+                "node_type": "physical",
+                "serial_number": "SERIAL1",
+                "pod_tep_pool": "10.0.0.1",
+                "firmware_version": "",
+                "node_object_name": "FAB1LEAF101",
+                "description": "",
+            },
+        )
+        apply_netbox_cisco_aci_acibridgedomain(
+            runner,
+            {
+                "fabric_name": "fabric-a",
+                "tenant_name": "TN-A",
+                "vrf_tenant_name": "TN-A",
+                "vrf_name": "VRF-A",
+                "name": "BD-WEB",
+                "unicast_routing_enabled": True,
+                "arp_flooding_enabled": False,
+                "limit_ip_learn_to_subnets": True,
+                "l2_unknown_unicast": "proxy",
+                "l3_unknown_multicast": "flood",
+                "multi_destination_flooding": "bd-flood",
+                "mac_address": "00:22:BD:F8:19:FF",
+                "description": "",
+            },
+        )
+        return apply_netbox_cisco_aci_aciendpointgroup(
+            runner,
+            {
+                "fabric_name": "fabric-a",
+                "tenant_name": "TN-A",
+                "app_profile_name": "AP-A",
+                "name": "EPG-WEB",
+                "bridge_domain_name": "BD-WEB",
+                "admin_shutdown": False,
+                "is_useg": is_useg,
+                "intra_epg_isolation": False,
+                "preferred_group_member": False,
+                "qos_class": "unspecified",
+                "description": "",
+            },
+        )
+
+    def _binding_row(self, **extra):
+        row = {
+            "fabric_name": "fabric-a",
+            "tenant_name": "TN-A",
+            "app_profile_name": "AP-A",
+            "epg_name": "EPG-WEB",
+            "pod_id": 1,
+            "node_id": 101,
+            "node_id_secondary": None,
+            "fex_id": None,
+            "interface_name": "eth1/1",
+            "path_kind": "path",
+            "encap_vlan": 100,
+            "primary_encap_vlan": None,
+            "mode": "regular",
+            "deployment_immediacy": "immediate",
+            "description": "",
+        }
+        row.update(extra)
+        return row
+
+    def test_a_leaf_path_binds_the_epg_to_the_node_device_interface(self):
+        runner = _ACIRunner()
+        epg = self._fabric_with_leaf(runner)
+        binding = apply_netbox_cisco_aci_acistaticportbinding(
+            runner, self._binding_row()
+        )
+        values = runner.upserts[-1]["values"]
+        self.assertEqual(
+            runner.upserts[-1]["model_string"], "netbox_cisco_aci.acistaticportbinding"
+        )
+        self.assertIs(values["aci_endpoint_group"], epg)
+        self.assertEqual(values["dcim_interface"].pk, 70)
+        self.assertEqual(values["binding_type"], "regular")
+        self.assertEqual(values["encap_vlan"], 100)
+        self.assertEqual(values["mode"], "regular")
+        self.assertEqual(values["deployment_immediacy"], "immediate")
+        self.assertIsNone(values["primary_encap_vlan"])
+        self.assertEqual(values["name"], "spb_EPG-WEB_Ethernet1_1_v100")
+        self.assertEqual(
+            runner.upserts[-1]["coalesce_sets"],
+            [("aci_endpoint_group", "dcim_interface", "encap_vlan")],
+        )
+        self.assertEqual(binding.encap_vlan, 100)
+        self.assertEqual(runner.skip_warnings, [])
+
+    def test_a_fex_path_binds_as_fex_when_the_leaf_carries_the_port(self):
+        runner = _ACIRunner()
+        self._fabric_with_leaf(runner)
+        apply_netbox_cisco_aci_acistaticportbinding(
+            runner,
+            self._binding_row(
+                path_kind="extpath", fex_id=101, interface_name="eth101/1/1"
+            ),
+        )
+        values = runner.upserts[-1]["values"]
+        self.assertEqual(values["binding_type"], "fex")
+        self.assertEqual(values["dcim_interface"].pk, 71)
+
+    def test_a_vpc_or_port_channel_path_is_skipped_with_the_reason(self):
+        # The path names an interface policy group, not a leaf interface.
+        runner = _ACIRunner()
+        self._fabric_with_leaf(runner)
+        for extra in (
+            {
+                "path_kind": "protpath",
+                "node_id_secondary": 102,
+                "interface_name": "PG-LAG0",
+            },
+            {"path_kind": "path", "interface_name": "PG-PC1"},
+        ):
+            outcome = apply_netbox_cisco_aci_acistaticportbinding(
+                runner, self._binding_row(**extra)
+            )
+            self.assertIs(outcome, False)
+        self.assertNotIn(
+            "netbox_cisco_aci.acistaticportbinding",
+            [call["model_string"] for call in runner.upserts],
+        )
+        self.assertEqual(
+            [w["reason"] for w in runner.skip_warnings],
+            ["aci-static-port-path-unsupported"] * 2,
+        )
+
+    def test_a_primary_encap_is_kept_only_on_a_useg_epg(self):
+        runner = _ACIRunner()
+        self._fabric_with_leaf(runner, is_useg=True)
+        apply_netbox_cisco_aci_acistaticportbinding(
+            runner, self._binding_row(primary_encap_vlan=200)
+        )
+        self.assertEqual(runner.upserts[-1]["values"]["primary_encap_vlan"], 200)
+        # Equal to the encap: the plugin rejects it, so it is dropped.
+        apply_netbox_cisco_aci_acistaticportbinding(
+            runner, self._binding_row(encap_vlan=300, primary_encap_vlan=300)
+        )
+        self.assertIsNone(runner.upserts[-1]["values"]["primary_encap_vlan"])
+
+    def test_a_primary_encap_on_a_regular_epg_is_dropped(self):
+        runner = _ACIRunner()
+        self._fabric_with_leaf(runner, is_useg=False)
+        apply_netbox_cisco_aci_acistaticportbinding(
+            runner, self._binding_row(primary_encap_vlan=200)
+        )
+        self.assertIsNone(runner.upserts[-1]["values"]["primary_encap_vlan"])
+
+    def test_missing_epg_node_link_and_interface_each_name_their_reason(self):
+        runner = _ACIRunner()
+        outcome = apply_netbox_cisco_aci_acistaticportbinding(
+            runner, self._binding_row()
+        )
+        self.assertIs(outcome, False)
+        self.assertEqual(
+            runner.skip_warnings[-1]["reason"], "aci-static-port-epg-missing"
+        )
+
+        runner = _ACIRunner()
+        self._fabric_with_leaf(runner)
+        outcome = apply_netbox_cisco_aci_acistaticportbinding(
+            runner, self._binding_row(node_id=102)
+        )
+        self.assertIs(outcome, False)
+        self.assertEqual(
+            runner.skip_warnings[-1]["reason"], "aci-static-port-node-missing"
+        )
+
+        outcome = apply_netbox_cisco_aci_acistaticportbinding(
+            runner, self._binding_row(interface_name="eth1/48")
+        )
+        self.assertIs(outcome, False)
+        self.assertEqual(
+            runner.skip_warnings[-1]["reason"], "aci-static-port-interface-missing"
+        )
+        self.assertNotIn(
+            "netbox_cisco_aci.acistaticportbinding",
+            [call["model_string"] for call in runner.upserts],
+        )
+
+    def test_a_node_without_a_device_link_is_a_missing_node(self):
+        runner = _ACIRunner()
+        self._fabric_with_leaf(runner, link_device=False)
+        outcome = apply_netbox_cisco_aci_acistaticportbinding(
+            runner, self._binding_row()
+        )
+        self.assertIs(outcome, False)
+        self.assertEqual(
+            runner.skip_warnings[-1]["reason"], "aci-static-port-node-missing"
+        )
+
+    def test_static_port_binding_delete_resolves_the_same_triple(self):
+        runner = _ACIRunner()
+        epg = self._fabric_with_leaf(runner)
+        self.assertTrue(
+            delete_netbox_cisco_aci_acistaticportbinding(runner, self._binding_row())
+        )
+        self.assertEqual(
+            runner.deletes[-1]["lookups"],
+            [
+                {
+                    "aci_endpoint_group": epg,
+                    "dcim_interface": runner.interfaces[(7, "eth1/1")],
+                    "encap_vlan": 100,
+                }
+            ],
+        )
+        self.assertFalse(
+            delete_netbox_cisco_aci_acistaticportbinding(
+                runner, self._binding_row(interface_name="eth1/48")
+            )
+        )
 
 
 class SuppressAciDeletesTest(TestCase):

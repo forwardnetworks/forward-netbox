@@ -413,6 +413,69 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
             ("fabric_name", "tenant_name", "filter_name", "name"),
         ),
     ),
+    "netbox_cisco_aci.acisubjectfilter": ModelSyncContract(
+        required_fields=(
+            "fabric_name",
+            "tenant_name",
+            "contract_name",
+            "subject_name",
+            "filter_name",
+            "direction",
+        ),
+        allowed_coalesce_fields=(
+            "fabric_name",
+            "tenant_name",
+            "contract_name",
+            "subject_name",
+            "filter_name",
+            "direction",
+        ),
+        default_coalesce_fields=(
+            (
+                "fabric_name",
+                "tenant_name",
+                "contract_name",
+                "subject_name",
+                "filter_name",
+                "direction",
+            ),
+        ),
+    ),
+    "netbox_cisco_aci.acistaticportbinding": ModelSyncContract(
+        required_fields=(
+            "fabric_name",
+            "tenant_name",
+            "app_profile_name",
+            "epg_name",
+            "pod_id",
+            "node_id",
+            "interface_name",
+            "path_kind",
+            "encap_vlan",
+        ),
+        allowed_coalesce_fields=(
+            "fabric_name",
+            "tenant_name",
+            "app_profile_name",
+            "epg_name",
+            "pod_id",
+            "node_id",
+            "interface_name",
+            "encap_vlan",
+        ),
+        default_coalesce_fields=(
+            (
+                "fabric_name",
+                "tenant_name",
+                "app_profile_name",
+                "epg_name",
+                "pod_id",
+                "node_id",
+                "interface_name",
+                "encap_vlan",
+            ),
+        ),
+    ),
 }
 
 

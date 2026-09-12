@@ -55,6 +55,8 @@ FAST_BASELINE_ADAPTER_CONTRACT_MODELS = frozenset(
         "netbox_cisco_aci.acicontract",
         "netbox_cisco_aci.acisubject",
         "netbox_cisco_aci.acifilterentry",
+        "netbox_cisco_aci.acisubjectfilter",
+        "netbox_cisco_aci.acistaticportbinding",
     }
 )
 MODULE_NATIVE_INVENTORY_PART_TYPES = frozenset(

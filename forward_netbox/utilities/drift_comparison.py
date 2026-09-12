@@ -1067,6 +1067,8 @@ def _aci_comparisons():
     from .sync_aci import apply_netbox_cisco_aci_acicontract
     from .sync_aci import apply_netbox_cisco_aci_acisubject
     from .sync_aci import apply_netbox_cisco_aci_acifilterentry
+    from .sync_aci import apply_netbox_cisco_aci_acistaticportbinding
+    from .sync_aci import apply_netbox_cisco_aci_acisubjectfilter
     from .sync_aci import apply_netbox_cisco_aci_acinode
     from .sync_aci import apply_netbox_cisco_aci_acipod
     from .sync_aci import apply_netbox_cisco_aci_acitenant
@@ -1086,6 +1088,10 @@ def _aci_comparisons():
         "netbox_cisco_aci.acicontract": apply_netbox_cisco_aci_acicontract,
         "netbox_cisco_aci.acisubject": apply_netbox_cisco_aci_acisubject,
         "netbox_cisco_aci.acifilterentry": apply_netbox_cisco_aci_acifilterentry,
+        "netbox_cisco_aci.acisubjectfilter": apply_netbox_cisco_aci_acisubjectfilter,
+        "netbox_cisco_aci.acistaticportbinding": (
+            apply_netbox_cisco_aci_acistaticportbinding
+        ),
     }
 
 

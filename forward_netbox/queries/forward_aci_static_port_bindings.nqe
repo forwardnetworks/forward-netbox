@@ -1,0 +1,51 @@
+/**
+ * @intent Forward ACI Static Port Bindings
+ * @description Discovers ACI static port bindings (EPG on leaf interface with an encap VLAN) from the APIC `moquery -c fvRsPathAtt` custom command.
+ */
+
+import "netbox_utilities";
+
+pathAttRegex = re`(?:^|\R)#\s+fv\.RsPathAtt\s*\R\s*tDn\s*:\s*topology/pod-(?<pod_id:Integer>\d+)/(?<path_class>paths|protpaths)-(?<node_id:Integer>\d+)(?:-(?<node_id_secondary:Integer>\d+))?(?:/extpaths-(?<fex_id:Integer>\d+))?/pathep-\[(?<pathep>[^\]\r\n]+)\]\s*\R(?:\s*[^\r\n]*\R)*?\s*dn\s*:\s*uni/tn-(?<tenant_name>[^/\s]+)/ap-(?<ap_name>[^/\s]+)/epg-(?<epg_name>[^/\s]+)/rspathAtt-\[[^\r\n]*\]\s*\R(?:\s*[^\r\n]*\R)*?\s*encap\s*:\s*(?<encap>\S+)\s*\R(?:\s*[^\r\n]*\R)*?\s*instrImedcy\s*:\s*(?<immediacy>\S+)\s*\R(?:\s*[^\r\n]*\R)*?\s*mode\s*:\s*(?<mode>\S+)\s*\R(?:\s*[^\r\n]*\R)*?\s*primaryEncap\s*:\s*(?<primary_encap>\S+)`;
+vlanRegex = re`^vlan-(?<vid:Integer>\d+)$`;
+encapVlan(value) = max(foreach m in regexMatches(value, vlanRegex) select m.data.vid);
+aciFabricName(device) =
+  if isPresent(device.locationName) && length(device.locationName) > 0
+  then slugify(toLowerCase(device.locationName))
+  else "forward-aci-fabric";
+pathKind(binding) =
+  if isPresent(binding.fex_id) then "extpath"
+  else if binding.path_class == "protpaths" then "protpath"
+  else "path";
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach command in device.outputs.commands
+where command.commandType == CommandType.CUSTOM
+where matches(toLowerCase(command.commandText), "moquery -c fvrspathatt*")
+foreach binding_match in regexMatches(command.response, pathAttRegex)
+let binding = binding_match.data
+let fabric_name = aciFabricName(device)
+where isEmpty(forward_netbox_shard_keys)
+  || fabric_name in forward_netbox_shard_keys
+  || binding.tenant_name in forward_netbox_shard_keys
+  || binding.epg_name in forward_netbox_shard_keys
+select distinct {
+  fabric_name: fabric_name,
+  tenant_name: binding.tenant_name,
+  app_profile_name: binding.ap_name,
+  epg_name: binding.epg_name,
+  pod_id: binding.pod_id,
+  node_id: binding.node_id,
+  node_id_secondary: binding.node_id_secondary,
+  fex_id: binding.fex_id,
+  interface_name: binding.pathep,
+  path_kind: pathKind(binding),
+  encap_vlan: encapVlan(binding.encap),
+  primary_encap_vlan: encapVlan(binding.primary_encap),
+  mode: binding.mode,
+  deployment_immediacy: binding.immediacy,
+  description: "Forward observed ACI static port binding"
+};

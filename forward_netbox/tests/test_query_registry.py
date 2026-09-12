@@ -2367,18 +2367,45 @@ select {name: "vendor", slug: "vendor"}
         optional_names = {
             query_default["name"] for query_default in BUILTIN_OPTIONAL_QUERY_MAPS
         }
-        # The tenant-policy maps joined in 2.9.5, seeded disabled like the rest
-        # of ACI; static port bindings are still not modelled.
+        # The tenant-policy maps joined in 2.9.5 and the two attachment maps in
+        # 2.9.6, all seeded disabled like the rest of ACI.
         for name in (
             "Forward ACI Application Profiles",
             "Forward ACI Endpoint Groups",
             "Forward ACI Contracts",
             "Forward ACI Contract Subjects",
             "Forward ACI Filter Entries",
+            "Forward ACI Subject Filters",
+            "Forward ACI Static Port Bindings",
         ):
             self.assertIn(name, optional_names)
             self.assertFalse(rows[next(k for k in rows if k[1] == name)]["enabled"])
-        self.assertNotIn("Forward ACI Static Port Bindings", optional_names)
+        binding_row = rows[
+            (
+                "netbox_cisco_aci.acistaticportbinding",
+                "Forward ACI Static Port Bindings",
+            )
+        ]
+        self.assertIn('"moquery -c fvrspathatt*"', binding_row["query"])
+        self.assertIn("(?<path_class>paths|protpaths)", binding_row["query"])
+        attachment_row = rows[
+            ("netbox_cisco_aci.acisubjectfilter", "Forward ACI Subject Filters")
+        ]
+        self.assertIn('"moquery -c vzrssubjfiltatt*"', attachment_row["query"])
+        self.assertIn("(?<terminal>intmnl|outtmnl)", attachment_row["query"])
+        # A subject learns its direction from the same attachments.
+        subject_row = rows[
+            ("netbox_cisco_aci.acisubject", "Forward ACI Contract Subjects")
+        ]
+        self.assertIn("apply_both_directions:", subject_row["query"])
+        self.assertIn('"moquery -c vzrssubjfiltatt*"', subject_row["query"])
+        # Fabrics are named after the APICs' locations, not every switch's.
+        fabric_row = rows[("netbox_cisco_aci.acifabric", "Forward ACI Fabrics")]
+        self.assertIn("isApicControllerCommandOutputs(device)", fabric_row["query"])
+        self.assertIn(
+            "if isEmpty(apicFabrics) then switchFabrics else apicFabrics",
+            fabric_row["query"],
+        )
 
     def test_seeded_builtin_query_spec_resolves_optional_module_query(self):
         spec = get_seeded_builtin_query_spec("dcim.module", "Forward Modules")

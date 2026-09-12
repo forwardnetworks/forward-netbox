@@ -78,6 +78,8 @@ FAST_BASELINE_MODEL_SPEC_VERSIONS = {
     "netbox_cisco_aci.acicontract": 1,
     "netbox_cisco_aci.acisubject": 1,
     "netbox_cisco_aci.acifilterentry": 1,
+    "netbox_cisco_aci.acisubjectfilter": 1,
+    "netbox_cisco_aci.acistaticportbinding": 1,
 }
 FAST_BASELINE_ALLOWED_MODELS = frozenset(FAST_BASELINE_MODEL_SPEC_VERSIONS)
 # Every registered NQE map model is either allowlisted above or named here
