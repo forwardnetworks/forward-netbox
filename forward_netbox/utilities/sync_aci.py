@@ -1,3 +1,5 @@
+import re
+
 from django.core.exceptions import ValidationError
 
 from ..exceptions import ForwardQueryError
@@ -5,6 +7,12 @@ from .sync_reporting import ACI_EPG_BRIDGE_DOMAIN_MISSING_REASON
 from .sync_reporting import ACI_FILTER_ENTRY_PORT_RANGE_REASON
 from .sync_reporting import ACI_NODE_DEVICE_AMBIGUOUS_REASON
 from .sync_reporting import ACI_NODE_DEVICE_MISSING_REASON
+from .sync_reporting import ACI_STATIC_PORT_EPG_MISSING_REASON
+from .sync_reporting import ACI_STATIC_PORT_INTERFACE_MISSING_REASON
+from .sync_reporting import ACI_STATIC_PORT_NODE_MISSING_REASON
+from .sync_reporting import ACI_STATIC_PORT_PATH_UNSUPPORTED_REASON
+from .sync_reporting import ACI_SUBJECT_FILTER_FILTER_MISSING_REASON
+from .sync_reporting import ACI_SUBJECT_FILTER_SUBJECT_MISSING_REASON
 
 
 ACI_APP_LABEL = "netbox_cisco_aci"
@@ -872,17 +880,19 @@ def _ensure_aci_subject(runner, row):
     )
     if _parent_absent(contract):
         return None
+    # The subjects query marks a subject directional when `vzRsSubjFiltAtt`
+    # shows a filter under one of its in/out terminals; APIC's default is both.
+    # netbox-cisco-aci rejects `reverse_filter_ports` on a directional subject.
+    apply_both_directions = _coerce_bool(row.get("apply_both_directions"), True)
     values = _aci_model_values(
         runner,
         ACISubject,
         {
             "aci_contract": contract,
             "name": row["name"],
-            # vzInTerm/vzOutTerm are not collected; APIC's default is both.
-            "apply_both_directions": _coerce_bool(
-                row.get("apply_both_directions"), True
-            ),
-            "reverse_filter_ports": _coerce_bool(row.get("reverse_filter_ports"), True),
+            "apply_both_directions": apply_both_directions,
+            "reverse_filter_ports": apply_both_directions
+            and _coerce_bool(row.get("reverse_filter_ports"), True),
             "qos_class": _choice(row.get("qos_class"), _QOS_CLASSES, "unspecified"),
             "target_dscp": _dscp(row.get("target_dscp")),
             "description": row.get("description") or "",
@@ -933,10 +943,14 @@ def _ensure_aci_filter_entry(runner, row):
             f"dst {row.get('destination_port_from')}-{row.get('destination_port_to')}"
         )
         description = (description + " " if description else "") + f"ports: {verbatim}"
-        ports = {
-            field: (None if value is not None and value > _PORT_MAX else value)
-            for field, value in ports.items()
-        }
+        # The plugin requires both ends of a range together, so a pair with
+        # one storable end (1024-65535) is dropped whole, never halved.
+        for side in ("source", "destination"):
+            pair = (f"{side}_port_from", f"{side}_port_to")
+            if any(
+                ports[field] is not None and ports[field] > _PORT_MAX for field in pair
+            ):
+                ports[pair[0]] = ports[pair[1]] = None
         warn = getattr(runner, "_record_aggregated_skip_warning", None)
         if warn is not None:
             warn(
@@ -1087,4 +1101,320 @@ def delete_netbox_cisco_aci_acifilterentry(runner, row):
         return False
     return runner._delete_by_coalesce(
         ACIFilterEntry, [{"aci_filter": aci_filter, "name": row.get("name")}]
+    )
+
+
+# --- Subject filters (vzRsSubjFiltAtt) and static port bindings (fvRsPathAtt)
+
+_SUBJECT_FILTER_DIRECTIONS = {"both", "in", "out"}
+_SUBJECT_FILTER_ACTIONS = {"permit", "deny", "redirect", "copy", "log"}
+_SUBJECT_FILTER_PRIORITIES = {"default", "level1", "level2", "level3"}
+_STATIC_PORT_MODES = {"regular", "native", "untagged"}
+_STATIC_PORT_IMMEDIACIES = {"immediate", "lazy"}
+_ACI_NAME_DISALLOWED = re.compile(r"[^A-Za-z0-9._:-]")
+_ACI_NAME_MAX = 64
+_ETHERNET_PATHEP = re.compile(r"^eth\d+/\d+(?:/\d+)?$", re.IGNORECASE)
+
+
+def _aci_name(value):
+    """APIC accepts letters, digits, dot, dash, underscore and colon, 64 max."""
+    return _ACI_NAME_DISALLOWED.sub("_", str(value or "").replace("/", "_"))[
+        :_ACI_NAME_MAX
+    ]
+
+
+def _skip(runner, *, model_string, reason, message, sample):
+    warn = getattr(runner, "_record_aggregated_skip_warning", None)
+    if warn is not None:
+        warn(
+            model_string=model_string,
+            reason=reason,
+            warning_message=message,
+            sample=sample,
+        )
+    return False
+
+
+def _resolve_aci_subject(runner, row):
+    ACISubject = _aci_model(runner, "ACISubject", "netbox_cisco_aci.acisubject")
+    contract = _resolve_aci_contract(runner, row)
+    if contract is None or not row.get("subject_name"):
+        return None
+    return runner._get_unique_or_raise(
+        ACISubject, {"aci_contract": contract, "name": row["subject_name"]}
+    )
+
+
+def _resolve_aci_subject_filter_target(runner, row):
+    """The filter a subject attachment names: the subject's tenant, then common.
+
+    APIC resolves `tnVzFilterName` in the subject's own tenant and falls back
+    to tenant `common`, so the import does the same and never guesses further.
+    """
+    for tenant_name in (row["tenant_name"], "common"):
+        aci_filter = _resolve_aci_filter(
+            runner,
+            {
+                "fabric_name": row["fabric_name"],
+                "tenant_name": tenant_name,
+                "filter_name": row["filter_name"],
+            },
+        )
+        if aci_filter is not None:
+            return aci_filter
+    return None
+
+
+def _ensure_aci_subject_filter(runner, row):
+    ACISubjectFilter = _aci_model(
+        runner, "ACISubjectFilter", "netbox_cisco_aci.acisubjectfilter"
+    )
+    sample = f"{row['tenant_name']}/{row['contract_name']}/{row['subject_name']}"
+    subject = _resolve_aci_subject(runner, row)
+    if subject is None:
+        return _skip(
+            runner,
+            model_string="netbox_cisco_aci.acisubjectfilter",
+            reason=ACI_SUBJECT_FILTER_SUBJECT_MISSING_REASON,
+            message=(
+                f"Skipping subject filter `{row['filter_name']}`: contract subject "
+                f"`{sample}` is not imported."
+            ),
+            sample=sample,
+        )
+    aci_filter = _resolve_aci_subject_filter_target(runner, row)
+    if aci_filter is None:
+        return _skip(
+            runner,
+            model_string="netbox_cisco_aci.acisubjectfilter",
+            reason=ACI_SUBJECT_FILTER_FILTER_MISSING_REASON,
+            message=(
+                f"Skipping subject filter `{row['filter_name']}` on `{sample}`: "
+                f"no imported filter by that name in tenant `{row['tenant_name']}` "
+                "or `common`."
+            ),
+            sample=f"{sample}/{row['filter_name']}",
+        )
+    direction = _choice(row.get("direction"), _SUBJECT_FILTER_DIRECTIONS, "both")
+    name = (
+        row["filter_name"]
+        if direction == "both"
+        else f"{row['filter_name']}-{direction}"
+    )
+    values = _aci_model_values(
+        runner,
+        ACISubjectFilter,
+        {
+            "aci_subject": subject,
+            "aci_filter": aci_filter,
+            "direction": direction,
+            "name": _aci_name(name),
+            "action": _choice(row.get("action"), _SUBJECT_FILTER_ACTIONS, "permit"),
+            "priority": _choice(
+                row.get("priority"), _SUBJECT_FILTER_PRIORITIES, "default"
+            ),
+            "description": row.get("description") or "",
+        },
+    )
+    attachment, _ = runner._upsert_values_from_defaults(
+        "netbox_cisco_aci.acisubjectfilter",
+        ACISubjectFilter,
+        values=values,
+        coalesce_sets=[("aci_subject", "aci_filter", "direction")],
+    )
+    return attachment
+
+
+def _resolve_aci_endpoint_group(runner, row):
+    ACIEndpointGroup = _aci_model(
+        runner, "ACIEndpointGroup", "netbox_cisco_aci.aciendpointgroup"
+    )
+    app_profile = _resolve_aci_app_profile(runner, row)
+    if app_profile is None or not row.get("epg_name"):
+        return None
+    return runner._get_unique_or_raise(
+        ACIEndpointGroup, {"aci_app_profile": app_profile, "name": row["epg_name"]}
+    )
+
+
+def _resolve_aci_node_device(runner, row):
+    """The NetBox device behind `(fabric, pod, node_id)`, through the ACI node.
+
+    The node row is what links a fabric node id to a device (exact name, then
+    unique case-insensitive), so the binding follows that link rather than
+    repeating the lookup; a node without a link yields no device.
+    """
+    ACINode = _aci_model(runner, "ACINode", "netbox_cisco_aci.acinode")
+    pod = _resolve_aci_pod(
+        runner,
+        {
+            "fabric_name": row["fabric_name"],
+            "pod_id": row["pod_id"],
+            "pod_name": f"pod-{row['pod_id']}",
+        },
+    )
+    if pod is None:
+        return None
+    node = runner._get_unique_or_raise(
+        ACINode, {"aci_pod": pod, "node_id": _coerce_int(row["node_id"], "node_id")}
+    )
+    if node is None or node.node_object_id is None:
+        return None
+    device = getattr(node, "node_object", None)
+    return device if device is not None and hasattr(device, "interfaces") else None
+
+
+def _static_port_binding_type(row):
+    kind = str(row.get("path_kind") or "path").strip().lower()
+    pathep = str(row.get("interface_name") or "").strip()
+    if kind == "protpath":
+        return "vpc"
+    if kind == "extpath":
+        return "fex"
+    if _ETHERNET_PATHEP.match(pathep):
+        return "regular"
+    return "pc"
+
+
+def _ensure_aci_static_port_binding(runner, row):
+    ACIStaticPortBinding = _aci_model(
+        runner, "ACIStaticPortBinding", "netbox_cisco_aci.acistaticportbinding"
+    )
+    sample = (
+        f"{row['tenant_name']}/{row['app_profile_name']}/{row['epg_name']} "
+        f"node {row['node_id']} {row['interface_name']} vlan {row['encap_vlan']}"
+    )
+    binding_type = _static_port_binding_type(row)
+    if binding_type in {"vpc", "pc"}:
+        # A vPC or port-channel path names an interface policy group, not a
+        # leaf interface, and the group's member ports are not collected.
+        return _skip(
+            runner,
+            model_string="netbox_cisco_aci.acistaticportbinding",
+            reason=ACI_STATIC_PORT_PATH_UNSUPPORTED_REASON,
+            message=f"Skipping static port binding on a {binding_type} path: {sample}.",
+            sample=sample,
+        )
+    epg = _resolve_aci_endpoint_group(runner, row)
+    if epg is None:
+        return _skip(
+            runner,
+            model_string="netbox_cisco_aci.acistaticportbinding",
+            reason=ACI_STATIC_PORT_EPG_MISSING_REASON,
+            message=f"Skipping static port binding: its EPG is not imported ({sample}).",
+            sample=sample,
+        )
+    device = _resolve_aci_node_device(runner, row)
+    if device is None:
+        return _skip(
+            runner,
+            model_string="netbox_cisco_aci.acistaticportbinding",
+            reason=ACI_STATIC_PORT_NODE_MISSING_REASON,
+            message=(
+                f"Skipping static port binding: node {row['node_id']} is not an "
+                f"imported ACI node with a device link ({sample})."
+            ),
+            sample=sample,
+        )
+    interface = runner._lookup_interface(device, row["interface_name"])
+    if interface is None:
+        return _skip(
+            runner,
+            model_string="netbox_cisco_aci.acistaticportbinding",
+            reason=ACI_STATIC_PORT_INTERFACE_MISSING_REASON,
+            message=(
+                f"Skipping static port binding: `{row['interface_name']}` is not "
+                f"an interface of `{device.name}` ({sample})."
+            ),
+            sample=sample,
+        )
+    encap_vlan = _coerce_int(row["encap_vlan"], "encap_vlan")
+    primary = row.get("primary_encap_vlan")
+    primary_encap_vlan = (
+        _coerce_int(primary, "primary_encap_vlan")
+        if primary not in (None, "")
+        else None
+    )
+    # The plugin rejects a primary encap on a non-uSeg EPG and one equal to
+    # the encap; APIC reports `unknown` for both cases, which the query drops.
+    if primary_encap_vlan == encap_vlan or not getattr(epg, "is_useg", False):
+        primary_encap_vlan = None
+    values = _aci_model_values(
+        runner,
+        ACIStaticPortBinding,
+        {
+            "aci_endpoint_group": epg,
+            "dcim_interface": interface,
+            "binding_type": binding_type,
+            "encap_vlan": encap_vlan,
+            "mode": _choice(row.get("mode"), _STATIC_PORT_MODES, "regular"),
+            "primary_encap_vlan": primary_encap_vlan,
+            "deployment_immediacy": _choice(
+                row.get("deployment_immediacy"), _STATIC_PORT_IMMEDIACIES, "lazy"
+            ),
+            "name": _aci_name(f"spb_{epg.name}_{interface.name}_v{encap_vlan}"),
+            "description": row.get("description") or "",
+        },
+    )
+    binding, _ = runner._upsert_values_from_defaults(
+        "netbox_cisco_aci.acistaticportbinding",
+        ACIStaticPortBinding,
+        values=values,
+        coalesce_sets=[("aci_endpoint_group", "dcim_interface", "encap_vlan")],
+    )
+    return binding
+
+
+def apply_netbox_cisco_aci_acisubjectfilter(runner, row, *, preview=False):
+    attachment = _ensure_aci_subject_filter(runner, row)
+    return _preview_verdict(runner, attachment) if preview else attachment
+
+
+def apply_netbox_cisco_aci_acistaticportbinding(runner, row, *, preview=False):
+    binding = _ensure_aci_static_port_binding(runner, row)
+    return _preview_verdict(runner, binding) if preview else binding
+
+
+def delete_netbox_cisco_aci_acisubjectfilter(runner, row):
+    ACISubjectFilter = _aci_model(
+        runner, "ACISubjectFilter", "netbox_cisco_aci.acisubjectfilter"
+    )
+    subject = _resolve_aci_subject(runner, row)
+    aci_filter = _resolve_aci_subject_filter_target(runner, row) if subject else None
+    if subject is None or aci_filter is None:
+        return False
+    return runner._delete_by_coalesce(
+        ACISubjectFilter,
+        [
+            {
+                "aci_subject": subject,
+                "aci_filter": aci_filter,
+                "direction": _choice(
+                    row.get("direction"), _SUBJECT_FILTER_DIRECTIONS, "both"
+                ),
+            }
+        ],
+    )
+
+
+def delete_netbox_cisco_aci_acistaticportbinding(runner, row):
+    ACIStaticPortBinding = _aci_model(
+        runner, "ACIStaticPortBinding", "netbox_cisco_aci.acistaticportbinding"
+    )
+    epg = _resolve_aci_endpoint_group(runner, row)
+    device = _resolve_aci_node_device(runner, row) if epg else None
+    interface = (
+        runner._lookup_interface(device, row.get("interface_name")) if device else None
+    )
+    if epg is None or interface is None or row.get("encap_vlan") in (None, ""):
+        return False
+    return runner._delete_by_coalesce(
+        ACIStaticPortBinding,
+        [
+            {
+                "aci_endpoint_group": epg,
+                "dcim_interface": interface,
+                "encap_vlan": _coerce_int(row["encap_vlan"], "encap_vlan"),
+            }
+        ],
     )

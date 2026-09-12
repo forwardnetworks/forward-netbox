@@ -50,6 +50,10 @@ UNIQUE_LOOKUP_CACHE_FIELD_SETS = {
     "netbox_cisco_aci.acicontract": (("aci_tenant", "name"),),
     "netbox_cisco_aci.acisubject": (("aci_contract", "name"),),
     "netbox_cisco_aci.acifilterentry": (("aci_filter", "name"),),
+    "netbox_cisco_aci.acisubjectfilter": (("aci_subject", "aci_filter", "direction"),),
+    "netbox_cisco_aci.acistaticportbinding": (
+        ("aci_endpoint_group", "dcim_interface", "encap_vlan"),
+    ),
     "netbox_cisco_aci.acinode": (("aci_pod", "node_id"), ("aci_pod", "name")),
     "netbox_cisco_aci.acipod": (("aci_fabric", "pod_id"), ("aci_fabric", "name")),
     "netbox_cisco_aci.acitenant": (("aci_fabric", "name"),),

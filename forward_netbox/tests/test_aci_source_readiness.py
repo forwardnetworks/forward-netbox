@@ -49,7 +49,6 @@ class AciSourceReadinessTest(SimpleTestCase):
             entry["name"]
             for entry in BUILTIN_OPTIONAL_QUERY_MAPS
             if entry["filename"].startswith("forward_aci_")
-            and entry["name"] != "Forward ACI Fabrics"
             and entry["name"] != "Forward ACI Command Inventory"
         }
         self.assertEqual(aci_maps - set(ACI_MAP_SOURCES), set())

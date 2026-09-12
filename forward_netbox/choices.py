@@ -41,6 +41,8 @@ FORWARD_ACI_MODELS = (
     "netbox_cisco_aci.acicontract",
     "netbox_cisco_aci.acisubject",
     "netbox_cisco_aci.acifilterentry",
+    "netbox_cisco_aci.acisubjectfilter",
+    "netbox_cisco_aci.acistaticportbinding",
 )
 
 FORWARD_SUPPORTED_MODELS = (

@@ -285,6 +285,25 @@ class FastBaselineLoadTest(TransactionTestCase):
                 "filter_name": "icmp",
                 "name": "echo",
             },
+            "netbox_cisco_aci.acisubjectfilter": {
+                "fabric_name": "fab1",
+                "tenant_name": "common",
+                "contract_name": "web",
+                "subject_name": "http",
+                "filter_name": "icmp",
+                "direction": "both",
+            },
+            "netbox_cisco_aci.acistaticportbinding": {
+                "fabric_name": "fab1",
+                "tenant_name": "common",
+                "app_profile_name": "ap1",
+                "epg_name": "epg1",
+                "pod_id": 1,
+                "node_id": 101,
+                "interface_name": "eth1/1",
+                "path_kind": "path",
+                "encap_vlan": 100,
+            },
         }
         self.assertEqual(set(rows), set(FORWARD_ACI_MODELS))
         return [
@@ -311,9 +330,14 @@ class FastBaselineLoadTest(TransactionTestCase):
         )
 
         blank = list(workloads)
-        blank[-1] = replace(
-            blank[-1],
-            upsert_rows=[{**blank[-1].upsert_rows[0], "filter_name": ""}],
+        index = next(
+            i
+            for i, workload in enumerate(blank)
+            if workload.model_string == "netbox_cisco_aci.acifilterentry"
+        )
+        blank[index] = replace(
+            blank[index],
+            upsert_rows=[{**blank[index].upsert_rows[0], "filter_name": ""}],
         )
         decision = fast_baseline_static_decision(sync=self.sync, workloads=blank)
         self.assertFalse(decision.enabled)
