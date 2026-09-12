@@ -180,12 +180,25 @@ class ForwardIngestionIssueFilterSet(BaseFilterSet):
 
         if value is None:
             return queryset
-        # Matches the column: a row whose ingestion promoted its baseline
-        # blocked nothing, so it is not offered as blocking however its class
-        # is scored. Filtering to rows the column calls Blocking and getting
-        # back rows it calls Promoted over is the same disagreement in the
-        # other direction.
-        predicate = blocking_issue_q() & Q(ingestion__baseline_ready=False)
+        # Matches the column, in both its exclusions. A row whose ingestion
+        # promoted blocked nothing; and a row the merge recorded as skipped
+        # blocked nothing either, because no retry can satisfy it - that is
+        # true whether or not the run went on to promote. Filtering to rows
+        # the column calls Blocking and getting back rows it calls Skipped or
+        # Promoted over is the same disagreement in the other direction.
+        #
+        # Rows written before 2.9.5 carry no `disposition` key, and they must
+        # keep their old behaviour with no migration. `~Q(disposition=...)`
+        # alone does NOT do that: a missing JSONB key reads as NULL, `NOT NULL`
+        # is NULL rather than true, and every legacy row would be dropped from
+        # the Blocking filter it used to match. The key's absence has to be
+        # tested explicitly.
+        not_skipped = ~Q(raw_data__has_key="disposition") | ~Q(
+            raw_data__disposition="skipped"
+        )
+        predicate = (
+            blocking_issue_q() & Q(ingestion__baseline_ready=False) & not_skipped
+        )
         return queryset.filter(predicate if value else ~predicate)
 
     def search(self, queryset, name, value):

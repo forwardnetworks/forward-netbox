@@ -74,7 +74,19 @@ def emit_aggregated_conflict_warning_summaries(runner, model_string):
 SKIP_WARNING_ROLLUP_SAMPLES = 5
 
 # One-line summary per rollup reason ({total},{model},{reason},{examples},{suffix}).
+# A holder this sync cannot prove it created is a systemic condition, not a
+# per-row anomaly: one unadopted device can hold many addresses, and each would
+# otherwise log its own warning.
+UNOWNED_PRIMARY_IP_HOLDER_REASON = "primary-ip-held-by-unowned-device"
+
 ROLLUP_SUMMARY_TEMPLATES = {
+    UNOWNED_PRIMARY_IP_HOLDER_REASON: (
+        "Did not move {total} {model} row(s): a device holds each address as a "
+        "primary IP but carries no identity from this sync, so the pointer "
+        "cannot be released. Staging the move anyway would be rejected at "
+        "merge on every run. Clear the primary IP on those devices, or let "
+        "this sync adopt them. Addresses (pk): {examples}{suffix}."
+    ),
     "missing-module-bay": (
         "Skipped {total} {model} row(s) because the Forward row did not provide "
         "a module-bay name. Correct the source query data and re-run the sync. "
@@ -398,6 +410,7 @@ def record_issue(
     context=None,
     defaults=None,
     log_level="failure",
+    disposition=None,
 ):
     if runner.ingestion is None:
         return None
@@ -577,6 +590,12 @@ def record_issue(
         # it, so anything reading issues programmatically does not have to
         # parse English out of `message`.
         raw_data["netbox_pk"] = netbox_pk
+    if disposition in ("skipped", "failed"):
+        # Only when the caller actually classified the row. A sync-phase
+        # recorder that does not know whether a retry could help must leave the
+        # key absent rather than guess, because `issue_blocking_disposition`
+        # treats a present key as authoritative over the ingestion-wide flag.
+        raw_data["disposition"] = disposition
     issue_key = (
         runner.ingestion.pk if runner.ingestion else None,
         ForwardIngestionPhaseChoices.SYNC,

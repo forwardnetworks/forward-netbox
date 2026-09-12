@@ -1335,12 +1335,39 @@ def _dependency_tag_rows(model_string, rows):
     }
 
 
+# Models whose rows carry a site, resolve it once per row, and have no primer
+# of their own. Without priming, each row costs a `dcim.site` lookup - two when
+# the slug misses and the name is tried. `ipam.vlan` is not here because its
+# pair primer (`_prime_vlan_cache`) already resolves its sites; what cost a
+# deployment 102,334 queries and 240 of its drift comparison's 766 seconds on
+# 7,902 converged `ipam.vlan` rows was that primer fetching VLANs WITHOUT their
+# site, so every row paid `vlan.site` again afterwards - see the
+# `select_related` there.
+_SITE_BEARING_MODELS = frozenset({"ipam.prefix"})
+
+
 def _prime_dcim_dependency_identity_cache(runner, model_string, rows):
     if model_string == "dcim.device":
         _prime_dcim_device_identity_cache(runner, rows)
         return
     if model_string in {"dcim.inventoryitem", "dcim.module"}:
         _prime_dcim_inventory_module_identity_cache(runner, model_string, rows)
+        return
+    if model_string in _SITE_BEARING_MODELS:
+        _prime_site_identity_cache(runner, rows)
+
+
+def _prime_site_identity_cache(runner, rows):
+    """Resolve every site these rows name in one pass, not one lookup per row."""
+    from dcim.models import Site
+
+    site_slugs, site_names = _slug_name_identity_inputs(rows, "site_slug", "site")
+    _prime_slug_name_identity_cache(
+        runner,
+        Site,
+        slugs=site_slugs,
+        names=site_names,
+    )
 
 
 def _prime_dcim_device_identity_cache(runner, rows):
@@ -1728,7 +1755,10 @@ def _prime_vlan_cache(runner, vlan_pairs):
         query = Q()
         for site_id, vids in grouped_by_site.items():
             query |= Q(site_id=site_id, vid__in=sorted(vids))
-        for obj in VLAN.objects.filter(query):
+        # `select_related`: the apply and the comparison both read `vlan.site`
+        # on the cached object, and a VLAN fetched bare re-queries its site on
+        # every row - which is one query per converged row, forever.
+        for obj in VLAN.objects.filter(query).select_related("site"):
             _remember_unique_lookup(
                 runner,
                 VLAN,

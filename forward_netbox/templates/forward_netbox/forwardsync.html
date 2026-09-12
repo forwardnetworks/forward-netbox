@@ -68,6 +68,17 @@
         <i class="mdi mdi-radar" aria-hidden="true"></i>&nbsp;{% trans "Refresh Device Analysis" %}
       </button>
     </form>
+    {# Offered only when a git data source is set, because the job can do #}
+    {# nothing without one and a skipped job reads as a completed backup. #}
+    {% if config_backup_configured %}
+    <form action="{{ config_backup_url }}" method="post" class="d-inline">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-outline-secondary"
+              title="{% trans 'Write this sync\'s device configurations to the configured git data source now, instead of waiting for the next sync. Configuration text never reaches job data or logs.' %}">
+        <i class="mdi mdi-source-branch" aria-hidden="true"></i>&nbsp;{% trans "Back up configs" %}
+      </button>
+    </form>
+    {% endif %}
     {# Say what it is for. Operators were sending screenshots because nothing #}
     {# on the page said this file answers the same questions and more.        #}
     <a class="btn btn-outline-secondary" href="{{ support_bundle_url }}"

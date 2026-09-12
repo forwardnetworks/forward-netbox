@@ -1126,6 +1126,21 @@ def _query_diff_ownership_mode(filename: str) -> str:
     return "global"
 
 
+def query_diff_ownership_mode_for_name(query_name: str) -> str:
+    """The diff ownership mode of a bundled map, looked up by its query NAME.
+
+    The modes are keyed by filename internally; callers outside this module
+    (the drift report, which explains why a model was not compared) only have
+    the name the report carries. Returns "" for a name this registry does not
+    know, so an unbundled or customer-authored map is not described as
+    excluded by design.
+    """
+    for entry in BUILTIN_OPTIONAL_QUERY_MAPS + BUILTIN_QUERY_MAPS:
+        if entry.get("name") == query_name:
+            return _query_diff_ownership_mode(str(entry.get("filename") or ""))
+    return ""
+
+
 def _query_contract_reducer_id(filename: str) -> str:
     ownership_mode = _query_diff_ownership_mode(filename)
     if filename in _TIER3_REDUCERS_BY_QUERY_FILENAME:

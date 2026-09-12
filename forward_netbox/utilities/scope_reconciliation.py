@@ -18,6 +18,7 @@ from .bulk_delete import lock_related_writes_for_delete
 from .forward_api import build_device_tag_scope_where
 from .forward_api import build_endpoint_device_eligibility_where
 from .forward_api import build_endpoint_tag_scope_where
+from .json_safe import json_safe_value
 from .post_sync import current_post_sync_snapshot
 from .sync_facade import device_tag_scope
 from .sync_facade import effective_scope_endpoints_by_include_tags
@@ -457,14 +458,24 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
     # when that count grows. The query carries no predicate, so widening the
     # set it classifies costs no extra NQE execution; `forward_api_usage` reads
     # the same after this change as before it.
-    kinds = _absence_kinds(
+    # Both prunes delete on `absent`, and an endpoint-derived device that
+    # left endpoint scope is missing from `network.devices` while Forward
+    # still has it. One extra unfiltered query is the price of `absent`
+    # meaning what the prune assumes it means - and it is paid whether or not
+    # endpoint sync is on, because turning it off is exactly the moment every
+    # endpoint-derived device would otherwise become `absent` and prunable.
+    census = _absence_census(
         out_of_scope | owned_untagged_names,
         client=client,
         network_id=network_id,
         snapshot_id=snapshot_id,
+        endpoint_scope=_endpoint_scope_settings(
+            sync, include_tags, exclude_tags, include_match
+        ),
     )
-    absence = _absence_summary(out_of_scope, kinds)
-    unmanaged["owned_absence"] = _absence_summary(owned_untagged_names, kinds)
+    kinds, details = census if census is not None else (None, None)
+    absence = _absence_summary(out_of_scope, kinds, details)
+    unmanaged["owned_absence"] = _absence_summary(owned_untagged_names, kinds, details)
     # What the uncovered cleanup would actually act on, and how much of it the
     # quarantine is still holding. Without this the panel shows a count of 105
     # and a button that deletes 3, with nothing on the page explaining the gap.
@@ -473,14 +484,25 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         if kinds is not None
         else set()
     )
-    owned_absent_pks = [
-        device_id
-        for device_id, name in Device.objects.filter(
-            pk__in=list(unmanaged.get("owned_untagged_device_ids") or ())
-        ).values_list("pk", "name")
-        if (name or "").strip() in owned_absent_names
-    ]
+    owned_absent_pks = []
+    owned_endpoint_detail_by_id = {}
+    for device_id, name in Device.objects.filter(
+        pk__in=list(unmanaged.get("owned_untagged_device_ids") or ())
+    ).values_list("pk", "name"):
+        name = (name or "").strip()
+        if name in owned_absent_names:
+            owned_absent_pks.append(device_id)
+        detail = (details or {}).get(name)
+        if detail:
+            owned_endpoint_detail_by_id[str(device_id)] = detail
     unmanaged["owned_prune_candidates"] = len(owned_absent_pks)
+    # The endpoint-scope rule behind each uncovered endpoint device, by pk, so
+    # the device page can say which setting or tag would cover it again.
+    unmanaged["owned_endpoint_detail_by_id"] = owned_endpoint_detail_by_id
+    # Persisted (no leading underscore) so the device page can tell whether one
+    # device is in the prune's target set without recomputing the census. Keys
+    # only - names are customer data and do not belong in a job payload.
+    unmanaged["owned_absent_device_ids"] = sorted(owned_absent_pks)
     unmanaged["owned_quarantine"] = (
         _quarantine_summary(sync, owned_absent_pks)
         if kinds is not None
@@ -582,6 +604,7 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         # The census verdict per name. A cleanup acts only on "absent"; a device
         # Forward still reports is a scoping question, not a dead device.
         "_absence_kinds": kinds,
+        "_absence_details": details,
         "_owned_untagged_pks": list(unmanaged.get("owned_untagged_device_ids") or ()),
         "_present_backfilled": present_backfilled,
         "_matched_include_tags_by_name": present_scope_tags_by_name,
@@ -707,17 +730,81 @@ def _classify_out_of_scope_absence(
     )
 
 
-def _absence_kinds(names, *, client, network_id, snapshot_id):
-    """Which kind of absence each name is: ``absent``, ``untagged`` or
-    ``vendor_excluded``. ``None`` when the census could not run, so every
-    caller renders "unavailable" rather than a zero.
+# Why an endpoint-derived device is `untagged` rather than `absent`: Forward
+# still reports it under `network.endpoints`, and one of these rules keeps it
+# out of the endpoint scope query. Each names the setting or the Forward-side
+# fact an operator would change, which is the point of splitting them.
+ENDPOINT_ABSENCE_DETAILS = {
+    "endpoint_scope_off": "endpoint sync is off on this source",
+    "endpoint_no_snmp": "Forward has no SNMP output for it in this snapshot",
+    "endpoint_cimc": "a CIMC controller, modelled as inventory rather than a device",
+    "endpoint_generic": "a generic SNMP endpoint, and generic endpoints are not imported",
+    "endpoint_untagged": "its endpoint tags match none of the include tags",
+    "endpoint_in_scope": "in endpoint scope by every rule, yet not in the result",
+}
 
-    One query for however many names are asked about. It carries no tag
-    predicate and no vendor guard on purpose: it must see the devices the
-    scope query filtered OUT.
+
+def _endpoint_scope_settings(sync, include_tags, exclude_tags, include_match):
+    """The endpoint-scope rules, as the census needs them to explain a miss."""
+    parameters = dict(getattr(sync.source, "parameters", {}) or {})
+    return {
+        "enabled": bool(parameters.get("sync_endpoints")),
+        "generic": bool(parameters.get("sync_generic_endpoints")),
+        "include_tags": (
+            list(include_tags)
+            if effective_scope_endpoints_by_include_tags(parameters)
+            else []
+        ),
+        "exclude_tags": list(exclude_tags or ()),
+        "include_match": include_match,
+    }
+
+
+def _endpoint_absence_detail(row, scope):
+    """Which endpoint-scope rule keeps this Forward endpoint out of the result."""
+    if not scope.get("enabled"):
+        return "endpoint_scope_off"
+    if not row.get("has_snmp"):
+        return "endpoint_no_snmp"
+    if row.get("cimc"):
+        return "endpoint_cimc"
+    if not row.get("console") and not scope.get("generic"):
+        return "endpoint_generic"
+    tags = {str(tag) for tag in (row.get("tags") or [])}
+    include_tags = scope.get("include_tags") or []
+    if include_tags:
+        matched = [tag for tag in include_tags if tag in tags]
+        required = len(include_tags) if scope.get("include_match") == "all" else 1
+        if len(matched) < required:
+            return "endpoint_untagged"
+    if any(tag in tags for tag in scope.get("exclude_tags") or []):
+        return "endpoint_untagged"
+    return "endpoint_in_scope"
+
+
+def _absence_census(names, *, client, network_id, snapshot_id, endpoint_scope=None):
+    """Classify each name: ``(kinds, details)``, or ``None`` if the census
+    could not run so every caller renders "unavailable" rather than a zero.
+
+    ``kinds`` is three-valued - ``absent``, ``untagged`` or ``vendor_excluded``
+    - and is what both prunes gate on; that vocabulary must not widen.
+    ``details`` refines ``untagged`` for endpoint-derived devices with the
+    endpoint-scope rule that excludes them (see ``ENDPOINT_ABSENCE_DETAILS``),
+    because "in Forward but untagged" is one badge covering a console server
+    whose tags need adding to the include set and a generic SNMP endpoint that
+    is out by design.
+
+    One query per Forward table for however many names are asked about. Neither
+    carries a tag predicate or a vendor guard, on purpose: the census must see
+    the devices the scope query filtered OUT. `absent` means "Forward does not
+    have this at all", and it is what both prunes delete on; an SNMP-endpoint
+    device that drops out of endpoint scope is missing from ``network.devices``
+    while Forward still reports it under ``network.endpoints``, so the endpoint
+    table is always probed.
     """
     if not names:
-        return {}
+        return {}, {}
+    scope = endpoint_scope or {"enabled": False}
 
     query = "\n".join(
         [
@@ -728,9 +815,36 @@ def _absence_kinds(names, *, client, network_id, snapshot_id):
             "}",
         ]
     )
+    endpoint_query = "\n".join(
+        [
+            "foreach endpoint in network.endpoints",
+            'let sysDescrOpt = max(foreach o in endpoint.snmpOutputs where o.requestedOid == "1.3.6.1.2.1.1.1" select max(foreach e in o.rawOidEntries select e.rawValue))',
+            'let sysObjIdOpt = max(foreach o in endpoint.snmpOutputs where o.requestedOid == "1.3.6.1.2.1.1.2" select max(foreach e in o.rawOidEntries select e.rawValue))',
+            'let sysDescr = if isPresent(sysDescrOpt) then toLowerCase(sysDescrOpt) else ""',
+            'let sysObjId = if isPresent(sysObjIdOpt) then sysObjIdOpt else ""',
+            "let nameLower = toLowerCase(toString(endpoint.name))",
+            "let profileLower = toLowerCase(toString(endpoint.profileName))",
+            "select {",
+            "  name: endpoint.name,",
+            "  has_snmp: !isEmpty(endpoint.snmpOutputs),",
+            '  cimc: matches(nameLower, "*cimc*") || matches(profileLower, "*cimc*") || matches(sysDescr, "*cisco integrated management controller*"),',
+            '  console: matches(sysObjId, "1.3.6.1.4.1.10418.*") || matches(sysObjId, "1.3.6.1.4.1.2925.*") || matches(sysDescr, "*avocent*") || matches(sysDescr, "*cyclades*") || matches(sysDescr, "*alterpath*") || matches(sysObjId, "1.3.6.1.4.1.25049.*") || matches(sysDescr, "*opengear*"),',
+            "  tags: endpoint.tagNames",
+            "}",
+        ]
+    )
     try:
         rows = client.run_nqe_query(
             query=query,
+            network_id=network_id,
+            snapshot_id=snapshot_id,
+            fetch_all=True,
+        )
+        # Unfiltered by tag on purpose, exactly like the device half: a name
+        # Forward still reports anywhere is not `absent`, whatever scope it has
+        # fallen out of.
+        endpoint_rows = client.run_nqe_query(
+            query=endpoint_query,
             network_id=network_id,
             snapshot_id=snapshot_id,
             fetch_all=True,
@@ -751,20 +865,46 @@ def _absence_kinds(names, *, client, network_id, snapshot_id):
         if name:
             vendor_by_name[name] = str(row.get("vendor") or "")
 
+    endpoint_by_name = {}
+    for row in endpoint_rows:
+        name = str(row.get("name") or "").strip()
+        if name:
+            endpoint_by_name[name] = row
+
     kinds = {}
+    details = {}
     for name in names:
         vendor = vendor_by_name.get(name)
         if vendor is None:
-            kinds[name] = "absent"
+            # Forward has no DEVICE by this name. Before calling it absent,
+            # check the endpoint table: an endpoint-derived device that left
+            # endpoint scope is still reported by Forward, so it is a scoping
+            # decision (`untagged`) rather than a removal, and must never be
+            # deleted by a prune that acts on absence.
+            endpoint = endpoint_by_name.get(name)
+            if endpoint is None:
+                kinds[name] = "absent"
+            else:
+                kinds[name] = "untagged"
+                details[name] = _endpoint_absence_detail(endpoint, scope)
         elif vendor.endswith("FORWARD_CUSTOM"):
             kinds[name] = "vendor_excluded"
         else:
             kinds[name] = "untagged"
-    return kinds
+    return kinds, details
 
 
-def _absence_summary(names, kinds):
-    """The panel's three counts and samples for one absent set."""
+def _absence_kinds(names, *, client, network_id, snapshot_id, include_endpoints=True):
+    """``kinds`` alone; see ``_absence_census``. Kept for callers that gate."""
+    census = _absence_census(
+        names, client=client, network_id=network_id, snapshot_id=snapshot_id
+    )
+    return None if census is None else census[0]
+
+
+def _absence_summary(names, kinds, details=None):
+    """The panel's three counts and samples for one absent set, plus the
+    endpoint breakdown of ``present_untagged`` (reason -> count and sample)."""
     if not names:
         return {
             "available": True,
@@ -774,6 +914,7 @@ def _absence_summary(names, kinds):
             "absent_from_snapshot_sample": [],
             "present_untagged_sample": [],
             "vendor_excluded_sample": [],
+            "endpoint_detail": [],
         }
     if kinds is None:
         return {"available": False}
@@ -782,6 +923,20 @@ def _absence_summary(names, kinds):
     vendor_excluded = sorted(
         name for name in names if kinds.get(name) == "vendor_excluded"
     )
+    by_detail = {}
+    for name in untagged:
+        detail = (details or {}).get(name)
+        if detail:
+            by_detail.setdefault(detail, []).append(name)
+    endpoint_detail = [
+        {
+            "reason": reason,
+            "label": ENDPOINT_ABSENCE_DETAILS.get(reason, reason),
+            "count": len(members),
+            "sample": members[:SAMPLE_LIMIT],
+        }
+        for reason, members in sorted(by_detail.items())
+    ]
     return {
         "available": True,
         "absent_from_snapshot": len(absent),
@@ -790,6 +945,7 @@ def _absence_summary(names, kinds):
         "absent_from_snapshot_sample": absent[:SAMPLE_LIMIT],
         "present_untagged_sample": untagged[:SAMPLE_LIMIT],
         "vendor_excluded_sample": vendor_excluded[:SAMPLE_LIMIT],
+        "endpoint_detail": endpoint_detail,
     }
 
 
@@ -970,6 +1126,7 @@ def _prune_result(
     protected_device_count=0,
     held_device_count=0,
     overridden_device_count=0,
+    restricted_refusals=None,
 ) -> dict:
     """One shape for every exit from the prune, however early it returns.
 
@@ -988,6 +1145,12 @@ def _prune_result(
         "quarantine_required_hours": required_hours,
         "quarantine_held_device_count": held_device_count,
         "quarantine_overridden_device_count": overridden_device_count,
+        # Why a specifically-requested device was not deleted, by reason. Empty
+        # lists on every unrestricted exit, so the key is always present and
+        # always means the same thing.
+        "restricted_refusals": dict(
+            restricted_refusals or {"not_owned": [], "not_absent": [], "held": []}
+        ),
     }
 
 
@@ -1102,6 +1265,38 @@ def prune_orphan_devices(
             "Orphan prune requires exact device identity evidence from the current "
             "scope reconciliation report."
         )
+    # Gate on the CAUSE of the absence, exactly as the uncovered prune does.
+    # Out-of-scope membership is decided purely by absence from the current tag
+    # result, and that covers three situations with opposite remedies: a device
+    # Forward no longer has, one Forward still reports under different tags, and
+    # one Forward classifies as a custom-command source. Only the first is a
+    # removal. Without this gate a Forward-side tag edit, or a query that
+    # narrowed, made live devices prune-eligible - the panel showed 63 gone and
+    # 2 still in Forward while offering to delete all 65.
+    kinds = report.get("_absence_kinds")
+    if kinds is None:
+        raise ScopeCensusUnavailableError(
+            "The Forward census that classifies each absence did not run, so an "
+            "orphan prune cannot tell a removed device from one Forward still "
+            "reports. Refresh the scope reconciliation report and retry."
+        )
+    absent_names = {name for name in out_of_scope if kinds.get(name) == "absent"}
+    # Resolve through the pks the report already established rather than
+    # re-matching a name NetBox does not hold unique.
+    orphan_pks = [
+        device_id
+        for device_id, name in Device.objects.filter(pk__in=orphan_pks).values_list(
+            "pk", "name"
+        )
+        if (name or "").strip() in absent_names
+    ]
+    if not orphan_pks:
+        required_runs, required_hours = absence_quarantine_thresholds(sync)
+        return _prune_result(
+            out_of_scope_sample=orphans[:SAMPLE_LIMIT],
+            required_runs=required_runs,
+            required_hours=required_hours,
+        )
     partition = partition_quarantined_orphans(sync, orphan_pks)
     held_device_count = len(partition["held_pks"])
     if not include_quarantined:
@@ -1179,6 +1374,7 @@ def prune_uncovered_devices(
     report=None,
     allow_scope_shrink=False,
     include_quarantined=False,
+    restrict_to_device_pks=None,
 ) -> dict:
     """Delete devices this sync created that Forward no longer reports at all.
 
@@ -1241,12 +1437,6 @@ def prune_uncovered_devices(
     _require_survivable_uncovered_shrink(
         sync, absent_names, allow_scope_shrink=allow_scope_shrink
     )
-    if not absent_names:
-        return _prune_result(
-            out_of_scope_sample=sorted(owned_names)[:SAMPLE_LIMIT],
-            required_runs=required_runs,
-            required_hours=required_hours,
-        )
 
     # Resolve to the pks the report already established, then keep only those
     # whose name is absent. Matching on the name at delete time would re-resolve
@@ -1259,9 +1449,37 @@ def prune_uncovered_devices(
         )
         if (name or "").strip() in absent_names
     ]
+    # A caller may narrow this to named devices - the device page acts on one.
+    # It can only ever INTERSECT what the whole-set prune would already delete:
+    # every gate above has run over the full picture first, and a pk the
+    # unrestricted prune would not touch is refused here with the reason, never
+    # widened to. A second deletion path is how a delete acquires a guard the
+    # other one lacks, so there is only this one.
+    #
+    # Classified in two halves, because the reason has to survive every exit -
+    # including the one directly below, for a sync with no absent device at
+    # all. Ownership and absence are decidable now; "held" needs the quarantine
+    # partition, which only exists when something is absent. Classifying after
+    # any exit meant a device Forward still reports was refused with NO reason
+    # recorded, indistinguishable from a request that was never dispatched.
+    restricted_refusals = {"not_owned": [], "not_absent": [], "held": []}
+    wanted = (
+        {int(pk) for pk in restrict_to_device_pks}
+        if restrict_to_device_pks is not None
+        else None
+    )
+    if wanted is not None:
+        absent_set = set(absent_pks)
+        for pk in sorted(wanted):
+            if pk not in owned_pks:
+                restricted_refusals["not_owned"].append(pk)
+            elif pk not in absent_set:
+                restricted_refusals["not_absent"].append(pk)
+
     if not absent_pks:
         return _prune_result(
             out_of_scope_sample=sorted(absent_names)[:SAMPLE_LIMIT],
+            restricted_refusals=restricted_refusals,
             required_runs=required_runs,
             required_hours=required_hours,
         )
@@ -1275,9 +1493,21 @@ def prune_uncovered_devices(
         "held_device_count": 0 if include_quarantined else held_device_count,
         "overridden_device_count": held_device_count if include_quarantined else 0,
     }
+    if wanted is not None:
+        held = set(partition["held_pks"])
+        for pk in sorted(wanted):
+            if (
+                pk in owned_pks
+                and pk in set(absent_pks)
+                and pk in held
+                and not include_quarantined
+            ):
+                restricted_refusals["held"].append(pk)
+        eligible_pks = [pk for pk in eligible_pks if pk in wanted]
     if not eligible_pks:
         return _prune_result(
             out_of_scope_sample=sorted(absent_names)[:SAMPLE_LIMIT],
+            restricted_refusals=restricted_refusals,
             **quarantine_counts,
         )
 
@@ -1292,6 +1522,7 @@ def prune_uncovered_devices(
         pruned_device_count=len(pruned_device_ids),
         pruned_object_count=deleted_total,
         out_of_scope_sample=sorted(absent_names)[:SAMPLE_LIMIT],
+        restricted_refusals=restricted_refusals,
         ownership_blocked_device_count=len(ownership_blocked_ids),
         protected_device_count=len(eligible_pks)
         - len(pruned_device_ids)
@@ -1432,6 +1663,85 @@ def _apply_maintained_device_tag(
         "removed": result["assignments_removed"],
         **{key: value for key, value in result.items() if not key.startswith("_")},
     }
+
+
+def latest_scope_report_job(sync):
+    """The newest completed job carrying a scope report, from either producer.
+
+    Two jobs compute one: the Refresh button's `scope reconciliation` job,
+    which stores the report at the top level, and the post-sync
+    `reconcile device scope tags (auto)` job, which already computes the same
+    report for its own tagging and stores it under `scope_reconciliation`.
+
+    Only the first used to be read, so the panel showed whatever Refresh last
+    produced and never moved on its own - a customer read the same counts for
+    days across several syncs and concluded the sync was creating uncovered
+    devices, when nothing had recomputed the page.
+
+    Ordered by `-completed`, not `-created`: a Refresh started before a sync
+    but finishing after it is the newer answer.
+
+    Lives here rather than in the view layer so the device-page panel can read
+    a stored report without importing views.
+    """
+    from core.choices import JobStatusChoices
+    from core.models import Job
+    from django.contrib.contenttypes.models import ContentType
+    from django.db.models import Q
+
+    from ..models import ForwardSync
+
+    return (
+        Job.objects.filter(
+            Q(name__icontains="scope reconciliation")
+            | Q(
+                name__icontains="reconcile device scope tags",
+                data__has_key="scope_reconciliation",
+            ),
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=sync.pk,
+            status=JobStatusChoices.STATUS_COMPLETED,
+        )
+        .order_by("-completed", "-pk")
+        .first()
+    )
+
+
+def stored_scope_report(job):
+    """``(payload, generated_at, error)`` for a stored reconciliation job."""
+    if job is None or not isinstance(job.data, dict) or not job.data:
+        return {}, None, ""
+    if job.data.get("error"):
+        return {}, job.completed, str(job.data.get("error"))
+    # The tag job nests the report; the Refresh job stores it flat. Unwrap so
+    # every caller sees one shape regardless of which job ran last.
+    nested = job.data.get("scope_reconciliation")
+    if isinstance(nested, dict) and nested:
+        return nested, job.completed, ""
+    return job.data, job.completed, ""
+
+
+def latest_scope_report(sync):
+    """``(job, payload, generated_at, error)`` for the newest stored report."""
+    job = latest_scope_report_job(sync)
+    payload, generated_at, error = stored_scope_report(job)
+    return job, payload, generated_at, error
+
+
+def public_scope_report(report) -> dict:
+    """The JSON-safe half of a report: every key not prefixed with ``_``.
+
+    The `_`-prefixed entries are working sets (name sets, pk lists) kept for
+    the prune and tag paths inside the same call. They are deliberately not
+    persisted: some hold device names, which this module does not write to a
+    job payload.
+
+    One definition, used by both producers of a stored report, so the panel
+    cannot be handed two different shapes depending on which job ran last.
+    """
+    return json_safe_value(
+        {key: value for key, value in report.items() if not key.startswith("_")}
+    )
 
 
 def tag_backfilled_devices(
@@ -1602,6 +1912,19 @@ def tag_backfilled_devices(
         "uncovered_claims_added": uncovered["claims_added"],
         "uncovered_claims_released": uncovered["claims_released"],
         "total_uncovered": uncovered["total"],
+        # What the uncovered prune would act on before the quarantine is
+        # applied. Recorded here so `_job_data_count_trend` can read it from
+        # consecutive post-sync jobs, the way it already reads the two totals
+        # above.
+        "total_owned_prune_candidates": int(
+            (report.get("unmanaged") or {}).get("owned_prune_candidates") or 0
+        ),
+        # The whole report, so the panel has a current one after every sync
+        # rather than only after someone presses Refresh. This job already
+        # computed it - `tag_backfilled_devices` calls
+        # `compute_scope_reconciliation` when handed no report - so storing it
+        # costs no additional NQE execution.
+        "scope_reconciliation": public_scope_report(report),
         "scope_claims_released": managed_scope_cleanup["claims_released"],
         "out_of_scope_scope_tags_removed": managed_scope_cleanup["assignments_removed"],
         "scope_claims_added": managed_scope_cleanup["claims_added"],

@@ -339,16 +339,28 @@ class ForwardIngestionIssueTable(NetBoxTable):
         # ingestion detail tab as well as the list view, and an annotation
         # only one caller supplies is a column that breaks on the other.
         #
-        # Three states, not two. "This kind of issue blocks readiness" and
-        # "this issue blocked anything" are different questions, and a
-        # validation rejection the merge recorded and promoted over answers
-        # yes to the first and no to the second.
+        # Four states, not two. "This kind of issue blocks readiness", "could
+        # a retry satisfy this row" and "did this run promote" are three
+        # different questions; a validation rejection in a run that also had a
+        # retryable failure answers yes, no, no - and used to render red.
         from .utilities.ingestion_issues import issue_blocking_disposition
 
         disposition = issue_blocking_disposition(record)
         if disposition == "blocking":
             return format_html(
                 '<span class="badge text-bg-red">{}</span>', _("Blocking")
+            )
+        if disposition == "skipped":
+            return format_html(
+                '<span class="badge text-bg-warning" title="{}">{}</span>',
+                _(
+                    "NetBox refused this row on its own validation rules, so no "
+                    "retry can satisfy it and it is not what holds the baseline "
+                    "back. Other rows in this run did fail, so the baseline has "
+                    "not promoted yet. Resolve the underlying row in NetBox to "
+                    "converge it."
+                ),
+                _("Skipped"),
             )
         if disposition == "promoted_over":
             return format_html(
