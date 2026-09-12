@@ -62,12 +62,20 @@ relationships. This normalization is shared by the ordinary and fast engines;
 partial/diff device workloads do not claim authoritative parent coverage.
 
 The relationship allowlist additionally pins `dcim.module`,
-`extras.taggeditem`, `ipam.fhrpgroup`, `ipam.vlan`, and the BGP/OSPF models in
-`netbox_routing`. These execute through the normal apply adapters inside the
-same transaction, preserving their coalesce, generic-relation, shared-VIP, and
-side-object semantics. Their preflight contract proves required keys, device
-and interface coverage, routable identities/choices, and owned side-table
-emptiness. When module sync is enabled, only module-native inventory rows move
+`extras.taggeditem`, `ipam.fhrpgroup`, `ipam.vlan`, the BGP/OSPF and policy
+models in `netbox_routing`, and every `netbox_cisco_aci` model. These execute
+through the normal apply adapters inside the same transaction, preserving
+their coalesce, generic-relation, shared-VIP, and side-object semantics. Their
+preflight contract proves required keys, device and interface coverage,
+routable identities/choices, and owned side-table emptiness; the policy and
+ACI models prove required keys only, and their parent resolution (fabric,
+tenant, VRF, bridge domain, node device) stays the adapter's recorded skip.
+Every registered NQE map model is either on the allowlist or named in
+`FAST_BASELINE_EXCLUDED_MODELS` with the reason it still disables the fast
+baseline (`dcim.virtualchassis`, `netbox_dlm.inventoryitemsoftware`,
+`netbox_peering_manager.peeringsession`); a test pins that union so a new map
+cannot silently reintroduce the `model_not_allowlisted` fallback for the whole
+sync, which is what enabling any ACI map did before 2.9.6. When module sync is enabled, only module-native inventory rows move
 to module ownership; all other InventoryItems retain the set-based loader.
 
 Standalone preflight necessarily pays for one complete workload fetch. The

@@ -1689,9 +1689,17 @@ class JobTerminationConcurrencyTest(TransactionTestCase):
             finally:
                 close_old_connections()
 
-        with patch(
-            "forward_netbox.jobs.terminate_job_once",
-            side_effect=blocking_terminate,
+        # The validation body is not under test here and would otherwise reach
+        # the source URL, making the test depend on the host resolver.
+        with (
+            patch(
+                "forward_netbox.jobs.terminate_job_once",
+                side_effect=blocking_terminate,
+            ),
+            patch(
+                "forward_netbox.jobs._validate_forwardsync_work",
+                side_effect=lambda _job: None,
+            ),
         ):
             worker = threading.Thread(target=handle)
             worker.start()
