@@ -1,0 +1,84 @@
+/**
+ * @intent Forward Routing Prefix Lists
+ * @description Optional config-derived NQE for netbox-routing prefix-list entries. Forward has no structured
+ * policy model, so this parses `ip prefix-list` / `ipv6 prefix-list` from device.files.config for the
+ * IOS / IOS-XE / NX-OS (flat `seq` lines) and Arista EOS (nested `seq` children) dialects, one row per entry.
+ * netbox-routing names these objects globally and a fleet defines the same name differently on different
+ * devices, so this map builds a catalogue: per configured name, every device's definition is grouped by
+ * content; the definition shared by the most devices is stored under the bare name, and each other
+ * definition is stored as `<name>@<lowest device holding it>`. `device` is that representative device and
+ * `device_count` how many define it identically. Nothing is dropped and shared policy appears once.
+ */
+
+flatRegex = re`^(?<af>ipv6|ip) prefix-list (?<name>\S+) seq (?<seq:Integer>\d+) (?<action>permit|deny) (?<prefix>\S+)(?<mods>.*)$`;
+nestedRegex = re`^\s*seq (?<seq:Integer>\d+) (?<action>permit|deny) (?<prefix>\S+)(?<mods>.*)$`;
+headerRegex = re`^(?<af>ipv6|ip) prefix-list (?<name>\S+)$`;
+geRegex = re`\bge (?<value:Integer>\d+)`;
+leRegex = re`\ble (?<value:Integer>\d+)`;
+eqRegex = re`\beq (?<value:Integer>\d+)`;
+
+entries =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where device.platform.os in [OS.IOS, OS.IOS_XE, OS.NXOS, OS.ARISTA_EOS]
+  where isPresent(device.files.config)
+  foreach line in device.files.config
+  where matches(line.text, "ip prefix-list *") || matches(line.text, "ipv6 prefix-list *")
+  let header = (foreach h in regexMatches(line.text, headerRegex) select h)
+  let nested = (foreach h in header foreach child in line.children foreach m in regexMatches(child.text, nestedRegex) select { af: h.data.af, name: h.data.name, seq: m.data.seq, action: m.data.action, prefix: m.data.prefix, mods: m.data.mods, text: child.text })
+  let flat = (foreach m in regexMatches(line.text, flatRegex) select { af: m.data.af, name: m.data.name, seq: m.data.seq, action: m.data.action, prefix: m.data.prefix, mods: m.data.mods, text: line.text })
+  foreach entry in (if length(nested) > 0 then nested else flat)
+  select {
+    device: device.name,
+    name: entry.name,
+    family: (if entry.af == "ipv6" then 6 else 4),
+    seq: entry.seq,
+    action: entry.action,
+    prefix: entry.prefix,
+    ge: max(foreach m in regexMatches(entry.mods, geRegex) select m.data.value),
+    le: max(foreach m in regexMatches(entry.mods, leRegex) select m.data.value),
+    eq: max(foreach m in regexMatches(entry.mods, eqRegex) select m.data.value),
+    sigtext: entry.af + " " + entry.text
+  };
+// netbox-routing's name uniqueness is case-insensitive, so the catalogue key
+// is the lower-cased name; the stored spelling is the lexically smallest one
+// the fleet uses, which is deterministic across runs.
+defs =
+  foreach e in entries
+  group e as es by { device: e.device, key: toLowerCase(e.name) } as k
+  select { device: k.device, key: k.key, name: min(foreach x in es select x.name), sig: (foreach x in es select x.sigtext) };
+
+variants =
+  foreach d in defs
+  group d as ds by { key: d.key, sig: d.sig } as k
+  select { key: k.key, name: min(foreach x in ds select x.name), count: length(ds), rep: min(foreach x in ds select x.device) };
+
+ranked =
+  foreach v in variants
+  group v as vs by v.key as key
+  let name = min(foreach x in vs select x.name)
+  let bestCount = max(foreach x in vs select x.count)
+  let bestRep = min(foreach x in vs where x.count == bestCount select x.rep)
+  foreach v2 in vs
+  select { key: key, name: name, rep: v2.rep, count: v2.count, object_name: (if v2.rep == bestRep then name else name + "@" + v2.rep) };
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach r in ranked
+where isEmpty(forward_netbox_shard_keys) || r.object_name in forward_netbox_shard_keys
+foreach e in entries
+where e.device == r.rep && toLowerCase(e.name) == r.key
+select {
+  name: r.object_name,
+  list_name: r.name,
+  device: r.rep,
+  device_count: r.count,
+  family: e.family,
+  sequence: e.seq,
+  action: e.action,
+  prefix: e.prefix,
+  ge: e.ge,
+  le: e.le,
+  eq: e.eq
+};

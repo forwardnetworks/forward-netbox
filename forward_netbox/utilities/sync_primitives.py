@@ -59,6 +59,14 @@ UNIQUE_LOOKUP_CACHE_FIELD_SETS = {
         ("assigned_object_type", "assigned_object_id", "address_family"),
     ),
     "netbox_routing.ospfarea": (("area_id",),),
+    "netbox_routing.prefixlist": (("name",),),
+    "netbox_routing.prefixlistentry": (("prefix_list", "sequence"),),
+    "netbox_routing.customprefix": (("prefix",),),
+    "netbox_routing.communitylist": (("name",),),
+    "netbox_routing.communitylistentry": (("community_list", "community"),),
+    "netbox_routing.community": (("community",),),
+    "netbox_routing.routemap": (("name",),),
+    "netbox_routing.routemapentry": (("route_map", "sequence"),),
     "netbox_routing.ospfinstance": (
         ("device", "process_id"),
         ("device", "vrf", "process_id"),
@@ -792,6 +800,16 @@ def prime_dependency_lookup_caches(runner, model_string, rows):
         summary["routing_ospf_instance_count"] = routing_ospf_summary[
             "routing_ospf_instance_count"
         ]
+    routing_policy_summary = _prime_optional_dependency_cache(
+        _prime_routing_policy_identity_cache,
+        runner,
+        model_string,
+        rows,
+    )
+    if routing_policy_summary:
+        summary["routing_policy_parent_count"] = routing_policy_summary[
+            "routing_policy_parent_count"
+        ]
     module_bay_pairs = _dependency_module_bay_pairs(model_string, rows)
     if module_bay_pairs:
         _prime_module_bay_cache(runner, module_bay_pairs)
@@ -1355,6 +1373,79 @@ def _prime_dcim_dependency_identity_cache(runner, model_string, rows):
         return
     if model_string in _SITE_BEARING_MODELS:
         _prime_site_identity_cache(runner, rows)
+
+
+def _prime_routing_policy_identity_cache(runner, model_string, rows):
+    """Batch the parent lookups a policy-entry batch will make.
+
+    Every entry row resolves its `<device>:<name>` parent (and, for prefix
+    lists, a `CustomPrefix`; for community lists, a `Community`) by unique
+    lookup. Unprimed, the first entry of each of thousands of lists is one
+    query, and a converged fleet pays that on every run - the shape 2.8.7
+    fixed for the preview and item 12 of the 2.9.5 plan fixed for `ipam.vlan`.
+    Missing keys are marked too, so an absent parent costs nothing per row.
+    """
+    from .sync_routing_policy import COMMUNITY_LIST_MODEL
+    from .sync_routing_policy import PREFIX_LIST_MODEL
+    from .sync_routing_policy import ROUTE_MAP_MODEL
+    from .sync_routing_policy import community_value
+    from .sync_routing_policy import policy_object_name
+
+    parent_by_model = {
+        PREFIX_LIST_MODEL: "PrefixList",
+        COMMUNITY_LIST_MODEL: "CommunityList",
+        ROUTE_MAP_MODEL: "RouteMap",
+    }
+    if model_string not in parent_by_model:
+        return {}
+
+    from django.apps import apps
+
+    if not apps.is_installed("netbox_routing"):
+        return {}
+
+    parent_model_name = parent_by_model[model_string]
+    Parent = runner._optional_model("netbox_routing", parent_model_name, model_string)
+    if Parent is None:
+        return {}
+    names = {policy_object_name(row) for row in rows if policy_object_name(row)}
+    _prime_slug_name_identity_cache(runner, Parent, slugs=set(), names=names)
+
+    if model_string == PREFIX_LIST_MODEL:
+        CustomPrefix = runner._optional_model(
+            "netbox_routing", "CustomPrefix", model_string
+        )
+        prefixes = {
+            str(row.get("prefix")).strip()
+            for row in rows
+            if row.get("prefix") not in ("", None)
+        }
+        found = set()
+        for chunk in _chunks(sorted(prefixes), DEPENDENCY_LOOKUP_PAIR_CHUNK_SIZE):
+            for obj in CustomPrefix.objects.filter(prefix__in=chunk):
+                _remember_unique_lookup(
+                    runner, CustomPrefix, {"prefix": str(obj.prefix)}, obj
+                )
+                found.add(str(obj.prefix))
+        for prefix in prefixes - found:
+            _mark_missing_unique_lookup(runner, CustomPrefix, {"prefix": prefix})
+    elif model_string == COMMUNITY_LIST_MODEL:
+        Community = runner._optional_model("netbox_routing", "Community", model_string)
+        values = {
+            value
+            for value in (community_value(row.get("community")) for row in rows)
+            if value
+        }
+        found = set()
+        for chunk in _chunks(sorted(values), DEPENDENCY_LOOKUP_PAIR_CHUNK_SIZE):
+            for obj in Community.objects.filter(community__in=chunk):
+                _remember_unique_lookup(
+                    runner, Community, {"community": obj.community}, obj
+                )
+                found.add(obj.community)
+        for value in values - found:
+            _mark_missing_unique_lookup(runner, Community, {"community": value})
+    return {"routing_policy_parent_count": len(names)}
 
 
 def _prime_site_identity_cache(runner, rows):
