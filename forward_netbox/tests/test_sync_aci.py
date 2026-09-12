@@ -1,12 +1,17 @@
 from types import SimpleNamespace
 from unittest import TestCase
 
+from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_aciappprofile
 from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acibridgedomain
+from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acicontract
+from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_aciendpointgroup
 from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acifabric
 from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acifilter
+from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acifilterentry
 from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acil3out
 from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acinode
 from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acipod
+from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acisubject
 from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acitenant
 from forward_netbox.utilities.sync_aci import apply_netbox_cisco_aci_acivrf
 from forward_netbox.utilities.sync_aci import delete_netbox_cisco_aci_acibridgedomain
@@ -74,6 +79,66 @@ class _ACIRunner:
                 "netbox_cisco_aci.acitenant",
                 ("aci_fabric", "name", "description"),
             ),
+            "ACIAppProfile": _fake_model(
+                "netbox_cisco_aci.aciappprofile",
+                ("aci_tenant", "name", "description"),
+            ),
+            "ACIEndpointGroup": _fake_model(
+                "netbox_cisco_aci.aciendpointgroup",
+                (
+                    "aci_tenant",
+                    "aci_app_profile",
+                    "aci_bridge_domain",
+                    "name",
+                    "admin_shutdown",
+                    "is_useg",
+                    "intra_epg_isolation",
+                    "preferred_group_member",
+                    "qos_class",
+                    "description",
+                ),
+            ),
+            "ACIContract": _fake_model(
+                "netbox_cisco_aci.acicontract",
+                (
+                    "aci_tenant",
+                    "name",
+                    "scope",
+                    "qos_class",
+                    "target_dscp",
+                    "description",
+                ),
+            ),
+            "ACISubject": _fake_model(
+                "netbox_cisco_aci.acisubject",
+                (
+                    "aci_contract",
+                    "name",
+                    "apply_both_directions",
+                    "reverse_filter_ports",
+                    "qos_class",
+                    "target_dscp",
+                    "description",
+                ),
+            ),
+            "ACIFilterEntry": _fake_model(
+                "netbox_cisco_aci.acifilterentry",
+                (
+                    "aci_filter",
+                    "name",
+                    "ether_type",
+                    "ip_protocol",
+                    "source_port_from",
+                    "source_port_to",
+                    "destination_port_from",
+                    "destination_port_to",
+                    "tcp_rules",
+                    "match_only_fragments",
+                    "arp_opcode",
+                    "stateful",
+                    "description",
+                ),
+            ),
             "ACIVRF": _fake_model(
                 "netbox_cisco_aci.acivrf",
                 (
@@ -126,6 +191,7 @@ class _ACIRunner:
         self.lookups = {}
         self.devices = {}
         self.interfaces = {}
+        self.skip_warnings = []
 
     def _parent_key(self, obj):
         return getattr(obj, "pk", obj)
@@ -188,6 +254,8 @@ class _ACIRunner:
         elif model_string in {
             "netbox_cisco_aci.acivrf",
             "netbox_cisco_aci.acifilter",
+            "netbox_cisco_aci.aciappprofile",
+            "netbox_cisco_aci.acicontract",
         }:
             self.lookups[
                 (
@@ -352,6 +420,19 @@ class _ACIRunner:
     def _lookup_device_by_name(self, device_name):
         return self.devices.get(device_name)
 
+    def _lookup_device_by_name_insensitive(self, device_name):
+        matches = [
+            device
+            for name, device in self.devices.items()
+            if name.lower() == str(device_name).lower()
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        return "ambiguous" if matches else None
+
+    def _record_aggregated_skip_warning(self, **kwargs):
+        self.skip_warnings.append(kwargs)
+
     def _lookup_interface(self, device, interface_name):
         if device is None:
             return None
@@ -387,6 +468,19 @@ class _ACIRunner:
                     ),
                 )
             )
+        for parent_field in ("aci_app_profile", "aci_contract", "aci_filter"):
+            if set(lookup) == {parent_field, "name"}:
+                return self.lookups.get(
+                    (
+                        model,
+                        (
+                            parent_field,
+                            self._parent_key(lookup[parent_field]),
+                            "name",
+                            lookup["name"],
+                        ),
+                    )
+                )
         if set(lookup) == {"aci_tenant", "name"}:
             return self.lookups.get(
                 (
@@ -480,6 +574,84 @@ class SyncACIAdapterTest(TestCase):
         self.assertEqual(
             runner.upserts[2]["coalesce_sets"],
             [("aci_pod", "node_id"), ("aci_pod", "name")],
+        )
+
+    def test_acinode_links_its_device_case_insensitively(self):
+        # APIC names nodes as configured (DC01LEAF101); Forward collected the
+        # device as dc01leaf101. 0 of 667 nodes matched exactly on a real fabric.
+        runner = _ACIRunner()
+        device = SimpleNamespace(pk=7, __class__=type("Device", (), {}))
+        runner.devices["dc01leaf101"] = device
+
+        apply_netbox_cisco_aci_acinode(
+            runner,
+            {
+                "fabric_name": "fabric-a",
+                "pod_name": "pod-1",
+                "pod_id": "1",
+                "node_id": "101",
+                "name": "DC01LEAF101",
+                "role": "leaf",
+                "node_type": "physical",
+                "serial_number": "SERIAL1",
+                "pod_tep_pool": "10.0.0.1",
+                "firmware_version": "",
+                "node_object_name": "DC01LEAF101",
+                "description": "Forward observed ACI node.",
+            },
+        )
+
+        self.assertEqual(runner.upserts[2]["values"]["node_object_id"], 7)
+        self.assertEqual(runner.skip_warnings, [])
+
+    def test_acinode_without_a_device_is_stored_unlinked_and_says_so(self):
+        runner = _ACIRunner()
+        apply_netbox_cisco_aci_acinode(
+            runner,
+            {
+                "fabric_name": "fabric-a",
+                "pod_name": "pod-1",
+                "pod_id": "1",
+                "node_id": "101",
+                "name": "leaf-101",
+                "role": "leaf",
+                "node_type": "physical",
+                "serial_number": "SERIAL1",
+                "pod_tep_pool": "10.0.0.1",
+                "firmware_version": "",
+                "node_object_name": "leaf-101",
+                "description": "Forward observed ACI node.",
+            },
+        )
+        self.assertIsNone(runner.upserts[2]["values"]["node_object_id"])
+        self.assertEqual(
+            [w["reason"] for w in runner.skip_warnings], ["aci-node-device-missing"]
+        )
+
+    def test_acinode_never_guesses_between_two_case_variants(self):
+        runner = _ACIRunner()
+        runner.devices["leaf-101"] = SimpleNamespace(pk=1, __class__=type("D", (), {}))
+        runner.devices["LEAF-101"] = SimpleNamespace(pk=2, __class__=type("D", (), {}))
+        apply_netbox_cisco_aci_acinode(
+            runner,
+            {
+                "fabric_name": "fabric-a",
+                "pod_name": "pod-1",
+                "pod_id": "1",
+                "node_id": "101",
+                "name": "Leaf-101",
+                "role": "leaf",
+                "node_type": "physical",
+                "serial_number": "SERIAL1",
+                "pod_tep_pool": "10.0.0.1",
+                "firmware_version": "",
+                "node_object_name": "Leaf-101",
+                "description": "Forward observed ACI node.",
+            },
+        )
+        self.assertIsNone(runner.upserts[2]["values"]["node_object_id"])
+        self.assertEqual(
+            [w["reason"] for w in runner.skip_warnings], ["aci-node-device-ambiguous"]
         )
 
     def test_apply_acinode_skips_duplicate_observation_in_same_run(self):
@@ -912,6 +1084,221 @@ class SyncACIAdapterTest(TestCase):
 
         self.assertFalse(result)
         self.assertEqual(runner.deletes, [])
+
+
+class TenantPolicyAdapterTest(TestCase):
+    """EPGs, application profiles, contracts, subjects and filter entries."""
+
+    def _bridge_domain(self, runner, name="BD-WEB"):
+        return apply_netbox_cisco_aci_acibridgedomain(
+            runner,
+            {
+                "fabric_name": "fabric-a",
+                "tenant_name": "TN-A",
+                "vrf_tenant_name": "TN-A",
+                "vrf_name": "VRF-A",
+                "name": name,
+                "unicast_routing_enabled": True,
+                "arp_flooding_enabled": False,
+                "limit_ip_learn_to_subnets": True,
+                "l2_unknown_unicast": "proxy",
+                "l3_unknown_multicast": "flood",
+                "multi_destination_flooding": "bd-flood",
+                "mac_address": "00:22:BD:F8:19:FF",
+                "description": "",
+            },
+        )
+
+    def _epg_row(self, **extra):
+        row = {
+            "fabric_name": "fabric-a",
+            "tenant_name": "TN-A",
+            "app_profile_name": "AP-A",
+            "name": "EPG-WEB",
+            "bridge_domain_name": "BD-WEB",
+            "admin_shutdown": False,
+            "is_useg": False,
+            "intra_epg_isolation": True,
+            "preferred_group_member": True,
+            "qos_class": "level3",
+            "description": "",
+        }
+        row.update(extra)
+        return row
+
+    def test_an_endpoint_group_creates_its_tenant_and_application_profile(self):
+        runner = _ACIRunner()
+        self._bridge_domain(runner)
+        apply_netbox_cisco_aci_aciendpointgroup(runner, self._epg_row())
+
+        self.assertEqual(
+            [call["model_string"] for call in runner.upserts][-2:],
+            ["netbox_cisco_aci.aciappprofile", "netbox_cisco_aci.aciendpointgroup"],
+        )
+        values = runner.upserts[-1]["values"]
+        self.assertEqual(values["name"], "EPG-WEB")
+        self.assertTrue(values["intra_epg_isolation"])
+        self.assertTrue(values["preferred_group_member"])
+        self.assertEqual(values["qos_class"], "level3")
+        self.assertEqual(
+            runner.upserts[-1]["coalesce_sets"], [("aci_app_profile", "name")]
+        )
+
+    def test_an_unknown_qos_class_falls_back_to_unspecified(self):
+        runner = _ACIRunner()
+        self._bridge_domain(runner)
+        apply_netbox_cisco_aci_aciendpointgroup(runner, self._epg_row(qos_class="gold"))
+        self.assertEqual(runner.upserts[-1]["values"]["qos_class"], "unspecified")
+
+    def test_an_endpoint_group_without_its_bridge_domain_is_skipped_not_failed(self):
+        # The plugin requires the bridge domain; it is resolved, never created
+        # here. 4,799 merge failures on the first acceptance run is what a
+        # silent None produced.
+        runner = _ACIRunner()
+        outcome = apply_netbox_cisco_aci_aciendpointgroup(
+            runner, self._epg_row(bridge_domain_name="BD-MISSING")
+        )
+        self.assertIs(outcome, False)
+        self.assertNotIn(
+            "netbox_cisco_aci.acibridgedomain",
+            [call["model_string"] for call in runner.upserts],
+        )
+        self.assertNotIn(
+            "netbox_cisco_aci.aciendpointgroup",
+            [call["model_string"] for call in runner.upserts],
+        )
+        self.assertEqual(
+            [w["reason"] for w in runner.skip_warnings],
+            ["aci-epg-bridge-domain-missing"],
+        )
+
+    def test_an_endpoint_group_links_an_imported_bridge_domain(self):
+        runner = _ACIRunner()
+        bd = self._bridge_domain(runner)
+        entry = apply_netbox_cisco_aci_aciendpointgroup(runner, self._epg_row())
+        self.assertIs(runner.upserts[-1]["values"]["aci_bridge_domain"], bd)
+        self.assertEqual(entry.name, "EPG-WEB")
+
+    def test_a_contract_maps_scope_and_dscp(self):
+        runner = _ACIRunner()
+        apply_netbox_cisco_aci_acicontract(
+            runner,
+            {
+                "fabric_name": "fabric-a",
+                "tenant_name": "TN-A",
+                "name": "CT-WEB",
+                "scope": "context",
+                "qos_class": "unspecified",
+                "target_dscp": "unspecified",
+                "description": "",
+            },
+        )
+        values = runner.upserts[-1]["values"]
+        self.assertEqual(values["scope"], "context")
+        self.assertEqual(values["target_dscp"], "")
+        self.assertEqual(runner.upserts[-1]["coalesce_sets"], [("aci_tenant", "name")])
+
+    def test_a_subject_hangs_off_its_contract(self):
+        runner = _ACIRunner()
+        apply_netbox_cisco_aci_acisubject(
+            runner,
+            {
+                "fabric_name": "fabric-a",
+                "tenant_name": "TN-A",
+                "contract_name": "CT-WEB",
+                "name": "SUBJ-HTTP",
+                "reverse_filter_ports": True,
+                "qos_class": "unspecified",
+                "target_dscp": "CS0",
+                "description": "",
+            },
+        )
+        self.assertEqual(
+            [call["model_string"] for call in runner.upserts][-2:],
+            ["netbox_cisco_aci.acicontract", "netbox_cisco_aci.acisubject"],
+        )
+        values = runner.upserts[-1]["values"]
+        self.assertTrue(values["apply_both_directions"])
+        self.assertTrue(values["reverse_filter_ports"])
+        self.assertEqual(values["target_dscp"], "CS0")
+
+    def test_a_filter_entry_turns_apic_ports_into_numbers(self):
+        runner = _ACIRunner()
+        apply_netbox_cisco_aci_acifilterentry(
+            runner,
+            {
+                "fabric_name": "fabric-a",
+                "tenant_name": "TN-A",
+                "filter_name": "FT-HTTP",
+                "name": "e-http",
+                "ether_type": "ip",
+                "ip_protocol": "tcp",
+                "source_port_from": "unspecified",
+                "source_port_to": "unspecified",
+                "destination_port_from": "http",
+                "destination_port_to": "https",
+                "tcp_rules": "",
+                "match_only_fragments": False,
+                "arp_opcode": "unspecified",
+                "stateful": True,
+                "description": "",
+            },
+        )
+        values = runner.upserts[-1]["values"]
+        self.assertEqual(
+            (values["source_port_from"], values["source_port_to"]), (None, None)
+        )
+        self.assertEqual(
+            (values["destination_port_from"], values["destination_port_to"]), (80, 443)
+        )
+        self.assertEqual(values["arp_opcode"], "")
+        self.assertTrue(values["stateful"])
+        self.assertEqual(runner.upserts[-1]["coalesce_sets"], [("aci_filter", "name")])
+
+    def test_an_ephemeral_port_range_is_kept_in_the_description(self):
+        # The plugin's port fields are small integers (32767); 49152-65535 is
+        # what a real fabric's filter entries carried.
+        runner = _ACIRunner()
+        apply_netbox_cisco_aci_acifilterentry(
+            runner,
+            {
+                "fabric_name": "fabric-a",
+                "tenant_name": "TN-A",
+                "filter_name": "FT-EPH",
+                "name": "e-eph",
+                "ether_type": "ip",
+                "ip_protocol": "tcp",
+                "source_port_from": "unspecified",
+                "source_port_to": "unspecified",
+                "destination_port_from": "49152",
+                "destination_port_to": "65535",
+                "tcp_rules": "",
+                "match_only_fragments": False,
+                "arp_opcode": "unspecified",
+                "stateful": False,
+                "description": "",
+            },
+        )
+        values = runner.upserts[-1]["values"]
+        self.assertEqual(
+            (values["destination_port_from"], values["destination_port_to"]),
+            (None, None),
+        )
+        self.assertIn("dst 49152-65535", values["description"])
+        self.assertEqual(
+            [w["reason"] for w in runner.skip_warnings],
+            ["aci-filter-entry-port-out-of-range"],
+        )
+
+    def test_previews_classify_from_the_leaf_upsert(self):
+        runner = _ACIRunner()
+        runner.last_upsert_would_change = False
+        outcome = apply_netbox_cisco_aci_aciappprofile(
+            runner,
+            {"fabric_name": "fabric-a", "tenant_name": "TN-A", "name": "AP-A"},
+            preview=True,
+        )
+        self.assertEqual(outcome, "unchanged")
 
 
 class SuppressAciDeletesTest(TestCase):

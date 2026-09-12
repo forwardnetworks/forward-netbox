@@ -56,6 +56,9 @@ from .full_removal_reconciliation import prune_removals_allowed
 from .full_removal_reconciliation import RemovalReconciliationRefused
 from .model_contracts import architecture_default_coalesce_fields_for_model
 from .query_diagnostics import (
+    append_aci_source_diagnostics as sync_append_aci_source_diagnostics,
+)
+from .query_diagnostics import (
     append_ipaddress_diagnostics as sync_append_ipaddress_diagnostics,
 )
 from .query_diagnostics import (
@@ -1033,6 +1036,7 @@ class ForwardQueryFetcher:
             self._append_ipaddress_diagnostics(context)
             self._append_ipaddress_parent_prefix_diagnostics(workloads)
             self._append_routing_diagnostics(context)
+            self._append_aci_source_diagnostics(context)
         # Capture the full normalised rows BEFORE the durable delta narrows
         # them, because the delta is computed against this plugin's own record
         # of what Forward last returned - not against NetBox.
@@ -2261,6 +2265,9 @@ class ForwardQueryFetcher:
     def _append_routing_diagnostics(self, context: ForwardQueryContext) -> None:
         return sync_append_routing_diagnostics(self, context)
 
+    def _append_aci_source_diagnostics(self, context: ForwardQueryContext) -> None:
+        return sync_append_aci_source_diagnostics(self, context)
+
     def _run_routing_import_diagnostic(
         self,
         context: ForwardQueryContext,
@@ -2293,6 +2300,7 @@ class ForwardQueryFetcher:
                 self.model_results.append(result)
         self._append_ipaddress_diagnostics(context)
         self._append_routing_diagnostics(context)
+        self._append_aci_source_diagnostics(context)
         return self.model_results
 
     def _run_sample_job(self, payload):

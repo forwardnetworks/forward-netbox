@@ -207,6 +207,8 @@ IPADDRESS_UNASSIGNABLE_DIAGNOSTIC_QUERY_FILE = (
 )
 ROUTING_IMPORT_DIAGNOSTIC_QUERY_NAME = "Forward Routing Import Diagnostics"
 ROUTING_IMPORT_DIAGNOSTIC_QUERY_FILE = "forward_routing_import_diagnostics.nqe"
+ACI_SOURCE_READINESS_QUERY_NAME = "Forward ACI Source Readiness"
+ACI_SOURCE_READINESS_QUERY_FILE = "forward_aci_source_readiness.nqe"
 SHARD_QUERY_PARAMETER_NAME = "forward_netbox_shard_keys"
 SHARD_QUERY_PARAMETER_DEFAULT = {SHARD_QUERY_PARAMETER_NAME: []}
 # Operator-selected Forward tags to sync as NetBox device tags. Declared by any
@@ -418,6 +420,10 @@ def ipaddress_unassignable_diagnostic_query() -> str:
 
 def routing_import_diagnostic_query() -> str:
     return _read_query(ROUTING_IMPORT_DIAGNOSTIC_QUERY_FILE)
+
+
+def aci_source_readiness_query() -> str:
+    return _read_query(ACI_SOURCE_READINESS_QUERY_FILE)
 
 
 BUILTIN_QUERY_MAPS = [
@@ -681,6 +687,12 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "enabled": False,
     },
     {
+        "model_string": "netbox_cisco_aci.acipod",
+        "name": "Forward ACI APIC Pods",
+        "filename": "forward_aci_apic_pods.nqe",
+        "enabled": False,
+    },
+    {
         "model_string": "netbox_cisco_aci.acinode",
         "name": "Forward ACI Nodes",
         "filename": "forward_aci_nodes.nqe",
@@ -723,9 +735,45 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "enabled": False,
     },
     {
+        "model_string": "netbox_cisco_aci.acifilter",
+        "name": "Forward ACI APIC Filters",
+        "filename": "forward_aci_apic_filters.nqe",
+        "enabled": False,
+    },
+    {
         "model_string": "netbox_cisco_aci.acil3out",
         "name": "Forward ACI L3Outs",
         "filename": "forward_aci_l3outs.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_cisco_aci.aciappprofile",
+        "name": "Forward ACI Application Profiles",
+        "filename": "forward_aci_app_profiles.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_cisco_aci.aciendpointgroup",
+        "name": "Forward ACI Endpoint Groups",
+        "filename": "forward_aci_endpoint_groups.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_cisco_aci.acicontract",
+        "name": "Forward ACI Contracts",
+        "filename": "forward_aci_contracts.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_cisco_aci.acisubject",
+        "name": "Forward ACI Contract Subjects",
+        "filename": "forward_aci_subjects.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_cisco_aci.acifilterentry",
+        "name": "Forward ACI Filter Entries",
+        "filename": "forward_aci_filter_entries.nqe",
         "enabled": False,
     },
 ]

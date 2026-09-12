@@ -245,10 +245,18 @@ For large routing datasets, publish the routing NQE into the Forward NQE library
 
 Optional Cisco ACI sync requires the `netbox-cisco-aci` plugin. When that
 plugin is installed and migrated, the map list exposes disabled `Forward ACI
-Fabrics`, `Forward ACI Pods`, `Forward ACI Nodes`, `Forward ACI Tenants`,
-`Forward ACI APIC Nodes`, `Forward ACI APIC CIMC Inventory`,
-`Forward ACI VRFs`, `Forward ACI Bridge Domains`, `Forward ACI Filters`, and
-`Forward ACI L3Outs` maps. Enable them only when you want Forward to create or
+Fabrics`, `Forward ACI Pods`, `Forward ACI APIC Pods`, `Forward ACI Nodes`,
+`Forward ACI Tenants`, `Forward ACI APIC Nodes`, `Forward ACI APIC CIMC
+Inventory`, `Forward ACI VRFs`, `Forward ACI Bridge Domains`, `Forward ACI
+Filters`, `Forward ACI APIC Filters`, `Forward ACI L3Outs`, `Forward ACI
+Application Profiles`, `Forward ACI Endpoint Groups`, `Forward ACI Contracts`,
+`Forward ACI Contract Subjects`, and `Forward ACI Filter Entries` maps. The
+`APIC` siblings read APIC-side output (`CISCO_APIC_SWITCH` /
+`CISCO_APIC_CONTROLLER_DETAIL`, `moquery -c vzFilter`) for fabrics where
+Forward does not collect the leaf-side `CISCO_ACI_FABRIC_NODES` or
+`CISCO_ACI_ZONING_FILTER` commands; enable whichever pair your collection
+provides, and the sync warns at plan time when an enabled ACI map has no
+source command on any completed device in the snapshot. Enable them only when you want Forward to create or
 update the plugin's ACI inventory and policy objects. The ACI maps use Forward
 saved-query/raw-query execution and the canonical `forward_netbox_shard_keys`
 query parameter; they do not issue per-tenant/per-node Forward API calls. The
@@ -291,6 +299,7 @@ The current built-in map set is:
 - `Forward Inventory Items`
 - `Forward ACI Fabrics` (optional `netbox_cisco_aci.acifabric`)
 - `Forward ACI Pods` (optional `netbox_cisco_aci.acipod`)
+- `Forward ACI APIC Pods` (optional `netbox_cisco_aci.acipod`)
 - `Forward ACI Nodes` (optional `netbox_cisco_aci.acinode`)
 - `Forward ACI APIC Nodes` (optional `netbox_cisco_aci.acinode`)
 - `Forward ACI APIC CIMC Inventory` (native `dcim.inventoryitem`)
@@ -298,7 +307,13 @@ The current built-in map set is:
 - `Forward ACI VRFs` (optional `netbox_cisco_aci.acivrf`)
 - `Forward ACI Bridge Domains` (optional `netbox_cisco_aci.acibridgedomain`)
 - `Forward ACI Filters` (optional `netbox_cisco_aci.acifilter`)
+- `Forward ACI APIC Filters` (optional `netbox_cisco_aci.acifilter`)
 - `Forward ACI L3Outs` (optional `netbox_cisco_aci.acil3out`)
+- `Forward ACI Application Profiles` (optional `netbox_cisco_aci.aciappprofile`)
+- `Forward ACI Endpoint Groups` (optional `netbox_cisco_aci.aciendpointgroup`)
+- `Forward ACI Contracts` (optional `netbox_cisco_aci.acicontract`)
+- `Forward ACI Contract Subjects` (optional `netbox_cisco_aci.acisubject`)
+- `Forward ACI Filter Entries` (optional `netbox_cisco_aci.acifilterentry`)
 
 `Forward HSRP Groups` is optional and disabled unless `ipam.fhrpgroup` is selected
 for a sync. It imports Forward native HSRP and VRRP group state into NetBox

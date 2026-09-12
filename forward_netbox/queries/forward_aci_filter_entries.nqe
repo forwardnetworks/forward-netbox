@@ -1,0 +1,45 @@
+/**
+ * @intent Forward ACI Filter Entries
+ * @description Discovers ACI filter entries from the APIC `moquery -c vzEntry` custom command.
+ */
+
+import "netbox_utilities";
+
+entryRegex = re`(?:^|\R)#\s+vz\.Entry\s*\R(?:\s*[^\r\n]*\R)*?\s*applyToFrag\s*:\s*(?<apply_to_frag>\S+)\R(?:\s*[^\r\n]*\R)*?\s*arpOpc\s*:\s*(?<arp_opc>\S+)\R(?:\s*[^\r\n]*\R)*?\s*dFromPort\s*:\s*(?<d_from>\S+)\R(?:\s*[^\r\n]*\R)*?\s*dToPort\s*:\s*(?<d_to>\S+)\R(?:\s*[^\r\n]*\R)*?\s*dn\s*:\s*uni/tn-(?<tenant_name>[^/\s]+)/flt-(?<filter_name>[^/\s]+)/e-(?<name>[^\r\n/]+)\R(?:\s*[^\r\n]*\R)*?\s*etherT\s*:\s*(?<ether_t>\S+)\R(?:\s*[^\r\n]*\R)*?\s*prot\s*:\s*(?<prot>\S+)\R(?:\s*[^\r\n]*\R)*?\s*sFromPort\s*:\s*(?<s_from>\S+)\R(?:\s*[^\r\n]*\R)*?\s*sToPort\s*:\s*(?<s_to>\S+)\R(?:\s*[^\r\n]*\R)*?\s*stateful\s*:\s*(?<stateful>\S+)\R(?:\s*[^\r\n]*\R)*?\s*tcpRules[ \t]*:[ \t]*(?<tcp_rules>[^\r\n]*)`;
+aciFabricName(device) =
+  if isPresent(device.locationName) && length(device.locationName) > 0
+  then slugify(toLowerCase(device.locationName))
+  else "forward-aci-fabric";
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+foreach command in device.outputs.commands
+where command.commandType == CommandType.CUSTOM
+where matches(toLowerCase(command.commandText), "moquery -c vzentry*")
+foreach entry_match in regexMatches(command.response, entryRegex)
+let entry = entry_match.data
+let fabric_name = aciFabricName(device)
+where isEmpty(forward_netbox_shard_keys)
+  || fabric_name in forward_netbox_shard_keys
+  || entry.tenant_name in forward_netbox_shard_keys
+  || entry.filter_name in forward_netbox_shard_keys
+select distinct {
+  fabric_name: fabric_name,
+  tenant_name: entry.tenant_name,
+  filter_name: entry.filter_name,
+  name: entry.name,
+  ether_type: entry.ether_t,
+  ip_protocol: entry.prot,
+  source_port_from: entry.s_from,
+  source_port_to: entry.s_to,
+  destination_port_from: entry.d_from,
+  destination_port_to: entry.d_to,
+  tcp_rules: entry.tcp_rules,
+  match_only_fragments: entry.apply_to_frag == "yes",
+  arp_opcode: entry.arp_opc,
+  stateful: entry.stateful == "yes",
+  description: "Forward observed ACI filter entry"
+};

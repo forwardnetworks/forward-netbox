@@ -276,6 +276,15 @@ class PreviewRunner:
 
         return lookup_device_by_name(self, device_name)
 
+    def _lookup_device_by_name_insensitive(self, device_name):
+        # Read-only, exactly as the apply resolves it; a preview that resolved
+        # differently would report the link as drift on every run.
+        from .sync_runner_adapters import ForwardSyncRunnerAdapterMixin
+
+        return ForwardSyncRunnerAdapterMixin._lookup_device_by_name_insensitive(
+            self, device_name
+        )
+
     def _content_type_for(self, model):
         # Read-only: a cached ContentType lookup, which the macaddress path
         # needs to compare an existing assignment against the incoming one.
@@ -1053,6 +1062,11 @@ def _aci_comparisons():
     from .sync_aci import apply_netbox_cisco_aci_acifabric
     from .sync_aci import apply_netbox_cisco_aci_acifilter
     from .sync_aci import apply_netbox_cisco_aci_acil3out
+    from .sync_aci import apply_netbox_cisco_aci_aciappprofile
+    from .sync_aci import apply_netbox_cisco_aci_aciendpointgroup
+    from .sync_aci import apply_netbox_cisco_aci_acicontract
+    from .sync_aci import apply_netbox_cisco_aci_acisubject
+    from .sync_aci import apply_netbox_cisco_aci_acifilterentry
     from .sync_aci import apply_netbox_cisco_aci_acinode
     from .sync_aci import apply_netbox_cisco_aci_acipod
     from .sync_aci import apply_netbox_cisco_aci_acitenant
@@ -1067,6 +1081,11 @@ def _aci_comparisons():
         "netbox_cisco_aci.acibridgedomain": apply_netbox_cisco_aci_acibridgedomain,
         "netbox_cisco_aci.acifilter": apply_netbox_cisco_aci_acifilter,
         "netbox_cisco_aci.acil3out": apply_netbox_cisco_aci_acil3out,
+        "netbox_cisco_aci.aciappprofile": apply_netbox_cisco_aci_aciappprofile,
+        "netbox_cisco_aci.aciendpointgroup": apply_netbox_cisco_aci_aciendpointgroup,
+        "netbox_cisco_aci.acicontract": apply_netbox_cisco_aci_acicontract,
+        "netbox_cisco_aci.acisubject": apply_netbox_cisco_aci_acisubject,
+        "netbox_cisco_aci.acifilterentry": apply_netbox_cisco_aci_acifilterentry,
     }
 
 

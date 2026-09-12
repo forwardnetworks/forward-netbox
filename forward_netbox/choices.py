@@ -36,6 +36,11 @@ FORWARD_ACI_MODELS = (
     "netbox_cisco_aci.acibridgedomain",
     "netbox_cisco_aci.acifilter",
     "netbox_cisco_aci.acil3out",
+    "netbox_cisco_aci.aciappprofile",
+    "netbox_cisco_aci.aciendpointgroup",
+    "netbox_cisco_aci.acicontract",
+    "netbox_cisco_aci.acisubject",
+    "netbox_cisco_aci.acifilterentry",
 )
 
 FORWARD_SUPPORTED_MODELS = (

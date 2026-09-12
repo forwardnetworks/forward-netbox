@@ -268,6 +268,29 @@ ADAPTER_MODEL_BLOCKERS = {
         "blocker_code": "plugin_model_dependencies",
         "blocker_reason": "ACI L3Out writes depend on tenant and VRF resolution.",
     },
+    "netbox_cisco_aci.aciappprofile": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": "ACI application-profile writes depend on tenant resolution.",
+    },
+    "netbox_cisco_aci.aciendpointgroup": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": (
+            "ACI endpoint-group writes depend on application-profile and "
+            "bridge-domain resolution."
+        ),
+    },
+    "netbox_cisco_aci.acicontract": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": "ACI contract writes depend on tenant resolution.",
+    },
+    "netbox_cisco_aci.acisubject": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": "ACI contract-subject writes depend on contract resolution.",
+    },
+    "netbox_cisco_aci.acifilterentry": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": "ACI filter-entry writes depend on filter resolution.",
+    },
 }
 
 APPLY_ENGINE_MODEL_CLASSIFICATIONS = {

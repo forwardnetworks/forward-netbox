@@ -1,11 +1,15 @@
 /**
  * @intent Forward ACI Bridge Domains
- * @description Discovers ACI bridge domains from the APIC fvBD custom command output.
+ * @description Discovers ACI bridge domains from the APIC `moquery -c fvBD` custom command, with each bridge
+ * domain's VRF from `moquery -c fvRsCtx` on the same controller. netbox-cisco-aci requires the VRF, so a
+ * bridge domain whose VRF binding is not collected is not emitted; the readiness diagnostic names the
+ * missing command.
  */
 
 import "netbox_utilities";
 
-bdRegex = re`(?:^|\R)#\s+fv\.BD\s*\R(?:\s*[^\r\n]*\R)*?\s*dn\s*:\s*uni/tn-(?<tenant_name>[^/\s]+)/BD-(?<name>[^\r\n/]+)\R(?:\s*[^\r\n]*\R)*?\s*arpFlood\s*:\s*(?<arp_flooding_enabled>\S+)\R(?:\s*[^\r\n]*\R)*?\s*unicastRoute\s*:\s*(?<unicast_routing_enabled>\S+)\R(?:\s*[^\r\n]*\R)*?\s*limitIpLearnToSubnets\s*:\s*(?<limit_ip_learn_to_subnets>\S+)\R(?:\s*[^\r\n]*\R)*?\s*unkMacUcastAct\s*:\s*(?<l2_unknown_unicast>\S+)\R(?:\s*[^\r\n]*\R)*?\s*unkMcastAct\s*:\s*(?<l3_unknown_multicast>\S+)\R(?:\s*[^\r\n]*\R)*?\s*multiDstPktAct\s*:\s*(?<multi_destination_flooding>\S+)\R(?:\s*[^\r\n]*\R)*?\s*mac\s*:\s*(?<mac_address>\S+)\R(?:\s*[^\r\n]*\R)*?\s*tnFvCtxName\s*:\s*(?<vrf_name>\S+)`;
+bdRegex = re`(?:^|\R)#\s+fv\.BD\s*\R(?:\s*[^\r\n]*\R)*?\s*arpFlood\s*:\s*(?<arp_flooding_enabled>\S+)\R(?:\s*[^\r\n]*\R)*?\s*dn\s*:\s*(?<dn>uni/tn-(?<tenant_name>[^/\s]+)/BD-(?<name>[^\r\n/]+))\R(?:\s*[^\r\n]*\R)*?\s*limitIpLearnToSubnets\s*:\s*(?<limit_ip_learn_to_subnets>\S+)\R(?:\s*[^\r\n]*\R)*?\s*mac\s*:\s*(?<mac_address>\S+)\R(?:\s*[^\r\n]*\R)*?\s*multiDstPktAct\s*:\s*(?<multi_destination_flooding>\S+)\R(?:\s*[^\r\n]*\R)*?\s*unicastRoute\s*:\s*(?<unicast_routing_enabled>\S+)\R(?:\s*[^\r\n]*\R)*?\s*unkMacUcastAct\s*:\s*(?<l2_unknown_unicast>\S+)\R(?:\s*[^\r\n]*\R)*?\s*unkMcastAct\s*:\s*(?<l3_unknown_multicast>\S+)`;
+rsCtxRegex = re`(?:^|\R)#\s+fv\.RsCtx\s*\R(?:\s*[^\r\n]*\R)*?\s*dn\s*:\s*(?<bd_dn>uni/tn-[^/\s]+/BD-[^\r\n/]+)/rsctx\R(?:\s*[^\r\n]*\R)*?\s*tDn\s*:\s*uni/tn-(?<vrf_tenant_name>[^/\s]+)/ctx-(?<vrf_name>[^\r\n/]+)`;
 
 aciFabricName(device) =
   if isPresent(device.locationName) && length(device.locationName) > 0
@@ -20,19 +24,28 @@ where device.platform.vendor != Vendor.FORWARD_CUSTOM
 foreach command in device.outputs.commands
 where command.commandType == CommandType.CUSTOM
 where matches(toLowerCase(command.commandText), "moquery -c fvbd*")
+let vrf_bindings = (
+  foreach ctx_command in device.outputs.commands
+  where ctx_command.commandType == CommandType.CUSTOM
+  where matches(toLowerCase(ctx_command.commandText), "moquery -c fvrsctx*")
+  foreach ctx_match in regexMatches(ctx_command.response, rsCtxRegex)
+  select { bd_dn: ctx_match.data.bd_dn, vrf_tenant_name: ctx_match.data.vrf_tenant_name, vrf_name: ctx_match.data.vrf_name }
+)
 foreach bd_match in regexMatches(command.response, bdRegex)
 let bd = bd_match.data
+let binding = max(foreach b in vrf_bindings where b.bd_dn == bd.dn select b)
+where isPresent(binding)
 let fabric_name = aciFabricName(device)
 where isEmpty(forward_netbox_shard_keys)
   || fabric_name in forward_netbox_shard_keys
   || bd.tenant_name in forward_netbox_shard_keys
   || bd.name in forward_netbox_shard_keys
-  || bd.vrf_name in forward_netbox_shard_keys
+  || binding.vrf_name in forward_netbox_shard_keys
 select distinct {
   fabric_name: fabric_name,
   tenant_name: bd.tenant_name,
-  vrf_tenant_name: bd.tenant_name,
-  vrf_name: bd.vrf_name,
+  vrf_tenant_name: binding.vrf_tenant_name,
+  vrf_name: binding.vrf_name,
   name: bd.name,
   unicast_routing_enabled: bd.unicast_routing_enabled == "yes",
   arp_flooding_enabled: bd.arp_flooding_enabled == "yes",
