@@ -401,6 +401,7 @@ class PreviewRunner:
         values,
         coalesce_sets,
         create_instance_attrs=None,
+        m2m_values=None,
     ):
         """Find the row, never create or update it, and say whether it differs.
 
@@ -426,6 +427,7 @@ class PreviewRunner:
         from .sync_primitives import _model_field_value_matches
         from .sync_primitives import coalesce_lookup
         from .sync_primitives import get_unique_or_raise
+        from .sync_primitives import m2m_link_changes
 
         lookups = _dedupe_lookups(
             [coalesce_lookup(values, *coalesce_set) for coalesce_set in coalesce_sets]
@@ -450,13 +452,15 @@ class PreviewRunner:
             self.last_upsert_would_change = False
             self._record_upsert_outcome(created=True, changed=False)
             return None, True
+        # Links are compared by the same primitive the apply writes with, so
+        # a link-only difference is drift here exactly when it is a write there.
         self.last_upsert_would_change = any(
             not _model_field_value_matches(model, obj, field, value)
             for field, value in _authoritative_update_values(
                 model._meta.label_lower,
                 values,
             ).items()
-        )
+        ) or bool(m2m_link_changes(obj, m2m_values))
         self._record_upsert_outcome(
             created=False, changed=self.last_upsert_would_change
         )

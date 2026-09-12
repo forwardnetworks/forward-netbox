@@ -1134,6 +1134,78 @@ class BulkMergeIntegrationTest(CleanTransactionTestCase):
         self.assertTrue(cve.affected_software.filter(pk=software_version.pk).exists())
         self.assertFalse(ingestion.issues.filter(phase="merge").exists())
 
+    def test_route_map_links_staged_in_a_branch_survive_the_merge(self):
+        # The routing adapter writes `match_prefix_list` through the engine's
+        # `m2m_values` primitive inside the branch; the merge must carry the
+        # through-table rows to production the way it carries the entry.
+        from django.apps import apps
+
+        from forward_netbox.utilities.sync import ForwardSyncRunner
+        from forward_netbox.utilities.sync_routing_policy import (
+            apply_netbox_routing_prefixlistentry,
+        )
+        from forward_netbox.utilities.sync_routing_policy import (
+            apply_netbox_routing_routemapentry,
+        )
+
+        PrefixList = apps.get_model("netbox_routing", "PrefixList")
+        RouteMapEntry = apps.get_model("netbox_routing", "RouteMapEntry")
+        branch = provision_branch(user=self.user, name="Route Map Links")
+        ingestion = self._ingestion_for_branch(branch, "route-map-links")
+        runner = ForwardSyncRunner(
+            sync=ingestion.sync, ingestion=ingestion, client=None, logger_=Mock()
+        )
+
+        with activate_branch(branch):
+            with event_tracking(self.request):
+                self.request.id = uuid.uuid4()
+                apply_netbox_routing_prefixlistentry(
+                    runner,
+                    {
+                        "name": "PL-MERGE",
+                        "list_name": "PL-MERGE",
+                        "device": "rtr-a",
+                        "device_count": 1,
+                        "has_variants": False,
+                        "holder_devices": [],
+                        "family": 4,
+                        "sequence": 10,
+                        "action": "permit",
+                        "prefix": "10.9.0.0/16",
+                        "ge": None,
+                        "le": None,
+                        "eq": None,
+                    },
+                )
+                entry = apply_netbox_routing_routemapentry(
+                    runner,
+                    {
+                        "name": "RM-MERGE",
+                        "map_name": "RM-MERGE",
+                        "device": "rtr-a",
+                        "device_count": 1,
+                        "sequence": 10,
+                        "action": "permit",
+                        "clauses": ["match ip address prefix-list PL-MERGE"],
+                    },
+                )
+            self.assertEqual(
+                list(entry.match_prefix_list.values_list("name", flat=True)),
+                ["PL-MERGE"],
+            )
+
+        self.assertFalse(RouteMapEntry.objects.filter(pk=entry.pk).exists())
+
+        merge_branch(ingestion, user=self.user)
+
+        merged = RouteMapEntry.objects.get(pk=entry.pk)
+        self.assertEqual(
+            list(merged.match_prefix_list.values_list("name", flat=True)),
+            ["PL-MERGE"],
+        )
+        self.assertEqual(PrefixList.objects.filter(name="PL-MERGE").count(), 1)
+        self.assertFalse(ingestion.issues.filter(phase="merge").exists())
+
     def test_candidate_dependency_closing_a_multihop_cycle_is_rejected(self):
         from forward_netbox.utilities.bulk_merge import _acyclic_delete_edges
 

@@ -85,6 +85,10 @@ EXPANDED_COMMUNITY_LIST_REASON = "expanded-community-list"
 NON_NUMERIC_COMMUNITY_REASON = "non-numeric-community"
 POLICY_NAME_TOO_LONG_REASON = "policy-name-too-long"
 SEQUENCE_OUT_OF_RANGE_REASON = "sequence-out-of-range"
+# Route-map entries link to the prefix lists and community lists they match;
+# see `resolve_policy_links` in sync_routing_policy.py.
+ROUTE_MAP_LINK_FALLBACK_REASON = "route-map-link-shared-definition"
+ROUTE_MAP_LINK_UNRESOLVED_REASON = "route-map-link-unresolved"
 
 # ACI node rows whose device link could not be made; see sync_aci.py.
 ACI_NODE_DEVICE_AMBIGUOUS_REASON = "aci-node-device-ambiguous"
@@ -99,6 +103,19 @@ ACI_STATIC_PORT_INTERFACE_MISSING_REASON = "aci-static-port-interface-missing"
 ACI_STATIC_PORT_PATH_UNSUPPORTED_REASON = "aci-static-port-path-unsupported"
 
 ROLLUP_SUMMARY_TEMPLATES = {
+    ROUTE_MAP_LINK_FALLBACK_REASON: (
+        "Linked {total} {model} row(s) to the shared definition of a list "
+        "whose per-device variants were not fetched in this run, so the "
+        "variant the entry's device holds could not be chosen; the JSON "
+        "`match` keeps the configured name. A full run of the prefix-list and "
+        "community-list maps makes the links exact. Entries: {examples}{suffix}."
+    ),
+    ROUTE_MAP_LINK_UNRESOLVED_REASON: (
+        "Stored {total} {model} row(s) without a link to a matched list that "
+        "is not imported under any spelling; the JSON `match` keeps the "
+        "configured name. Enable Forward Routing Prefix Lists and Community "
+        "Lists so the lists import first. Entries: {examples}{suffix}."
+    ),
     ACI_SUBJECT_FILTER_SUBJECT_MISSING_REASON: (
         "Skipped {total} {model} row(s) whose contract subject is not imported. "
         "Enable Forward ACI Contract Subjects so the subjects import first. "

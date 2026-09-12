@@ -47,11 +47,17 @@ from forward_netbox.utilities.sync_routing_policy import (
     delete_netbox_routing_routemapentry,
 )
 from forward_netbox.utilities.sync_routing_policy import EXPANDED_COMMUNITY_LIST_REASON
+from forward_netbox.utilities.sync_routing_policy import new_link_index
 from forward_netbox.utilities.sync_routing_policy import NON_NUMERIC_COMMUNITY_REASON
 from forward_netbox.utilities.sync_routing_policy import parse_route_map_clauses
 from forward_netbox.utilities.sync_routing_policy import policy_object_name
 from forward_netbox.utilities.sync_routing_policy import prefix_length_bounds
 from forward_netbox.utilities.sync_routing_policy import PREFIX_LIST_MODEL
+from forward_netbox.utilities.sync_routing_policy import ROUTE_MAP_LINK_FALLBACK_REASON
+from forward_netbox.utilities.sync_routing_policy import route_map_link_names
+from forward_netbox.utilities.sync_routing_policy import (
+    ROUTE_MAP_LINK_UNRESOLVED_REASON,
+)
 from forward_netbox.utilities.sync_routing_policy import ROUTE_MAP_MODEL
 from forward_netbox.utilities.sync_routing_policy import (
     UNREPRESENTABLE_PREFIX_BOUNDS_REASON,
@@ -152,6 +158,32 @@ class RouteMapClauseParserTest(SimpleTestCase):
         self.assertEqual(
             parsed,
             {"match": None, "set": None, "flow_control": None, "description": ""},
+        )
+
+
+class RouteMapLinkNamesTest(SimpleTestCase):
+    def test_prefix_list_and_community_clauses_name_their_lists(self):
+        parsed = parse_route_map_clauses(
+            [
+                "match ip address prefix-list PL-A PL-B",
+                "match ipv6 address prefix-list PL6",
+                "match ip next-hop prefix-list NH",
+                "match community CL-A exact-match",
+                "match community CL-A",
+                "match tag 100",
+                "set community 64101:1",
+            ]
+        )
+        self.assertEqual(
+            route_map_link_names(parsed),
+            {
+                "match_prefix_list": ["PL-A", "PL-B", "PL6", "NH"],
+                "match_community_list": ["CL-A"],
+            },
+        )
+        self.assertEqual(
+            route_map_link_names({"match": None}),
+            {"match_prefix_list": [], "match_community_list": []},
         )
 
 
@@ -454,6 +486,171 @@ class RoutingPolicyAdapterTest(TestCase):
 
         self.assertTrue(delete_netbox_routing_routemapentry(runner, self._rm_row()))
         self.assertEqual(_routing("RouteMap").objects.count(), 0)
+
+    # --- route-map links ---------------------------------------------------
+
+    def _links(self, entry):
+        return {
+            "prefix": sorted(entry.match_prefix_list.values_list("name", flat=True)),
+            "community": sorted(
+                entry.match_community_list.values_list("name", flat=True)
+            ),
+        }
+
+    def _import_lists(self, runner, *, variants=False):
+        rows = [self._pl_row(has_variants=variants, holder_devices=[])]
+        if variants:
+            rows.append(
+                self._pl_row(
+                    name="PL-OUT@pol-b",
+                    device="pol-b",
+                    device_count=1,
+                    has_variants=True,
+                    holder_devices=["pol-b"],
+                    prefix="10.1.0.0/16",
+                )
+            )
+        for row in rows:
+            apply_netbox_routing_prefixlistentry(runner, row)
+        apply_netbox_routing_communitylistentry(
+            runner, self._cl_row(has_variants=False, holder_devices=[])
+        )
+
+    def test_an_entry_links_the_lists_it_matches(self):
+        runner = self._runner()
+        self._import_lists(runner)
+        entry = apply_netbox_routing_routemapentry(
+            runner,
+            self._rm_row(
+                clauses=[
+                    "match ip address prefix-list PL-OUT",
+                    "match community CL-A",
+                ]
+            ),
+        )
+        self.assertEqual(
+            self._links(entry), {"prefix": ["PL-OUT"], "community": ["CL-A"]}
+        )
+        self.assertEqual(entry.match["ip_address_prefix_list"], ["PL-OUT"])
+        self.assertEqual(runner._aggregated_skip_warning_counts, {})
+
+    def test_the_variant_the_entry_device_holds_is_linked(self):
+        runner = self._runner()
+        self._import_lists(runner, variants=True)
+        on_b = apply_netbox_routing_routemapentry(runner, self._rm_row(device="pol-b"))
+        on_a = apply_netbox_routing_routemapentry(
+            runner, self._rm_row(name="RM-OUT@pol-a", device="pol-a", sequence=10)
+        )
+        self.assertEqual(self._links(on_b)["prefix"], ["PL-OUT@pol-b"])
+        self.assertEqual(self._links(on_a)["prefix"], ["PL-OUT"])
+        # The configured name, not the catalogue spelling, stays in the JSON.
+        self.assertEqual(on_b.match["ip_address_prefix_list"], ["PL-OUT"])
+        self.assertEqual(runner._aggregated_skip_warning_counts, {})
+
+    def test_the_index_the_executor_hands_over_outlives_one_item_runner(self):
+        # A sync builds one runner per plan item; the list items run before
+        # the route-map item. The first acceptance run linked 2,287 entries to
+        # the shared definition because each runner had a private index.
+        from types import SimpleNamespace
+
+        from forward_netbox.utilities.branch_lifecycle import (
+            _routing_policy_link_index,
+        )
+
+        executor = SimpleNamespace()
+        index = _routing_policy_link_index(executor)
+        self.assertIs(_routing_policy_link_index(executor), index)
+
+        lists = self._runner()
+        lists._routing_policy_link_index = index
+        self._import_lists(lists, variants=True)
+        maps = self._runner()
+        maps._routing_policy_link_index = index
+        entry = apply_netbox_routing_routemapentry(maps, self._rm_row(device="pol-b"))
+        self.assertEqual(self._links(entry)["prefix"], ["PL-OUT@pol-b"])
+        self.assertEqual(maps._aggregated_skip_warning_counts, {})
+        self.assertEqual(set(new_link_index()), {"prefixlist", "communitylist"})
+
+    def test_a_list_not_fetched_this_run_falls_back_to_the_shared_definition(self):
+        self._import_lists(self._runner(), variants=True)
+        runner = self._runner()  # a fresh run with no list rows
+        entry = apply_netbox_routing_routemapentry(runner, self._rm_row(device="pol-b"))
+        self.assertEqual(self._links(entry)["prefix"], ["PL-OUT"])
+        self.assertEqual(
+            runner._aggregated_skip_warning_counts.get(
+                (ROUTE_MAP_MODEL, ROUTE_MAP_LINK_FALLBACK_REASON)
+            ),
+            1,
+        )
+
+    def test_an_existing_link_is_kept_when_the_list_rows_are_absent(self):
+        # A diff run or a preview sees no list rows; a converged link to a
+        # variant must neither churn to the shared definition nor read as
+        # drift.
+        runner = self._runner()
+        self._import_lists(runner, variants=True)
+        apply_netbox_routing_routemapentry(runner, self._rm_row(device="pol-b"))
+
+        later = self._runner()
+        entry = apply_netbox_routing_routemapentry(later, self._rm_row(device="pol-b"))
+        self.assertEqual(self._links(entry)["prefix"], ["PL-OUT@pol-b"])
+        self.assertEqual(later._aggregated_skip_warning_counts, {})
+
+        result = compare_model_rows(
+            None, ROUTE_MAP_MODEL, [self._rm_row(device="pol-b")]
+        )
+        self.assertEqual((result["creates"], result["updates"]), (0, 0))
+
+    def test_an_unimported_list_leaves_no_link_and_names_the_reason(self):
+        runner = self._runner()
+        entry = apply_netbox_routing_routemapentry(
+            runner, self._rm_row(clauses=["match ip address prefix-list PL-NOPE"])
+        )
+        self.assertEqual(self._links(entry)["prefix"], [])
+        self.assertEqual(entry.match["ip_address_prefix_list"], ["PL-NOPE"])
+        self.assertEqual(
+            runner._aggregated_skip_warning_counts.get(
+                (ROUTE_MAP_MODEL, ROUTE_MAP_LINK_UNRESOLVED_REASON)
+            ),
+            1,
+        )
+
+    def test_a_link_only_change_is_a_change_and_is_drift(self):
+        runner = self._runner()
+        self._import_lists(runner)
+        apply_netbox_routing_routemapentry(runner, self._rm_row())
+        RouteMapEntry = _routing("RouteMapEntry")
+        RouteMapEntry.objects.get().match_prefix_list.clear()
+
+        result = compare_model_rows(None, ROUTE_MAP_MODEL, [self._rm_row()])
+        self.assertEqual((result["creates"], result["updates"]), (0, 1))
+
+        again = self._runner()
+        self._import_lists(again)
+        entry = apply_netbox_routing_routemapentry(again, self._rm_row())
+        self.assertEqual(self._links(entry)["prefix"], ["PL-OUT"])
+
+    def test_a_dropped_match_removes_the_link(self):
+        runner = self._runner()
+        self._import_lists(runner)
+        apply_netbox_routing_routemapentry(runner, self._rm_row())
+        entry = apply_netbox_routing_routemapentry(
+            runner, self._rm_row(clauses=["match tag 12345"])
+        )
+        self.assertEqual(self._links(entry)["prefix"], [])
+
+    def test_a_converged_entry_issues_no_link_write(self):
+        runner = self._runner()
+        self._import_lists(runner)
+        apply_netbox_routing_routemapentry(runner, self._rm_row())
+        RouteMapEntry = _routing("RouteMapEntry")
+        through = RouteMapEntry.match_prefix_list.through
+        before = list(through.objects.values_list("pk", flat=True))
+
+        again = self._runner()
+        self._import_lists(again)
+        apply_netbox_routing_routemapentry(again, self._rm_row())
+        self.assertEqual(list(through.objects.values_list("pk", flat=True)), before)
 
     def test_the_stored_name_is_the_catalogue_name_the_query_decided(self):
         self.assertEqual(policy_object_name({"name": "TO-DMZ@leaf-1"}), "TO-DMZ@leaf-1")
