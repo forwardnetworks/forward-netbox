@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.9.5
+
+Release candidate; Fix: the numbers an operator reads are current, honest and actionable - the scope panel refreshes itself after every sync with a trend, the uncovered card states the quarantine and counts what is eligible now, an uncovered device can be removed from its own page through the same gates as the bulk prune, an uncovered SNMP endpoint says which endpoint-scope rule excludes it, an ingestion issue's label can never contradict its message, the two recurring issues converge instead of recurring, and the drift comparison no longer pays a query per converged VLAN. Feature: **prefix lists, community lists and route maps** import from device configuration into netbox-routing as a catalogue (shared policy once under its real name, divergent definitions as `<name>@<device>`). Feature: **ACI validated on a real fabric** - fabric identity resolved through the APIC, nodes linked to their devices, an empty ACI map explains itself, and five new maps import application profiles, endpoint groups, contracts, subjects and filter entries. Config backup gains an operator button and its credentialed path is tested end to end. Migrations `0053`-`0054`; org-backed customers run Publish Bundled Queries once after upgrading, and ACI customers collect `moquery -c fvRsCtx` and `moquery -c l3extRsEctx` for bridge domains, L3Outs and endpoint groups.
+
 ## v2.9.4
 
 Fix: every operator diagnostic and remediation is now reachable in the NetBox GUI - the uncovered-device cleanup 2.9.3 shipped as a command flag is a gated button, a wedged sync has a recovery control, ingestion issues say which of them block the baseline, the two device sets the panel counted but would not list are listable in full, a device that refuses a manual delete explains which records refuse it and which of those this plugin can release, and the support bundle carries all of it so a problem we have to look at arrives with its evidence.
