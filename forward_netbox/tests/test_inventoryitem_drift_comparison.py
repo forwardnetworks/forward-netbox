@@ -9,10 +9,11 @@
 #
 # The branch that needed real thought is not a write at all. When `dcim.module`
 # is enabled a module-native row is DELETED rather than upserted, and this
-# comparison's contract has no slot for a delete - the report reads drift as
-# `creates + updates` and accounts for deletes separately. Such a row declines
-# the whole model rather than being folded into a bucket that would double-count
-# it or zero it.
+# comparison's contract has no slot in `creates`/`updates`/`unchanged`/
+# `rejected` for that - so it gets a `deletes` key of its own (2.9.6), folded
+# into `delete_count` by the caller, rather than declining the whole model:
+# `dcim.module` being on is common, and 58,606 other rows should not read
+# "Not measured" because of it.
 from dcim.models import Device
 from dcim.models import DeviceRole
 from dcim.models import DeviceType
@@ -133,7 +134,8 @@ class InventoryItemPreviewTest(TestCase):
         result = compare_model_rows(None, "dcim.inventoryitem", [self._row()])
 
         self.assertEqual(
-            result, {"creates": 1, "updates": 0, "unchanged": 0, "rejected": 0}
+            result,
+            {"creates": 1, "updates": 0, "unchanged": 0, "rejected": 0, "deletes": 0},
         )
 
     def test_a_matching_item_is_unchanged(self):
@@ -154,7 +156,8 @@ class InventoryItemPreviewTest(TestCase):
         result = compare_model_rows(None, "dcim.inventoryitem", [self._row()])
 
         self.assertEqual(
-            result, {"creates": 0, "updates": 0, "unchanged": 1, "rejected": 0}
+            result,
+            {"creates": 0, "updates": 0, "unchanged": 1, "rejected": 0, "deletes": 0},
         )
 
     def test_a_drifted_item_is_an_update(self):
@@ -178,7 +181,8 @@ class InventoryItemPreviewTest(TestCase):
         )
 
         self.assertEqual(
-            result, {"creates": 0, "updates": 1, "unchanged": 0, "rejected": 0}
+            result,
+            {"creates": 0, "updates": 1, "unchanged": 0, "rejected": 0, "deletes": 0},
         )
 
     def test_an_unknown_device_is_rejected(self):
@@ -189,21 +193,26 @@ class InventoryItemPreviewTest(TestCase):
         self.assertEqual(result["rejected"], 1)
         self.assertEqual(result["creates"], 0)
 
-    # --- the delete branch: declines rather than guesses ---------------------
+    # --- the delete branch: a real delete, not a decline ---------------------
 
-    def test_a_module_native_row_declines_the_whole_model(self):
+    def test_a_module_native_row_is_counted_as_a_delete(self):
         # `dcim.module` enabled + a module-native part type means the apply
-        # DELETES this row. The contract has no slot for that, so the honest
-        # answer is no comparison at all.
+        # DELETES this row. It has its own key, not creates/updates/unchanged/
+        # rejected, and the model is still measured.
         result = compare_model_rows(
             _ModuleEnabledSync(),
             "dcim.inventoryitem",
             [self._row(part_type="LINE CARD")],
         )
 
-        self.assertIsNone(result)
+        self.assertEqual(
+            result,
+            {"creates": 0, "updates": 0, "unchanged": 0, "rejected": 0, "deletes": 1},
+        )
 
-    def test_a_module_native_row_deletes_nothing_while_declining(self):
+    def test_a_module_native_row_deletes_nothing_during_the_preview(self):
+        # The preview call returns the sentinel and never reaches the real
+        # delete - that only happens on the actual apply.
         role = InventoryItemRole.objects.create(
             name="Transceiver", slug="transceiver", color="9e9e9e"
         )
@@ -226,16 +235,20 @@ class InventoryItemPreviewTest(TestCase):
 
         self.assertEqual(InventoryItem.objects.count(), before)
 
-    def test_one_module_native_row_declines_the_batch_it_is_in(self):
-        # Not merely the row: the whole model, because a partial count would
-        # understate drift by however many rows were dropped.
+    def test_a_module_native_row_no_longer_declines_its_batch(self):
+        # Before 2.9.6 one such row declined the whole model, so a batch
+        # mixing an ordinary row with a module-native one lost its
+        # measurement entirely. Now each row is counted on its own terms.
         result = compare_model_rows(
             _ModuleEnabledSync(),
             "dcim.inventoryitem",
             [self._row(), self._row(name="Slot 2", part_type="LINE CARD")],
         )
 
-        self.assertIsNone(result)
+        self.assertEqual(
+            result,
+            {"creates": 1, "updates": 0, "unchanged": 0, "rejected": 0, "deletes": 1},
+        )
 
     def test_a_module_native_row_is_compared_normally_when_modules_are_off(self):
         # The delete branch is gated on `dcim.module` being enabled. With it

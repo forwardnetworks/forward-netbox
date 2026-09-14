@@ -225,6 +225,48 @@ class ScopeModuleUiTest(TestCase):
         self.assertTrue(Device.objects.filter(name="dev-a").exists())
         self.assertFalse(Device.objects.filter(name="dev-stale").exists())
 
+    def test_uncovered_card_explains_the_global_tag_list(self):
+        # The tag list is one tag shared by every sync; a customer
+        # bulk-deleted from it reading "546 uncovered" against a sync whose
+        # own card said 107.
+        self._device("dev-a")
+        dev_backfilled = self._device("dev-backfilled")
+        self._claim_scope("dev-a")
+        from forward_netbox.models import ForwardDeviceIdentity
+
+        # `owned_untagged` is decided by ownership (a ForwardDeviceIdentity
+        # from this sync) plus absence from the current tag result - not by
+        # any tag claim, which is the reconciliation's OUTPUT, not its input.
+        ForwardDeviceIdentity.objects.create(
+            sync=self.sync,
+            ingestion=self.ingestion,
+            source_device_key=dev_backfilled.name,
+            device=dev_backfilled,
+        )
+        fwd_client = Mock()
+        fwd_client.run_nqe_query = Mock(
+            return_value=[{"name": "dev-a", "completed": True}]
+        )
+        client = self._superuser_client()
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+        ):
+            self._run_scope_reconciliation_job(fwd_client)
+            resp = client.get(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                    kwargs={"pk": self.sync.pk},
+                )
+            )
+
+        self.assertEqual(resp.status_code, 200)
+        content = resp.content.decode()
+        self.assertIn("shared by every sync", content)
+        list_all_index = content.index("List all")
+        tag_link_index = content.index("Filter devices by tag")
+        self.assertLess(list_all_index, tag_link_index)
+
     def test_scope_reconciliation_view_reports_imported_endpoints(self):
         self.source.parameters = {**self.source.parameters, "sync_endpoints": True}
         self.source.save(update_fields=["parameters"])
@@ -1190,7 +1232,7 @@ class ForwardDeviceOwnershipPanelTest(TestCase):
         self.assertIn("Forward Ownership", rendered)
         self.assertIn("own-sync", rendered)
         self.assertIn("Device identity", rendered)
-        self.assertIn("refuse a manual delete", rendered)
+        self.assertIn("also removes these Forward records", rendered)
         self.assertIn("scope-reconciliation", rendered)
 
     def test_uncovered_claim_is_named_with_its_absence_streak(self):
@@ -1243,7 +1285,7 @@ class ForwardDeviceOwnershipPanelTest(TestCase):
         self.assertEqual(blockers, [("forward_netbox.ForwardDeviceIdentity", 1)])
 
         rendered = self._panel(self.device)
-        self.assertIn("Would refuse a manual delete", rendered)
+        self.assertIn("Would refuse a delete", rendered)
         self.assertIn("forward_netbox.ForwardDeviceIdentity", rendered)
         # Ours, so the prune CAN clear it: the extra warning must not appear.
         self.assertNotIn("belong to another plugin", rendered)

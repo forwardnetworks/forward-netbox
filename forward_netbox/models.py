@@ -1482,6 +1482,49 @@ class ForwardIngestionProvenanceMixin(models.Model):
         return super().save(*args, **kwargs)
 
 
+def release_on_operator_delete(collector, field, sub_objs, using):
+    """PROTECT for the engine, CASCADE for a person deleting a device on main.
+
+    The ownership rows (`ForwardDeviceIdentity`, `ForwardDeviceTagClaim`)
+    hold their device with PROTECT for a reason the merge relies on: a
+    Forward diff delete of a device another sync still claims must be held,
+    not cascaded, and `protecting_relations()` predicts that hold from this
+    very `on_delete`. But the same PROTECT met an operator bulk-deleting
+    uncovered devices from the device list with "3 dependent objects were
+    found" - our three record names, no cause, no remedy, and the device
+    page's explanation nowhere in sight. Bookkeeping ABOUT a device must not
+    hold one hostage (the rule `ForwardDeviceAbsence` already follows).
+
+    The discriminator is who is deleting. Every engine path - the sync's
+    apply, the merge, the prune, the fast baseline - runs under a
+    `NetBoxFakeRequest` the plugin builds for change attribution (or none),
+    and every staging write runs inside a branch; all of them keep PROTECT
+    exactly as before. A real `HttpRequest` on main is a person, in the UI
+    or the REST API, who chose to delete the device: their delete takes
+    every sync's identity and claims for it along, the way the prune's own
+    release would have. A person deleting inside an active branch keeps
+    PROTECT too: these tables are not branch-aware, so a cascade there would
+    delete the claims in main while the device delete stayed staged.
+    `ForwardVirtualParentClaim` is not on this path: a parent with claimed
+    virtual children is a real dependency the panel names.
+    """
+    from django.http import HttpRequest
+    from netbox.context import current_request
+    from netbox_branching.contextvars import active_branch
+
+    request = current_request.get()
+    operator = isinstance(request, HttpRequest) and active_branch.get() is None
+    if not operator:
+        return models.PROTECT(collector, field, sub_objs, using)
+    return models.CASCADE(collector, field, sub_objs, using)
+
+
+# Read by `protecting_relations()`, which otherwise matches `on_delete` by
+# identity with `models.PROTECT`; without this the merge would stop
+# predicting the hold and attempt a delete it used to hold back.
+release_on_operator_delete.protects = True
+
+
 class ForwardDeviceIdentity(
     ForwardIngestionProvenanceMixin,
     ForwardPluginModelDocsMixin,
@@ -1496,7 +1539,7 @@ class ForwardDeviceIdentity(
     source_device_key = models.CharField(max_length=255)
     device = models.ForeignKey(
         "dcim.Device",
-        on_delete=models.PROTECT,
+        on_delete=release_on_operator_delete,
         related_name="+",
     )
     snapshot_id = models.CharField(max_length=100, blank=True, default="")
@@ -1540,7 +1583,7 @@ class ForwardDeviceTagClaim(
     )
     device = models.ForeignKey(
         "dcim.Device",
-        on_delete=models.PROTECT,
+        on_delete=release_on_operator_delete,
         related_name="+",
     )
     tag = models.ForeignKey(
