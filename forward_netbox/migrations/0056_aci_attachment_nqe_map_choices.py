@@ -9,7 +9,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ("contenttypes", "0002_remove_content_type_name"),
-        ("forward_netbox", "0054_aci_tenant_policy_nqe_map_choices"),
+        ("forward_netbox", "0055_operator_delete_releases_ownership"),
     ]
 
     operations = [
