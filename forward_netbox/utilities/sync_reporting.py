@@ -616,9 +616,21 @@ def record_issue(
         and dependency_skip_detail_number == runner.DEPENDENCY_SKIP_ISSUE_DETAIL_LIMIT
         else ""
     )
+    # A caller with no exception in hand has already composed its own
+    # complete, safe sentence - `record_unowned_primary_ip_holder_skip` names
+    # the exact device pks and the remedy, and two Bulk ORM row-shape checks
+    # name the missing field. Synthesizing `(ForwardSyncDataError)` over that
+    # sentence was the actual bug: the caller's `message` argument was
+    # accepted and then unconditionally discarded for every caller except the
+    # dependency-skip summary, so the operator-visible Issues table showed
+    # only the generic template - never the sentence that names the holder
+    # devices and what to do about them. A caller WITH an exception still gets
+    # the schema-derived detail below, which is the message a raw exception
+    # cannot compose for itself.
+    caller_composed_message = exception is None and bool(message)
     message = (
         message
-        if is_dependency_skip_summary
+        if is_dependency_skip_summary or caller_composed_message
         else (
             f"{model_string} row processing {outcome_word} ({detail})."
             f"{identity_sentence}{cap_sentence}"
