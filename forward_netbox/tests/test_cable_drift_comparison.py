@@ -101,7 +101,8 @@ class CablePreviewTest(TestCase):
         result = compare_model_rows(None, "dcim.cable", [self._row()])
 
         self.assertEqual(
-            result, {"creates": 1, "updates": 0, "unchanged": 0, "rejected": 0}
+            result,
+            {"creates": 1, "updates": 0, "unchanged": 0, "rejected": 0, "deletes": 0},
         )
 
     def test_a_matching_cable_is_unchanged(self):
@@ -110,7 +111,8 @@ class CablePreviewTest(TestCase):
         result = compare_model_rows(None, "dcim.cable", [self._row()])
 
         self.assertEqual(
-            result, {"creates": 0, "updates": 0, "unchanged": 1, "rejected": 0}
+            result,
+            {"creates": 0, "updates": 0, "unchanged": 1, "rejected": 0, "deletes": 0},
         )
 
     def test_a_cable_whose_status_drifted_is_an_update(self):
@@ -119,7 +121,8 @@ class CablePreviewTest(TestCase):
         result = compare_model_rows(None, "dcim.cable", [self._row()])
 
         self.assertEqual(
-            result, {"creates": 0, "updates": 1, "unchanged": 0, "rejected": 0}
+            result,
+            {"creates": 0, "updates": 1, "unchanged": 0, "rejected": 0, "deletes": 0},
         )
 
     # --- the refusals, which must not read as drift -------------------------

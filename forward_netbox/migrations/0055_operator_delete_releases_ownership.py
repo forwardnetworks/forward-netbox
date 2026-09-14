@@ -11,7 +11,7 @@ import forward_netbox.models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("dcim", "0241_nullify_empty_cable_end"),
+        ("dcim", "0001_initial"),
         ("forward_netbox", "0054_aci_tenant_policy_nqe_map_choices"),
     ]
 
