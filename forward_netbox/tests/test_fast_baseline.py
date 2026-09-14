@@ -18,6 +18,7 @@ from netbox_dlm.models import CVE
 from rest_framework.test import APIRequestFactory
 
 from forward_netbox.api.serializers import ForwardIngestionSerializer
+from forward_netbox.choices import FORWARD_ACI_MODELS
 from forward_netbox.choices import FORWARD_SUPPORTED_MODELS
 from forward_netbox.choices import ForwardSyncStatusChoices
 from forward_netbox.models import ForwardContributorBaseline
@@ -28,6 +29,8 @@ from forward_netbox.models import ForwardWorkloadState
 from forward_netbox.utilities.branch_budget import BranchWorkload
 from forward_netbox.utilities.executor_base import ForwardExecutorBase
 from forward_netbox.utilities.fast_baseline import _side_models
+from forward_netbox.utilities.fast_baseline import FAST_BASELINE_ALLOWED_MODELS
+from forward_netbox.utilities.fast_baseline import FAST_BASELINE_EXCLUDED_MODELS
 from forward_netbox.utilities.fast_baseline import fast_baseline_locked_decision
 from forward_netbox.utilities.fast_baseline import fast_baseline_static_decision
 from forward_netbox.utilities.fast_baseline import run_fast_baseline_load
@@ -36,6 +39,8 @@ from forward_netbox.utilities.fast_baseline_models import (
     fast_baseline_workload_contract,
 )
 from forward_netbox.utilities.logging import SyncLogging
+from forward_netbox.utilities.query_registry import BUILTIN_OPTIONAL_QUERY_MAPS
+from forward_netbox.utilities.query_registry import BUILTIN_QUERY_MAPS
 from forward_netbox.utilities.workload_normalization import (
     CVE_WITHOUT_IN_SCOPE_VULNERABILITY_DELETE_CONTRACT,
 )
@@ -188,6 +193,133 @@ class FastBaselineLoadTest(TransactionTestCase):
         decision = fast_baseline_static_decision(sync=self.sync, workloads=[mixed])
         self.assertFalse(decision.enabled)
         self.assertEqual(decision.reason_code, "delete_rows_not_supported")
+
+    def test_every_registered_map_model_is_allowlisted_or_excluded(self):
+        # A map whose model is in neither set turns the fast baseline off for
+        # the whole sync the moment an operator enables it, with no warning
+        # until the run is hours late. Name the exclusion and its reason.
+        registered = {
+            str(query_map["model_string"])
+            for query_map in (*BUILTIN_QUERY_MAPS, *BUILTIN_OPTIONAL_QUERY_MAPS)
+        }
+        unaccounted = sorted(
+            registered
+            - FAST_BASELINE_ALLOWED_MODELS
+            - set(FAST_BASELINE_EXCLUDED_MODELS)
+        )
+        self.assertEqual(unaccounted, [])
+        self.assertEqual(
+            sorted(set(FAST_BASELINE_EXCLUDED_MODELS) & FAST_BASELINE_ALLOWED_MODELS),
+            [],
+        )
+        for model_string, reason in FAST_BASELINE_EXCLUDED_MODELS.items():
+            self.assertIn(model_string, registered, model_string)
+            self.assertTrue(str(reason).strip(), model_string)
+        self.assertTrue(set(FORWARD_ACI_MODELS) <= FAST_BASELINE_ALLOWED_MODELS)
+
+    def _aci_workloads(self):
+        rows = {
+            "netbox_cisco_aci.acifabric": {"name": "fab1", "fabric_id": 1},
+            "netbox_cisco_aci.acipod": {
+                "fabric_name": "fab1",
+                "name": "pod-1",
+                "pod_id": 1,
+            },
+            "netbox_cisco_aci.acinode": {
+                "fabric_name": "fab1",
+                "pod_name": "pod-1",
+                "pod_id": 1,
+                "node_id": 101,
+                "name": "FAB1LEAF101",
+                "role": "leaf",
+                "node_type": "leaf",
+            },
+            "netbox_cisco_aci.acitenant": {"fabric_name": "fab1", "name": "common"},
+            "netbox_cisco_aci.acivrf": {
+                "fabric_name": "fab1",
+                "tenant_name": "common",
+                "name": "default",
+            },
+            "netbox_cisco_aci.acibridgedomain": {
+                "fabric_name": "fab1",
+                "tenant_name": "common",
+                "vrf_name": "default",
+                "name": "bd1",
+            },
+            "netbox_cisco_aci.acifilter": {
+                "fabric_name": "fab1",
+                "tenant_name": "common",
+                "name": "icmp",
+            },
+            "netbox_cisco_aci.acil3out": {
+                "fabric_name": "fab1",
+                "tenant_name": "common",
+                "vrf_name": "default",
+                "name": "l3out1",
+            },
+            "netbox_cisco_aci.aciappprofile": {
+                "fabric_name": "fab1",
+                "tenant_name": "common",
+                "name": "ap1",
+            },
+            "netbox_cisco_aci.aciendpointgroup": {
+                "fabric_name": "fab1",
+                "tenant_name": "common",
+                "app_profile_name": "ap1",
+                "name": "epg1",
+            },
+            "netbox_cisco_aci.acicontract": {
+                "fabric_name": "fab1",
+                "tenant_name": "common",
+                "name": "web",
+            },
+            "netbox_cisco_aci.acisubject": {
+                "fabric_name": "fab1",
+                "tenant_name": "common",
+                "contract_name": "web",
+                "name": "http",
+            },
+            "netbox_cisco_aci.acifilterentry": {
+                "fabric_name": "fab1",
+                "tenant_name": "common",
+                "filter_name": "icmp",
+                "name": "echo",
+            },
+        }
+        self.assertEqual(set(rows), set(FORWARD_ACI_MODELS))
+        return [
+            BranchWorkload(
+                model_string=model_string,
+                label=model_string,
+                upsert_rows=[row],
+                sync_mode="full",
+            )
+            for model_string, row in rows.items()
+        ]
+
+    def test_aci_maps_keep_the_fast_baseline_on(self):
+        # Before 2.9.6 enabling one ACI map produced `model_not_allowlisted`
+        # and the whole sync fell back to the branch baseline.
+        for model_string in FORWARD_ACI_MODELS:
+            self.sync.parameters[model_string] = True
+        workloads = [*self.workloads, *self._aci_workloads()]
+        decision = fast_baseline_static_decision(sync=self.sync, workloads=workloads)
+        self.assertTrue(decision.enabled, decision)
+        self.assertEqual(
+            set(FORWARD_ACI_MODELS) & set(decision.context.get("unsupported", ())),
+            set(),
+        )
+
+        blank = list(workloads)
+        blank[-1] = replace(
+            blank[-1],
+            upsert_rows=[{**blank[-1].upsert_rows[0], "filter_name": ""}],
+        )
+        decision = fast_baseline_static_decision(sync=self.sync, workloads=blank)
+        self.assertFalse(decision.enabled)
+        self.assertEqual(decision.reason_code, "unsupported_row_contract")
+        self.assertEqual(decision.context["model"], "netbox_cisco_aci.acifilterentry")
+        self.assertEqual(decision.context["reason"], "required_fields")
 
     def test_relationship_adapter_contract_covers_all_ten_models(self):
         workloads = [

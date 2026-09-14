@@ -42,6 +42,19 @@ FAST_BASELINE_ADAPTER_CONTRACT_MODELS = frozenset(
         "netbox_routing.prefixlistentry",
         "netbox_routing.communitylistentry",
         "netbox_routing.routemapentry",
+        "netbox_cisco_aci.acifabric",
+        "netbox_cisco_aci.acipod",
+        "netbox_cisco_aci.acinode",
+        "netbox_cisco_aci.acitenant",
+        "netbox_cisco_aci.acivrf",
+        "netbox_cisco_aci.acibridgedomain",
+        "netbox_cisco_aci.acifilter",
+        "netbox_cisco_aci.acil3out",
+        "netbox_cisco_aci.aciappprofile",
+        "netbox_cisco_aci.aciendpointgroup",
+        "netbox_cisco_aci.acicontract",
+        "netbox_cisco_aci.acisubject",
+        "netbox_cisco_aci.acifilterentry",
     }
 )
 MODULE_NATIVE_INVENTORY_PART_TYPES = frozenset(
