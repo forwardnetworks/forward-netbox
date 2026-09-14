@@ -476,6 +476,29 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
     kinds, details = census if census is not None else (None, None)
     absence = _absence_summary(out_of_scope, kinds, details)
     unmanaged["owned_absence"] = _absence_summary(owned_untagged_names, kinds, details)
+    # Only `absent` orphans are what `prune_orphan_devices` will actually
+    # delete (it gates on cause, same as the uncovered prune two blocks
+    # below) - a device Forward still reports under different tags, or
+    # classifies as a custom-command source, is a scoping fact, not a
+    # removal. Without this the quarantine badge counted every orphan, so
+    # "10 in quarantine / 97 prune-eligible" on a fleet with untagged
+    # devices among its orphans promised deletions the gate refuses; the
+    # button already only ever deletes the absent ones.
+    out_of_scope_absent_names = (
+        {name for name in out_of_scope if (kinds or {}).get(name) == "absent"}
+        if kinds is not None
+        else set()
+    )
+    out_of_scope_absent_pks = [
+        device_id
+        for device_id, name in previously_managed
+        if name in out_of_scope_absent_names
+    ]
+    # The other reason an orphan is never deletable: still in Forward,
+    # under different tags or as a custom-command source. The card names
+    # this next to the button so "10 held / 97 eligible" cannot be read as
+    # "the other 107 will go once the quarantine clears".
+    out_of_scope_not_prunable = len(out_of_scope) - len(out_of_scope_absent_names)
     # What the uncovered cleanup would actually act on, and how much of it the
     # quarantine is still holding. Without this the panel shows a count of 105
     # and a button that deletes 3, with nothing on the page explaining the gap.
@@ -575,7 +598,12 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         # And the second question is how long the absence has lasted. A device
         # disabled in Forward looks exactly like one that left, so orphans wait
         # out a quarantine before the prune will touch them.
-        "out_of_scope_quarantine": _quarantine_summary(sync, out_of_scope_pks),
+        "out_of_scope_quarantine": (
+            _quarantine_summary(sync, out_of_scope_absent_pks)
+            if kinds is not None
+            else {"available": False}
+        ),
+        "out_of_scope_not_prunable": out_of_scope_not_prunable,
         # "Carries neither include tag" covers two opposite situations. Orphans
         # can read zero while hundreds of devices are untagged, because a device
         # this sync never claimed is not an orphan of it.

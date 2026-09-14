@@ -124,7 +124,8 @@ class FhrpGroupPreviewTest(TestCase):
         result = compare_model_rows(None, "ipam.fhrpgroup", [self._row()])
 
         self.assertEqual(
-            result, {"creates": 1, "updates": 0, "unchanged": 0, "rejected": 0}
+            result,
+            {"creates": 1, "updates": 0, "unchanged": 0, "rejected": 0, "deletes": 0},
         )
 
     def test_a_fully_matching_row_is_unchanged(self):
@@ -133,7 +134,8 @@ class FhrpGroupPreviewTest(TestCase):
         result = compare_model_rows(None, "ipam.fhrpgroup", [self._row()])
 
         self.assertEqual(
-            result, {"creates": 0, "updates": 0, "unchanged": 1, "rejected": 0}
+            result,
+            {"creates": 0, "updates": 0, "unchanged": 1, "rejected": 0, "deletes": 0},
         )
 
     def test_a_group_present_without_its_assignment_is_a_create(self):

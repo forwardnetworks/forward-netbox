@@ -140,7 +140,8 @@ class DlmPreviewTest(TestCase):
         result = compare_model_rows(None, "netbox_dlm.cve", [self._cve_row()])
 
         self.assertEqual(
-            result, {"creates": 1, "updates": 0, "unchanged": 0, "rejected": 0}
+            result,
+            {"creates": 1, "updates": 0, "unchanged": 0, "rejected": 0, "deletes": 0},
         )
 
     def test_a_matching_cve_is_unchanged(self):

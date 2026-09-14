@@ -280,7 +280,8 @@ class AciPreviewTest(TestCase):
         """
         counts = _counts(NODE, [self._node_row(pod_id=9, pod_name="pod-9")])
         self.assertEqual(
-            counts, {"creates": 1, "updates": 0, "unchanged": 0, "rejected": 0}
+            counts,
+            {"creates": 1, "updates": 0, "unchanged": 0, "rejected": 0, "deletes": 0},
         )
 
     def test_a_second_observation_of_a_node_in_one_run_is_unchanged(self):

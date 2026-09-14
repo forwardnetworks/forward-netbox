@@ -137,7 +137,8 @@ class ModulePreviewTest(TestCase):
         result = compare_model_rows(None, "dcim.module", [self._row()])
 
         self.assertEqual(
-            result, {"creates": 1, "updates": 0, "unchanged": 0, "rejected": 0}
+            result,
+            {"creates": 1, "updates": 0, "unchanged": 0, "rejected": 0, "deletes": 0},
         )
 
     def test_an_absent_module_type_is_a_create(self):
@@ -161,7 +162,8 @@ class ModulePreviewTest(TestCase):
         result = compare_model_rows(None, "dcim.module", [self._row()])
 
         self.assertEqual(
-            result, {"creates": 0, "updates": 0, "unchanged": 1, "rejected": 0}
+            result,
+            {"creates": 0, "updates": 0, "unchanged": 1, "rejected": 0, "deletes": 0},
         )
 
     def test_a_drifted_module_is_an_update(self):
@@ -178,7 +180,8 @@ class ModulePreviewTest(TestCase):
         result = compare_model_rows(None, "dcim.module", [self._row()])
 
         self.assertEqual(
-            result, {"creates": 0, "updates": 1, "unchanged": 0, "rejected": 0}
+            result,
+            {"creates": 0, "updates": 1, "unchanged": 0, "rejected": 0, "deletes": 0},
         )
 
     def test_a_row_missing_its_manufacturer_key_is_rejected_not_a_create(self):
