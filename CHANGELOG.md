@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v2.9.6
 
-Release candidate; Manual device deletes release plugin ownership instead of being refused; ACI static port bindings and subject filters; route-map entries link to prefix and community lists; nine operator audits become sync pages; the fast baseline stays on with ACI maps enabled; an ingestion issue keeps its own message
+Manual device deletes release plugin ownership instead of being refused; ACI static port bindings and subject filters; route-map entries link to prefix and community lists; nine operator audits become sync pages; the fast baseline stays on with ACI maps enabled; an ingestion issue keeps its own message
 
 ## v2.9.5
 
