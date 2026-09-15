@@ -338,6 +338,7 @@ class ForwardSyncRunnerAdapterMixin:
         values,
         coalesce_sets,
         create_instance_attrs=None,
+        m2m_values=None,
     ):
         return sync_upsert_values_from_defaults(
             self,
@@ -346,6 +347,7 @@ class ForwardSyncRunnerAdapterMixin:
             values=values,
             coalesce_sets=coalesce_sets,
             create_instance_attrs=create_instance_attrs,
+            m2m_values=m2m_values,
         )
 
     def _apply_model_rows(self, model_string, rows):
