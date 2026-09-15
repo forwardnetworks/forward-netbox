@@ -138,6 +138,17 @@ class ButtonJobAPIActionTest(TestCase):
     # enumerable at all.
     KINDS = tuple((kind, spec[1]) for kind, spec in BUTTON_JOB_SPECS.items())
 
+    # release_foreign_delete_blockers has no whole-set meaning, so an empty
+    # POST is a 400 from its own validation, not a bare-button success -
+    # every other kind must still accept an empty body, which is what this
+    # test enforces for them.
+    EXTRA_POST_DATA = {
+        "release_foreign_delete_blockers": {
+            "device": "1",
+            "expected_blockers": {"netbox_routing.OSPFInstance": 1},
+        },
+    }
+
     @classmethod
     def setUpTestData(cls):
         from django.contrib.auth import get_user_model
@@ -169,14 +180,18 @@ class ButtonJobAPIActionTest(TestCase):
             parameters={"snapshot_id": "latestProcessed"},
         )
 
-    def _post(self, user, action_name):
+    def _post(self, user, action_name, data=None):
         from rest_framework.test import APIRequestFactory
         from rest_framework.test import force_authenticate
 
         from forward_netbox.api.views import ForwardSyncViewSet
 
         factory = APIRequestFactory()
-        request = factory.post(f"/api/plugins/forward/sync/{self.sync.pk}/x/")
+        request = factory.post(
+            f"/api/plugins/forward/sync/{self.sync.pk}/x/",
+            data=data or {},
+            format="json",
+        )
         force_authenticate(request, user=user)
         view = ForwardSyncViewSet.as_view({"post": action_name})
         return view(request, pk=self.sync.pk)
@@ -195,7 +210,9 @@ class ButtonJobAPIActionTest(TestCase):
                     "forward_netbox.jobs.enqueue_forward_job",
                     return_value=real_job,
                 ) as enqueue:
-                    response = self._post(self.admin, kind)
+                    response = self._post(
+                        self.admin, kind, self.EXTRA_POST_DATA.get(kind)
+                    )
                 self.assertEqual(response.status_code, 201, kind)
                 self.assertEqual(response.data["name"], f"btn-api-sync - {suffix}")
                 enqueue.assert_called_once()
@@ -309,6 +326,7 @@ class ButtonJobRunnerParityTest(TestCase):
         "audit_apply_identity": "_audit_apply_identity_work",
         "audit_apic_cimc_readiness": "_audit_apic_cimc_readiness_work",
         "audit_fast_baseline_preflight": "_audit_fast_baseline_preflight_work",
+        "release_foreign_delete_blockers": "_release_foreign_delete_blockers_work",
     }
 
     def test_every_kind_names_its_work_function(self):

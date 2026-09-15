@@ -961,6 +961,103 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
 
     @extend_schema(
         methods=["post"],
+        responses={
+            201: JobSerializer(),
+            202: OpenApiResponse(
+                description=(
+                    '{"status": "already_running"|"blocked_by_sync_run", '
+                    '"job_id": N}'
+                )
+            ),
+            400: OpenApiResponse(
+                description="missing or malformed `device`/`expected_blockers`"
+            ),
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="release-foreign-delete-blockers")
+    def release_foreign_delete_blockers(self, request, pk):
+        """Release exactly the netbox_routing rows named as delete blockers.
+
+        Unlike every other button action here, this one has no whole-set
+        meaning - there is no device to act on without one being named - so
+        it validates its own body rather than going through
+        `_enqueue_button_job_response`, which assumes an empty POST is a
+        complete request.
+        """
+        from ..utilities.sync_facade import button_job_permission
+        from ..utilities.sync_facade import enqueue_button_job
+        from ..utilities.sync_facade import JobAlreadyActive
+        from ..utilities.sync_facade import JobBlockedBySyncRun
+
+        permission = button_job_permission("release_foreign_delete_blockers")
+        if not request.user.has_perm(permission):
+            raise PermissionDenied(
+                f"This user does not have the `{permission}` permission."
+            )
+        data = request.data if isinstance(request.data, dict) else {}
+        try:
+            device_pk = int(data.get("device") or "")
+        except (TypeError, ValueError):
+            return Response(
+                {"detail": "A `device` id is required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        expected_blockers = data.get("expected_blockers")
+        if (
+            not isinstance(expected_blockers, dict)
+            or not expected_blockers
+            or not all(
+                isinstance(label, str) and isinstance(count, int)
+                for label, count in expected_blockers.items()
+            )
+        ):
+            return Response(
+                {
+                    "detail": (
+                        "`expected_blockers` must name at least one blocking "
+                        "row as {label: count}."
+                    )
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        sync = self.get_object()
+        try:
+            job = enqueue_button_job(
+                sync,
+                "release_foreign_delete_blockers",
+                request.user,
+                job_kwargs={
+                    "device_pk": device_pk,
+                    "expected_blockers": expected_blockers,
+                },
+            )
+        except JobBlockedBySyncRun as exc:
+            return Response(
+                {
+                    "status": "blocked_by_sync_run",
+                    "job_id": exc.job.pk,
+                    "detail": (
+                        "This operation is blocked while a Forward sync job "
+                        "is active."
+                    ),
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+        except JobAlreadyActive as exc:
+            return Response(
+                {
+                    "status": "already_running",
+                    "job_id": exc.job.pk,
+                    "detail": "An equivalent job is already queued or running.",
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+        return Response(
+            JobSerializer(job, context={"request": request}).data, status=201
+        )
+
+    @extend_schema(
+        methods=["post"],
         request=EmptySerializer(),
         responses={
             201: JobSerializer(),
