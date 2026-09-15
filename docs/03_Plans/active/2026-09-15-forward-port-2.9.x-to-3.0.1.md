@@ -157,3 +157,9 @@ revert there is invisible to a running deployment.
   slug, generically, and `safe_exception_summary` keeps the full sentence
   for the two reasons only the plugin's own map-enablement message ever
   raises.
+- 2026-09-15: from the same failure, `ForwardSyncForm.clean` now refuses
+  to save a sync whose enabled model has no enabled NQE map, with the
+  run's own sentence on the offending checkbox; that sentence moved from
+  the query fetcher into `query_registry.missing_query_specs_message` so
+  the form and the run cannot drift. (Maps are global, so the checkbox
+  cannot enable one - refusing the save is the honest alternative.)

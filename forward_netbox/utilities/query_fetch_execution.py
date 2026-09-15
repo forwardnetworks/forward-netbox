@@ -15,7 +15,6 @@ from django.db import DatabaseError
 from django.utils.text import slugify
 from rq.timeouts import JobTimeoutException
 
-from ..choices import FORWARD_OPTIONAL_MODELS
 from ..choices import ForwardApplyEngineChoices
 from ..choices import ForwardDiffFallbackModeChoices
 from ..exceptions import ForwardClientError
@@ -83,8 +82,8 @@ from .query_execution_contract import scope_config_fingerprint
 from .query_execution_contract import scope_membership_fingerprint
 from .query_registry import ensure_unique_query_spec_executions
 from .query_registry import get_query_specs
+from .query_registry import missing_query_specs_message
 from .query_registry import only_legacy_safe_default_parameters
-from .query_registry import optional_builtin_query_names_for_model
 from .query_registry import QuerySpec
 from .query_registry import resolve_query_specs_for_client
 from .sync import ForwardSyncRunner
@@ -948,24 +947,7 @@ class ForwardQueryFetcher:
         return jobs
 
     def _missing_query_specs_message(self, model_string: str) -> str:
-        optional_map_names = optional_builtin_query_names_for_model(model_string)
-        if optional_map_names:
-            quoted_names = ", ".join(f"`{name}`" for name in optional_map_names)
-            return (
-                f"No enabled NQE maps were resolved for {model_string}. "
-                f"Enable the {quoted_names} NQE Map or disable the `{model_string}` "
-                "model on the sync."
-            )
-        if model_string in FORWARD_OPTIONAL_MODELS:
-            return (
-                f"No enabled NQE maps were resolved for {model_string}. "
-                f"Enable at least one NQE Map for `{model_string}` or disable the "
-                f"`{model_string}` model on the sync."
-            )
-        return (
-            f"No enabled built-in or custom query maps were resolved for {model_string}. "
-            "Enable at least one NQE Map for this model before running the sync."
-        )
+        return missing_query_specs_message(model_string)
 
     def fetch_workloads(
         self,
