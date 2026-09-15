@@ -522,8 +522,7 @@ class RoutingDanglingAuditCommandTest(TransactionTestCase):
     def test_skips_cleanly_without_plugin(self):
         out = StringIO()
         with patch(
-            "forward_netbox.utilities."
-            "routing_dangling_audit.apps.is_installed",
+            "forward_netbox.utilities." "routing_dangling_audit.apps.is_installed",
             return_value=False,
         ):
             call_command("forward_routing_dangling_audit", stdout=out)
