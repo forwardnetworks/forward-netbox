@@ -163,3 +163,16 @@ revert there is invisible to a running deployment.
   the query fetcher into `query_registry.missing_query_specs_message` so
   the form and the run cannot drift. (Maps are global, so the checkbox
   cannot enable one - refusing the save is the honest alternative.)
+- 2026-09-15: a fifth 2.9.7 item landed on `maint/2.9.x` -
+  `release_foreign_delete_blockers`, releasing exactly the allowlisted
+  `netbox_routing` rows blocking a manual device delete, offered as a
+  button on the device ownership panel - but **NOT carried here**. It
+  builds directly on `describe_delete_blockers` and
+  `ForwardDeviceOwnershipPanel`/`device_ownership_panel.html`, which are
+  2.9.4's/2.9.6's ownership-panel work (Phase 2's `bc73e57` and Phase 4's
+  `da9457f`) and do not exist on `main` yet - `template_content.py` here
+  is still the 967-byte pre-ownership-panel version. Porting this item
+  now would mean pulling forward a slice of Phase 2/4 early and out of
+  the planned dependency order. Carry it forward as part of Phase 2/4
+  instead of as a 2.9.7 patch: see `maint/2.9.x` commit `c2f61a5` for the
+  full change to re-apply once `describe_delete_blockers` exists here.
