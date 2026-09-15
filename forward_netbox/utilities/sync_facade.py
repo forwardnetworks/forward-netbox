@@ -575,6 +575,39 @@ BUTTON_JOB_SPECS = {
         "config backup",
         "forward_netbox.run_forwardsync",
     ),
+    # The read-only audits that talk to Forward (utilities/audit_reports.py).
+    # Each is a button so a GET of its report page never spends an NQE
+    # execution; none of them writes anything, so they take the run permission.
+    "audit_primary_ip": (
+        "forward_netbox.jobs.AuditPrimaryIpJob",
+        "audit primary IP resolution",
+        "forward_netbox.run_forwardsync",
+    ),
+    "audit_global_ipam": (
+        "forward_netbox.jobs.AuditGlobalIpamJob",
+        "audit stale global IPAM",
+        "forward_netbox.run_forwardsync",
+    ),
+    "audit_stale_hardware_notices": (
+        "forward_netbox.jobs.AuditStaleHardwareNoticesJob",
+        "audit stale hardware notices",
+        "forward_netbox.run_forwardsync",
+    ),
+    "audit_apply_identity": (
+        "forward_netbox.jobs.AuditApplyIdentityJob",
+        "audit apply identity",
+        "forward_netbox.run_forwardsync",
+    ),
+    "audit_apic_cimc_readiness": (
+        "forward_netbox.jobs.AuditApicCimcReadinessJob",
+        "audit APIC CIMC readiness",
+        "forward_netbox.run_forwardsync",
+    ),
+    "audit_fast_baseline_preflight": (
+        "forward_netbox.jobs.AuditFastBaselinePreflightJob",
+        "audit fast-baseline eligibility",
+        "forward_netbox.run_forwardsync",
+    ),
 }
 
 _ACTIVE_JOB_STATUSES = (

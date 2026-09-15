@@ -303,6 +303,12 @@ class ButtonJobRunnerParityTest(TestCase):
         "config_backup": "_run_forward_config_backup_work",
         "recover_stuck_sync": "_recover_stuck_sync_work",
         "tag_delete_eligible_ipam": "_tag_delete_eligible_ipam_work",
+        "audit_primary_ip": "_audit_primary_ip_work",
+        "audit_global_ipam": "_audit_global_ipam_work",
+        "audit_stale_hardware_notices": "_audit_stale_hardware_notices_work",
+        "audit_apply_identity": "_audit_apply_identity_work",
+        "audit_apic_cimc_readiness": "_audit_apic_cimc_readiness_work",
+        "audit_fast_baseline_preflight": "_audit_fast_baseline_preflight_work",
     }
 
     def test_every_kind_names_its_work_function(self):
@@ -331,7 +337,7 @@ class ButtonJobRunnerParityTest(TestCase):
                     object_id=self.sync.pk,
                     name=runner_cls.name,
                     status=JobStatusChoices.STATUS_RUNNING,
-                    job_id=f"123e4567-e89b-12d3-a456-42661417610{index}",
+                    job_id=f"123e4567-e89b-12d3-a456-4266141761{index:02d}",
                 )
                 with patch(work_path) as work:
                     runner_cls(job).run()

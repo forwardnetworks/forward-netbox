@@ -99,6 +99,15 @@ class Command(BaseCommand):
             default=None,
         )
         parser.add_argument("--disable-bulk-orm", action="store_true")
+        parser.add_argument(
+            "--force-unchanged",
+            action="store_true",
+            help=(
+                "Run the queries even when the snapshot is unchanged since the "
+                "last baseline ingestion (an acceptance re-run on the same "
+                "snapshot is otherwise a no-op)."
+            ),
+        )
 
     def handle(self, *args, **options):
         self._validate_options(options)
@@ -140,7 +149,10 @@ class Command(BaseCommand):
             )
             return
 
-        sync.sync(max_changes_per_staging_item=options["max_changes_per_staging_item"])
+        sync.sync(
+            max_changes_per_staging_item=options["max_changes_per_staging_item"],
+            force_unchanged=bool(options.get("force_unchanged")),
+        )
         sync.refresh_from_db()
         ingestion = sync.last_ingestion
         if ingestion is None:

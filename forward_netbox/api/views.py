@@ -992,6 +992,84 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
             request, "prune_stale_hardware_notices"
         )
 
+    # Read-only audits that talk to Forward; the report pages render the
+    # latest job. Same overlap guard and permission check as every button.
+    @extend_schema(
+        methods=["post"],
+        request=EmptySerializer(),
+        responses={
+            201: JobSerializer(),
+            202: OpenApiResponse(description="already running"),
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="audits/primary-ip")
+    def audit_primary_ip(self, request, pk):
+        return self._enqueue_button_job_response(request, "audit_primary_ip")
+
+    @extend_schema(
+        methods=["post"],
+        request=EmptySerializer(),
+        responses={
+            201: JobSerializer(),
+            202: OpenApiResponse(description="already running"),
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="audits/global-ipam")
+    def audit_global_ipam(self, request, pk):
+        return self._enqueue_button_job_response(request, "audit_global_ipam")
+
+    @extend_schema(
+        methods=["post"],
+        request=EmptySerializer(),
+        responses={
+            201: JobSerializer(),
+            202: OpenApiResponse(description="already running"),
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="audits/stale-hardware-notices")
+    def audit_stale_hardware_notices(self, request, pk):
+        return self._enqueue_button_job_response(
+            request, "audit_stale_hardware_notices"
+        )
+
+    @extend_schema(
+        methods=["post"],
+        request=EmptySerializer(),
+        responses={
+            201: JobSerializer(),
+            202: OpenApiResponse(description="already running"),
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="audits/apply-identity")
+    def audit_apply_identity(self, request, pk):
+        return self._enqueue_button_job_response(request, "audit_apply_identity")
+
+    @extend_schema(
+        methods=["post"],
+        request=EmptySerializer(),
+        responses={
+            201: JobSerializer(),
+            202: OpenApiResponse(description="already running"),
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="audits/apic-cimc-readiness")
+    def audit_apic_cimc_readiness(self, request, pk):
+        return self._enqueue_button_job_response(request, "audit_apic_cimc_readiness")
+
+    @extend_schema(
+        methods=["post"],
+        request=EmptySerializer(),
+        responses={
+            201: JobSerializer(),
+            202: OpenApiResponse(description="already running"),
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="audits/fast-baseline-preflight")
+    def audit_fast_baseline_preflight(self, request, pk):
+        return self._enqueue_button_job_response(
+            request, "audit_fast_baseline_preflight"
+        )
+
 
 class ForwardIngestionViewSet(NetBoxReadOnlyModelViewSet):
     queryset = ForwardIngestion.objects.all()
