@@ -35,7 +35,7 @@ VALIDATED_BRANCHING_SERIES = "1.2"
 # integrations. netbox-dlm 0.10.0 raised its ceiling to 4.7.99 on 2026-09-03;
 # netbox-validity 3.6.0 and netbox-peering-manager 0.3.1 followed in released
 # versions; netbox-routing's 4.7 support is merged on upstream main (0.4.4)
-# and is installed from that git ref until it is tagged. netbox-cisco-aci
+# and is installed from that branch archive until it is tagged. netbox-cisco-aci
 # 0.4.0 still declares `max_version = "4.6.99"`, and NetBox refuses to start
 # with a plugin outside its declared range. It cannot be installed here, so
 # listing it would be a claim about a runtime nobody can assemble.

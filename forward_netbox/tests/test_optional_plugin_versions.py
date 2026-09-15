@@ -46,7 +46,7 @@ class OptionalDistributionVersionSetTest(SimpleTestCase):
 
     On NetBox 4.7 they hold four entries - netbox-dlm 0.10.0, netbox-validity
     3.6.0, netbox-peering-manager 0.3.1, and netbox-routing 0.4.4 (upstream
-    main, the first netbox-routing to declare 4.7, installed from its git ref
+    main, the first netbox-routing to declare 4.7, installed from its branch archive
     until it is tagged). netbox-cisco-aci still declares a max_version in the
     4.6 series, and NetBox refuses to start with a plugin outside its declared
     range, so it cannot be installed on this runtime. Claiming a validated

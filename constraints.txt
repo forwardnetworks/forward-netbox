@@ -14,9 +14,9 @@ netbox-peering-manager==0.3.1
 # netbox-routing is deliberately absent while it installs from upstream main:
 # its 4.7 support (0.4.4) is merged but not tagged, so no PyPI version can be
 # pinned here - and this file is fed to pip-audit, which resolves from PyPI
-# and fails on a pin it cannot find. The Dockerfile installs the git ref, and
+# and fails on a pin it cannot find. The Dockerfile installs the branch archive, and
 # validated_runtime.py holds the installed version to exactly 0.4.4, failing
-# closed if the ref ever reports something else. Restore the pin the moment
+# closed if the archive ever reports something else. Restore the pin the moment
 # upstream tags 0.4.4.
 netbox-validity==3.6.0
 pyzipper==0.4.0
