@@ -50,6 +50,8 @@ from .utilities.forward_api import MAX_NQE_FETCH_ALL_MAX_PAGES
 from .utilities.forward_api import MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
 from .utilities.forward_api import MAX_NQE_PAGE_SIZE
 from .utilities.forward_api import MAX_QUERY_FETCH_CONCURRENCY
+from .utilities.query_registry import missing_query_specs_message
+from .utilities.query_registry import models_without_query_specs
 from .utilities.runtime_guidance import DEFAULT_PUSHDOWN_DIFF_WARN_RATIO
 from .utilities.runtime_guidance import DEFAULT_PUSHDOWN_FALLBACK_WARN_RATE
 from .utilities.runtime_guidance import (
@@ -1453,11 +1455,19 @@ class ForwardSyncForm(NetBoxModelForm):
                 raise forms.ValidationError(
                     "Selected snapshot is not available for the source network."
                 )
-        if not any(
-            cleaned.get(model_string, False)
+        enabled_model_strings = [
+            model_string
             for model_string in forward_configured_models()
-        ):
+            if cleaned.get(model_string, False)
+        ]
+        if not enabled_model_strings:
             raise forms.ValidationError("Select at least one NetBox model to sync.")
+        # NQE maps are global, not per sync, so the checkbox cannot enable one;
+        # say at save time exactly what the run would fail with otherwise.
+        for model_string in models_without_query_specs(
+            enabled_model_strings, self.instance.get_maps()
+        ):
+            self.add_error(model_string, missing_query_specs_message(model_string))
         if cleaned.get("require_fast_baseline_eligibility") and not cleaned.get(
             "enable_fast_baseline_load"
         ):
