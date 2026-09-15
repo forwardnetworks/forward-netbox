@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.9.6
+
+Release candidate; Manual device deletes release plugin ownership instead of being refused; ACI static port bindings and subject filters; route-map entries link to prefix and community lists; nine operator audits become sync pages; the fast baseline stays on with ACI maps enabled; an ingestion issue keeps its own message
+
 ## v2.9.5
 
 Fix: the numbers an operator reads are current, honest and actionable - the scope panel refreshes itself after every sync with a trend, the uncovered card states the quarantine and counts what is eligible now, an uncovered device can be removed from its own page through the same gates as the bulk prune, an uncovered SNMP endpoint says which endpoint-scope rule excludes it, an ingestion issue's label can never contradict its message, the two recurring issues converge instead of recurring, and the drift comparison no longer pays a query per converged VLAN. Feature: **prefix lists, community lists and route maps** import from device configuration into netbox-routing as a catalogue (shared policy once under its real name, divergent definitions as `<name>@<device>`). Feature: **ACI validated on a real fabric** - fabric identity resolved through the APIC, nodes linked to their devices, an empty ACI map explains itself, and five new maps import application profiles, endpoint groups, contracts, subjects and filter entries. Config backup gains an operator button and its credentialed path is tested end to end. Migrations `0053`-`0054`; org-backed customers run Publish Bundled Queries once after upgrading, and ACI customers collect `moquery -c fvRsCtx` and `moquery -c l3extRsEctx` for bridge domains, L3Outs and endpoint groups.
