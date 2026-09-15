@@ -44,17 +44,19 @@ from forward_netbox.utilities.version_series import series_matches
 class OptionalDistributionVersionSetTest(SimpleTestCase):
     """The validated optional-distribution sets, whatever they currently hold.
 
-    On NetBox 4.7 they hold one entry: netbox-dlm 0.10.0, the first release of
-    any optional plugin to raise its ceiling past 4.6.99. netbox-cisco-aci,
-    netbox-peering-manager, netbox-routing and netbox-validity still declare a
-    max_version in the 4.6 series, and NetBox refuses to start with a plugin
-    outside its declared range, so none of them can be installed on this
-    runtime. Claiming a validated version for a plugin nobody can install would
-    be a claim about a runtime nobody can assemble.
+    On NetBox 4.7 they hold four entries - netbox-dlm 0.10.0, netbox-validity
+    3.6.0, netbox-peering-manager 0.3.1, and netbox-routing 0.4.4 (upstream
+    main, the first netbox-routing to declare 4.7, installed from its git ref
+    until it is tagged). netbox-cisco-aci still declares a max_version in the
+    4.6 series, and NetBox refuses to start with a plugin outside its declared
+    range, so it cannot be installed on this runtime. Claiming a validated
+    version for a plugin nobody can install would be a claim about a runtime
+    nobody can assemble.
 
-    The 4.6 validations of netbox-dlm 0.4.1 through 0.9.1 are deliberately NOT
-    carried over: they were evidence about 4.6, and none of those releases can
-    boot here anyway. They are recorded in
+    The 4.6 validations - netbox-dlm 0.4.1 through 0.9.1, netbox-routing
+    0.4.3, netbox-peering-manager 0.3.0, netbox-validity 3.5.2 - are
+    deliberately NOT carried over: they were evidence about 4.6, and none of
+    those releases can boot here anyway. They are recorded in
     `docs/03_Plans/active/2026-09-02-netbox-4.7-runtime.md`.
     """
 
@@ -66,13 +68,18 @@ class OptionalDistributionVersionSetTest(SimpleTestCase):
             SET_BASED_MERGE_SUPPORTED_OPTIONAL_DISTRIBUTIONS,
         )
 
-    def test_only_netbox_dlm_0_10_0_is_validated_on_this_runtime(self):
+    def test_only_the_versions_that_boot_on_4_7_are_validated(self):
         self.assertEqual(
             dict(COPY_SQL_SUPPORTED_OPTIONAL_DISTRIBUTIONS),
-            {"netbox-dlm": frozenset({"0.10.0"})},
-            "the other four optional plugins cannot be installed on NetBox "
-            "4.7, so a validated version for one is a claim about an "
-            "unbuildable runtime; and no netbox-dlm before 0.10.0 can boot here",
+            {
+                "netbox-dlm": frozenset({"0.10.0"}),
+                "netbox-peering-manager": frozenset({"0.3.1"}),
+                "netbox-routing": frozenset({"0.4.4"}),
+                "netbox-validity": frozenset({"3.6.0"}),
+            },
+            "netbox-cisco-aci cannot be installed on NetBox 4.7, so a "
+            "validated version for it is a claim about an unbuildable "
+            "runtime; and no earlier release of any of these four can boot here",
         )
 
     def test_any_entry_that_returns_names_a_real_version(self):
@@ -119,10 +126,12 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
     def _decide(self, *, optional_plugins=None, plugin_apps=None, netbox="4.7.0"):
         """A runtime tuple in the 4.7 shape.
 
-        The default is the validated tuple: forward_netbox, Branching and
-        netbox-dlm 0.10.0. Two things can be varied under it - the netbox-dlm
-        version (the thing customers change under us) and whether an UNEXPECTED
-        app is present - and both must fail closed.
+        The default is the validated tuple: forward_netbox, Branching and the
+        four optional plugins that boot on 4.7 at their validated versions.
+        Spelled out rather than derived from the declaration, so the fixture
+        is an independent cross-check of it. Two things can be varied under it
+        - an optional plugin's version (the thing customers change under us)
+        and whether an UNEXPECTED app is present - and both must fail closed.
         """
         from forward_netbox.utilities import fast_baseline
 
@@ -131,12 +140,25 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
             "branching": "1.2.0",
             "forward_netbox": fast_baseline.forward_config.version,
             "optional_plugins": (
-                {"netbox-dlm": "0.10.0"}
+                {
+                    "netbox-dlm": "0.10.0",
+                    "netbox-peering-manager": "0.3.1",
+                    "netbox-routing": "0.4.4",
+                    "netbox-validity": "3.6.0",
+                }
                 if optional_plugins is None
                 else optional_plugins
             ),
             "plugin_apps": sorted(
-                plugin_apps or {"forward_netbox", "netbox_branching", "netbox_dlm"}
+                plugin_apps
+                or {
+                    "forward_netbox",
+                    "netbox_branching",
+                    "netbox_dlm",
+                    "netbox_peering_manager",
+                    "netbox_routing",
+                    "validity",
+                }
             ),
         }
         with patch.object(
@@ -163,7 +185,7 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
         self.assertFalse(decision.enabled)
         self.assertEqual(decision.reason_code, "unsupported_runtime_tuple")
 
-    def test_netbox_dlm_absent_from_plugins_fails_closed(self):
+    def test_a_validated_app_absent_from_plugins_fails_closed(self):
         # The set is an exact match in both directions: an app the validated
         # tuple expects and PLUGINS lacks is as much a mismatch as a stranger.
         decision = self._decide(
@@ -195,7 +217,13 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
 
         json.dumps(detail)
         self.assertEqual(
-            detail["expected"]["optional_plugins"], {"netbox-dlm": ["0.10.0"]}
+            detail["expected"]["optional_plugins"],
+            {
+                "netbox-dlm": ["0.10.0"],
+                "netbox-peering-manager": ["0.3.1"],
+                "netbox-routing": ["0.4.4"],
+                "netbox-validity": ["3.6.0"],
+            },
         )
 
 

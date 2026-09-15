@@ -10,7 +10,10 @@ httpx==0.28.1
 netbox-cisco-aci==0.4.0
 netbox-dlm==0.10.0
 netboxlabs-netbox-branching==1.2.0
-netbox-peering-manager==0.3.0
-netbox-routing==0.4.3
-netbox-validity==3.5.2
+netbox-peering-manager==0.3.1
+# netbox-routing 0.4.4 is upstream main (4.7 support, unreleased); the
+# Dockerfile installs it from the git ref and this pin is the version that
+# ref's metadata reports, so the constraint check still holds it to a value.
+netbox-routing==0.4.4
+netbox-validity==3.6.0
 pyzipper==0.4.0

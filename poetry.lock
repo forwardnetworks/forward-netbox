@@ -1589,20 +1589,20 @@ requests = ">=2.28,<3.0"
 
 [[package]]
 name = "netbox-peering-manager"
-version = "0.3.0"
+version = "0.3.1"
 description = "NetBox plugin for peering session management with PeeringDB and IRR integration. Builds on netbox-routing."
 optional = true
 python-versions = ">=3.12"
 groups = ["main"]
 markers = "python_version >= \"3.12\" and (extra == \"peering\" or extra == \"integrations\")"
 files = [
-    {file = "netbox_peering_manager-0.3.0-py3-none-any.whl", hash = "sha256:e3642d1736b65a42b727ad44e3ec0ba7274a42638ae7968f491a9cf6b1ac6e00"},
-    {file = "netbox_peering_manager-0.3.0.tar.gz", hash = "sha256:320d806ad698ec3841626077df60ee0ada68e0053688cf4fda16baf7afb7869f"},
+    {file = "netbox_peering_manager-0.3.1-py3-none-any.whl", hash = "sha256:e3a5fccfc25780b5ff14c0bc2c429db9d21d5c136c6d6dedd419cac25c931600"},
+    {file = "netbox_peering_manager-0.3.1.tar.gz", hash = "sha256:efdf84da5b161c93ae9273ec6f8e7a0232426b55cfab713c3ce6e535cde4adae"},
 ]
 
 [package.dependencies]
 httpx = "*"
-netbox-routing = ">=0.4.2"
+netbox-routing = ">=0.4.3"
 tenacity = "*"
 
 [package.extras]
@@ -1627,15 +1627,15 @@ django-polymorphic = "*"
 
 [[package]]
 name = "netbox-validity"
-version = "3.5.2"
+version = "3.6.0"
 description = "NetBox plugin for network devices validation"
 optional = true
 python-versions = ">=3.10"
 groups = ["main"]
 markers = "python_version >= \"3.12\" and (extra == \"validity\" or extra == \"integrations\")"
 files = [
-    {file = "netbox_validity-3.5.2-py3-none-any.whl", hash = "sha256:112fca3ece715a59be829e93349ec11706b63b84830bf52d280abafd184ade33"},
-    {file = "netbox_validity-3.5.2.tar.gz", hash = "sha256:ac698800b69eb97fffb30c13d6651b15e90320a3f43a519db3514c9dc97156eb"},
+    {file = "netbox_validity-3.6.0-py3-none-any.whl", hash = "sha256:087218db0d494e85e2b116a5d707a5340b89d0b09b55117f8b5361e064cc4eb4"},
+    {file = "netbox_validity-3.6.0.tar.gz", hash = "sha256:acd18803083f16dbaeec892b972a6f41df80298fa7dcc2cbbd76382b9fae92e3"},
 ]
 
 [package.dependencies]
@@ -1655,7 +1655,7 @@ xmltodict = "<1"
 
 [package.extras]
 dev = ["debugpy (==1.8.19)", "factory_boy (==3.3.3)", "ipython", "pre-commit (==4.5.1)", "pytest (==9.0.3)", "pytest-cov (==7.1.0)", "pytest-django (==4.12.0)", "pytest-subtests (==0.15.0)", "ruff (==0.14.11)", "tomli (==2.4.0)"]
-docs = ["mkdocs (==1.6.1)", "mkdocs-include-markdown-plugin (==7.1.8)", "mkdocs-material (==9.5.34)"]
+docs = ["mkdocs (==1.6.1)", "mkdocs-include-markdown-plugin (==7.3.0)", "mkdocs-material (==9.7.7)"]
 
 [[package]]
 name = "netboxlabs-netbox-branching"
@@ -2829,4 +2829,4 @@ validity = ["netbox-validity"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.15"
-content-hash = "bac10503a7d8b778c59093aa830fb70c8b374b260b18bff6381df0a22e1542c5"
+content-hash = "1c38b28da6b53b72a34569356c7297a13511bc67a067036c60aecbf890106703"

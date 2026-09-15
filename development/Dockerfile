@@ -16,13 +16,20 @@ COPY development/launch-netbox.sh /opt/netbox/launch-netbox.sh
 RUN chmod +x /opt/netbox/launch-netbox.sh
 
 RUN uv pip install --constraint ${CONSTRAINTS} ${PACKAGE}
-# netbox-dlm is the one optional plugin on NetBox 4.7: 0.10.0 raised its
-# ceiling to 4.7.99. The other four - netbox-cisco-aci, netbox-peering-manager,
-# netbox-routing, netbox-validity - still declare `max_version = "4.6.99"`, and
-# NetBox refuses to start with a plugin outside its declared range, so the
-# image would not boot. Each returns here the moment its upstream raises its
-# ceiling. The 4.6 lane keeps all five on 2.9.x.
-RUN uv pip install --constraint ${CONSTRAINTS} netbox-dlm
+# Four of the five optional plugins run on NetBox 4.7: netbox-dlm 0.10.0,
+# netbox-validity 3.6.0 and netbox-peering-manager 0.3.1 raised their ceilings
+# in released versions; netbox-routing's 4.7 support is merged on upstream
+# main (0.4.4) but not yet tagged, so it installs from the git ref until it
+# is - the constraint pin holds it to the version that ref reports.
+# netbox-cisco-aci 0.4.0 still declares `max_version = "4.6.99"`, and NetBox
+# refuses to start with a plugin outside its declared range, so the image would
+# not boot with it; it returns here the moment its upstream raises the ceiling.
+# The 4.6 lane keeps all five on 2.9.x.
+# The git ref goes first: netbox-peering-manager depends on netbox-routing, and
+# resolving that from PyPI against the 0.4.4 pin would fail before the ref
+# had a chance to satisfy it.
+RUN uv pip install --constraint ${CONSTRAINTS} "netbox-routing @ git+https://github.com/DanSheps/netbox-routing@main"
+RUN uv pip install --constraint ${CONSTRAINTS} netbox-dlm netbox-validity netbox-peering-manager
 RUN uv pip install "watchdog[watchmedo]"
 RUN uv pip install coverage
 
