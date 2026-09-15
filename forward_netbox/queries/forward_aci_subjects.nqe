@@ -1,11 +1,15 @@
 /**
  * @intent Forward ACI Contract Subjects
- * @description Discovers ACI contract subjects from the APIC `moquery -c vzSubj` custom command.
+ * @description Discovers ACI contract subjects from the APIC `moquery -c vzSubj` custom command. A subject
+ * applies in both directions unless `moquery -c vzRsSubjFiltAtt` on the same controller shows a filter
+ * attached under one of its in/out terminals.
  */
 
 import "netbox_utilities";
 
 subjectRegex = re`(?:^|\R)#\s+vz\.Subj\s*\R(?:\s*[^\r\n]*\R)*?\s*dn\s*:\s*uni/tn-(?<tenant_name>[^/\s]+)/brc-(?<contract_name>[^/\s]+)/subj-(?<name>[^\r\n/]+)\R(?:\s*[^\r\n]*\R)*?\s*prio\s*:\s*(?<prio>\S+)\R(?:\s*[^\r\n]*\R)*?\s*revFltPorts\s*:\s*(?<rev_flt_ports>\S+)\R(?:\s*[^\r\n]*\R)*?\s*targetDscp\s*:\s*(?<target_dscp>\S+)`;
+// Filter attachments under `intmnl` / `outtmnl` mark a subject as directional.
+terminalAttachmentRegex = re`(?:^|\R)\s*dn\s*:\s*(?<subject_dn>uni/tn-[^/\s]+/brc-[^/\s]+/subj-[^/\s]+)/(?:intmnl|outtmnl)/rssubjFiltAtt-\S+`;
 aciFabricName(device) =
   if isPresent(device.locationName) && length(device.locationName) > 0
   then slugify(toLowerCase(device.locationName))
@@ -19,8 +23,16 @@ where device.platform.vendor != Vendor.FORWARD_CUSTOM
 foreach command in device.outputs.commands
 where command.commandType == CommandType.CUSTOM
 where matches(toLowerCase(command.commandText), "moquery -c vzsubj*")
+let directional_subjects = (
+  foreach att_command in device.outputs.commands
+  where att_command.commandType == CommandType.CUSTOM
+  where matches(toLowerCase(att_command.commandText), "moquery -c vzrssubjfiltatt*")
+  foreach att_match in regexMatches(att_command.response, terminalAttachmentRegex)
+  select distinct att_match.data.subject_dn
+)
 foreach subject_match in regexMatches(command.response, subjectRegex)
 let subject = subject_match.data
+let subject_dn = "uni/tn-" + subject.tenant_name + "/brc-" + subject.contract_name + "/subj-" + subject.name
 let fabric_name = aciFabricName(device)
 where isEmpty(forward_netbox_shard_keys)
   || fabric_name in forward_netbox_shard_keys
@@ -31,6 +43,7 @@ select distinct {
   tenant_name: subject.tenant_name,
   contract_name: subject.contract_name,
   name: subject.name,
+  apply_both_directions: !(subject_dn in directional_subjects),
   reverse_filter_ports: subject.rev_flt_ports == "yes",
   qos_class: subject.prio,
   target_dscp: subject.target_dscp,

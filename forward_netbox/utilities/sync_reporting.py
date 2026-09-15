@@ -91,8 +91,46 @@ ACI_NODE_DEVICE_AMBIGUOUS_REASON = "aci-node-device-ambiguous"
 ACI_NODE_DEVICE_MISSING_REASON = "aci-node-device-missing"
 ACI_EPG_BRIDGE_DOMAIN_MISSING_REASON = "aci-epg-bridge-domain-missing"
 ACI_FILTER_ENTRY_PORT_RANGE_REASON = "aci-filter-entry-port-out-of-range"
+ACI_SUBJECT_FILTER_SUBJECT_MISSING_REASON = "aci-subject-filter-subject-missing"
+ACI_SUBJECT_FILTER_FILTER_MISSING_REASON = "aci-subject-filter-filter-missing"
+ACI_STATIC_PORT_EPG_MISSING_REASON = "aci-static-port-epg-missing"
+ACI_STATIC_PORT_NODE_MISSING_REASON = "aci-static-port-node-missing"
+ACI_STATIC_PORT_INTERFACE_MISSING_REASON = "aci-static-port-interface-missing"
+ACI_STATIC_PORT_PATH_UNSUPPORTED_REASON = "aci-static-port-path-unsupported"
 
 ROLLUP_SUMMARY_TEMPLATES = {
+    ACI_SUBJECT_FILTER_SUBJECT_MISSING_REASON: (
+        "Skipped {total} {model} row(s) whose contract subject is not imported. "
+        "Enable Forward ACI Contract Subjects so the subjects import first. "
+        "Attachments: {examples}{suffix}."
+    ),
+    ACI_SUBJECT_FILTER_FILTER_MISSING_REASON: (
+        "Skipped {total} {model} row(s) whose filter is not imported in the "
+        "subject's tenant or in `common`. Enable Forward ACI APIC Filters so "
+        "the filters import first. Attachments: {examples}{suffix}."
+    ),
+    ACI_STATIC_PORT_EPG_MISSING_REASON: (
+        "Skipped {total} {model} row(s) whose endpoint group is not imported. "
+        "Enable Forward ACI Endpoint Groups so the EPGs import first. "
+        "Bindings: {examples}{suffix}."
+    ),
+    ACI_STATIC_PORT_NODE_MISSING_REASON: (
+        "Skipped {total} {model} row(s) whose leaf is not an imported ACI node "
+        "with a device link. Enable Forward ACI APIC Nodes (or Forward ACI "
+        "Nodes) and import the fabric's switches so the node links to its "
+        "device. Bindings: {examples}{suffix}."
+    ),
+    ACI_STATIC_PORT_INTERFACE_MISSING_REASON: (
+        "Skipped {total} {model} row(s) whose interface does not exist on the "
+        "node's NetBox device. Enable Forward Interfaces for the fabric's "
+        "switches. Bindings: {examples}{suffix}."
+    ),
+    ACI_STATIC_PORT_PATH_UNSUPPORTED_REASON: (
+        "Skipped {total} {model} row(s) bound to a vPC or port-channel policy "
+        "group rather than a leaf interface; netbox-cisco-aci binds an EPG to "
+        "one dcim.Interface and the member ports of the group are not "
+        "collected. Bindings: {examples}{suffix}."
+    ),
     ACI_NODE_DEVICE_MISSING_REASON: (
         "Stored {total} {model} row(s) without a device link: no NetBox device "
         "matches the node name exactly or case-insensitively. Import the "

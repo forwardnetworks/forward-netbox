@@ -11,7 +11,9 @@ from .sync_aci import apply_netbox_cisco_aci_acifilterentry
 from .sync_aci import apply_netbox_cisco_aci_acil3out
 from .sync_aci import apply_netbox_cisco_aci_acinode
 from .sync_aci import apply_netbox_cisco_aci_acipod
+from .sync_aci import apply_netbox_cisco_aci_acistaticportbinding
 from .sync_aci import apply_netbox_cisco_aci_acisubject
+from .sync_aci import apply_netbox_cisco_aci_acisubjectfilter
 from .sync_aci import apply_netbox_cisco_aci_acitenant
 from .sync_aci import apply_netbox_cisco_aci_acivrf
 from .sync_aci import delete_netbox_cisco_aci_aciappprofile
@@ -24,7 +26,9 @@ from .sync_aci import delete_netbox_cisco_aci_acifilterentry
 from .sync_aci import delete_netbox_cisco_aci_acil3out
 from .sync_aci import delete_netbox_cisco_aci_acinode
 from .sync_aci import delete_netbox_cisco_aci_acipod
+from .sync_aci import delete_netbox_cisco_aci_acistaticportbinding
 from .sync_aci import delete_netbox_cisco_aci_acisubject
+from .sync_aci import delete_netbox_cisco_aci_acisubjectfilter
 from .sync_aci import delete_netbox_cisco_aci_acitenant
 from .sync_aci import delete_netbox_cisco_aci_acivrf
 from .sync_cable import apply_dcim_cable
@@ -941,6 +945,12 @@ class ForwardSyncRunnerAdapterMixin:
     def _delete_netbox_cisco_aci_acifilterentry(self, row):
         return delete_netbox_cisco_aci_acifilterentry(self, row)
 
+    def _delete_netbox_cisco_aci_acisubjectfilter(self, row):
+        return delete_netbox_cisco_aci_acisubjectfilter(self, row)
+
+    def _delete_netbox_cisco_aci_acistaticportbinding(self, row):
+        return delete_netbox_cisco_aci_acistaticportbinding(self, row)
+
     def _apply_dcim_site(self, row):
         return apply_dcim_site(self, row)
 
@@ -1102,3 +1112,9 @@ class ForwardSyncRunnerAdapterMixin:
 
     def _apply_netbox_cisco_aci_acifilterentry(self, row):
         return apply_netbox_cisco_aci_acifilterentry(self, row)
+
+    def _apply_netbox_cisco_aci_acisubjectfilter(self, row):
+        return apply_netbox_cisco_aci_acisubjectfilter(self, row)
+
+    def _apply_netbox_cisco_aci_acistaticportbinding(self, row):
+        return apply_netbox_cisco_aci_acistaticportbinding(self, row)

@@ -102,6 +102,8 @@ _DELIBERATELY_WIDER = frozenset(
         "netbox_cisco_aci.acicontract",
         "netbox_cisco_aci.acisubject",
         "netbox_cisco_aci.acifilterentry",
+        "netbox_cisco_aci.acisubjectfilter",
+        "netbox_cisco_aci.acistaticportbinding",
         "netbox_cisco_aci.acinode",
         "netbox_cisco_aci.acipod",
         "netbox_cisco_aci.acitenant",

@@ -1,6 +1,9 @@
 /**
  * @intent Forward ACI Fabrics
- * @description Discovers ACI fabric containers for the optional netbox-cisco-aci integration.
+ * @description Discovers ACI fabric containers for the optional netbox-cisco-aci integration. A fabric
+ * is named after the location of the APIC controllers that manage it, which is the fabric name every
+ * other ACI map resolves nodes, pods and tenant policy under; leaf and spine locations only stand in
+ * when the snapshot carries no APIC controller output at all.
  */
 
 import "netbox_utilities";
@@ -10,13 +13,23 @@ aciFabricName(device) =
   then slugify(toLowerCase(device.locationName))
   else "forward-aci-fabric";
 
+apicFabrics =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isApicControllerCommandOutputs(device)
+  select distinct aciFabricName(device);
+
+switchFabrics =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isAciDevice(device)
+  select distinct aciFabricName(device);
+
 @query
 f(forward_netbox_shard_keys: List<String>) =
-foreach device in network.devices
-where device.snapshotInfo.result == DeviceSnapshotResult.completed
-where device.platform.vendor != Vendor.FORWARD_CUSTOM
-where isAciDevice(device)
-let fabric_name = aciFabricName(device)
+foreach fabric_name in (if isEmpty(apicFabrics) then switchFabrics else apicFabrics)
 where isEmpty(forward_netbox_shard_keys) || fabric_name in forward_netbox_shard_keys
 select distinct {
   name: fabric_name,

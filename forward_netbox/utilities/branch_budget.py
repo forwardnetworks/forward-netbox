@@ -106,6 +106,8 @@ APPLY_DEPENDENCY_MODEL_ORDER = (
     "netbox_cisco_aci.acicontract",
     "netbox_cisco_aci.acisubject",
     "netbox_cisco_aci.acifilterentry",
+    "netbox_cisco_aci.acisubjectfilter",
+    "netbox_cisco_aci.acistaticportbinding",
 )
 APPLY_DEPENDENCY_MODEL_RANK = {
     model_string: index
@@ -172,6 +174,15 @@ APPLY_PARENT_MODEL_DEPENDENCIES = {
     "netbox_cisco_aci.acicontract": ("netbox_cisco_aci.acitenant",),
     "netbox_cisco_aci.acisubject": ("netbox_cisco_aci.acicontract",),
     "netbox_cisco_aci.acifilterentry": ("netbox_cisco_aci.acifilter",),
+    "netbox_cisco_aci.acisubjectfilter": (
+        "netbox_cisco_aci.acisubject",
+        "netbox_cisco_aci.acifilter",
+    ),
+    "netbox_cisco_aci.acistaticportbinding": (
+        "netbox_cisco_aci.aciendpointgroup",
+        "netbox_cisco_aci.acinode",
+        "dcim.interface",
+    ),
 }
 DELETE_DEPENDENCY_MODEL_ORDER = (
     "netbox_dlm.vulnerability",
@@ -197,6 +208,8 @@ DELETE_DEPENDENCY_MODEL_ORDER = (
     "netbox_routing.ospfinterface",
     "netbox_routing.ospfinstance",
     "netbox_routing.ospfarea",
+    "netbox_cisco_aci.acistaticportbinding",
+    "netbox_cisco_aci.acisubjectfilter",
     "netbox_cisco_aci.acifilterentry",
     "netbox_cisco_aci.acisubject",
     "netbox_cisco_aci.acicontract",
@@ -339,6 +352,12 @@ STRUCTURED_SHARD_FILTER_FIELDS = {
     "netbox_cisco_aci.acicontract": ("fabric_name", "tenant_name", "name"),
     "netbox_cisco_aci.acisubject": ("fabric_name", "tenant_name", "contract_name"),
     "netbox_cisco_aci.acifilterentry": ("fabric_name", "tenant_name", "filter_name"),
+    "netbox_cisco_aci.acisubjectfilter": (
+        "fabric_name",
+        "tenant_name",
+        "contract_name",
+    ),
+    "netbox_cisco_aci.acistaticportbinding": ("fabric_name", "tenant_name", "epg_name"),
     **IPAM_SHARD_FILTER_FIELDS,
 }
 
