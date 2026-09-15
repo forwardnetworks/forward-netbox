@@ -1,4 +1,6 @@
 # Branch-staging lifecycle helpers for the single production executor.
+from collections import defaultdict
+
 from core.models import ObjectType
 from django.db.models import Max
 from netbox.context import current_request
@@ -10,6 +12,42 @@ from .apply_engine import select_apply_engine
 from .branching import build_branch_request
 from .query_fetch import plan_item_model_result
 from .sync import ForwardSyncRunner
+
+
+def initialize_plan_statistics(executor, plan):
+    """Set each model's progress total once, to its sum across every item.
+
+    `build_branch_plan` splits one model's workload into several plan items
+    when it exceeds the staging-item budget - a 70k-row table like
+    `netbox_dlm.vulnerability` routinely does. Each item used to add only its
+    OWN `estimated_changes` to the model's running total right before it
+    applied, so the total grew in installments interleaved with `current`
+    climbing toward the total AT THAT MOMENT: a later item's total could land
+    while `current` was already most of the way to the prior (smaller) total,
+    dropping the displayed percentage before it climbed back as that item's
+    rows applied. The whole plan is known before any item runs, so the true
+    per-model total can be set once, and `current` then climbs to it
+    monotonically.
+    """
+    totals = defaultdict(int)
+    for item in plan:
+        totals[item.model_string] += item.estimated_changes
+    initialized_models = getattr(executor, "_statistics_initialized_models", None)
+    if initialized_models is None:
+        initialized_models = set()
+        executor._statistics_initialized_models = initialized_models
+    # Separate from `initialized_models`: that set only means "don't reset
+    # this model's total to 0 again." This one means "the total is already
+    # complete - never add to it per item," which is what actually needs to
+    # be true before any item runs to keep `current / total` monotonic.
+    precomputed_totals = getattr(executor, "_statistics_totals_precomputed", None)
+    if precomputed_totals is None:
+        precomputed_totals = set()
+        executor._statistics_totals_precomputed = precomputed_totals
+    for model_string, total in totals.items():
+        executor.logger.init_statistics(model_string, total)
+        initialized_models.add(model_string)
+        precomputed_totals.add(model_string)
 
 
 def branch_change_watermark(branch) -> int:
@@ -148,7 +186,13 @@ def run_item_in_branch(executor, item, context, ingestion, branch, *, total_plan
     if item.model_string not in initialized_models:
         executor.logger.init_statistics(item.model_string, 0)
         initialized_models.add(item.model_string)
-    executor.logger.add_statistics_total(item.model_string, item.estimated_changes)
+    # `initialize_plan_statistics` already summed every item's
+    # `estimated_changes` for this model across the whole plan and set the
+    # total once; a caller that skipped it (e.g. running a single item in
+    # isolation) still tracks the total incrementally here, same as before.
+    precomputed_totals = getattr(executor, "_statistics_totals_precomputed", ())
+    if item.model_string not in precomputed_totals:
+        executor.logger.add_statistics_total(item.model_string, item.estimated_changes)
     executor.logger.log_info(
         f"Applying {item.model_string} ({item.index}/{total_plan_items}).",
         obj=executor.sync,
@@ -223,7 +267,10 @@ def run_item_direct_to_main(executor, item, context, ingestion, *, total_plan_it
     if item.model_string not in initialized_models:
         executor.logger.init_statistics(item.model_string, 0)
         initialized_models.add(item.model_string)
-    executor.logger.add_statistics_total(item.model_string, item.estimated_changes)
+    # See the matching comment in `run_item_in_branch`.
+    precomputed_totals = getattr(executor, "_statistics_totals_precomputed", ())
+    if item.model_string not in precomputed_totals:
+        executor.logger.add_statistics_total(item.model_string, item.estimated_changes)
     executor.logger.log_info(
         f"Fast baseline applying {item.model_string} ({item.index}/{total_plan_items}).",
         obj=executor.sync,

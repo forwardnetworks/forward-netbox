@@ -143,4 +143,17 @@ revert there is invisible to a running deployment.
 
 ## Progress
 
-- 2026-09-15: Phase 0 built.
+- 2026-09-15: Phase 0 built; `invoke ci` green.
+- 2026-09-15: the customer's first-day-on-2.9.6 fixes carried across
+  ahead of the rest of the port (they are being fixed on `maint/2.9.x`
+  as 2.9.7 and belong on both lanes): a per-model progress total that
+  grew in installments as a split model's plan items applied, so the bar
+  ran backwards - `initialize_plan_statistics` now sums every item up
+  front; SNMP endpoints whose walk returned neither `sysDescr` nor
+  `sysObjectID` reading Unknown when Forward's own profile assignment
+  named the vendor - the endpoint branch now reads the profile name; and
+  a blocking failure that named the models but not the reason -
+  `describe_failure` appends every failed model's already-safe reason
+  slug, generically, and `safe_exception_summary` keeps the full sentence
+  for the two reasons only the plugin's own map-enablement message ever
+  raises.

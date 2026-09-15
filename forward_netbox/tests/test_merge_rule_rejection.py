@@ -297,6 +297,39 @@ class DescribeFailurePrecedenceTests(SimpleTestCase):
         self.assertIn("on invalid field(s) untagged_vlan", message)
         self.assertIn("violating untagged-vlan-outside-device-site.", message)
 
+    def test_failed_models_carry_their_reasons(self):
+        # `failed_model_reasons` is the same deduplicated, allowlisted-slug set
+        # every caller already computes for its support bundle - generic to
+        # any reason, not a message tied to one exception's own wording. An
+        # operator's first live use of a brand-new map (three routing-policy
+        # models with no enabled query map) used to read only the model list
+        # here; the reason was visible nowhere but an exported support bundle.
+        message = describe_failure(
+            "Forward ingestion failed (SyncError).",
+            {
+                "failed_models": [
+                    "netbox_routing.communitylistentry",
+                    "netbox_routing.prefixlistentry",
+                    "netbox_routing.routemapentry",
+                ],
+                "failed_model_reasons": ["no-enabled-query-maps"],
+            },
+        )
+        self.assertIn("for 3 model(s):", message)
+        self.assertIn("(no-enabled-query-maps).", message)
+
+    def test_failed_models_without_a_reason_are_unchanged(self):
+        # No regression for the common case: most failures still have no
+        # allowlisted reason at all, and the message must not grow a stray
+        # empty parenthesis for them.
+        message = describe_failure(
+            "Forward ingestion failed (SyncError).",
+            {"failed_models": ["dcim.device"]},
+        )
+        self.assertEqual(
+            message, "Forward ingestion failed (SyncError) for 1 model(s): dcim.device."
+        )
+
 
 class PreexistingRuleRejectionTests(SimpleTestCase):
     """One predicate for every apply path, so they cannot disagree again."""
