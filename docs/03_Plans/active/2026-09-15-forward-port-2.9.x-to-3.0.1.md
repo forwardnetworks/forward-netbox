@@ -63,9 +63,12 @@ netbox-peering-manager 0.3.1 carries its own 4.7-readiness work (its
 published badge is stale). netbox-routing's 4.7 support is merged on its
 upstream `main` (reported as 0.4.4) but not tagged, so the development and
 CI image installs it from that git ref; the published constraint is the
-range `>=0.4.3` so the distribution stays uploadable, and the constraint
-files pin `0.4.4` - the version the ref reports - so the install is still
-held to a value. netbox-cisco-aci is unchanged: its upstream still declares
+range `>=0.4.3` so the distribution stays uploadable. The constraint files
+carry no routing pin at all while it is a git ref: they are fed to
+`pip-audit`, which resolves from PyPI and fails on a version it cannot find.
+The runtime validator holds the installed version to exactly `0.4.4`
+instead, failing closed if the ref ever reports anything else.
+netbox-cisco-aci is unchanged: its upstream still declares
 `max_version = "4.6.99"`, so it cannot boot here and stays out of
 `VALIDATED_PLUGIN_APPS`. The validator's app set and distribution table
 gain the three returning plugins; the registry's per-plugin version fields
@@ -128,8 +131,9 @@ revert there is invisible to a running deployment.
   2.9.4's GUI work.
 - **netbox-routing follows upstream `main` in the image, not in the
   package metadata.** A direct URL in `Requires-Dist` is refused by PyPI;
-  the range plus a constraint-file pin gives CI the upstream branch without
-  making the distribution unpublishable.
+  the range in the metadata, the git ref in the image, and the exact
+  version in the runtime validator give CI the upstream branch without
+  making the distribution unpublishable or the audit unresolvable.
 - **The validator's app set is an exact match in both directions**, as on
   the 2.9.x lane. Admitting three plugins means a deployment without them
   takes the safe slow paths; that is the existing policy, and the fast

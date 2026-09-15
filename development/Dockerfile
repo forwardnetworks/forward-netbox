@@ -20,7 +20,8 @@ RUN uv pip install --constraint ${CONSTRAINTS} ${PACKAGE}
 # netbox-validity 3.6.0 and netbox-peering-manager 0.3.1 raised their ceilings
 # in released versions; netbox-routing's 4.7 support is merged on upstream
 # main (0.4.4) but not yet tagged, so it installs from the git ref until it
-# is - the constraint pin holds it to the version that ref reports.
+# is; constraints.txt cannot pin a version PyPI does not have, so
+# validated_runtime.py is what holds the installed version to exactly 0.4.4.
 # netbox-cisco-aci 0.4.0 still declares `max_version = "4.6.99"`, and NetBox
 # refuses to start with a plugin outside its declared range, so the image would
 # not boot with it; it returns here the moment its upstream raises the ceiling.
