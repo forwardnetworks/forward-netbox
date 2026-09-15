@@ -87,26 +87,42 @@ foreach row in (
       || matches(sdLower, "*cisco integrated management controller*")
     where !isCimc
     // Avocent overlay: enterprise OIDs 10418 (Avocent/Vertiv) and 2925 (Cyclades,
-    // pre-acquisition), plus product-name signatures for units that report no
-    // distinct sysObjectID (Cyclades/AlterPath fold into Avocent).
+    // pre-acquisition), product-name signatures for units that report no
+    // distinct sysObjectID (Cyclades/AlterPath fold into Avocent), and the
+    // profile name Forward already assigned - some units answer neither
+    // sysDescr nor sysObjectID at all, and the profile is the only identity
+    // signal left.
     let isAvocent = matches(sysObjId, "1.3.6.1.4.1.10418.*")
       || matches(sysObjId, "1.3.6.1.4.1.2925.*")
       || matches(sdLower, "*avocent*")
       || matches(sdLower, "*cyclades*")
       || matches(sdLower, "*alterpath*")
+      || matches(endpointProfileName, "*avocent*")
+      || matches(endpointProfileName, "*cyclades*")
     // Opengear console servers use enterprise OID 25049. Their sysDescr embeds
     // kernel, firmware, build hash, and date data, so treating the full value as
     // DeviceType.model creates a new type after every software upgrade.
     let isOpengear = matches(sysObjId, "1.3.6.1.4.1.25049.*")
       || matches(sdLower, "*opengear*")
+      || matches(endpointProfileName, "*opengear*")
     let isConsoleServer = isAvocent || isOpengear
     where sync_generic_endpoints || isConsoleServer
-    // Manufacturer: Avocent when the overlay matches; else the first token of the
-    // cleaned sysDescr; "Unknown" when there was no sysDescr at all (so the
-    // fabricated "SNMP Endpoint" default never masquerades as a vendor).
+    // Non-console-server vendors Forward names in the profile itself. Not an
+    // overlay like Avocent/Opengear (these are ordinary SNMP-GENERIC-class
+    // endpoints, ungated by sync_generic_endpoints), just a manufacturer
+    // signal for when SNMP returned no sysDescr/sysObjectID to read one from.
+    let isInfoblox = matches(endpointProfileName, "*infoblox*")
+    let isPaloAlto = matches(endpointProfileName, "*pano*")
+      || matches(endpointProfileName, "*panorama*")
+    // Manufacturer: the overlay/profile match when one applies; else the
+    // first token of the cleaned sysDescr; "Unknown" only when none of the
+    // above named a vendor (SNMP returned no system-group data AND the
+    // profile is generic).
     let ep_manuf_raw = if isAvocent then "Avocent"
       else if isOpengear then "Opengear"
       else if hasDescr then substring(replaceRegexMatches(sysDescrClean, re` .*`, ""), 0, 100)
+      else if isInfoblox then "Infoblox"
+      else if isPaloAlto then "Palo Alto Networks"
       else "Unknown"
     let ep_manuf = if ep_manuf_raw == "" then "Unknown" else ep_manuf_raw
     let ep_manuf_slug_raw = slugify(ep_manuf)

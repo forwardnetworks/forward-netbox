@@ -327,6 +327,18 @@ def failure_classifier(exc) -> str:
     return f"{classifier}: {reason}" if reason else classifier
 
 
+# Reason slugs whose exception message is composed ENTIRELY by this plugin
+# from its own vocabulary - model strings and the NQE Map display names it
+# registers itself in `query_registry.py` - never from a Forward API response
+# or anything a customer's network supplied. `_missing_query_specs_message`
+# is the only place either of these is ever raised, and its whole point is to
+# name exactly which map to enable; reducing it to a bare classifier+slug
+# ("ForwardQueryError: no-enabled-query-maps.") threw away the one thing that
+# made it actionable, on an operator's first live use of a brand-new map
+# (three routing-policy models, 2.9.6's own newest feature).
+_VERBATIM_SAFE_REASONS = frozenset({"no-enabled-query-maps", "no-resolved-query-maps"})
+
+
 def safe_exception_summary(exc) -> str:
     """Classifier plus a value-free characterisation, never message content.
 
@@ -335,8 +347,14 @@ def safe_exception_summary(exc) -> str:
     downstream tooling, and the reason five identical customer ingestions could
     not be diagnosed at all.
     """
+    reason = failure_reason(exc)
+    if reason in _VERBATIM_SAFE_REASONS:
+        # `failure_classifier` would fold the slug in twice here (it already
+        # appends `: {reason}` to the bare classifier); the whole point of
+        # this branch is the full sentence in place of the slug, not beside it.
+        return f"{exception_type(exc)}: {exc}"
     named = failure_classifier(exc)
-    if failure_reason(exc):
+    if reason:
         return f"{named}."
     # Uncatalogued: fall back to bounded leading wording. This is the one thing
     # `safe_exception_summary` does that `failure_classifier` does not, and it
@@ -845,12 +863,24 @@ def describe_failure(message: str, diagnosis: dict) -> str:
     unrecognized = diagnosis.get("unrecognized_validation_rules") or []
     invalid_fields = diagnosis.get("invalid_fields") or []
     failed_models = diagnosis.get("failed_models") or []
+    failed_model_reasons = diagnosis.get("failed_model_reasons") or []
     stem = message[:-1] if message.endswith(".") else message
     if failed_models:
         listed = ", ".join(failed_models[:8])
         if len(failed_models) > 8:
             listed = f"{listed}, +{len(failed_models) - 8} more"
-        return f"{stem} for {len(failed_models)} model(s): {listed}."
+        rendered = f"{stem} for {len(failed_models)} model(s): {listed}."
+        # `failed_model_reasons` is already a deduplicated, allowlisted-slug
+        # set - the same value every caller already computes for its support
+        # bundle - so surfacing it here costs nothing new to make safe. An
+        # operator reading "no-enabled-query-maps" right on the blocking issue
+        # knows what to go check; reading only the model list, on their first
+        # live use of a brand-new map, they had nowhere to go but the support
+        # bundle. Generic: this is every reason for every failed model in the
+        # run, not a message tied to one exception's wording.
+        if failed_model_reasons:
+            rendered = f"{rendered[:-1]} ({', '.join(sorted(failed_model_reasons))})."
+        return rendered
     if constraint:
         return f"{stem} on constraint {constraint}."
     # `__all__` is the absence of a field name, so it is never worth printing;
