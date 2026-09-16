@@ -1236,8 +1236,6 @@ class QueryRegistryTest(TestCase):
         rows = {row["name"]: row for row in builtin_nqe_map_rows()}
 
         for query_name in (
-            "Forward Interfaces",
-            "Forward IPv4 IP Addresses",
             "Forward IPv6 IP Addresses",
             "Forward MAC Addresses",
             "Forward Modules",
@@ -1258,6 +1256,23 @@ class QueryRegistryTest(TestCase):
                 "forward_netbox_shard_keys": [],
             },
         )
+
+        # Forward Interfaces / Forward IPv4 IP Addresses also carry SNMP
+        # endpoint rows (endpoint_interfaces/endpoint_ipv4), so they seed the
+        # full endpoint + device-tag parameter set, not just shard_keys.
+        endpoint_and_tag_parameters = {
+            "forward_netbox_shard_keys": [],
+            "sync_endpoints": False,
+            "sync_generic_endpoints": False,
+            "scope_endpoints_by_include_tags": False,
+            "device_tag_include_tags": [],
+            "device_tag_include_match": "any",
+            "device_tag_exclude_tags": [],
+        }
+        for query_name in ("Forward Interfaces", "Forward IPv4 IP Addresses"):
+            self.assertEqual(
+                rows[query_name]["parameters"], endpoint_and_tag_parameters
+            )
 
     def test_prefix_builtin_queries_seed_empty_shard_parameter(self):
         rows = {row["name"]: row for row in builtin_nqe_map_rows()}
@@ -2799,9 +2814,19 @@ select {name: "vendor", slug: "vendor"}
             ip_spec.coalesce_fields,
             (("address", "vrf"), ("address",)),
         )
+        # Carries SNMP endpoint IP rows (endpoint_ipv4) too, so it seeds the
+        # full endpoint + device-tag parameter set, not just shard_keys.
         self.assertEqual(
             ip_spec.parameters,
-            {"forward_netbox_shard_keys": []},
+            {
+                "forward_netbox_shard_keys": [],
+                "sync_endpoints": False,
+                "sync_generic_endpoints": False,
+                "scope_endpoints_by_include_tags": False,
+                "device_tag_include_tags": [],
+                "device_tag_include_match": "any",
+                "device_tag_exclude_tags": [],
+            },
         )
 
     def test_prefix_queries_derive_connected_subnets(self):
