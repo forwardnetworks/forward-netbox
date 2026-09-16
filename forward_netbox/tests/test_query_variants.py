@@ -49,6 +49,43 @@ class VariantQueryFeatureParityTest(SimpleTestCase):
         src = _read_query("forward_device_feature_tags_with_rules.nqe")
         self.assertEqual(src.count("network.devices"), 1)
 
+    def test_interfaces_and_ip_addresses_have_endpoint_branch(self):
+        for filename in (
+            "forward_interfaces.nqe",
+            "forward_ip_addresses_ipv4.nqe",
+        ):
+            src = _read_query(filename)
+            self.assertIn("sync_endpoints: Bool", src, filename)
+            self.assertIn("sync_generic_endpoints: Bool", src, filename)
+            self.assertIn("network.endpoints", src, filename)
+            self.assertIn("1.3.6.1.2.1.1.2", src, filename)  # sysObjectId
+            self.assertIn("10418", src, filename)  # Avocent overlay
+            self.assertIn("endpoint.tagNames", src, filename)
+
+    def test_interfaces_and_ip_addresses_declare_endpoint_and_tag_params(self):
+        # DEVICE_TAG_PARAMETER_QUERY_FILES gates whether the device-tag
+        # parameters actually get a runtime value at all
+        # (_apply_context_tag_parameters only injects them when
+        # accepts_device_tag_parameters is true) - a file declaring these
+        # in its @query signature without also being in that set would call
+        # the live NQE query missing three of its declared arguments.
+        for filename in (
+            "forward_interfaces.nqe",
+            "forward_ip_addresses_ipv4.nqe",
+        ):
+            params = _default_query_parameters(filename)
+            self.assertIs(params.get("sync_endpoints"), False, filename)
+            self.assertIs(params.get("sync_generic_endpoints"), False, filename)
+            self.assertIs(
+                params.get("scope_endpoints_by_include_tags"), False, filename
+            )
+            for key in (
+                "device_tag_include_tags",
+                "device_tag_include_match",
+                "device_tag_exclude_tags",
+            ):
+                self.assertIn(key, params, filename)
+
 
 class OptInFeatureMapStateCheckTest(SimpleTestCase):
     """Warn when a feature is enabled but no enabled map provides it."""
@@ -84,9 +121,20 @@ class OptInFeatureMapStateCheckTest(SimpleTestCase):
         self.assertEqual(result["status"], "pass")
 
     def test_endpoints_on_without_supporting_map_warns(self):
-        result = self._check({"sync_endpoints": True}, ["forward_interfaces.nqe"])
+        # forward_interfaces.nqe now provides sync_endpoints too (SNMP
+        # endpoint interfaces), so it no longer serves as a
+        # doesn't-support-it example; forward_device_types.nqe declares only
+        # forward_netbox_shard_keys.
+        result = self._check({"sync_endpoints": True}, ["forward_device_types.nqe"])
         self.assertEqual(result["status"], "warn")
         self.assertIn("Import SNMP Endpoints", result["message"])
+
+    def test_endpoints_on_with_interfaces_map_passes(self):
+        # forward_interfaces.nqe's endpoint_interfaces branch declares
+        # sync_endpoints - one row per ifTable ifIndex on the same SNMP
+        # endpoints forward_devices.nqe emits as device rows.
+        result = self._check({"sync_endpoints": True}, ["forward_interfaces.nqe"])
+        self.assertEqual(result["status"], "pass")
 
     def test_device_tags_on_with_rules_map_passes(self):
         result = self._check(

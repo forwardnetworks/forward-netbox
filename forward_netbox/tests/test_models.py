@@ -2578,9 +2578,12 @@ class ForwardNQEMapModelTest(TestCase):
         self.assertEqual(query_map.commit_id, "commit-1")
 
     def test_seed_builtin_maps_preserves_seeded_shard_parameters(self):
-        netbox_model = ContentType.objects.get(app_label="dcim", model="interface")
+        # Forward Interfaces now also carries the SNMP-endpoint parameter set
+        # (sync_endpoints etc.), so it no longer represents the plain
+        # shard-only case this test is about; Forward Modules still does.
+        netbox_model = ContentType.objects.get(app_label="dcim", model="module")
         query_map = ForwardNQEMap.objects.get(
-            name="Forward Interfaces",
+            name="Forward Modules",
             netbox_model=netbox_model,
             built_in=True,
         )

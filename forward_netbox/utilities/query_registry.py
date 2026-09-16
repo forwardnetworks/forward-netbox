@@ -246,6 +246,8 @@ DEVICE_TAG_PARAMETER_QUERY_FILES = {
     "forward_devices.nqe",
     "forward_devices_with_netbox_aliases.nqe",
     "forward_hsrp_groups.nqe",
+    "forward_interfaces.nqe",
+    "forward_ip_addresses_ipv4.nqe",
     "forward_locations.nqe",
     "forward_prefixes_ipv4.nqe",
     "forward_prefixes_ipv6.nqe",

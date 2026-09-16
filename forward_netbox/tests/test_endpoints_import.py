@@ -586,6 +586,39 @@ class AvocentUnificationTest(SimpleTestCase):
         self.assertEqual(base, alias)
 
 
+class EndpointEligibilityGateParityTest(SimpleTestCase):
+    """forward_interfaces.nqe and forward_ip_addresses_ipv4.nqe emit rows only
+    for endpoints forward_devices.nqe also emits as device rows - an
+    interface or IP whose device was never created is a dependency-skip, not
+    a corruption, but the two gates must still agree or endpoints silently
+    lose their interfaces/IPs. The gate (tag scope, CIMC exclusion, Avocent/
+    Opengear console-server detection) is byte-identical through the
+    "isConsoleServer" line in all three files, then each diverges into its
+    own row shape."""
+
+    _GATE_START = "foreach endpoint in network.endpoints"
+    _GATE_END_MARKER = "where sync_generic_endpoints || isConsoleServer"
+
+    def _endpoint_gate(self, filename):
+        # forward_devices.nqe nests this inside a `(...)` union branch (one
+        # extra indent level) while forward_interfaces.nqe/
+        # forward_ip_addresses_ipv4.nqe hold it in a top-level helper
+        # function - normalize per-line indentation so the comparison
+        # catches real drift, not the difference in nesting depth.
+        src = _read_query(filename)
+        start = src.index(self._GATE_START)
+        end = src.index(self._GATE_END_MARKER) + len(self._GATE_END_MARKER)
+        return "\n".join(line.strip() for line in src[start:end].splitlines())
+
+    def test_gate_is_byte_identical_across_all_three_files(self):
+        device_gate = self._endpoint_gate("forward_devices.nqe")
+        for filename in (
+            "forward_interfaces.nqe",
+            "forward_ip_addresses_ipv4.nqe",
+        ):
+            self.assertEqual(device_gate, self._endpoint_gate(filename), filename)
+
+
 from forward_netbox.utilities.forward_api import (  # noqa: E402
     build_endpoint_tag_scope_where,
 )
