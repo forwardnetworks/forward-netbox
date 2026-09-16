@@ -120,6 +120,11 @@ class ModelResultCarriesItsFailureReasonTest(SimpleTestCase):
         )
 
     def test_the_skip_warning_no_longer_reduces_to_a_class_name(self):
+        # `no-enabled-query-maps` is one of the two reasons whose entire
+        # sentence is plugin-authored vocabulary (see
+        # `_VERBATIM_SAFE_REASONS` in diagnostics.py) - the warning now
+        # carries that full sentence rather than the bare slug, which is
+        # strictly more than "no longer a class name" asked for.
         fetcher = _fetcher()
         fetcher._record_model_failure(
             _Context(),
@@ -128,7 +133,10 @@ class ModelResultCarriesItsFailureReasonTest(SimpleTestCase):
             ForwardQueryError("No enabled NQE maps were resolved for dcim.device."),
             sync_mode="planning",
         )
-        self.assertIn("no-enabled-query-maps", fetcher.logger.warnings[0])
+        self.assertIn(
+            "No enabled NQE maps were resolved for dcim.device",
+            fetcher.logger.warnings[0],
+        )
 
     def test_the_failure_fields_reach_the_serialized_result(self):
         # `as_dict` is what the ingestion persists and the bundle reads.

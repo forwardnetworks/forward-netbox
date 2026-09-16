@@ -1,4 +1,4 @@
-# Two gaps the failure-reason work recorded and left open.
+# Three gaps the failure-reason work recorded and left open.
 #
 # 1. The reason catalogue is matched against MESSAGE TEXT, so a message
 #    reworded by a future change silently stops resolving to its slug and falls
@@ -8,6 +8,13 @@
 #    `<redacted diagnostic>` - plugin-authored sentences interpolating a
 #    plugin-defined enum, so safe in full, but carrying no classifier for the
 #    recovery to find.
+# 3. `safe_exception_summary` reduced EVERY exception whose message matched a
+#    reason slug to that bare slug, including `_missing_query_specs_message`'s
+#    `ForwardQueryError` - composed entirely from model strings and NQE Map
+#    names this plugin registers itself, never from Forward or a customer's
+#    network. An operator's first live use of 2.9.6's own newest maps
+#    (three routing-policy models) failed with "no-enabled-query-maps." and no
+#    way to tell which map to enable, when the exception already said so.
 import ast
 import re
 from pathlib import Path
@@ -15,8 +22,10 @@ from pathlib import Path
 from django.test import SimpleTestCase
 
 from forward_netbox.choices import ForwardSyncStatusChoices
+from forward_netbox.exceptions import ForwardQueryError
 from forward_netbox.utilities import diagnostics
 from forward_netbox.utilities.diagnostics import REDACTED_DIAGNOSTIC
+from forward_netbox.utilities.diagnostics import safe_exception_summary
 from forward_netbox.utilities.diagnostics import safe_job_error_summary
 
 # Where the plugin-authored needles begin. Everything before this slug comes
@@ -167,4 +176,46 @@ class ExceptionFreeJobErrorsReadBackTest(SimpleTestCase):
         self.assertEqual(
             safe_job_error_summary("something went wrong on leaf-101"),
             REDACTED_DIAGNOSTIC,
+        )
+
+
+class VerbatimSafeReasonsSurviveReadbackTest(SimpleTestCase):
+    """`_missing_query_specs_message`'s two reasons keep their full sentence.
+
+    Every other reason in the catalogue reduces `safe_exception_summary` to a
+    bare `Classifier: slug.`, because the underlying exception text could be
+    Forward API response content or interpolate a customer's own naming. These
+    two are different: the entire sentence is built from this plugin's own
+    model-string and NQE-Map-name vocabulary (see `query_registry.py`), so
+    there is nothing to redact - and the sentence names exactly which map to
+    enable, which the bare slug does not.
+    """
+
+    def test_no_enabled_query_maps_keeps_its_sentence(self):
+        message = (
+            "No enabled NQE maps were resolved for netbox_routing.routemapentry. "
+            "Enable the `Forward Routing Route Maps` NQE Map or disable the "
+            "`netbox_routing.routemapentry` model on the sync."
+        )
+        self.assertEqual(
+            safe_exception_summary(ForwardQueryError(message)),
+            f"ForwardQueryError: {message}",
+        )
+
+    def test_no_resolved_query_maps_keeps_its_sentence(self):
+        message = (
+            "No enabled built-in or custom query maps were resolved for "
+            "some.model. Enable at least one NQE Map for this model before "
+            "running the sync."
+        )
+        self.assertEqual(
+            safe_exception_summary(ForwardQueryError(message)),
+            f"ForwardQueryError: {message}",
+        )
+
+    def test_an_unrelated_reason_still_reduces_to_the_bare_slug(self):
+        # The change is scoped to these two reasons, not a general loosening.
+        self.assertEqual(
+            safe_exception_summary(ForwardQueryError("connection refused")),
+            "ForwardQueryError: connection-refused.",
         )

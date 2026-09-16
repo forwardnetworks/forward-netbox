@@ -356,6 +356,77 @@ class ForwardSyncFormTest(TestCase):
         self.assertFalse(form.is_valid())
         self.assertIn("also requires enabling", str(form.non_field_errors()))
 
+    def _sync_form_data(self, **models):
+        data = {
+            "name": "sync-map-check",
+            "source": self.source.pk,
+            "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+            "dcim.device": "on",
+            "auto_merge": "on",
+            "enable_bulk_orm": "on",
+            "max_changes_per_staging_item": "10000",
+        }
+        data.update(models)
+        return data
+
+    def test_form_rejects_a_model_whose_only_map_is_disabled(self):
+        # An operator's first live use of a brand-new model: the checkbox on
+        # the sync went on, the (global, seeded-disabled) map did not, and the
+        # run failed with the sentence below. Say it at save time instead.
+        self.assertFalse(
+            ForwardNQEMap.objects.filter(
+                name="Forward Virtual Chassis", enabled=True
+            ).exists()
+        )
+
+        form = ForwardSyncForm(
+            data=self._sync_form_data(**{"dcim.virtualchassis": "on"})
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertEqual(
+            form.errors["dcim.virtualchassis"],
+            [
+                "No enabled NQE maps were resolved for dcim.virtualchassis. "
+                "Enable the `Forward Virtual Chassis` NQE Map or disable the "
+                "`dcim.virtualchassis` model on the sync."
+            ],
+        )
+        self.assertNotIn("dcim.device", form.errors)
+
+    def test_form_accepts_the_model_once_its_map_is_enabled(self):
+        ForwardNQEMap.objects.filter(name="Forward Virtual Chassis").update(
+            enabled=True
+        )
+
+        form = ForwardSyncForm(
+            data=self._sync_form_data(**{"dcim.virtualchassis": "on"})
+        )
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertTrue(form.instance.parameters["dcim.virtualchassis"])
+
+    def test_form_says_the_same_sentence_the_run_would_fail_with(self):
+        from forward_netbox.utilities.query_fetch_execution import ForwardQueryFetcher
+        from forward_netbox.utilities.query_registry import (
+            missing_query_specs_message,
+        )
+
+        form = ForwardSyncForm(
+            data=self._sync_form_data(**{"dcim.virtualchassis": "on"})
+        )
+        form.is_valid()
+
+        fetcher = ForwardQueryFetcher.__new__(ForwardQueryFetcher)
+        self.assertEqual(
+            form.errors["dcim.virtualchassis"],
+            [fetcher._missing_query_specs_message("dcim.virtualchassis")],
+        )
+        self.assertEqual(
+            form.errors["dcim.virtualchassis"],
+            [missing_query_specs_message("dcim.virtualchassis")],
+        )
+
     def test_form_defaults_diff_fallback_mode_to_allow_fallback(self):
         form = ForwardSyncForm(
             data={

@@ -151,27 +151,53 @@
             will refuse this device too and report which model refused it.
           {% endblocktrans %}
         </p>
-        <p class="mb-1">{% trans "To delete this device:" %}</p>
-        <ol class="mb-2">
-          <li>
+        {% if ownership.release_blockers.offered and perms.dcim.delete_device %}
+          <p class="mb-2">
             {% blocktrans trimmed %}
-              Delete these records first, from the pages their own plugin
-              provides:
+              These are all rows this plugin's own routing integration
+              re-syncs from Forward, so releasing them costs nothing the next
+              sync does not restore. Releasing deletes exactly the rows named
+              below - nothing else, and never the device itself.
             {% endblocktrans %}
-            {% for label, count in ownership.foreign_delete_blockers %}<code>{{ label }}</code>&nbsp;&times;&nbsp;{{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}
-          </li>
-          <li>{% trans "Then delete the device, here or from Prune uncovered devices on the owning sync; either releases the Forward records." %}</li>
-        </ol>
-        <p class="mb-0 small">
-          {% blocktrans trimmed %}
-            Records derived from Forward data are recreated by the next sync,
-            so deleting them is not a permanent loss. Anything you created by
-            hand is not — check before deleting. If you would rather we
-            confirm which is which, download the support bundle from the sync
-            page and send it: it carries these blockers and the counts behind
-            them.
-          {% endblocktrans %}
-        </p>
+          </p>
+          <form method="post" action="{{ ownership.release_blockers.url }}" class="mb-2"
+                onsubmit="return confirm('{% blocktrans %}Release the delete-blocking rows named below? This deletes them, not the device.{% endblocktrans %}');">
+            {% csrf_token %}
+            <input type="hidden" name="device" value="{{ ownership.device_pk }}">
+            <input type="hidden" name="expected_blockers_json" value="{{ ownership.release_blockers.expected_blockers_json }}">
+            <p class="mb-2">
+              {% for label, count in ownership.release_blockers.releasable %}<code>{{ label }}</code>&nbsp;&times;&nbsp;{{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}
+            </p>
+            <button type="submit" class="btn btn-sm btn-warning">
+              <i class="mdi mdi-lock-open-variant-outline" aria-hidden="true"></i>&nbsp;{% trans "Release these rows" %}
+            </button>
+          </form>
+          <p class="mb-0 small">
+            {% trans "Once released, delete the device here or from Prune uncovered devices on the owning sync." %}
+          </p>
+        {% else %}
+          <p class="mb-1">{% trans "To delete this device:" %}</p>
+          <ol class="mb-2">
+            <li>
+              {% blocktrans trimmed %}
+                Delete these records first, from the pages their own plugin
+                provides:
+              {% endblocktrans %}
+              {% for label, count in ownership.foreign_delete_blockers %}<code>{{ label }}</code>&nbsp;&times;&nbsp;{{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}
+            </li>
+            <li>{% trans "Then delete the device, here or from Prune uncovered devices on the owning sync; either releases the Forward records." %}</li>
+          </ol>
+          <p class="mb-0 small">
+            {% blocktrans trimmed %}
+              Records derived from Forward data are recreated by the next sync,
+              so deleting them is not a permanent loss. Anything you created by
+              hand is not — check before deleting. If you would rather we
+              confirm which is which, download the support bundle from the sync
+              page and send it: it carries these blockers and the counts behind
+              them.
+            {% endblocktrans %}
+          </p>
+        {% endif %}
       </div>
     {% endif %}
   </div>

@@ -8,6 +8,7 @@ from netbox_branching.models import Branch
 from ..choices import ForwardSyncStatusChoices
 from .branch_budget import build_branch_plan
 from .branch_lifecycle import create_noop_ingestion
+from .branch_lifecycle import initialize_plan_statistics
 from .branch_lifecycle import persist_density_observations
 from .branch_lifecycle import run_item_in_branch
 from .branching import build_branch_request
@@ -257,6 +258,7 @@ class ForwardSingleBranchExecutor(ForwardExecutorBase):
                 )
                 warned_models.add(item.model_string)
         total = len(plan)
+        initialize_plan_statistics(self, plan)
         context_dict = context.as_dict()
         # This is deliberately ephemeral. `ForwardQueryContext.as_dict()` is
         # also used by persisted reporting paths, while this guard needs the

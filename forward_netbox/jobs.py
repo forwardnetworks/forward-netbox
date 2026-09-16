@@ -1005,6 +1005,76 @@ def _prune_uncovered_devices_work(
         raise
 
 
+def _release_foreign_delete_blockers_work(
+    job, *, device_pk=None, expected_blockers=None
+):
+    """Release exactly the netbox_routing rows an operator saw on the device panel.
+
+    ``expected_blockers`` pins ``{label: count}`` as rendered when the
+    operator clicked. A fresh `describe_delete_blockers` that no longer
+    matches means something changed underneath them - another sync ran,
+    another operator acted - and the job refuses rather than releasing a
+    different set of rows than the one it showed and got confirmed.
+
+    This action has no whole-set meaning - there is no device to act on
+    without one being named - so unlike the prunes, calling it with neither
+    argument is not a broader version of the same job, just a bad request.
+    """
+    from dcim.models import Device
+
+    from .utilities.workload_state import describe_delete_blockers
+    from .utilities.workload_state import ForeignDeleteBlockerNotAllowlisted
+    from .utilities.workload_state import ForeignDeleteBlockerSafetyCapExceeded
+    from .utilities.workload_state import release_foreign_delete_blockers
+
+    if device_pk is None:
+        job.data = {"error": "No device was named for this release."}
+        job.save(update_fields=["data"])
+        return
+    expected_blockers = expected_blockers or {}
+
+    try:
+        device = Device.objects.get(pk=device_pk)
+    except Device.DoesNotExist:
+        job.data = {"error": f"Device #{device_pk} no longer exists."}
+        job.save(update_fields=["data"])
+        return
+
+    current_blockers = dict(describe_delete_blockers(device))
+    if current_blockers != dict(expected_blockers):
+        job.data = {
+            "error": (
+                "The blocking rows changed since this was requested; nothing "
+                "was released. Reload the device page and try again."
+            ),
+            "expected_blockers": dict(expected_blockers),
+            "current_blockers": current_blockers,
+        }
+        job.save(update_fields=["data"])
+        return
+
+    try:
+        released = release_foreign_delete_blockers(device)
+    except ForeignDeleteBlockerNotAllowlisted as exc:
+        job.data = {
+            "error": str(exc),
+            "error_type": exception_type(exc),
+            "blocking_label": exc.label,
+            "blocking_count": exc.count,
+        }
+        job.save(update_fields=["data"])
+        raise
+    except ForeignDeleteBlockerSafetyCapExceeded as exc:
+        job.data = {
+            "error": safe_operation_failure("Foreign delete-blocker release", exc),
+            "error_type": exception_type(exc),
+        }
+        job.save(update_fields=["data"])
+        raise
+    job.data = {"released": released}
+    job.save(update_fields=["data"])
+
+
 def _prune_forward_orphans_work(job, *, include_quarantined=False):
     """Run reviewed orphan pruning for a JobRunner-managed sync job.
 
@@ -2168,6 +2238,26 @@ class PruneUncoveredDevicesJob(ForwardJobRunner):
                 int(pk) for pk in kwargs["restrict_to_device_pks"]
             ]
         _prune_uncovered_devices_work(self.job, **extra)
+
+
+class ReleaseForeignDeleteBlockersJob(ForwardJobRunner):
+    """Releases exactly the netbox_routing rows named on the device panel."""
+
+    class Meta:
+        # Byte-identical to BUTTON_JOB_SPECS["release_foreign_delete_blockers"][1]:
+        # the overlap guard's exact-name arm depends on it.
+        name = "release foreign delete blockers"
+
+    def run(self, *args, **kwargs):
+        # Forwarded only when the caller supplied one, so the default lives
+        # in the work function's signature rather than being restated here
+        # where the two could drift apart - same shape as prune_uncovered.
+        extra = {}
+        if "device_pk" in kwargs:
+            extra["device_pk"] = int(kwargs["device_pk"])
+        if "expected_blockers" in kwargs:
+            extra["expected_blockers"] = dict(kwargs["expected_blockers"] or {})
+        _release_foreign_delete_blockers_work(self.job, **extra)
 
 
 class PruneOrphansJob(ForwardJobRunner):

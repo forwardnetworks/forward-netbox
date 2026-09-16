@@ -796,6 +796,7 @@ def fast_baseline_preflight(*, sync, client=None, logger=None):
 def run_fast_baseline_load(executor, *, context, workloads, fetcher):
     """Apply one eligible baseline directly to main and finalize it durably."""
     from .branch_budget import build_branch_plan
+    from .branch_lifecycle import initialize_plan_statistics
     from .branch_lifecycle import run_item_direct_to_main
     from .branching import build_branch_request
     from .ingestion_merge import _complete_post_merge_bookkeeping
@@ -828,6 +829,7 @@ def run_fast_baseline_load(executor, *, context, workloads, fetcher):
             oversized_bucket_policy="warn",
         )
         total = len(plan)
+        initialize_plan_statistics(executor, plan)
         context_dict = context.as_dict()
         for item in plan:
             run_item_direct_to_main(

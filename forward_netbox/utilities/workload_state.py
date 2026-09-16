@@ -658,6 +658,120 @@ def describe_delete_blockers(instance):
     return []
 
 
+# App labels this plugin is willing to auto-release a delete blocker from, on
+# an explicit, per-device operator confirmation naming the exact rows.
+# Deliberately narrow: `describe_delete_blockers` names every foreign PROTECT
+# relation, including ones on a customer's own manually-authored data (a
+# netbox_dlm or netbox_cisco_aci record deserves the same scrutiny a device
+# does), so this does not become a blanket release for anything it can name.
+# Just the routing integration this plugin populates and re-syncs from
+# Forward itself, where a stale row costs nothing the next sync does not
+# restore.
+RELEASABLE_FOREIGN_APP_LABELS = frozenset({"netbox_routing"})
+
+_RELEASE_ITERATION_CAP = 25
+
+
+class ForeignDeleteBlockerNotAllowlisted(RuntimeError):
+    """A blocker outside `RELEASABLE_FOREIGN_APP_LABELS` stopped the release.
+
+    Carries the blocking label/count so the caller can tell the operator
+    exactly what still needs a manual delete elsewhere - the same thing
+    `describe_delete_blockers` would have shown them.
+    """
+
+    def __init__(self, label, count):
+        super().__init__(
+            f"{count} {label} row(s) block this delete and are not in the "
+            "release allowlist."
+        )
+        self.label = label
+        self.count = count
+
+
+class ForeignDeleteBlockerSafetyCapExceeded(RuntimeError):
+    """The release loop did not converge within its bounded iteration cap.
+
+    Django's on_delete graph cannot cycle, so this should be unreachable; it
+    exists so a future allowlisted model with an unexpectedly deep chain
+    stops the job instead of looping.
+    """
+
+
+def release_foreign_delete_blockers(instance, *, allowed_app_labels=None):
+    """Delete exactly the allowlisted rows that would refuse this delete.
+
+    Re-runs the same ``Collector.collect`` walk `describe_delete_blockers`
+    reads, but instead of reporting the first protected relation it finds,
+    deletes those specific rows - only if every one of them belongs to an app
+    in `allowed_app_labels` - and collects again, until the walk finds
+    nothing left protecting `instance` or it meets a blocker outside the
+    allowlist. Everything happens in one transaction: hitting a
+    non-allowlisted blocker partway through rolls back whatever was already
+    released, so a refused release never leaves a device half-cleared.
+
+    Never deletes `instance` itself - only the rows that were refusing ITS
+    delete. The caller still performs, or declines to perform, the actual
+    delete afterward.
+
+    Returns ``{label: count}`` for every model actually released. Raises
+    `ForeignDeleteBlockerNotAllowlisted` (naming the blocker that stopped it)
+    or `ForeignDeleteBlockerSafetyCapExceeded`.
+    """
+    from django.db import DEFAULT_DB_ALIAS
+    from django.db.models.deletion import Collector
+    from django.db.models.deletion import ProtectedError
+    from django.db.models.deletion import RestrictedError
+
+    allowed_app_labels = frozenset(allowed_app_labels or RELEASABLE_FOREIGN_APP_LABELS)
+    released = {}
+
+    def _release_blockers(exc):
+        blockers = list(
+            getattr(exc, "protected_objects", None)
+            or getattr(exc, "restricted_objects", None)
+            or []
+        )
+        if not blockers:
+            raise exc
+        model = type(blockers[0])
+        if model._meta.app_label not in allowed_app_labels:
+            raise ForeignDeleteBlockerNotAllowlisted(
+                model._meta.label, len(blockers)
+            ) from exc
+        pks = [obj.pk for obj in blockers]
+        _delete_releasing(model.objects.filter(pk__in=pks))
+        released[model._meta.label] = released.get(model._meta.label, 0) + len(pks)
+
+    def _delete_releasing(queryset):
+        # A released row can itself be blocked one level deeper (an
+        # OSPFInterface protecting an OSPFInstance, say); resolve that before
+        # retrying this delete, rather than surfacing it as a fresh error.
+        for _ in range(_RELEASE_ITERATION_CAP):
+            try:
+                queryset.delete()
+            except (ProtectedError, RestrictedError) as exc:
+                _release_blockers(exc)
+                continue
+            return
+        raise ForeignDeleteBlockerSafetyCapExceeded(
+            f"Did not converge after {_RELEASE_ITERATION_CAP} rounds."
+        )
+
+    with transaction.atomic():
+        for _ in range(_RELEASE_ITERATION_CAP):
+            collector = Collector(using=DEFAULT_DB_ALIAS)
+            try:
+                collector.collect([instance])
+            except (ProtectedError, RestrictedError) as exc:
+                _release_blockers(exc)
+                continue
+            return released
+        raise ForeignDeleteBlockerSafetyCapExceeded(
+            f"Did not converge after {_RELEASE_ITERATION_CAP} rounds."
+        )
+
+
 def _claimed_device_delete_identities(delete_entries):
     from ..models import (
         ForwardDeviceIdentity,

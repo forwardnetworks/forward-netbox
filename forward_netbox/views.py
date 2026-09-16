@@ -2331,6 +2331,96 @@ class ForwardSyncConfigBackupView(BaseObjectView):
 
 
 @register_model_view(
+    ForwardSync,
+    "release_foreign_delete_blockers",
+    path="release-foreign-delete-blockers",
+)
+class ForwardSyncReleaseForeignDeleteBlockersView(BaseObjectView):
+    """Release exactly the netbox_routing rows named on a device's own panel.
+
+    Scoped to the sync for the same reason as the per-device prune below: one
+    deletion path, one overlap guard, one job name. It never deletes the
+    device itself, only the specific rows the ownership panel already showed
+    as foreign delete blockers - and only those, re-checked fresh against
+    what the operator saw when they clicked, so a race with a sync run or
+    another operator's action refuses rather than releasing something else.
+    """
+
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "dcim.delete_device"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return redirect(sync.get_absolute_url())
+
+    def post(self, request, pk):
+        import json
+
+        from .utilities.sync_facade import JobAlreadyActive
+        from .utilities.sync_facade import enqueue_button_job
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        try:
+            device_pk = int(request.POST.get("device") or "")
+        except (TypeError, ValueError):
+            messages.error(request, _("No device was named for this release."))
+            return redirect(sync.get_absolute_url())
+        try:
+            expected_blockers = json.loads(
+                request.POST.get("expected_blockers_json") or "{}"
+            )
+        except (TypeError, ValueError):
+            expected_blockers = {}
+        if (
+            not isinstance(expected_blockers, dict)
+            or not expected_blockers
+            or not all(
+                isinstance(label, str) and isinstance(count, int)
+                for label, count in expected_blockers.items()
+            )
+        ):
+            messages.error(
+                request, _("No delete-blocking rows were named for release.")
+            )
+            return redirect(sync.get_absolute_url())
+        try:
+            job = enqueue_button_job(
+                sync,
+                "release_foreign_delete_blockers",
+                request.user,
+                job_kwargs={
+                    "device_pk": device_pk,
+                    "expected_blockers": expected_blockers,
+                },
+            )
+        except JobAlreadyActive:
+            # Covers both an equivalent release already running and this
+            # sync itself writing inventory (`JobBlockedBySyncRun`); either
+            # way the operator just needs to try again once it clears.
+            messages.warning(
+                request,
+                _(
+                    "Cannot release delete-blocking rows right now: an "
+                    "equivalent job or this sync's own run is already active."
+                ),
+            )
+            return redirect(sync.get_absolute_url())
+        messages.success(
+            request,
+            _(
+                "Queued job #%(pk)d to release the delete-blocking rows shown "
+                "for device #%(device)d. It releases them only if they are "
+                "still exactly what was shown; the job records the reason "
+                "otherwise."
+            )
+            % {"pk": job.pk, "device": device_pk},
+        )
+        return redirect(sync.get_absolute_url())
+
+
+@register_model_view(
     ForwardSync, "prune_uncovered_device", path="prune-uncovered/device"
 )
 class ForwardSyncPruneUncoveredDeviceView(BaseObjectView):
