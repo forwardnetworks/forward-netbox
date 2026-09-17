@@ -39,6 +39,10 @@ NO_MODE_REMEDIATION = (
 def _interface_row(interface):
     vlan = interface.untagged_vlan
     return {
+        # Primary keys travel with the names so the report page can link to
+        # the rows; nothing is persisted, the view computes on open.
+        "device_id": interface.device_id,
+        "interface_id": interface.pk,
         "device": interface.device.name,
         "interface": interface.name,
         "device_site": interface.device.site.name if interface.device.site else None,

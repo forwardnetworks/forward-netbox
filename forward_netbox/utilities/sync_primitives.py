@@ -116,6 +116,30 @@ def _is_uniqueness_violation(exc) -> bool:
     return bool(codes) and codes <= {"unique", "unique_together"}
 
 
+def m2m_link_changes(obj, m2m_values):
+    """Which many-to-many fields differ from the requested pk sets.
+
+    Returns ``{field: sorted desired pks}`` for every field whose stored link
+    set differs; an empty mapping means nothing to write. The comparison is
+    the whole primitive's guarantee: a converged row issues no through-table
+    write, so a preview and the apply agree on "unchanged".
+    """
+    changes = {}
+    for field, desired in (m2m_values or {}).items():
+        desired_pks = {int(getattr(value, "pk", value)) for value in (desired or ())}
+        current_pks = set(getattr(obj, field).values_list("pk", flat=True))
+        if current_pks != desired_pks:
+            changes[field] = sorted(desired_pks)
+    return changes
+
+
+def _apply_m2m_values(obj, m2m_values):
+    changes = m2m_link_changes(obj, m2m_values)
+    for field, pks in changes.items():
+        getattr(obj, field).set(pks)
+    return bool(changes)
+
+
 def coalesce_update_or_create(
     runner,
     model,
@@ -126,7 +150,15 @@ def coalesce_update_or_create(
     conflict_policy="strict",
     return_change=False,
     create_instance_attrs=None,
+    m2m_values=None,
 ):
+    """Find-or-create through the coalesce lookups, then write what differs.
+
+    ``m2m_values`` maps a many-to-many field to the pks (or objects) it should
+    link; the engine's ``model_field_values`` filters on concrete fields, so a
+    caller passes links separately. They are set after ``save()``, only when
+    the stored set differs, and a link-only difference counts as a change.
+    """
     lookups = [lookup for lookup in (coalesce_lookups or []) if lookup]
     if not lookups:
         raise ValueError("At least one coalesce lookup must be provided.")
@@ -149,6 +181,7 @@ def coalesce_update_or_create(
                 setattr(obj, attr, value)
             obj.full_clean()
             obj.save()
+            _apply_m2m_values(obj, m2m_values)
             remember_lookup_object(runner, obj)
             _remember_unique_lookups(runner, model, lookups, obj)
             if return_change:
@@ -197,10 +230,11 @@ def coalesce_update_or_create(
             exc.forward_written_fields = set(update_fields)
             raise
         obj.save(update_fields=update_fields)
+    links_changed = _apply_m2m_values(obj, m2m_values)
     remember_lookup_object(runner, obj)
     _remember_unique_lookups(runner, model, lookups, obj)
     if return_change:
-        return obj, False, bool(update_fields)
+        return obj, False, bool(update_fields) or links_changed
     return obj, False
 
 
@@ -396,6 +430,7 @@ def coalesce_upsert(
     update_values=None,
     return_change=False,
     create_instance_attrs=None,
+    m2m_values=None,
 ):
     return coalesce_update_or_create(
         runner,
@@ -406,6 +441,7 @@ def coalesce_upsert(
         conflict_policy=runner._conflict_policy(model_string),
         return_change=return_change,
         create_instance_attrs=create_instance_attrs,
+        m2m_values=m2m_values,
     )
 
 
@@ -454,7 +490,14 @@ def upsert_row_from_defaults(
 
 
 def upsert_values_from_defaults(
-    runner, model_string, model, *, values, coalesce_sets, create_instance_attrs=None
+    runner,
+    model_string,
+    model,
+    *,
+    values,
+    coalesce_sets,
+    create_instance_attrs=None,
+    m2m_values=None,
 ):
     lookups = _dedupe_lookups(
         [coalesce_lookup(values, *coalesce_set) for coalesce_set in coalesce_sets]
@@ -467,6 +510,7 @@ def upsert_values_from_defaults(
         create_values=values,
         update_values=values,
         create_instance_attrs=create_instance_attrs,
+        m2m_values=m2m_values,
     )
 
 
@@ -1420,7 +1464,66 @@ def _prime_routing_policy_identity_cache(runner, model_string, rows):
     names = {policy_object_name(row) for row in rows if policy_object_name(row)}
     _prime_slug_name_identity_cache(runner, Parent, slugs=set(), names=names)
 
-    if model_string == PREFIX_LIST_MODEL:
+    if model_string == ROUTE_MAP_MODEL:
+        # The lists each entry matches, so linking is a dictionary walk.
+        from .sync_routing_policy import parse_route_map_clauses
+        from .sync_routing_policy import prime_policy_link_objects
+        from .sync_routing_policy import route_map_link_names
+
+        wanted = {"prefixlist": set(), "communitylist": set()}
+        for row in rows:
+            link_names = route_map_link_names(
+                parse_route_map_clauses(row.get("clauses"))
+            )
+            wanted["prefixlist"].update(link_names["match_prefix_list"])
+            wanted["communitylist"].update(link_names["match_community_list"])
+        for kind, kind_names in wanted.items():
+            if kind_names:
+                prime_policy_link_objects(runner, kind, kind_names)
+        # The entries themselves, with their links prefetched: resolving a
+        # link may read the links the entry already carries (when the list
+        # rows were not fetched in this run), and a converged fleet must not
+        # pay two link queries per entry for that on every preview.
+        RouteMapEntry = runner._optional_model(
+            "netbox_routing", "RouteMapEntry", model_string
+        )
+        if RouteMapEntry is not None and hasattr(RouteMapEntry, "objects"):
+            wanted_pairs = set()
+            for row in rows:
+                route_map = get_unique_or_raise(
+                    runner, Parent, {"name": policy_object_name(row)}
+                )
+                sequence = row.get("sequence")
+                if route_map is not None and sequence not in (None, ""):
+                    try:
+                        wanted_pairs.add((route_map.pk, int(sequence)))
+                    except (TypeError, ValueError):
+                        continue
+            map_pks = {pk for pk, _ in wanted_pairs}
+            found_pairs = set()
+            for chunk in _chunks(sorted(map_pks), DEPENDENCY_LOOKUP_PAIR_CHUNK_SIZE):
+                for entry in RouteMapEntry.objects.filter(
+                    route_map_id__in=chunk
+                ).prefetch_related("match_prefix_list", "match_community_list"):
+                    pair = (entry.route_map_id, entry.sequence)
+                    if pair in wanted_pairs:
+                        _remember_unique_lookup(
+                            runner,
+                            RouteMapEntry,
+                            {
+                                "route_map": entry.route_map_id,
+                                "sequence": entry.sequence,
+                            },
+                            entry,
+                        )
+                        found_pairs.add(pair)
+            for map_pk, sequence in wanted_pairs - found_pairs:
+                _mark_missing_unique_lookup(
+                    runner,
+                    RouteMapEntry,
+                    {"route_map": map_pk, "sequence": sequence},
+                )
+    elif model_string == PREFIX_LIST_MODEL:
         CustomPrefix = runner._optional_model(
             "netbox_routing", "CustomPrefix", model_string
         )

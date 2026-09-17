@@ -1,0 +1,62 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+{% load i18n %}
+
+{% block title %}{{ object }} - {% trans "Audits" %}{% endblock %}
+
+{% block extra_controls %}
+  <a class="btn btn-outline-secondary" href="{{ object.get_absolute_url }}">
+    <i class="mdi mdi-arrow-left" aria-hidden="true"></i>&nbsp;{% trans "Sync" %}
+  </a>
+{% endblock extra_controls %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col">
+    <div class="card">
+      <h5 class="card-header">{% trans "Audits" %}</h5>
+      <div class="card-body">
+        <p class="text-muted">
+          {% trans "Read-only checks that explain a symptom before anything is changed. An audit that reads only NetBox renders when opened; one that has to ask Forward runs as a job from its page, so opening a page never spends a query execution." %}
+        </p>
+        <table class="table table-hover">
+          <thead>
+            <tr>
+              <th>{% trans "Audit" %}</th>
+              <th>{% trans "What it answers" %}</th>
+              <th>{% trans "Source" %}</th>
+              <th>{% trans "Last run" %}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for entry in entries %}
+              <tr>
+                <td><a href="{{ entry.url }}">{{ entry.report.title }}</a></td>
+                <td class="text-muted">{{ entry.report.description }}</td>
+                <td>
+                  {% if entry.report.forward_backed %}
+                    <span class="badge text-bg-secondary">{% trans "Forward (job)" %}</span>
+                  {% else %}
+                    <span class="badge text-bg-light">{% trans "NetBox (live)" %}</span>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if not entry.report.forward_backed %}
+                    <span class="text-muted">{% trans "on open" %}</span>
+                  {% elif entry.job %}
+                    <a href="{{ entry.job.get_absolute_url }}">#{{ entry.job.pk }}</a>
+                    {% badge entry.job.get_status_display bg_color=entry.job.get_status_color %}
+                    {% if entry.job.completed %}<span class="text-muted">{{ entry.job.completed|isodatetime }}</span>{% endif %}
+                  {% else %}
+                    <span class="text-muted">{% trans "never" %}</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock content %}

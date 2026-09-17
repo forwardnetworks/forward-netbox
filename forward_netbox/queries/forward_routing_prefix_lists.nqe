@@ -52,7 +52,7 @@ defs =
 variants =
   foreach d in defs
   group d as ds by { key: d.key, sig: d.sig } as k
-  select { key: k.key, name: min(foreach x in ds select x.name), count: length(ds), rep: min(foreach x in ds select x.device) };
+  select { key: k.key, name: min(foreach x in ds select x.name), count: length(ds), rep: min(foreach x in ds select x.device), holders: (foreach x in ds select x.device) };
 
 ranked =
   foreach v in variants
@@ -60,8 +60,13 @@ ranked =
   let name = min(foreach x in vs select x.name)
   let bestCount = max(foreach x in vs select x.count)
   let bestRep = min(foreach x in vs where x.count == bestCount select x.rep)
+  let hasVariants = length(vs) > 1
   foreach v2 in vs
-  select { key: key, name: name, rep: v2.rep, count: v2.count, object_name: (if v2.rep == bestRep then name else name + "@" + v2.rep) };
+  // The devices holding a non-owner variant travel with its rows so a route
+  // map on one of them can link to the definition that device actually has;
+  // the owner definition is what any other device resolves to, so its
+  // holders are not repeated on every row.
+  select { key: key, name: name, rep: v2.rep, count: v2.count, object_name: (if v2.rep == bestRep then name else name + "@" + v2.rep), has_variants: hasVariants, holders: (foreach h in v2.holders where v2.rep != bestRep select h) };
 
 @query
 f(forward_netbox_shard_keys: List<String>) =
@@ -74,6 +79,8 @@ select {
   list_name: r.name,
   device: r.rep,
   device_count: r.count,
+  has_variants: r.has_variants,
+  holder_devices: r.holders,
   family: e.family,
   sequence: e.seq,
   action: e.action,

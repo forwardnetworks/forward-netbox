@@ -18,9 +18,10 @@
 #   here already carrying the stored `name`, the configured `list_name` /
 #   `map_name`, the representative `device` and `device_count`. Shared policy
 #   appears once under its real name and nothing is dropped. The route-map M2M
-#   links (`match_prefix_list`, `match_community_list`) are not written: the
-#   staging engine stages concrete fields only, and the JSON `match`/`set`
-#   blobs carry the referenced names verbatim.
+#   links (`match_prefix_list`, `match_community_list`) are written through
+#   the engine's `m2m_values` primitive, resolved to the variant the entry's
+#   device holds (see "catalogue links" below); the JSON `match`/`set` blobs
+#   carry the referenced names verbatim regardless.
 # - **Entries are validated by the plugin's own `clean()`**, which the merge
 #   runs. `PrefixListEntry.clean()` in 0.4.3 rejects the normal `ge X le Y`
 #   pair (it raises when `ge < le`) and any bound not longer than the prefix.
@@ -35,6 +36,8 @@ from .sync_primitives import forget_lookup_object
 from .sync_reporting import EXPANDED_COMMUNITY_LIST_REASON
 from .sync_reporting import NON_NUMERIC_COMMUNITY_REASON
 from .sync_reporting import POLICY_NAME_TOO_LONG_REASON
+from .sync_reporting import ROUTE_MAP_LINK_FALLBACK_REASON
+from .sync_reporting import ROUTE_MAP_LINK_UNRESOLVED_REASON
 from .sync_reporting import SEQUENCE_OUT_OF_RANGE_REASON
 from .sync_reporting import UNREPRESENTABLE_PREFIX_BOUNDS_REASON
 from .sync_routing_impl import preview_leaf_outcome
@@ -57,6 +60,8 @@ ROUTING_POLICY_ROLLUP_REASONS = frozenset(
         NON_NUMERIC_COMMUNITY_REASON,
         POLICY_NAME_TOO_LONG_REASON,
         SEQUENCE_OUT_OF_RANGE_REASON,
+        ROUTE_MAP_LINK_FALLBACK_REASON,
+        ROUTE_MAP_LINK_UNRESOLVED_REASON,
     }
 )
 
@@ -183,6 +188,235 @@ def _ensure_policy_parent(runner, model_string, model, name, values):
     return obj
 
 
+# --- catalogue links ---------------------------------------------------------
+#
+# A route map's `match ip address prefix-list X` names the X on that device,
+# which the catalogue stored either as `X` (the definition most devices share)
+# or as `X@<device>`. The list maps carry, on every row of a non-owner
+# variant, the devices holding that variant, and every row says whether its
+# name has variants at all; the route-map map carries each entry's
+# representative device. Resolution is then a dictionary walk with no
+# per-entry query, and every fallback is counted.
+
+LINK_PARENT_MODELS = {
+    "prefixlist": ("netbox_routing.prefixlist", "PrefixList"),
+    "communitylist": ("netbox_routing.communitylist", "CommunityList"),
+}
+_LINK_KIND_BY_ENTRY_MODEL = {
+    PREFIX_LIST_MODEL: "prefixlist",
+    COMMUNITY_LIST_MODEL: "communitylist",
+}
+
+
+def new_link_index():
+    return {
+        kind: {"seen": set(), "holders": {}, "objects": {}, "missing": set()}
+        for kind in LINK_PARENT_MODELS
+    }
+
+
+def _link_index(runner):
+    """The run's link index.
+
+    A sync builds one runner per plan item, and the list rows are applied by
+    earlier items than the route-map rows, so the index has to outlive the
+    runner: the executor owns it and hands it to each runner it builds
+    (`branch_lifecycle`). A runner without one - a test, a preview - gets a
+    private index, which is the "list rows not fetched" case by construction.
+    """
+    index = getattr(runner, "_routing_policy_link_index", None)
+    if index is None:
+        index = new_link_index()
+        setattr(runner, "_routing_policy_link_index", index)
+    return index
+
+
+def record_policy_variant_holders(runner, model_string, row):
+    """What this list row says about its name's variants, for link resolution."""
+    kind = _LINK_KIND_BY_ENTRY_MODEL.get(model_string)
+    configured = str(row.get("list_name") or "").strip().lower()
+    if kind is None or not configured:
+        return
+    index = _link_index(runner)[kind]
+    index["seen"].add(configured)
+    holders = row.get("holder_devices") or ()
+    if "@" in policy_object_name(row) and holders:
+        by_device = index["holders"].setdefault(configured, {})
+        object_name = policy_object_name(row)
+        for device in holders:
+            device = str(device or "").strip()
+            if device:
+                by_device[device] = object_name
+
+
+def _link_object(runner, kind, name):
+    """The stored list named `name`, case-insensitively, or None (cached)."""
+    key = str(name or "").strip().lower()
+    if not key:
+        return None
+    index = _link_index(runner)[kind]
+    if key in index["objects"]:
+        return index["objects"][key]
+    if key in index["missing"]:
+        return None
+    model_string, model_name = LINK_PARENT_MODELS[kind]
+    Model = runner._optional_model("netbox_routing", model_name, model_string)
+    obj = None
+    if Model is not None and hasattr(Model, "objects"):
+        obj = Model.objects.filter(name__iexact=key).first()
+    if obj is None:
+        index["missing"].add(key)
+    else:
+        index["objects"][key] = obj
+    return obj
+
+
+def prime_policy_link_objects(runner, kind, names):
+    """Fetch every candidate list object for `names` in one pass per chunk."""
+    from django.db.models.functions import Lower
+
+    from .sync_primitives import _chunks
+    from .sync_primitives import DEPENDENCY_LOOKUP_PAIR_CHUNK_SIZE
+
+    index = _link_index(runner)[kind]
+    wanted = set()
+    for name in names:
+        key = str(name or "").strip().lower()
+        if not key:
+            continue
+        wanted.add(key)
+        wanted.update(
+            object_name.lower()
+            for object_name in index["holders"].get(key, {}).values()
+        )
+    wanted -= set(index["objects"]) | index["missing"]
+    if not wanted:
+        return 0
+    model_string, model_name = LINK_PARENT_MODELS[kind]
+    Model = runner._optional_model("netbox_routing", model_name, model_string)
+    if Model is None or not hasattr(Model, "objects"):
+        return 0
+    found = set()
+    for chunk in _chunks(sorted(wanted), DEPENDENCY_LOOKUP_PAIR_CHUNK_SIZE):
+        for obj in Model.objects.annotate(_lname=Lower("name")).filter(
+            _lname__in=chunk
+        ):
+            index["objects"][obj.name.lower()] = obj
+            found.add(obj.name.lower())
+    index["missing"].update(wanted - found)
+    return len(wanted)
+
+
+def _linked_variant_of(existing, field, key):
+    """The object already linked on `existing` that spells `key`, if any."""
+    if existing is None or not hasattr(existing, field):
+        return None
+    for obj in getattr(existing, field).all():
+        if str(obj.name or "").split("@", 1)[0].strip().lower() == key:
+            return obj
+    return None
+
+
+def resolve_policy_link(runner, kind, name, device, *, existing=None, field=None):
+    """The list object `name` means on `device`, and how sure that is.
+
+    Returns ``(obj, outcome)`` with outcome ``exact`` (the variant this device
+    holds; the shared definition when the name has no variants or this
+    device holds the shared one; or the link the entry already carries for
+    this name when the list's rows were not fetched in this run - a preview
+    and a diff run see no index, and must not read a converged link as
+    drift), ``fallback`` (the shared definition, chosen because the list's
+    rows were not fetched in this run and the entry carried no link yet), or
+    ``unresolved`` (no stored list under any spelling).
+    """
+    key = str(name or "").strip().lower()
+    index = _link_index(runner)[kind]
+    device = str(device or "").strip()
+    variant = index["holders"].get(key, {}).get(device)
+    if variant is not None:
+        obj = _link_object(runner, kind, variant)
+        if obj is not None:
+            return obj, "exact"
+    if key in index["seen"]:
+        obj = _link_object(runner, kind, name)
+        return (obj, "exact") if obj is not None else (None, "unresolved")
+    retained = _linked_variant_of(existing, field, key)
+    if retained is not None:
+        return retained, "exact"
+    obj = _link_object(runner, kind, name)
+    if obj is None:
+        return None, "unresolved"
+    return obj, "fallback"
+
+
+def route_map_link_names(parsed):
+    """The list names a parsed route-map entry matches, by link kind."""
+    match = (parsed or {}).get("match") or {}
+    prefix_lists = []
+    community_lists = []
+    for key, values in match.items():
+        if not isinstance(values, list):
+            continue
+        if key.endswith("_prefix_list"):
+            prefix_lists.extend(str(value) for value in values)
+        elif key == "community":
+            community_lists.extend(str(value) for value in values)
+    return {
+        "match_prefix_list": list(dict.fromkeys(prefix_lists)),
+        "match_community_list": list(dict.fromkeys(community_lists)),
+    }
+
+
+_LINK_FIELD_KINDS = {
+    "match_prefix_list": "prefixlist",
+    "match_community_list": "communitylist",
+}
+
+
+def resolve_route_map_links(runner, parsed, row, *, existing=None):
+    """`m2m_values` for a route-map entry, with every fallback recorded once."""
+    warn = getattr(runner, "_record_aggregated_skip_warning", None)
+    entry_label = f"{policy_object_name(row)}:{row.get('sequence')}"
+    links = {}
+    for field, names in route_map_link_names(parsed).items():
+        kind = _LINK_FIELD_KINDS[field]
+        pks = []
+        for name in names:
+            obj, outcome = resolve_policy_link(
+                runner,
+                kind,
+                name,
+                row.get("device"),
+                existing=existing,
+                field=field,
+            )
+            if obj is not None:
+                pks.append(obj.pk)
+            if outcome == "exact" or warn is None:
+                continue
+            reason = (
+                ROUTE_MAP_LINK_FALLBACK_REASON
+                if outcome == "fallback"
+                else ROUTE_MAP_LINK_UNRESOLVED_REASON
+            )
+            warn(
+                model_string=ROUTE_MAP_MODEL,
+                reason=reason,
+                warning_message=(
+                    f"Route-map entry `{entry_label}` matches list `{name}`: "
+                    + (
+                        "linked to its shared definition; the variant this "
+                        "device holds was not fetched in this run."
+                        if outcome == "fallback"
+                        else "no imported list by that name."
+                    )
+                ),
+                sample=f"{entry_label} {name}",
+            )
+        links[field] = pks
+    return links
+
+
 # --- prefix lists -----------------------------------------------------------
 
 
@@ -261,6 +495,7 @@ def ensure_prefix_list(runner, row):
 
 
 def ensure_prefix_list_entry(runner, row, *, preview=False):
+    record_policy_variant_holders(runner, PREFIX_LIST_MODEL, row)
     PrefixListEntry = runner._optional_model(
         "netbox_routing", "PrefixListEntry", PREFIX_LIST_MODEL
     )
@@ -419,6 +654,7 @@ def ensure_community_list(runner, row):
 
 
 def ensure_community_list_entry(runner, row, *, preview=False):
+    record_policy_variant_holders(runner, COMMUNITY_LIST_MODEL, row)
     CommunityListEntry = runner._optional_model(
         "netbox_routing", "CommunityListEntry", COMMUNITY_LIST_MODEL
     )
@@ -634,11 +870,17 @@ def ensure_route_map_entry(runner, row, *, preview=False):
             "description": parsed["description"],
         },
     )
+    # The upsert looks the entry up by the same key right after, from the
+    # runner's lookup cache, so this costs no extra query on the apply path.
+    existing = runner._get_unique_or_raise(
+        RouteMapEntry, {"route_map": route_map, "sequence": sequence}
+    )
     entry, _ = runner._upsert_values_from_defaults(
         ROUTE_MAP_MODEL,
         RouteMapEntry,
         values=values,
         coalesce_sets=[("route_map", "sequence")],
+        m2m_values=resolve_route_map_links(runner, parsed, row, existing=existing),
     )
     return entry
 
