@@ -1787,7 +1787,7 @@ def main(argv: list[str] | None = None) -> int:
         default="",
         help=(
             "runtime clause for the compatibility sentence, e.g. "
-            "'NetBox `4.7.x` (tested on `4.7.0`) and `netbox-branching` `1.2.x`'"
+            "'NetBox `4.7.x` (tested on `4.7.1`) and `netbox-branching` `1.2.x`'"
         ),
     )
     parser.add_argument(
