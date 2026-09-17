@@ -4,10 +4,9 @@
 name = "annotated-types"
 version = "0.8.0"
 description = "Reusable constraint types to use with typing.Annotated"
-optional = true
+optional = false
 python-versions = ">=3.10"
 groups = ["main"]
-markers = "python_version >= \"3.12\" and (extra == \"validity\" or extra == \"integrations\")"
 files = [
     {file = "annotated_types-0.8.0-py3-none-any.whl", hash = "sha256:f072f4d804ea359e4eaf198b1af7a8b0943881a87f31bb764f8bf219bb9419e0"},
     {file = "annotated_types-0.8.0.tar.gz", hash = "sha256:13b2beaad985e05e2d6407ee4c4f35590b11f8d693a258a561055cac8f64cab7"},
@@ -797,6 +796,23 @@ files = [
     {file = "filelock-3.31.0-py3-none-any.whl", hash = "sha256:739b73e580fe88bb78d830aeddbc492519ece3d97ac8368de13a2032c61010c1"},
     {file = "filelock-3.31.0.tar.gz", hash = "sha256:c188cbc4307c18894c5424fa73f97ea7fa127ddf62192487546da3a214d0a381"},
 ]
+
+[[package]]
+name = "forward-sdk"
+version = "0.1.16"
+description = "Python SDK for the Forward Networks REST API. A Forward Networks Field Integration."
+optional = false
+python-versions = ">=3.10"
+groups = ["main"]
+files = [
+    {file = "forward_sdk-0.1.16-py3-none-any.whl", hash = "sha256:67323f4d379d5a398432e6cf0c793d563b6a407aa8109ba62abbc37044d7b541"},
+    {file = "forward_sdk-0.1.16.tar.gz", hash = "sha256:ff40ab42e4d3eccd1f975449d35d6560f74ccef08b081960cc8c5461ff82c68b"},
+]
+
+[package.dependencies]
+httpx = ">=0.27,<1"
+pydantic = ">=2.6,<3"
+typing-extensions = {version = ">=4.8", markers = "python_version < \"3.11\""}
 
 [[package]]
 name = "future"
@@ -1911,10 +1927,9 @@ files = [
 name = "pydantic"
 version = "2.13.4"
 description = "Data validation using Python type hints"
-optional = true
+optional = false
 python-versions = ">=3.9"
 groups = ["main"]
-markers = "python_version >= \"3.12\" and (extra == \"validity\" or extra == \"integrations\")"
 files = [
     {file = "pydantic-2.13.4-py3-none-any.whl", hash = "sha256:45a282cde31d808236fd7ea9d919b128653c8b38b393d1c4ab335c62924d9aba"},
     {file = "pydantic-2.13.4.tar.gz", hash = "sha256:c40756b57adaa8b1efeeced5c196f3f3b7c435f90e84ea7f443901bec8099ef6"},
@@ -1934,10 +1949,9 @@ timezone = ["tzdata ; python_version >= \"3.9\" and platform_system == \"Windows
 name = "pydantic-core"
 version = "2.46.4"
 description = "Core functionality for Pydantic validation and serialization"
-optional = true
+optional = false
 python-versions = ">=3.9"
 groups = ["main"]
-markers = "python_version >= \"3.12\" and (extra == \"validity\" or extra == \"integrations\")"
 files = [
     {file = "pydantic_core-2.46.4-cp310-cp310-macosx_10_12_x86_64.whl", hash = "sha256:a396dcc17e5a0b164dbe026896245a4fa9ff402edca1dff0be3d53a517f74de4"},
     {file = "pydantic_core-2.46.4-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:da4b951fe36dc7c3a1ccb4e3cd1747c3542b8c9ceede8fc86cae054e764485f5"},
@@ -2657,16 +2671,15 @@ files = [
     {file = "typing_extensions-4.16.0-py3-none-any.whl", hash = "sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8"},
     {file = "typing_extensions-4.16.0.tar.gz", hash = "sha256:dc983d19a509c94dba722ee6abd33940f7c05a89e243c47e907eb4db6f1a43e5"},
 ]
-markers = {main = "extra == \"routing\" or extra == \"integrations\" or extra == \"peering\" or extra == \"validity\" or python_version < \"3.13\"", dev = "python_version == \"3.10\""}
+markers = {dev = "python_version == \"3.10\""}
 
 [[package]]
 name = "typing-inspection"
 version = "0.4.4"
 description = "Runtime typing introspection tools"
-optional = true
+optional = false
 python-versions = ">=3.10"
 groups = ["main"]
-markers = "python_version >= \"3.12\" and (extra == \"validity\" or extra == \"integrations\")"
 files = [
     {file = "typing_inspection-0.4.4-py3-none-any.whl", hash = "sha256:65b8397ba37ccbce054456aaccddfc91e6e3083c92824df348d96ca832f3f147"},
     {file = "typing_inspection-0.4.4.tar.gz", hash = "sha256:547274fa6b0a561ccf549cc9524b999a578e737d015d8709d021f9d0d13bea47"},
@@ -2829,4 +2842,4 @@ validity = ["netbox-validity"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.15"
-content-hash = "1c38b28da6b53b72a34569356c7297a13511bc67a067036c60aecbf890106703"
+content-hash = "4db8e5d3a98e7a345731a430008f9fa61f3b9ac358cc4fff5a205c8947005f8b"
