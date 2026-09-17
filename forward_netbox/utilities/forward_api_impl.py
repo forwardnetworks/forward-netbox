@@ -8,6 +8,8 @@ from urllib.parse import quote
 
 import httpx
 from django.core.cache import cache as django_cache
+from forward_sdk.errors import ForwardError as SDKForwardError
+from forward_sdk.errors import ForwardTransportError as SDKForwardTransportError
 from rq.timeouts import JobTimeoutException
 from utilities.proxy import resolve_proxies
 
@@ -41,6 +43,8 @@ from .forward_client_config import MAX_NQE_FETCH_ALL_MAX_PAGES
 from .forward_client_config import MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
 from .forward_client_config import MAX_NQE_PAGE_SIZE
 from .forward_client_errors import TRANSIENT_FORWARD_HTTP_STATUS_CODES
+from .forward_client_errors import translate_client_exception
+from .forward_client_factory import get_client
 from .forward_read_cache import shared_read_cache_scope
 from .forward_read_cache import SharedReadCache
 from .forward_throttle import _RATE_LIMIT_LAST_REQUEST_AT
@@ -335,6 +339,19 @@ class ForwardClient:
             ),
             cache_provider=lambda: _shared_read_cache(),
         )
+        self._sdk_client = get_client(
+            base_url=self.base_url,
+            username=self.username,
+            password=self.password,
+            verify=self.verify,
+            timeout=self.timeout,
+            retries=self.retries,
+            api_requests_per_minute=self.api_requests_per_minute,
+            throttle=self._throttle,
+            usage=self._usage,
+            client=self,
+            source=self.source,
+        )
         self._read_cache_lock = threading.Lock()
         self._latest_processed_snapshot_cache: dict[str, dict] = {}
         self._snapshots_cache: dict[tuple[str, bool, int], list[dict]] = {}
@@ -491,6 +508,30 @@ class ForwardClient:
             mounts[f"{protocol}://"] = httpx.HTTPTransport(proxy=proxy_url)
         return mounts or None
 
+    def _call_sdk(self, fn, *args, **kwargs):
+        """Call an `forward-sdk` service method, translating its exceptions.
+
+        `UsageTrackingHooks` (wired in `__init__` via `get_client`) already
+        records `http_attempts`/`http_successes`/status-classified failures/
+        `http_retries` for every SDK call, from the transport's own request
+        hooks - see that module's docstring for why per-call-site
+        approximation would under-count. The one thing hooks cannot see is a
+        transport failure (no response was ever received), so
+        `http_failures`/`http_timeout_failures`/`http_transport_failures` are
+        recorded here, at the only place that information exists.
+        """
+        try:
+            return fn(*args, **kwargs)
+        except SDKForwardTransportError as exc:
+            self._record_api_usage("http_failures")
+            if isinstance(exc.__cause__, httpx.TimeoutException):
+                self._record_api_usage("http_timeout_failures")
+            else:
+                self._record_api_usage("http_transport_failures")
+            raise translate_client_exception(exc) from exc
+        except SDKForwardError as exc:
+            raise translate_client_exception(exc) from exc
+
     def _request(
         self,
         method,
@@ -636,12 +677,11 @@ class ForwardClient:
             self._record_read_cache_hit()
             return [dict(item) for item in cached_networks]
         self._record_read_cache_miss()
-        response = self._request("GET", "/networks")
-        data = response.json()
+        sdk_networks = self._call_sdk(self._sdk_client.networks.list)
         networks = []
-        for item in data or []:
-            network_id = str(item.get("id", "")).strip()
-            name = str(item.get("name", "")).strip()
+        for item in sdk_networks or []:
+            network_id = str(item.id or "").strip()
+            name = str(item.name or "").strip()
             if not network_id or not name:
                 continue
             networks.append(
@@ -676,23 +716,20 @@ class ForwardClient:
             self._record_read_cache_hit()
             return [dict(item) for item in cached_snapshots]
         self._record_read_cache_miss()
-        response = self._request(
-            "GET",
-            f"/networks/{network_id}/snapshots",
-            params={
-                "includeArchived": str(bool(include_archived)).lower(),
-                "limit": limit,
-            },
+        sdk_snapshots = self._call_sdk(
+            self._sdk_client.snapshots.list,
+            network_id,
+            include_archived=bool(include_archived),
+            limit=limit,
         )
-        data = response.json() or {}
         snapshots = []
-        for item in data.get("snapshots") or []:
-            snapshot_id = str(item.get("id", "")).strip()
+        for item in sdk_snapshots or []:
+            snapshot_id = str(item.id or "").strip()
             if not snapshot_id:
                 continue
-            state = str(item.get("state", "")).strip()
-            created = str(item.get("createdAt", "")).strip()
-            processed = str(item.get("processedAt", "")).strip()
+            state = str(item.state or "").strip()
+            created = str(item.created_at or "").strip()
+            processed = str(item.processed_at or "").strip()
             label_parts = [snapshot_id]
             if state:
                 label_parts.append(state)
@@ -735,11 +772,28 @@ class ForwardClient:
             self._record_read_cache_hit()
             return dict(cached_snapshot)
         self._record_read_cache_miss()
-        response = self._request(
-            "GET", f"/networks/{network_id}/snapshots/latestProcessed"
+        # `include_predicted=False` (the SDK default) excludes a snapshot
+        # Forward created to analyse a change set - a network using Predict
+        # would otherwise very often resolve "latest processed" to a
+        # simulation rather than a state the network was ever actually in.
+        # Forward's own now-deprecated `latestProcessed` selector, which this
+        # replaces, had no such filter; adopted deliberately as a
+        # correctness fix, not preserved as a quirk - see this plan's
+        # Decision Log.
+        sdk_snapshot = self._call_sdk(
+            self._sdk_client.snapshots.latest_processed, network_id
         )
-        snapshot = response.json() or {}
-        if isinstance(snapshot, dict):
+        snapshot = (
+            {}
+            if sdk_snapshot is None
+            else {
+                "id": str(sdk_snapshot.id or ""),
+                "state": str(sdk_snapshot.state or ""),
+                "createdAt": str(sdk_snapshot.created_at or ""),
+                "processedAt": str(sdk_snapshot.processed_at or ""),
+            }
+        )
+        if snapshot:
             with self._read_cache_lock:
                 self._latest_processed_snapshot_cache[network_id] = dict(snapshot)
             self._shared_read_cache_set(shared_cache_key, dict(snapshot))
@@ -934,8 +988,7 @@ class ForwardClient:
             self._record_read_cache_hit()
             return dict(cached_metrics)
         self._record_read_cache_miss()
-        response = self._request("GET", f"/snapshots/{snapshot_id}/metrics")
-        metrics = response.json() or {}
+        metrics = self._call_sdk(self._sdk_client.snapshots.metrics, snapshot_id)
         if isinstance(metrics, dict):
             with self._read_cache_lock:
                 self._snapshot_metrics_cache[snapshot_id] = dict(metrics)
@@ -958,12 +1011,15 @@ class ForwardClient:
             self._record_read_cache_hit()
             return dict(cached)
         self._record_read_cache_miss()
-        response = self._request(
-            "GET",
-            f"/networks/{quote(network_id, safe='')}/data-files",
-            params={"view": "snapshot", "snapshotId": snapshot_id},
+        payload = (
+            self._call_sdk(
+                self._sdk_client.data_files.get_data_files,
+                network_id=network_id,
+                view="snapshot",
+                snapshot_id=snapshot_id,
+            )
+            or []
         )
-        payload = response.json() or []
         if isinstance(payload, dict):
             rows = (
                 payload.get("dataFiles")

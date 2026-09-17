@@ -233,3 +233,53 @@ dependency declaration; the first with a behavioural one is the transport swap.
     this client makes targets the same `base_url`, so this loses only a
     per-request routing decision no real deployment's `resolve_proxies`
     implementation actually makes today.
+- **2026-09-17** -- Step 5b: `get_client()` wired into `ForwardClient.__init__`
+  (as `self._sdk_client`), and the first five read-only methods converted -
+  `get_networks`, `get_snapshots`, `get_latest_processed_snapshot(_id)`,
+  `get_snapshot_metrics`, `get_snapshot_data_file_hashes`. Each keeps its
+  exact external return shape; only what fetches the data changed.
+  - **Usage counters, resolved before touching any method**: approximating
+    `http_attempts`/`http_successes`/etc. per call site would under-count,
+    because the SDK retries internally inside one service call and a caller
+    cannot see how many actual HTTP attempts that made -
+    `evaluate_forward_api_usage`'s accuracy is this plan's own hardest
+    constraint, so this could not be hand-waved. `forward_usage_hooks.py`'s
+    `UsageTrackingHooks`, wired once at client construction via `get_client`'s
+    new `usage=` parameter, hooks the SDK's own `on_request`/`on_response`/
+    `on_retry` events (`_sync/transport.py`) directly onto
+    `ApiUsageTracker`, so every counter stays accurate regardless of which
+    method issued the call or how many times the SDK retried it internally.
+    The one thing hooks cannot see is a transport failure (no response was
+    ever received): `ForwardClient._call_sdk` records
+    `http_transport_failures`/`http_timeout_failures` at the point it
+    catches and translates a `ForwardTransportError`, the only place that
+    information exists. `on_sleep` is deliberately NOT hooked for
+    `throttle_sleep_seconds`, which `Throttle.throttle()` (step 2) already
+    records on the same tracker - hooking it too would double-count.
+  - **`get_latest_collected_snapshot_id` is explicitly NOT converted to
+    `client.snapshots.latest_collected_id()`**, despite it being a close
+    match (its `COLLECTED_PROBE` constant is structurally identical to this
+    plugin's own hand-built probe query - the SDK credits this plugin by
+    name for the pattern). That SDK method builds its scope predicate with
+    `forward_sdk.nqe.where.tag_scope()`, which this plan's own Decision Log
+    already rejected on data-loss risk ("the failure mode if the probe and
+    the query branch diverge is deletion of customer data"). Using this SDK
+    convenience method would silently reintroduce exactly that risk. The
+    plugin's own hand-rolled version (still calling `self.run_nqe_query`
+    with `build_device_tag_scope_where`) is untouched; it will pick up the
+    SDK transparently once `run_nqe_query` itself is converted in a later
+    sub-commit.
+  - **`get_latest_processed_snapshot` behavior change, called out
+    deliberately**: the SDK's `latest_processed()` excludes a Predict-created
+    snapshot by default; the deprecated Forward endpoint this replaces had
+    no such filter. Adopted as a correctness fix, not preserved as a quirk -
+    a network using Predict would otherwise very often resolve "latest
+    processed" to a simulation rather than a state the network was ever
+    actually in.
+  - `get_latest_processed_snapshot`'s return shape stays camelCase
+    (`{id, state, createdAt, processedAt}`), matching Forward's own raw JSON
+    the deprecated endpoint returned - confirmed by reading every caller
+    (`sync_execution.py`, `query_fetch_execution.py`, `api/views.py`,
+    `models.py`) rather than assuming consistency with `get_snapshots`'s
+    own snake_case shape, which is a genuinely different convention used
+    nowhere else in this method.
