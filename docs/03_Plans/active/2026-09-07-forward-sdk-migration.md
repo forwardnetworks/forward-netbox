@@ -153,3 +153,18 @@ dependency declaration; the first with a behavioural one is the transport swap.
   unchanged between `0.1.3` and `0.1.16`, so the intersection with this
   project's own `httpx` pin and the base-install cost of `pydantic` becoming a
   required (not optional) dependency are exactly as analyzed below.
+- **2026-09-17** -- Step 2's extraction stops at the shared, cross-process
+  substrate (`forward_client_config.py`, `forward_usage.py`,
+  `forward_read_cache.py`, `forward_throttle.py`). Each per-resource
+  in-memory cache dict on `ForwardClient` (`_networks_cache`,
+  `_snapshots_cache`, etc.) stays put, shaped and read differently per
+  resource inside each `get_*` method body. Extracting those too would mean
+  rewriting every cached-fetch method's body in the same change meant to
+  prove the extraction changes nothing. Every method name the test suite or
+  an internal call site depends on (`_record_api_usage`,
+  `_throttle_request`, `_rate_limit_key`, `api_usage_summary`,
+  `_shared_read_cache`/`_shared_rate_limit_cache` module functions,
+  `_RATE_LIMIT_LAST_REQUEST_AT`) is preserved as a thin delegating wrapper;
+  none were renamed or removed. Validated by running the full
+  `test_forward_api.py` + `test_health.py` suite (149 tests, all green)
+  against the extraction with no test changes.
