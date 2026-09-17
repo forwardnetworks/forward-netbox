@@ -168,3 +168,25 @@ dependency declaration; the first with a behavioural one is the transport swap.
   none were renamed or removed. Validated by running the full
   `test_forward_api.py` + `test_health.py` suite (149 tests, all green)
   against the extraction with no test changes.
+- **2026-09-17** -- Step 4's translator (`forward_client_errors.py`) is built
+  and tested standalone, not wired into `ForwardClient._request()` yet - that
+  is step 5. Every branch dispatches on the SDK exception's own type or, for
+  a status-carrying `ForwardAPIError`, its `.status` attribute directly,
+  never on message-text guessing, because the SDK already did that guessing
+  once inside itself to decide which of its own exception classes to raise.
+  The message each branch builds still reproduces the exact wording
+  `_request()` builds today for the equivalent httpx failure ("Forward API
+  request timed out while connecting to Forward.", "Forward API request
+  returned transient HTTP `<code>`; retry attempts were exhausted.", "Forward
+  API request failed with HTTP `<code>`: `<body>`"), so `diagnostics.py`'s
+  needle-based `failure_reason()` and its `_http_status_slug()` regex
+  fallback classify a translated exception identically to today's - neither
+  function is touched by this step. `TRANSIENT_FORWARD_HTTP_STATUS_CODES`
+  moved from `forward_api_impl.py` into this new module (which
+  `forward_api_impl.py` now re-imports) rather than being duplicated, since
+  step 5 would otherwise need this module to import back from
+  `forward_api_impl.py` - a circular import the move avoids before it can
+  ever be introduced. One test case per SDK exception type was added
+  (`forward_netbox/tests/test_forward_client_errors.py`), each asserting
+  both the translated exception's type and its `failure_reason()` slug,
+  per this plan's own Validation section.
