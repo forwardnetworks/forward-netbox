@@ -205,6 +205,27 @@ ADAPTER_MODEL_BLOCKERS = {
             "adapter sequencing guarantees."
         ),
     },
+    "netbox_routing.prefixlistentry": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": (
+            "Prefix-list entry writes create their list and CustomPrefix "
+            "parents and predict the plugin's bound validation in the adapter."
+        ),
+    },
+    "netbox_routing.communitylistentry": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": (
+            "Community-list entry writes create their list and Community "
+            "parents and skip non-numeric communities in the adapter."
+        ),
+    },
+    "netbox_routing.routemapentry": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": (
+            "Route-map entry writes create their route-map parent and derive "
+            "the match/set JSON from config clauses in the adapter."
+        ),
+    },
     "netbox_cisco_aci.acifabric": {
         "blocker_code": "plugin_model_dependencies",
         "blocker_reason": (
