@@ -35,6 +35,7 @@ def _workload(
     model_string="dcim.interface",
     query_name="Forward rows",
     coalesce_fields=None,
+    sync_mode="full",
 ):
     coalesce_fields = coalesce_fields or {
         "dcim.device": [["name"]],
@@ -49,7 +50,7 @@ def _workload(
         label=model_string,
         upsert_rows=list(rows),
         delete_rows=list(delete_rows or []),
-        sync_mode="full",
+        sync_mode=sync_mode,
         coalesce_fields=coalesce_fields,
         query_name=query_name,
         execution_mode="query_path",
@@ -1183,3 +1184,87 @@ class DurableWorkloadStateTest(TestCase):
             ForwardWorkloadState.objects.get(is_current=True).ingestion,
             second,
         )
+
+
+class MixedSyncModeConsolidationTest(TestCase):
+    """dcim.inventoryitem has three built-in maps. A customer who just
+    enabled one of the two optional maps can get a run where that map has no
+    established diff baseline yet (falls back to a parameterized full fetch)
+    while a sibling map for the SAME model is diff-eligible. Every existing
+    test above calls `apply_durable_workload_deltas` with exactly one
+    workload per model, so this mixed-sync_mode case was never exercised.
+
+    Before the fix, `all(workload.sync_mode == "full" ...)` made the whole
+    model group `continue` past consolidation whenever any sibling used a
+    different sync_mode - so the full map's own already-computed delete_rows
+    (from a stale cross-map-union baseline) passed straight through
+    unconsolidated, even though a sibling map's current rows still supplied
+    the identity being deleted.
+    """
+
+    def setUp(self):
+        user = get_user_model().objects.create_user(username="mixed-sync-mode-owner")
+        source = ForwardSource.objects.create(
+            name="mixed-sync-mode-source",
+            type="saas",
+            url="https://fwd.app",
+            parameters={"network_id": "network"},
+        )
+        self.sync = ForwardSync.objects.create(
+            name="mixed-sync-mode-sync",
+            source=source,
+            user=user,
+            parameters={"dcim.interface": True},
+        )
+
+    def test_a_full_maps_delete_is_held_when_a_diff_sibling_still_supplies_it(self):
+        full_map = _workload(
+            [],
+            delete_rows=[{"device": "router-1", "name": "Ethernet1"}],
+            model_string="dcim.interface",
+            sync_mode="full",
+        )
+        diff_sibling_map = _workload(
+            [{"device": "router-1", "name": "Ethernet1", "enabled": True}],
+            model_string="dcim.interface",
+            sync_mode="diff",
+            parameters={},
+        )
+
+        workloads, _, _ = apply_durable_workload_deltas(
+            self.sync,
+            [full_map, diff_sibling_map],
+        )
+
+        deleted_identities = {
+            (row["device"], row["name"])
+            for workload in workloads
+            for row in workload.delete_rows
+        }
+        self.assertNotIn(("router-1", "Ethernet1"), deleted_identities)
+
+    def test_the_diff_siblings_own_workload_is_left_untouched(self):
+        full_map = _workload(
+            [],
+            delete_rows=[{"device": "router-1", "name": "Ethernet1"}],
+            model_string="dcim.interface",
+            sync_mode="full",
+        )
+        diff_sibling_rows = [
+            {"device": "router-1", "name": "Ethernet1", "enabled": True}
+        ]
+        diff_sibling_map = _workload(
+            diff_sibling_rows,
+            model_string="dcim.interface",
+            sync_mode="diff",
+            parameters={},
+        )
+
+        workloads, _, _ = apply_durable_workload_deltas(
+            self.sync,
+            [full_map, diff_sibling_map],
+        )
+
+        diff_survivors = [w for w in workloads if w.sync_mode == "diff"]
+        self.assertEqual(len(diff_survivors), 1)
+        self.assertEqual(diff_survivors[0].upsert_rows, diff_sibling_rows)

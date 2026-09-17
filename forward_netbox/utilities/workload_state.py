@@ -1032,27 +1032,55 @@ def apply_durable_workload_deltas(sync, workloads):
     summaries = []
     for model_string, positions in positions_by_model.items():
         model_workloads = [workloads[position] for position in positions]
-        if not all(
-            workload.sync_mode == "full" for workload in model_workloads
-        ) or not any(bool(workload.query_parameters) for workload in model_workloads):
+        # Every FULL-mode workload for this model consolidates together
+        # (parameterized or not - a parameterless full map has always shared
+        # durable state with a parameterized sibling); the group only needs
+        # at least one parameterized member to trigger consolidation at all.
+        full_mode_positions = [
+            position
+            for position, workload in zip(positions, model_workloads)
+            if workload.sync_mode == "full"
+        ]
+        full_mode_workloads = [workloads[position] for position in full_mode_positions]
+        if not full_mode_workloads or not any(
+            bool(workload.query_parameters) for workload in full_mode_workloads
+        ):
             continue
-        coalesce_fields = model_workloads[0].coalesce_fields
+        # A model can have more than one enabled map (e.g. dcim.inventoryitem's
+        # three built-in maps). One map may fall back to a parameterized full
+        # fetch this run (no established diff baseline for its own contract key
+        # yet) while a sibling map is diff-eligible - that sibling's own
+        # workload is intentionally left OUT of consolidation below ("native
+        # Forward diffs remain untouched"), but its current upsert rows are
+        # still proof the identity exists, and a delete staged from the full
+        # map's stale cross-map-union baseline must not go through for it.
+        sibling_positions = [
+            position for position in positions if position not in full_mode_positions
+        ]
+        sibling_workloads = [workloads[position] for position in sibling_positions]
+
+        coalesce_fields = full_mode_workloads[0].coalesce_fields
         if any(
             workload.coalesce_fields != coalesce_fields
-            for workload in model_workloads[1:]
+            for workload in full_mode_workloads[1:]
         ):
             raise ForwardQueryError(
                 f"Parameterized full maps for `{model_string}` disagree on durable identity."
             )
 
-        target_rows = _merge_rows(model_workloads, "upsert_rows")
+        sibling_entries = build_state_entries(
+            model_string,
+            _merge_rows(sibling_workloads, "upsert_rows"),
+            coalesce_fields,
+        )
+        target_rows = _merge_rows(full_mode_workloads, "upsert_rows")
         target_entries = build_state_entries(
             model_string,
             target_rows,
             coalesce_fields,
         )
-        parameter_hash = _parameter_hash(model_workloads)
-        identity_contract_hash = _identity_contract_hash(model_workloads)
+        parameter_hash = _parameter_hash(full_mode_workloads)
+        identity_contract_hash = _identity_contract_hash(full_mode_workloads)
         current_state = _load_current_state(sync, model_string)
         compatible = bool(
             current_state is not None
@@ -1062,7 +1090,7 @@ def apply_durable_workload_deltas(sync, workloads):
 
         explicit_deletes = _deduplicate_rows(
             model_string,
-            _merge_rows(model_workloads, "delete_rows"),
+            _merge_rows(full_mode_workloads, "delete_rows"),
             coalesce_fields,
         )
         bootstrap_delete_identities = set()
@@ -1202,6 +1230,8 @@ def apply_durable_workload_deltas(sync, workloads):
         )
         for identity in target_entries:
             explicit_delete_entries.pop(identity, None)
+        for identity in sibling_entries:
+            explicit_delete_entries.pop(identity, None)
         protected_identities, unrepresented_peer, _ = _peer_delete_protection(
             sync,
             model_string,
@@ -1243,7 +1273,9 @@ def apply_durable_workload_deltas(sync, workloads):
                     "action": "delete",
                 }
                 for identity, value in previous_entries.items()
-                if value["action"] == "upsert" and identity not in target_entries
+                if value["action"] == "upsert"
+                and identity not in target_entries
+                and identity not in sibling_entries
             }
             proposed_missing_count = len(missing_entries)
             missing_reference_protected = _locally_referenced_delete_identities(
@@ -1301,8 +1333,8 @@ def apply_durable_workload_deltas(sync, workloads):
                 row_count=len(target_entries),
             )
         )
-        first = model_workloads[0]
-        replacements[positions[0]] = replace(
+        first = full_mode_workloads[0]
+        replacements[full_mode_positions[0]] = replace(
             first,
             label=f"{model_string} | durable parameterized workload",
             upsert_rows=changed_rows,
@@ -1311,7 +1343,11 @@ def apply_durable_workload_deltas(sync, workloads):
             execution_mode="local_delta" if compatible else first.execution_mode,
             execution_value=model_string,
         )
-        removed_positions.update(positions[1:])
+        # Sibling (non-full-parameterized) positions - e.g. a diff-eligible
+        # map for the same model - are left in `workloads` untouched; only
+        # the OTHER full-parameterized maps collapse into the one replacement
+        # above.
+        removed_positions.update(full_mode_positions[1:])
         summaries.append(
             {
                 "model": model_string,
