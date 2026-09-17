@@ -91,7 +91,8 @@ class TaggedItemPreviewTest(TestCase):
         result = compare_model_rows(None, "extras.taggeditem", [self._row()])
 
         self.assertEqual(
-            result, {"creates": 1, "updates": 0, "unchanged": 0, "rejected": 0}
+            result,
+            {"creates": 1, "updates": 0, "unchanged": 0, "rejected": 0, "deletes": 0},
         )
 
     def test_an_existing_assignment_is_unchanged(self):
@@ -101,7 +102,8 @@ class TaggedItemPreviewTest(TestCase):
         result = compare_model_rows(None, "extras.taggeditem", [self._row()])
 
         self.assertEqual(
-            result, {"creates": 0, "updates": 0, "unchanged": 1, "rejected": 0}
+            result,
+            {"creates": 0, "updates": 0, "unchanged": 1, "rejected": 0, "deletes": 0},
         )
 
     def test_an_assigned_tag_whose_colour_drifted_is_an_update(self):
@@ -114,7 +116,8 @@ class TaggedItemPreviewTest(TestCase):
         result = compare_model_rows(None, "extras.taggeditem", [self._row()])
 
         self.assertEqual(
-            result, {"creates": 0, "updates": 1, "unchanged": 0, "rejected": 0}
+            result,
+            {"creates": 0, "updates": 1, "unchanged": 0, "rejected": 0, "deletes": 0},
         )
 
     def test_a_tag_matched_by_name_when_the_slug_differs_is_not_a_create(self):
@@ -181,7 +184,8 @@ class TaggedItemPreviewTest(TestCase):
         )
 
         self.assertEqual(
-            result, {"creates": 1, "updates": 0, "unchanged": 1, "rejected": 1}
+            result,
+            {"creates": 1, "updates": 0, "unchanged": 1, "rejected": 1, "deletes": 0},
         )
 
     # --- parity with the apply ----------------------------------------------

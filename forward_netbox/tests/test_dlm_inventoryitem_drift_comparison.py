@@ -99,7 +99,8 @@ class InventoryItemSoftwarePreviewTest(TestCase):
         # another model's drift. This row is one create here.
         counts = compare_model_rows(None, SOFTWARE, [self._row()])
         self.assertEqual(
-            counts, {"creates": 1, "updates": 0, "unchanged": 0, "rejected": 0}
+            counts,
+            {"creates": 1, "updates": 0, "unchanged": 0, "rejected": 0, "deletes": 0},
         )
 
     def test_an_existing_row_on_the_same_version_is_unchanged(self):

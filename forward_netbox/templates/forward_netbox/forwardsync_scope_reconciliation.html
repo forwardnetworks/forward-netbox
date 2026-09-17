@@ -436,9 +436,17 @@
           {% elif payload.unmanaged.owned_absence %}
             <p class="text-muted small mb-2">{% trans "The Forward census that classifies the cause did not run for this report." %}</p>
           {% endif %}
-          <p>
+          <p class="mb-1">
             <a href="{{ uncovered_devices_url }}" class="btn btn-sm btn-outline-warning"><i class="mdi mdi-format-list-bulleted" aria-hidden="true"></i>&nbsp;{% blocktrans with count=payload.unmanaged.owned_untagged %}List all {{ count }}{% endblocktrans %}</a>
             <a href="{{ uncovered_tag_url }}" class="btn btn-sm btn-outline-secondary"><i class="mdi mdi-tag-outline" aria-hidden="true"></i>&nbsp;{% trans "Filter devices by tag" %}</a>
+          </p>
+          {# The tag list above is not this sync's count: it is one tag shared  #}
+          {# by every sync, so a device another sync uncovered - or one this    #}
+          {# sync has since covered again - still carries it and still shows    #}
+          {# up there. A customer bulk-deleted from exactly that list reading   #}
+          {# "546 uncovered" against a sync whose own card said 107.            #}
+          <p class="text-muted small mb-2">
+            {% trans "The tag list is shared by every sync and kept from earlier runs; a device another sync uncovered, or one this sync has since covered again, still carries it. List all above is this sync's current count." %}
           </p>
           {% comment %} Only the devices Forward no longer reports at all are eligible, so
              the button counts `absent_from_snapshot` rather than the card's own total.
