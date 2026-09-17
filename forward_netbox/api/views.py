@@ -965,6 +965,23 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
         responses={
             201: JobSerializer(),
             202: OpenApiResponse(
+                description=(
+                    '{"status": "already_running"|"blocked_by_sync_run", '
+                    '"job_id": N}'
+                )
+            ),
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="config-backup")
+    def config_backup(self, request, pk):
+        return self._enqueue_button_job_response(request, "config_backup")
+
+    @extend_schema(
+        methods=["post"],
+        request=EmptySerializer(),
+        responses={
+            201: JobSerializer(),
+            202: OpenApiResponse(
                 description='{"status": "already_running", "job_id": N}'
             ),
         },

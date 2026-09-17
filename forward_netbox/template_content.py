@@ -28,6 +28,86 @@ class ForwardDeviceAnalysisPanel(PluginTemplateExtension):
         )
 
 
+def _uncovered_prune_offer(device, identities, foreign_blockers):
+    """Whether this device can be removed from its own page, and how.
+
+    Offered only when the whole-set prune would already delete it: exactly one
+    owning sync, the device in that sync's latest report as owned-and-absent,
+    and no blocker belonging to another plugin. The view narrows that prune
+    rather than running its own deletion, so this is a rendering decision, not
+    a second gate - but offering a control that the prune will refuse is its
+    own kind of lie, so the conditions are checked here too.
+
+    Two owning syncs offer nothing: "remove via which sync" has no answer a
+    button can imply, and picking one silently would delete another sync's
+    evidence.
+    """
+    from django.urls import reverse
+
+    from .utilities.scope_reconciliation import absence_quarantine_thresholds
+    from .utilities.scope_reconciliation import latest_scope_report
+    from .utilities.scope_reconciliation import partition_quarantined_orphans
+
+    offer = {
+        "offered": False,
+        "held": False,
+        "still_reported": False,
+        "url": "",
+        "sync_name": "",
+        "report_at": None,
+        "required_runs": None,
+        "required_hours": None,
+        "endpoint_detail": "",
+        "endpoint_detail_label": "",
+    }
+    sync_ids = {row.sync_id for row in identities}
+    if len(sync_ids) != 1:
+        return offer
+    sync = identities[0].sync
+    _job, payload, generated_at, _error = latest_scope_report(sync)
+    unmanaged = (payload or {}).get("unmanaged") or {}
+    absent_ids = {
+        int(pk)
+        for pk in (unmanaged.get("owned_absent_device_ids") or ())
+        if isinstance(pk, int)
+    }
+    uncovered_ids = {
+        int(pk)
+        for pk in (unmanaged.get("owned_untagged_device_ids") or ())
+        if isinstance(pk, int)
+    }
+    required_runs, required_hours = absence_quarantine_thresholds(sync)
+    offer.update(
+        {
+            "sync_name": sync.name,
+            "report_at": generated_at,
+            "required_runs": required_runs,
+            "required_hours": required_hours,
+            "url": reverse(
+                "plugins:forward_netbox:forwardsync_prune_uncovered_device",
+                kwargs={"pk": sync.pk},
+            ),
+        }
+    )
+    if device.pk in absent_ids:
+        partition = partition_quarantined_orphans(sync, [device.pk])
+        offer["held"] = device.pk not in set(partition["eligible_pks"])
+        offer["offered"] = not foreign_blockers
+    elif device.pk in uncovered_ids:
+        # Uncovered, but Forward still reports it: a scoping decision, and the
+        # prune will never touch it. Say that instead of offering a button -
+        # and for an endpoint-derived device, say WHICH endpoint-scope rule.
+        from .utilities.scope_reconciliation import ENDPOINT_ABSENCE_DETAILS
+
+        offer["still_reported"] = True
+        detail = (unmanaged.get("owned_endpoint_detail_by_id") or {}).get(
+            str(device.pk), ""
+        )
+        offer["endpoint_detail"] = detail
+        offer["endpoint_detail_label"] = ENDPOINT_ABSENCE_DETAILS.get(detail, "")
+    return offer
+
+
 class ForwardDeviceOwnershipPanel(PluginTemplateExtension):
     """Why NetBox refuses to delete a plugin-owned device, and what does.
 
@@ -107,7 +187,13 @@ class ForwardDeviceOwnershipPanel(PluginTemplateExtension):
             )
 
         blockers = describe_delete_blockers(device)
+        foreign_blockers = [
+            (label, count)
+            for label, count in blockers
+            if not label.startswith("forward_netbox.")
+        ]
         claim_slugs = {claim.tag.slug for claim in claims}
+        prune = _uncovered_prune_offer(device, identities, foreign_blockers)
         holders = []
         if identities:
             holders.append(("Device identity", len(identities)))
@@ -131,6 +217,7 @@ class ForwardDeviceOwnershipPanel(PluginTemplateExtension):
                     "absence": ForwardDeviceAbsence.objects.filter(device=device)
                     .order_by("-consecutive_absent_runs")
                     .first(),
+                    "prune": prune,
                     # Everything that would refuse the delete, not just ours.
                     # A customer's second attempt was refused by ten
                     # netbox_routing BGP rows reached through the cascade,

@@ -19,6 +19,7 @@ The negative space matters most here:
 """
 
 import tempfile
+from types import SimpleNamespace
 
 from core.models import DataSource
 from dcim.models import Device
@@ -28,10 +29,12 @@ from dcim.models import Manufacturer
 from dcim.models import Site
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
+from django.test import SimpleTestCase
 from django.test import TestCase
 from extras.models import CustomField
 
 from forward_netbox.exceptions import ForwardSyncError
+from forward_netbox.utilities.config_backup import _authenticated_url
 from forward_netbox.models import ForwardDeviceIdentity
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardSource
@@ -606,3 +609,90 @@ class ValidityReadsWhatWeWriteTest(TestCase):
             f"available: {sorted(vds.datafiles.values_list('path', flat=True))}",
         )
         self.assertEqual(data_file.data_as_string, config)
+
+
+class AuthenticatedUrlTest(SimpleTestCase):
+    """The one function that handles a credential, and it had no tests.
+
+    Every other test in this file pushes to a local bare repository, where a
+    filesystem path carries no credentials at all - so the whole HTTP(S)
+    embedding path, the characters that must be escaped in it, and the
+    property that matters most (the assembled url never leaves this function)
+    were unexercised.
+    """
+
+    def _source(self, url, **parameters):
+        return SimpleNamespace(source_url=url, parameters=parameters or {})
+
+    def test_no_credentials_returns_the_url_unchanged(self):
+        source = self._source("https://git.example.com/configs.git")
+        self.assertEqual(
+            _authenticated_url(source), "https://git.example.com/configs.git"
+        )
+
+    def test_username_and_password_are_embedded(self):
+        source = self._source(
+            "https://git.example.com/configs.git", username="svc", password="s3cret"
+        )
+        self.assertEqual(
+            _authenticated_url(source),
+            "https://svc:s3cret@git.example.com/configs.git",
+        )
+
+    def test_special_characters_are_percent_encoded(self):
+        # An unescaped `@` or `/` in a password splits the authority and the
+        # push goes to a host nobody configured - or silently authenticates as
+        # a different user. `safe=""` is what makes that impossible.
+        source = self._source(
+            "https://git.example.com/configs.git",
+            username="svc@corp",
+            password="p@ss/w:rd?",
+        )
+        url = _authenticated_url(source)
+        self.assertEqual(
+            url,
+            "https://svc%40corp:p%40ss%2Fw%3Ard%3F@git.example.com/configs.git",
+        )
+        # The host survived intact: the credential did not eat it.
+        self.assertTrue(url.endswith("@git.example.com/configs.git"))
+
+    def test_an_existing_credential_in_the_url_is_replaced_not_appended(self):
+        # Two `@` in the authority is not a valid url, and appending would
+        # produce one.
+        source = self._source(
+            "https://old:stale@git.example.com/configs.git",
+            username="svc",
+            password="new",
+        )
+        self.assertEqual(
+            _authenticated_url(source),
+            "https://svc:new@git.example.com/configs.git",
+        )
+
+    def test_ssh_remotes_are_left_alone(self):
+        # ssh authenticates with keys; embedding is neither needed nor
+        # meaningful, and would corrupt a scp-style remote.
+        source = self._source(
+            "ssh://git@git.example.com/configs.git", username="svc", password="p"
+        )
+        self.assertEqual(
+            _authenticated_url(source), "ssh://git@git.example.com/configs.git"
+        )
+
+    def test_a_username_with_no_password_omits_the_colon(self):
+        source = self._source("https://git.example.com/configs.git", username="token")
+        self.assertEqual(
+            _authenticated_url(source),
+            "https://token@git.example.com/configs.git",
+        )
+
+    def test_the_query_string_survives_and_the_fragment_is_dropped(self):
+        source = self._source(
+            "https://git.example.com/configs.git?depth=1#frag",
+            username="svc",
+            password="p",
+        )
+        self.assertEqual(
+            _authenticated_url(source),
+            "https://svc:p@git.example.com/configs.git?depth=1",
+        )

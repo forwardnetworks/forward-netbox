@@ -903,13 +903,19 @@ def _recover_stuck_sync_work(job):
     job.save(update_fields=["data"])
 
 
-def _prune_uncovered_devices_work(job, *, include_quarantined=False):
+def _prune_uncovered_devices_work(
+    job, *, include_quarantined=False, restrict_to_device_pks=None
+):
     """Run reviewed uncovered-device pruning for a JobRunner-managed sync job.
 
     Same shape as the orphan prune, and the same reason for the flag: it
     arrives only from the operator button, and only when that operator ticked
     the box beside a named list of held devices. Nothing schedules this, so
     there is no unattended path that could override the quarantine.
+
+    ``restrict_to_device_pks`` is the device page acting on one device. It can
+    only narrow what the whole-set prune would delete; see
+    `prune_uncovered_devices`.
     """
     from .utilities.scope_reconciliation import compute_scope_reconciliation
     from .utilities.scope_reconciliation import EmptyForwardScopeError
@@ -924,11 +930,17 @@ def _prune_uncovered_devices_work(job, *, include_quarantined=False):
             sync,
             report=report,
             include_quarantined=include_quarantined,
+            restrict_to_device_pks=restrict_to_device_pks,
         )
         job.data = {
             "pruned_device_count": result.get("pruned_device_count", 0),
             "pruned_object_count": result.get("pruned_object_count", 0),
             "out_of_scope_sample": result.get("out_of_scope_sample", []),
+            # What was asked for, and why any of it was declined. Without both
+            # a single-device request that deleted nothing is indistinguishable
+            # from one that was never dispatched.
+            "restricted_to_device_pks": list(restrict_to_device_pks or []),
+            "refused_device_pks_by_reason": result.get("restricted_refusals", {}),
             "ownership_blocked_device_count": result.get(
                 "ownership_blocked_device_count", 0
             ),
@@ -1130,6 +1142,14 @@ def _run_forward_config_backup_work(job, *args, **kwargs):
     sync = ForwardSync.objects.get(pk=job.object_id)
     try:
         sync.logger = SyncLogging(job=job.pk)
+        snapshot_id = kwargs.get("snapshot_id")
+        if not snapshot_id:
+            # The post-sync overlay always supplies one. The operator button
+            # does not, and `run_config_backup` skips with "no snapshot id"
+            # rather than guessing - so resolve it here, in the job, where a
+            # Forward call belongs. Resolved before the post-sync guard so the
+            # guard has something to compare.
+            snapshot_id = sync.resolve_snapshot_id(sync.source.get_client())
         with current_post_sync_snapshot(
             sync,
             kwargs.get("snapshot_id"),
@@ -1137,7 +1157,7 @@ def _run_forward_config_backup_work(job, *args, **kwargs):
         ):
             result = run_config_backup(
                 sync,
-                snapshot_id=kwargs.get("snapshot_id"),
+                snapshot_id=snapshot_id,
                 logger=sync.logger,
             )
         job.data = _overlay_job_data(result.as_dict(), kwargs)
@@ -1431,6 +1451,7 @@ def _scope_reconciliation_work(job):
     on the job, and let the page render the stored result.
     """
     from .utilities.scope_reconciliation import compute_scope_reconciliation
+    from .utilities.scope_reconciliation import public_scope_report
 
     sync = ForwardSync.objects.get(pk=job.object_id)
     client = None
@@ -1438,9 +1459,7 @@ def _scope_reconciliation_work(job):
         sync.logger = SyncLogging(job=job.pk)
         client = sync.source.get_client()
         report = compute_scope_reconciliation(sync)
-        job.data = json_safe_value(
-            {key: value for key, value in report.items() if not key.startswith("_")}
-        )
+        job.data = public_scope_report(report)
         job.save(update_fields=["data"])
     except Exception as exc:
         from .utilities.api_usage import record_forward_api_usage
@@ -2141,6 +2160,13 @@ class PruneUncoveredDevicesJob(ForwardJobRunner):
         extra = {}
         if "include_quarantined" in kwargs:
             extra["include_quarantined"] = bool(kwargs["include_quarantined"])
+        if kwargs.get("restrict_to_device_pks"):
+            # Forwarded only when the caller supplied one, so the default lives
+            # in the work function's signature rather than being restated here
+            # where the two could drift apart.
+            extra["restrict_to_device_pks"] = [
+                int(pk) for pk in kwargs["restrict_to_device_pks"]
+            ]
         _prune_uncovered_devices_work(self.job, **extra)
 
 

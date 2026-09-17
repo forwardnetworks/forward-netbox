@@ -4,6 +4,8 @@ from django.core.exceptions import ObjectDoesNotExist
 
 from ..exceptions import ForwardDependencySkipError
 from ..exceptions import ForwardSearchError
+from .sync_reporting import record_issue
+from .sync_reporting import UNOWNED_PRIMARY_IP_HOLDER_REASON
 
 
 def delete_ipam_vlan(runner, row):
@@ -674,11 +676,26 @@ def apply_ipam_ipaddress(runner, row):
             existing.assigned_object_id = interface.pk
             update_fields.append("assigned_object_id")
         if update_fields:
-            for previous_owner, primary_fields in release_owned_primary_ip_claims(
+            plan = primary_ip_holder_release_plan(
                 runner,
                 existing,
                 destination_device_id=device.pk,
-            ):
+            )
+            # Only a move can trip `primary-ip-reassignment-blocked`; a
+            # status-only or address-only update must never be skipped for a
+            # holder it does not disturb.
+            reassigning = bool(
+                {"assigned_object_type", "assigned_object_id"} & set(update_fields)
+            )
+            if reassigning and plan["unowned_holder_ids"]:
+                record_unowned_primary_ip_holder_skip(
+                    runner,
+                    ip_pk=existing.pk,
+                    holder_pks=plan["unowned_holder_ids"],
+                    destination_device_pk=device.pk,
+                )
+                return False
+            for previous_owner, primary_fields in plan["releases"]:
                 previous_owner.save(update_fields=primary_fields)
             existing.save(update_fields=update_fields)
         return True
@@ -697,6 +714,76 @@ def apply_ipam_ipaddress(runner, row):
             [("address", "vrf")],
         ),
     )
+
+
+def record_unowned_primary_ip_holder_skip(
+    runner, *, ip_pk, holder_pks, destination_device_pk
+):
+    """Record, once per address per run, a move this sync must not stage.
+
+    This replaces a count-only log warning that named neither object and did
+    not stop the move. The address was staged anyway, the merge refused it as
+    `primary-ip-reassignment-blocked`, and the row came back every run forever
+    with no operator remedy on it.
+
+    Primary keys, never names: the pks resolve to the object pages in the
+    operator's own NetBox, which is exactly where the fix happens, and device
+    names are customer data this module does not persist.
+    """
+    holders = ", ".join(f"#{pk}" for pk in holder_pks)
+    message = (
+        f"IP address #{ip_pk} was not moved to device #{destination_device_pk}: "
+        f"device(s) {holders} hold it as a primary IP and carry no identity "
+        "from this sync, so the pointer cannot be released. Clear the primary "
+        "IP on those devices, or let this sync adopt them, to let the address "
+        "move."
+    )
+    runner._record_aggregated_skip_warning(
+        model_string="ipam.ipaddress",
+        reason=UNOWNED_PRIMARY_IP_HOLDER_REASON,
+        warning_message=message,
+        sample=str(ip_pk),
+    )
+    # One issue row per address per run. `record_issue` dedupes on the whole
+    # (phase, model, exception, message, context, defaults) tuple, and the
+    # message carries the address pk, so a second observation of the same
+    # address in one run collapses into the first.
+    record_issue(
+        runner,
+        "ipam.ipaddress",
+        message,
+        {},
+        context={
+            "row_pk": ip_pk,
+            "holder_device_pks": list(holder_pks),
+            "destination_device_pk": destination_device_pk,
+        },
+        log_level="warning",
+        # No retry can satisfy this while the holder is unowned, which is
+        # exactly what "skipped" means to the Issues table.
+        disposition="skipped",
+    )
+
+
+def primary_ip_holder_release_plan(runner, ip_address, *, destination_device_id):
+    """Who holds this address as primary, and which of them this sync may release.
+
+    Returns ``{"releases": [(device, fields), ...], "unowned_holder_ids": [pk],
+    "evaluated": bool}``.
+
+    ``evaluated`` is False only on the fail-closed exits - no active branch, no
+    address pk, or a runner whose scope context was never populated. Those must
+    keep behaving exactly as they did: stage the move and let the merge refuse
+    it. Treating "could not evaluate" as "nothing is owned" would silently skip
+    every reassignment the moment a runner lacked scope context.
+
+    ``unowned_holder_ids`` is the reason the caller may decline to stage at all.
+    It is non-empty only when a holder exists that this sync cannot prove it
+    created - the one case the merge can never satisfy. Note it includes the
+    MIXED case: if one holder is owned and another is not, releasing the owned
+    half still leaves the merge rejecting, so the caller skips and reports both.
+    """
+    return _release_plan(runner, ip_address, destination_device_id)
 
 
 def release_owned_primary_ip_claims(runner, ip_address, *, destination_device_id):
@@ -725,15 +812,23 @@ def release_owned_primary_ip_claims(runner, ip_address, *, destination_device_id
 
     Returns ``[(device, update_fields), ...]`` with snapshotted, mutated branch
     objects. The adapter persists them; the bulk path writes them in its batch.
+
+    This is the releases half of `primary_ip_holder_release_plan`, kept as its
+    own name because the bulk apply path and its tests call it directly.
     """
+    return _release_plan(runner, ip_address, destination_device_id)["releases"]
+
+
+def _release_plan(runner, ip_address, destination_device_id):
     from dcim.models import Device
     from django.db.models import Q
     from netbox_branching.contextvars import active_branch
 
     from ..models import ForwardDeviceIdentity
 
+    unevaluated = {"releases": [], "unowned_holder_ids": [], "evaluated": False}
     if active_branch.get() is None or getattr(ip_address, "pk", None) is None:
-        return []
+        return unevaluated
     # These two remain a check that the sync context was populated at all - a
     # runner with no resolved scope is one whose provenance cannot be trusted,
     # so it stays fail-closed. They are no longer a membership filter: which
@@ -741,19 +836,20 @@ def release_owned_primary_ip_claims(runner, ip_address, *, destination_device_id
     # row it is about to correct.
     scope_names = getattr(runner, "_primary_ip_reassignment_scope_names", None)
     if scope_names is None:
-        return []
+        return unevaluated
     scope_restricted = bool(
         getattr(runner, "_primary_ip_reassignment_scope_restricted", True)
     )
     if scope_restricted and not scope_names:
-        return []
+        return unevaluated
 
     holders = Device.objects.filter(
         Q(primary_ip4_id=ip_address.pk) | Q(primary_ip6_id=ip_address.pk)
     ).exclude(pk=destination_device_id)
     holder_ids = list(holders.values_list("pk", flat=True))
     if not holder_ids:
-        return []
+        # Evaluated, and there is simply nothing in the way.
+        return {"releases": [], "unowned_holder_ids": [], "evaluated": True}
     # Identity provenance is control-plane evidence in main. A branch only
     # contains the snapshot it was provisioned from; querying it through the
     # active branch can therefore miss an identity finalized after provision
@@ -767,24 +863,26 @@ def release_owned_primary_ip_claims(runner, ip_address, *, destination_device_id
         )
         .values_list("device_id", flat=True)
     )
-    if not owned_ids:
+    unowned_holder_ids = sorted(set(holder_ids) - owned_ids)
+    if unowned_holder_ids:
         # The remaining way this reassignment can still be refused, and it is
         # refused correctly - the plugin will not clear a primary pointer on a
-        # device it cannot prove it created. Say so HERE, while the sync is
-        # still staging, because the consequence lands at merge time as
-        # `primary-ip-reassignment-blocked` on an ipam.ipaddress row that names
-        # neither device. Counts only; device names are customer data.
-        logger = getattr(runner, "logger", None)
-        if logger is not None:
-            logger.log_warning(
-                f"{len(holder_ids)} device(s) hold this address as a primary IP "
-                "but carry no identity from this sync, so the pointer cannot be "
-                "released and the reassignment will be rejected at merge with "
-                "`primary-ip-reassignment-blocked`. Clear the primary IP on "
-                "those devices, or let this sync adopt them, to let the address "
-                "move."
-            )
-        return []
+        # device it cannot prove it created.
+        #
+        # Reported rather than logged, and reported by the CALLER: staging the
+        # move anyway produced `primary-ip-reassignment-blocked` at merge on
+        # every run, forever, on a row that named neither device. The caller
+        # declines to stage and records the holders' pks with the remedy, so
+        # the merge never sees a row it cannot satisfy.
+        #
+        # Mixed ownership counts as unowned: releasing only the owned holders
+        # leaves the others still naming the address, and the merge rejects
+        # exactly as before.
+        return {
+            "releases": [],
+            "unowned_holder_ids": unowned_holder_ids,
+            "evaluated": True,
+        }
 
     releases = []
     for holder in holders.filter(pk__in=owned_ids):
@@ -797,4 +895,4 @@ def release_owned_primary_ip_claims(runner, ip_address, *, destination_device_id
                 update_fields.append(attr)
         if update_fields:
             releases.append((holder, update_fields))
-    return releases
+    return {"releases": releases, "unowned_holder_ids": [], "evaluated": True}

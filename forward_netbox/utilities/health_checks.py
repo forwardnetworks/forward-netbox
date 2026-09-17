@@ -445,43 +445,83 @@ def validation_check_message(validation_run):
     return f"Latest validation {validation_run.pk} status is {validation_run.status}."
 
 
-def ingestion_check_status(ingestion):
+def ingestion_check_verdict(ingestion):
+    """The one ladder both the status and the message are read from.
+
+    These were two independent ladders in different orders: the status tested
+    `failed -> blocking -> baseline_ready` while the message tested
+    `failed -> skipped -> blocking`. The status therefore had no `skipped`
+    branch at all, so a run whose rows were all recorded-and-skipped was
+    described by one and mis-ranked by the other.
+
+    Not every difference between them was a defect, and this deliberately
+    preserves the one that was not: a promoted baseline carrying only
+    non-blocking issues is a `pass` whose sentence still names those issues.
+    Ranking it `warn` because rows exist would make every healthy sync with a
+    dependency skip look degraded.
+    """
     if ingestion is None:
-        return "warn"
+        return "missing"
     if ingestion.catchup_status == ForwardCatchupStatusChoices.FAILED:
-        return "fail"
-    if ingestion.catchup_status in {
-        ForwardCatchupStatusChoices.PENDING,
-        ForwardCatchupStatusChoices.CHECKING,
-        ForwardCatchupStatusChoices.QUEUED,
-    }:
-        return "warn"
+        return "catchup_failed"
+    if ingestion.catchup_status == ForwardCatchupStatusChoices.PENDING:
+        return "catchup_pending"
+    if ingestion.catchup_status == ForwardCatchupStatusChoices.CHECKING:
+        return "catchup_checking"
+    if ingestion.catchup_status == ForwardCatchupStatusChoices.QUEUED:
+        return "catchup_queued"
     if ingestion.failed_change_count:
-        return "fail"
+        return "failed"
+    if int(getattr(ingestion, "skipped_change_count", 0) or 0):
+        return "skipped"
     if has_blocking_issues(ingestion):
-        return "warn"
+        return "blocking"
+    # `ready` outranks `nonblocking`: the baseline promoted, and the remaining
+    # rows are ones nothing is waiting on. The message still names them.
     if ingestion.baseline_ready:
-        return "pass"
+        return "ready"
     if ingestion.issues.exists():
-        return "warn"
-    return "warn"
+        return "nonblocking"
+    return "not_ready"
+
+
+_INGESTION_VERDICT_STATUS = {
+    "missing": "warn",
+    "catchup_failed": "fail",
+    "catchup_pending": "warn",
+    "catchup_checking": "warn",
+    "catchup_queued": "warn",
+    "failed": "fail",
+    # Recorded and skipped: no retry can satisfy these rows, and the baseline
+    # promotes over them. Worth surfacing, never a failure.
+    "skipped": "warn",
+    "blocking": "warn",
+    "nonblocking": "warn",
+    "ready": "pass",
+    "not_ready": "warn",
+}
+
+
+def ingestion_check_status(ingestion):
+    return _INGESTION_VERDICT_STATUS[ingestion_check_verdict(ingestion)]
 
 
 def ingestion_check_message(ingestion):
-    if ingestion is None:
+    verdict = ingestion_check_verdict(ingestion)
+    if verdict == "missing":
         return "No ingestion has run for this sync."
-    if ingestion.catchup_status == ForwardCatchupStatusChoices.FAILED:
+    if verdict == "catchup_failed":
         return (
             f"Latest ingestion {ingestion.pk} snapshot catch-up failed "
             f"({ingestion.catchup_reason or 'unknown reason'})."
         )
-    if ingestion.catchup_status == ForwardCatchupStatusChoices.PENDING:
+    if verdict == "catchup_pending":
         return f"Latest ingestion {ingestion.pk} snapshot catch-up is pending."
-    if ingestion.catchup_status == ForwardCatchupStatusChoices.CHECKING:
+    if verdict == "catchup_checking":
         return f"Latest ingestion {ingestion.pk} snapshot catch-up is being checked."
-    if ingestion.catchup_status == ForwardCatchupStatusChoices.QUEUED:
+    if verdict == "catchup_queued":
         return f"Latest ingestion {ingestion.pk} queued a newer snapshot catch-up."
-    if ingestion.failed_change_count:
+    if verdict == "failed":
         # Naming the consequence and the remedy, because the count alone reads
         # as a minor blemish. Those rows are why the baseline never promoted,
         # and therefore why drift reports "Not measured", ownership stays
@@ -499,31 +539,39 @@ def ingestion_check_message(ingestion):
                 "the ingestion to complete it over these rows."
             )
         return message
-    skipped = int(getattr(ingestion, "skipped_change_count", 0) or 0)
-    if skipped:
+    if verdict == "skipped":
         # Naming the disposition, because the issue rows read exactly like a
         # failure and the operator otherwise has no way to tell that this run
-        # completed, promoted its baseline, and cannot be improved by a rerun.
-        return (
+        # completed and cannot be improved by a rerun.
+        skipped = int(getattr(ingestion, "skipped_change_count", 0) or 0)
+        message = (
             f"Latest ingestion {ingestion.pk} skipped {skipped} row(s) that "
             "NetBox refused on its own validation rules. Re-running cannot "
             "change a validation rejection, so they were recorded as ingestion "
-            "issues and the baseline was promoted over them. Resolve the "
-            "underlying rows in NetBox to converge them."
+            "issues. Resolve the underlying rows in NetBox to converge them."
         )
-    if has_blocking_issues(ingestion):
+        # Whether the baseline promoted is a separate fact from whether these
+        # rows could be retried, and stating it unconditionally was how the
+        # row-level label came to contradict its own run.
+        if ingestion.baseline_ready:
+            message += " The baseline was promoted over them."
+        return message
+    if verdict == "blocking":
         issue_count = ingestion.issues.count()
         return (
             f"Latest ingestion {ingestion.pk} recorded {issue_count} issue(s), "
             "including blocking rows."
         )
-    issue_count = ingestion.issues.count()
-    if issue_count:
-        return (
-            f"Latest ingestion {ingestion.pk} recorded {issue_count} issue(s), "
-            "all currently classified as non-blocking."
-        )
-    if ingestion.baseline_ready:
+    if verdict in ("nonblocking", "ready"):
+        issue_count = ingestion.issues.count()
+        if issue_count:
+            # Named whether or not the baseline promoted: "pass" is the right
+            # rank for a promoted run, and silently dropping the rows from the
+            # sentence is how an operator stops seeing them at all.
+            return (
+                f"Latest ingestion {ingestion.pk} recorded {issue_count} "
+                "issue(s), all currently classified as non-blocking."
+            )
         return f"Latest ingestion {ingestion.pk} is baseline-ready."
     return f"Latest ingestion {ingestion.pk} is not marked baseline-ready."
 

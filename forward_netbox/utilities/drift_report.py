@@ -14,6 +14,36 @@ def _count(value):
         return 0
 
 
+_UNAVAILABLE_REASON_LABELS = {
+    "error": "the comparison raised",
+    "full_only_by_design": "excluded from the diff path by design",
+    "no_exact_comparison": "no exact comparison is available for this model",
+}
+
+
+def _unavailable_reason(result) -> str:
+    """Why one model could not be compared: error, by design, or unavailable.
+
+    The by-design case is decided from the query registry rather than guessed:
+    a map whose diff ownership mode is `unsafe_contributor_reduction` or
+    `feature_state_full_only` has no diff path at all, so "not measured" is the
+    correct and permanent answer for it, not a symptom.
+    """
+    if result.get("comparison_error"):
+        return "error"
+    query_name = str(result.get("query_name") or "")
+    if query_name:
+        from .query_registry import query_diff_ownership_mode_for_name
+
+        # A pure registry lookup: "" for a name the registry does not know.
+        if query_diff_ownership_mode_for_name(query_name) in (
+            "unsafe_contributor_reduction",
+            "feature_state_full_only",
+        ):
+            return "full_only_by_design"
+    return "no_exact_comparison"
+
+
 def _estimate_kind(result, *, row_count, estimated_changes, delete_count):
     kind = str(result.get("change_estimate_kind") or "").strip()
     if kind in {EXACT_COMPARISON, WORKLOAD_UPPER_BOUND}:
@@ -253,6 +283,15 @@ def compute_drift_report(payload):
                 "change_estimate_kind": estimate_kind,
                 "comparison_available": comparison_available,
                 "comparison_error": str(result.get("comparison_error") or ""),
+                # WHY it was not measured. Three unrelated situations rendered
+                # as the same grey "Not measured" badge: a model excluded from
+                # the diff path by design, a comparison that raised, and a
+                # model with no exact comparison available. Only the middle one
+                # is a fault, and a customer reading five such badges on one
+                # page cannot tell which of them to care about.
+                "comparison_unavailable_reason": (
+                    "" if comparison_available else _unavailable_reason(result)
+                ),
                 "drift": drift,
                 "in_sync": in_sync,
                 "comparison_runtime_ms": result.get("comparison_runtime_ms"),
