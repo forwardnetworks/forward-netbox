@@ -190,3 +190,46 @@ dependency declaration; the first with a behavioural one is the transport swap.
   (`forward_netbox/tests/test_forward_client_errors.py`), each asserting
   both the translated exception's type and its `failure_reason()` slug,
   per this plan's own Validation section.
+- **2026-09-17** -- Step 5 is split into sub-commits rather than landed as
+  one, on the same "small, independently releasable" principle every step
+  before it has followed. A pre-implementation survey (method-by-method,
+  ForwardClient vs the SDK's actual services) found that `forward_api_impl.py`
+  is ~19 public methods, each wrapping its own caching logic around a
+  `_request()` call, several with genuine plugin-authored fallback policy
+  (`get_committed_nqe_query`'s index-then-commits-endpoint fallback for a
+  Forward API quirk) that has no 1:1 SDK method. Rewriting all of it, with
+  full shape verification against the SDK's pydantic models, in one commit
+  risks exactly the kind of untested, hard-to-review change this plan's
+  step-by-step structure exists to avoid. **Step 5 preserves `ForwardClient`'s
+  external contract (method names, signatures, and return shapes) exactly**
+  across every sub-commit - internals swap to the SDK, callers see no
+  difference - so none of the ~60+ call sites need to change here. Step 6
+  ("remove the compatibility passthrough, converting every call site
+  explicitly") is what removes `ForwardClient` as a class and moves callers
+  onto the SDK's own shapes directly; that is where the shape-adaptation
+  work `ForwardClient`'s wrapper methods do in step 5 gets deleted, which is
+  what proves every call site was actually migrated rather than left
+  quietly depending on a compatibility shim.
+- **2026-09-17** -- Step 5a: `forward_client_factory.py`'s `get_client()`
+  builds the SDK client but is not called from `ForwardClient.__init__` yet
+  (the next sub-commit wires it in) - same "build and test standalone first"
+  pattern as step 4's translator. Two resolved design points:
+  - **Rate limiting**: the SDK's `Throttle` protocol (`acquire() -> float`)
+    is, by its own docstring, exactly this plugin's existing extension
+    point - "implement this to coordinate across processes" is what
+    `forward_throttle.py`'s Django-cache-backed `Throttle` already does, and
+    the SDK's own built-in limiter is documented as per-client only, which
+    is not this plugin's deployment shape (many workers, one Forward
+    account). `_CrossProcessThrottleAdapter` wraps the plugin's `Throttle`
+    to satisfy the protocol. Passing a custom `throttle=` makes the SDK's
+    `Transport` use it EXCLUSIVELY (`self._throttle = throttle or
+    self._default_throttle(config)`, `_sync/transport.py:53`), so there is
+    no double-throttling and `forward_throttle.py`'s step-2 extraction
+    remains the permanent home for pacing, not temporary scaffolding.
+  - **Proxy resolution**: `resolve_proxies()` is designed for a per-request
+    call keyed on the request URL, but the SDK accepts one static `proxy`
+    string for the client's whole lifetime. Resolved once, against
+    `base_url`'s own scheme, at client-construction time - every request
+    this client makes targets the same `base_url`, so this loses only a
+    per-request routing decision no real deployment's `resolve_proxies`
+    implementation actually makes today.
