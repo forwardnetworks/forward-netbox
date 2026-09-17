@@ -777,6 +777,18 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "filename": "forward_aci_filter_entries.nqe",
         "enabled": False,
     },
+    {
+        "model_string": "netbox_cisco_aci.acisubjectfilter",
+        "name": "Forward ACI Subject Filters",
+        "filename": "forward_aci_subject_filters.nqe",
+        "enabled": False,
+    },
+    {
+        "model_string": "netbox_cisco_aci.acistaticportbinding",
+        "name": "Forward ACI Static Port Bindings",
+        "filename": "forward_aci_static_port_bindings.nqe",
+        "enabled": False,
+    },
 ]
 
 BUILTIN_SEEDED_QUERY_MAPS = [

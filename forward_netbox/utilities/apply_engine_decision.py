@@ -291,6 +291,19 @@ ADAPTER_MODEL_BLOCKERS = {
         "blocker_code": "plugin_model_dependencies",
         "blocker_reason": "ACI filter-entry writes depend on filter resolution.",
     },
+    "netbox_cisco_aci.acisubjectfilter": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": (
+            "ACI subject-filter writes depend on subject and filter resolution."
+        ),
+    },
+    "netbox_cisco_aci.acistaticportbinding": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": (
+            "ACI static-port-binding writes depend on endpoint-group, node-device "
+            "and interface resolution."
+        ),
+    },
 }
 
 APPLY_ENGINE_MODEL_CLASSIFICATIONS = {

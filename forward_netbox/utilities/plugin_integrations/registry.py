@@ -55,6 +55,8 @@ ACI_INTEGRATION = OptionalPluginIntegration(
         "netbox_cisco_aci.acicontract",
         "netbox_cisco_aci.acisubject",
         "netbox_cisco_aci.acifilterentry",
+        "netbox_cisco_aci.acisubjectfilter",
+        "netbox_cisco_aci.acistaticportbinding",
     ),
     supported_models=(
         "netbox_cisco_aci.acifabric",
@@ -70,6 +72,8 @@ ACI_INTEGRATION = OptionalPluginIntegration(
         "netbox_cisco_aci.acicontract",
         "netbox_cisco_aci.acisubject",
         "netbox_cisco_aci.acifilterentry",
+        "netbox_cisco_aci.acisubjectfilter",
+        "netbox_cisco_aci.acistaticportbinding",
     ),
     native_models=("dcim.inventoryitem",),
     query_maps=(
@@ -90,6 +94,8 @@ ACI_INTEGRATION = OptionalPluginIntegration(
         "Forward ACI Contracts",
         "Forward ACI Contract Subjects",
         "Forward ACI Filter Entries",
+        "Forward ACI Subject Filters",
+        "Forward ACI Static Port Bindings",
     ),
     package_name="netbox-cisco-aci",
     adapter_module="forward_netbox.utilities.sync_aci",

@@ -250,7 +250,8 @@ Fabrics`, `Forward ACI Pods`, `Forward ACI APIC Pods`, `Forward ACI Nodes`,
 Inventory`, `Forward ACI VRFs`, `Forward ACI Bridge Domains`, `Forward ACI
 Filters`, `Forward ACI APIC Filters`, `Forward ACI L3Outs`, `Forward ACI
 Application Profiles`, `Forward ACI Endpoint Groups`, `Forward ACI Contracts`,
-`Forward ACI Contract Subjects`, and `Forward ACI Filter Entries` maps. The
+`Forward ACI Contract Subjects`, `Forward ACI Filter Entries`, `Forward ACI
+Subject Filters`, and `Forward ACI Static Port Bindings` maps. The
 `APIC` siblings read APIC-side output (`CISCO_APIC_SWITCH` /
 `CISCO_APIC_CONTROLLER_DETAIL`, `moquery -c vzFilter`) for fabrics where
 Forward does not collect the leaf-side `CISCO_ACI_FABRIC_NODES` or
@@ -264,15 +265,33 @@ fabric/pod/node, tenant/VRF, bridge-domain, filter, L3Out, and APIC CIMC
 inventory maps parse selected command output in NQE and emit normalized fields
 instead of raw command responses. The APIC CIMC inventory map targets native
 `dcim.inventoryitem` rows and requires the APIC custom command
-`moquery -c eqptCh -a all` to be collected by Forward. The tenant and VRF maps
-consume `moquery -c fvCtx`; bridge domains consume `moquery -c fvBD`; and
-L3Outs consume `moquery -c l3extInstP`. The separate `Forward ACI Command
+`moquery -c eqptCh -a all` to be collected by Forward. Every tenant-policy map
+reads one APIC `moquery` custom command, and the minimum set to collect on the
+controllers is:
+
+| Custom command | Feeds |
+| --- | --- |
+| `moquery -c fvCtx` | `Forward ACI Tenants`, `Forward ACI VRFs` |
+| `moquery -c fvBD` and `moquery -c fvRsCtx` | `Forward ACI Bridge Domains` (the second carries the bridge domain's VRF, which the plugin requires) |
+| `moquery -c l3extRsEctx` | `Forward ACI L3Outs` |
+| `moquery -c vzFilter` | `Forward ACI APIC Filters` |
+| `moquery -c fvAEPg` and `moquery -c fvRsBd` | `Forward ACI Application Profiles`, `Forward ACI Endpoint Groups` |
+| `moquery -c vzBrCP` | `Forward ACI Contracts` |
+| `moquery -c vzSubj` | `Forward ACI Contract Subjects` |
+| `moquery -c vzEntry` | `Forward ACI Filter Entries` |
+| `moquery -c vzRsSubjFiltAtt` | `Forward ACI Subject Filters` (and the direction of each contract subject) |
+| `moquery -c fvRsPathAtt` | `Forward ACI Static Port Bindings` |
+| `moquery -c eqptCh -a all` | `Forward ACI APIC CIMC Inventory` |
+
+Nothing else is read; `moquery -c l3extInstP` in particular is the external
+EPG, not the L3Out, and feeds no map. The separate `Forward ACI Command
 Inventory` discovery map reports bounded APIC/ACI command family presence
 without exposing raw payloads. Exact custom-command checks stay in the map that
 needs them, so missing input fails cleanly there instead of being hidden behind
-a broad APIC dump. Application profiles, EPGs, contracts, and static bindings
-are not part of the 2.6 supported map set because the available Forward inputs
-do not provide a bounded identity contract for those objects.
+a broad APIC dump. Static port bindings are written for leaf ports
+(`topology/pod-N/paths-N/pathep-[ethX/Y]`, and FEX ports the leaf carries as
+interfaces); a binding to a vPC or port-channel interface policy group names no
+single interface and is recorded and skipped with the count.
 
 Large datasets should prefer saved queries plus `latestProcessed`. That keeps the first run as a full baseline, then lets later runs use Forward `nqe-diffs` directly. The current built-ins also collapse NetBox identities in NQE where the source emits many raw rows for one object, such as prefix, IP, MAC, and VLAN records.
 
@@ -314,6 +333,8 @@ The current built-in map set is:
 - `Forward ACI Contracts` (optional `netbox_cisco_aci.acicontract`)
 - `Forward ACI Contract Subjects` (optional `netbox_cisco_aci.acisubject`)
 - `Forward ACI Filter Entries` (optional `netbox_cisco_aci.acifilterentry`)
+- `Forward ACI Subject Filters` (optional `netbox_cisco_aci.acisubjectfilter`)
+- `Forward ACI Static Port Bindings` (optional `netbox_cisco_aci.acistaticportbinding`)
 
 `Forward HSRP Groups` is optional and disabled unless `ipam.fhrpgroup` is selected
 for a sync. It imports Forward native HSRP and VRRP group state into NetBox
