@@ -70,11 +70,11 @@ class OptionalPluginIntegrationRegistryTest(TestCase):
     def test_registry_reports_capabilities_for_each_optional_surface(self):
         def fake_version(package_name):
             versions = {
-                "netbox-routing": "0.4.3",
-                "netbox-peering-manager": "0.3.0",
+                "netbox-routing": "0.4.4",
+                "netbox-peering-manager": "0.3.1",
                 "netbox-cisco-aci": "0.3.9",
                 "netbox-dlm": "0.10.0",
-                "netbox-validity": "3.5.2",
+                "netbox-validity": "3.6.0",
             }
             return versions[package_name]
 
@@ -190,12 +190,12 @@ class OptionalPluginIntegrationRegistryTest(TestCase):
             return_value=[],
         ), patch(
             "forward_netbox.utilities.plugin_integrations.registry.metadata.version",
-            return_value="0.4.3",
+            return_value="0.4.4",
         ):
             capability = integration_capability(ROUTING_INTEGRATION)
 
         self.assertTrue(capability["available"])
-        self.assertEqual(capability["supported_versions"], ["0.4.3"])
+        self.assertEqual(capability["supported_versions"], ["0.4.4"])
 
         with patch(
             "forward_netbox.utilities.plugin_integrations.registry.apps.is_installed",
@@ -208,14 +208,14 @@ class OptionalPluginIntegrationRegistryTest(TestCase):
             return_value=[],
         ), patch(
             "forward_netbox.utilities.plugin_integrations.registry.metadata.version",
-            return_value="0.4.4",
+            return_value="0.4.3",
         ):
             capability = integration_capability(ROUTING_INTEGRATION)
 
         self.assertFalse(capability["available"])
         self.assertEqual(
             capability["availability_reason"],
-            "Installed plugin version must equal 0.4.3.",
+            "Installed plugin version must equal 0.4.4.",
         )
 
     def test_registry_reports_no_plugin_state_cleanly(self):

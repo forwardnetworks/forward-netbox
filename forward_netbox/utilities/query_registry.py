@@ -8,6 +8,7 @@ from typing import Any
 
 from rq.timeouts import JobTimeoutException
 
+from ..choices import FORWARD_OPTIONAL_MODELS
 from ..choices import FORWARD_SUPPORTED_MODELS
 from ..exceptions import ForwardQueryError
 from .model_contracts import architecture_default_coalesce_fields_for_model
@@ -1897,6 +1898,43 @@ def get_query_specs(
     if maps:
         return []
     return BUILTIN_QUERY_SPECS[model_string]
+
+
+def missing_query_specs_message(model_string: str) -> str:
+    """The one sentence for "this model is on but no map feeds it".
+
+    Composed entirely from model strings and the NQE Map names this plugin
+    registers itself, so it is safe to show verbatim - the sync form says it
+    at save time and the query fetch says it at run time, and they must
+    agree.
+    """
+    optional_map_names = optional_builtin_query_names_for_model(model_string)
+    if optional_map_names:
+        quoted_names = ", ".join(f"`{name}`" for name in optional_map_names)
+        return (
+            f"No enabled NQE maps were resolved for {model_string}. "
+            f"Enable the {quoted_names} NQE Map or disable the `{model_string}` "
+            "model on the sync."
+        )
+    if model_string in FORWARD_OPTIONAL_MODELS:
+        return (
+            f"No enabled NQE maps were resolved for {model_string}. "
+            f"Enable at least one NQE Map for `{model_string}` or disable the "
+            f"`{model_string}` model on the sync."
+        )
+    return (
+        f"No enabled built-in or custom query maps were resolved for {model_string}. "
+        "Enable at least one NQE Map for this model before running the sync."
+    )
+
+
+def models_without_query_specs(model_strings, maps) -> list[str]:
+    """Which of `model_strings` would fail `get_query_specs` with these maps."""
+    return [
+        model_string
+        for model_string in model_strings
+        if not get_query_specs(model_string, maps=maps)
+    ]
 
 
 def get_seeded_builtin_query_spec(model_string: str, query_name: str) -> QuerySpec:

@@ -31,41 +31,55 @@ VALIDATED_BRANCHING_SERIES = "1.2"
 
 # Plugin apps as they appear in `settings.PLUGINS`.
 #
-# On NetBox 4.7 this is forward_netbox, Branching and netbox-dlm. netbox-dlm
-# 0.10.0 raised its ceiling to 4.7.99 on 2026-09-03 and is the first optional
-# integration back. The other four - netbox-cisco-aci 0.4.0,
-# netbox-peering-manager 0.3.0, netbox-routing 0.4.3, netbox-validity 3.5.2 -
-# still declare `max_version = "4.6.99"`, and NetBox refuses to start with a
-# plugin outside its declared range. They cannot be installed here, so listing
-# them would be a claim about a runtime nobody can assemble.
+# On NetBox 4.7 this is forward_netbox, Branching and four of the five optional
+# integrations. netbox-dlm 0.10.0 raised its ceiling to 4.7.99 on 2026-09-03;
+# netbox-validity 3.6.0 and netbox-peering-manager 0.3.1 followed in released
+# versions; netbox-routing's 4.7 support is merged on upstream main (0.4.4)
+# and is installed from that branch archive until it is tagged. netbox-cisco-aci
+# 0.4.0 still declares `max_version = "4.6.99"`, and NetBox refuses to start
+# with a plugin outside its declared range. It cannot be installed here, so
+# listing it would be a claim about a runtime nobody can assemble.
 #
 # This set is an EXACT match that fails closed and silently: an app present in
 # PLUGINS but absent here disables COPY/SQL, the set-based merge and the fast
 # baseline with no error, turning a first sync from minutes into hours. So when
-# an optional plugin raises its ceiling past 4.6.99, its app label goes back in
-# here and its versions into VALIDATED_OPTIONAL_DISTRIBUTIONS below - a data
+# netbox-cisco-aci raises its ceiling past 4.6.99, its app label goes back in
+# here and its version into VALIDATED_OPTIONAL_DISTRIBUTIONS below - a data
 # edit in one file, which is the whole point of this module.
 VALIDATED_PLUGIN_APPS = frozenset(
     {
         "forward_netbox",
         "netbox_branching",
         "netbox_dlm",
+        "netbox_peering_manager",
+        "netbox_routing",
+        # netbox-validity is a CONSUMER integration: it reads configuration
+        # files from a git data source and writes nothing the apply engines
+        # touch. It is listed here anyway, because this set is an exact match
+        # that fails closed - its mere presence in PLUGINS would otherwise
+        # disable the fast paths entirely. This entry is a claim that they
+        # were validated with it installed; the COPY/SQL paired-branch
+        # equivalence tests are that validation.
+        "validity",
     }
 )
 
 # Distribution name -> every version validated against these subsystems, not a
 # single pin. An exact pin meant a customer upgrading one optional plugin
 # silently lost the fast paths, because the whole tuple stopped matching.
-# Only netbox-dlm on 4.7, and only 0.10.0 of it: every earlier release caps at
-# 4.6.99, and the 4.6 validations of 0.4.1 through 0.9.1 are evidence about a
-# different runtime. The four absent integrations are not removed - their
-# registry, models and sync paths are all still here and still report an
-# absent plugin honestly. The 4.6 versions this set held are kept in the 2.9.x
-# line, and the values to restore are recorded in
-# `docs/03_Plans/active/2026-09-02-netbox-4.7-runtime.md` so regaining one is a
+# Only the versions that boot on 4.7: every earlier release of each caps at
+# 4.6.99, and their 4.6 validations are evidence about a different runtime.
+# netbox-routing 0.4.4 is the version upstream main reports; it stays the
+# validated value when upstream tags it. netbox-cisco-aci is absent, not
+# removed - its registry, models and sync paths are all still here and still
+# report an absent plugin honestly; its 4.6 value (0.4.0) is recorded in
+# `docs/03_Plans/active/2026-09-02-netbox-4.7-runtime.md` so regaining it is a
 # lookup rather than an archaeology exercise.
 VALIDATED_OPTIONAL_DISTRIBUTIONS: dict[str, frozenset[str]] = {
     "netbox-dlm": frozenset({"0.10.0"}),
+    "netbox-peering-manager": frozenset({"0.3.1"}),
+    "netbox-routing": frozenset({"0.4.4"}),
+    "netbox-validity": frozenset({"3.6.0"}),
 }
 
 # The distributions whose versions a runtime probe reports. Derived rather than

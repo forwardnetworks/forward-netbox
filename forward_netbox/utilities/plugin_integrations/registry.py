@@ -159,7 +159,10 @@ ROUTING_INTEGRATION = OptionalPluginIntegration(
     ),
     package_name="netbox-routing",
     adapter_module="forward_netbox.utilities.sync_routing_impl",
-    required_package_version="0.4.3",
+    # 0.4.4 is upstream main - the first netbox-routing that declares NetBox
+    # 4.7 - installed from the branch archive until it is tagged. 0.4.3 caps at 4.6.99
+    # and cannot boot here, so it is not a supported version on this lane.
+    required_package_version="0.4.4",
     enabled_by_default=False,
     status="supported",
     notes=("Supported routing import backed by optional NetBox routing models.",),
@@ -178,7 +181,7 @@ PEERING_INTEGRATION = OptionalPluginIntegration(
     query_maps=("Forward Peering Sessions",),
     package_name="netbox-peering-manager",
     adapter_module="forward_netbox.utilities.sync_routing_impl",
-    required_package_version="0.3.0",
+    required_package_version="0.3.1",
     enabled_by_default=False,
     status="supported",
     notes=("Supported peering-session import backed by NetBox Peering Manager.",),
@@ -270,8 +273,8 @@ VALIDITY_INTEGRATION = OptionalPluginIntegration(
     required_models=(),
     supported_models=(),
     package_name="netbox-validity",
-    required_package_version="3.5.2",
-    supported_package_versions=("3.5.2",),
+    required_package_version="3.6.0",
+    supported_package_versions=("3.6.0",),
     enabled_by_default=False,
     status="supported",
     notes=(
