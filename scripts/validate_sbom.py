@@ -9,6 +9,7 @@ from pathlib import Path
 
 REQUIRED_COMPONENTS = {
     "forward-netbox": None,
+    "forward-sdk": "0.1.16",
     "httpx": "0.28.1",
     "netbox": "4.7.0",
     # netbox-dlm 0.10.0 is the one optional plugin that runs on 4.7. The other

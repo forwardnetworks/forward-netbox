@@ -145,3 +145,11 @@ dependency declaration; the first with a behavioural one is the transport swap.
   made private rather than deleted, because the index method that survives them
   still calls them. Deleting them would have meant inlining live code in a
   commit whose value is that it changes no behaviour.
+- **2026-09-17** -- `forward-sdk` is declared at `0.1.16` exactly, not the
+  `0.1.3` first drafted here on 2026-09-07: this step landed ten days after
+  the plan was written, and `0.1.16` is the actual latest published release as
+  of today. Re-verified the reasoning still holds at this version - the SDK's
+  own `httpx` range (`>=0.27,<1`) and `pydantic` range (`>=2.6,<3`) are
+  unchanged between `0.1.3` and `0.1.16`, so the intersection with this
+  project's own `httpx` pin and the base-install cost of `pydantic` becoming a
+  required (not optional) dependency are exactly as analyzed below.
