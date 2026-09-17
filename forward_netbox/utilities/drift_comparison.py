@@ -899,6 +899,9 @@ def _peering_comparisons():
     from .sync_routing_impl import apply_netbox_routing_ospfarea
     from .sync_routing_impl import apply_netbox_routing_ospfinstance
     from .sync_routing_impl import apply_netbox_routing_ospfinterface
+    from .sync_routing_policy import apply_netbox_routing_communitylistentry
+    from .sync_routing_policy import apply_netbox_routing_prefixlistentry
+    from .sync_routing_policy import apply_netbox_routing_routemapentry
 
     return {
         "netbox_routing.bgppeer": apply_netbox_routing_bgppeer,
@@ -912,6 +915,9 @@ def _peering_comparisons():
         "netbox_routing.ospfinstance": apply_netbox_routing_ospfinstance,
         "netbox_routing.ospfarea": apply_netbox_routing_ospfarea,
         "netbox_routing.ospfinterface": apply_netbox_routing_ospfinterface,
+        "netbox_routing.prefixlistentry": apply_netbox_routing_prefixlistentry,
+        "netbox_routing.communitylistentry": (apply_netbox_routing_communitylistentry),
+        "netbox_routing.routemapentry": apply_netbox_routing_routemapentry,
     }
 
 

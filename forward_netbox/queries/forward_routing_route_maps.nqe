@@ -1,0 +1,70 @@
+/**
+ * @intent Forward Routing Route Maps
+ * @description Optional config-derived NQE for netbox-routing route-map entries. Parses
+ * `route-map NAME permit|deny SEQ` stanzas from device.files.config for the IOS / IOS-XE / NX-OS / Arista
+ * EOS dialects (identical stanza syntax) and emits one row per sequence with the stanza's child lines
+ * verbatim; the adapter turns `match`, `set`, `continue` and `description` clauses into the entry's fields.
+ * netbox-routing names these objects globally and a fleet defines the same name differently on different
+ * devices, so this map builds a catalogue: per configured name, every device's definition is grouped by
+ * content; the definition shared by the most devices is stored under the bare name, and each other
+ * definition is stored as `<name>@<lowest device holding it>`. `device` is that representative device and
+ * `device_count` how many define it identically. Nothing is dropped and shared policy appears once.
+ */
+
+rmRegex = re`^route-map (?<name>\S+) (?<action>permit|deny) (?<seq:Integer>\d+)$`;
+
+entries =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where device.platform.os in [OS.IOS, OS.IOS_XE, OS.NXOS, OS.ARISTA_EOS]
+  where isPresent(device.files.config)
+  foreach line in device.files.config
+  where matches(line.text, "route-map *")
+  foreach m in regexMatches(line.text, rmRegex)
+  let clauses = (foreach c in line.children select c.text)
+  select {
+    device: device.name,
+    name: m.data.name,
+    seq: m.data.seq,
+    action: m.data.action,
+    clauses: clauses,
+    sigtext: line.text + toString(clauses)
+  };
+// netbox-routing's name uniqueness is case-insensitive, so the catalogue key
+// is the lower-cased name; the stored spelling is the lexically smallest one
+// the fleet uses, which is deterministic across runs.
+defs =
+  foreach e in entries
+  group e as es by { device: e.device, key: toLowerCase(e.name) } as k
+  select { device: k.device, key: k.key, name: min(foreach x in es select x.name), sig: (foreach x in es select x.sigtext) };
+
+variants =
+  foreach d in defs
+  group d as ds by { key: d.key, sig: d.sig } as k
+  select { key: k.key, name: min(foreach x in ds select x.name), count: length(ds), rep: min(foreach x in ds select x.device) };
+
+ranked =
+  foreach v in variants
+  group v as vs by v.key as key
+  let name = min(foreach x in vs select x.name)
+  let bestCount = max(foreach x in vs select x.count)
+  let bestRep = min(foreach x in vs where x.count == bestCount select x.rep)
+  foreach v2 in vs
+  select { key: key, name: name, rep: v2.rep, count: v2.count, object_name: (if v2.rep == bestRep then name else name + "@" + v2.rep) };
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach r in ranked
+where isEmpty(forward_netbox_shard_keys) || r.object_name in forward_netbox_shard_keys
+foreach e in entries
+where e.device == r.rep && toLowerCase(e.name) == r.key
+select {
+  name: r.object_name,
+  map_name: r.name,
+  device: r.rep,
+  device_count: r.count,
+  sequence: e.seq,
+  action: e.action,
+  clauses: e.clauses
+};

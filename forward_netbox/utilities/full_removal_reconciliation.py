@@ -101,6 +101,9 @@ BASELINE_REMOVAL_MODELS = frozenset(
         "netbox_routing.ospfinstance",
         "netbox_routing.ospfarea",
         "netbox_routing.ospfinterface",
+        "netbox_routing.prefixlistentry",
+        "netbox_routing.communitylistentry",
+        "netbox_routing.routemapentry",
     }
 )
 
