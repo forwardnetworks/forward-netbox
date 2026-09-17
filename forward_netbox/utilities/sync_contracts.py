@@ -377,6 +377,42 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
         allowed_coalesce_fields=("fabric_name", "tenant_name", "name"),
         default_coalesce_fields=(("fabric_name", "tenant_name", "name"),),
     ),
+    "netbox_cisco_aci.aciappprofile": ModelSyncContract(
+        required_fields=("fabric_name", "tenant_name", "name"),
+        allowed_coalesce_fields=("fabric_name", "tenant_name", "name"),
+        default_coalesce_fields=(("fabric_name", "tenant_name", "name"),),
+    ),
+    "netbox_cisco_aci.aciendpointgroup": ModelSyncContract(
+        required_fields=("fabric_name", "tenant_name", "app_profile_name", "name"),
+        allowed_coalesce_fields=(
+            "fabric_name",
+            "tenant_name",
+            "app_profile_name",
+            "name",
+        ),
+        default_coalesce_fields=(
+            ("fabric_name", "tenant_name", "app_profile_name", "name"),
+        ),
+    ),
+    "netbox_cisco_aci.acicontract": ModelSyncContract(
+        required_fields=("fabric_name", "tenant_name", "name"),
+        allowed_coalesce_fields=("fabric_name", "tenant_name", "name"),
+        default_coalesce_fields=(("fabric_name", "tenant_name", "name"),),
+    ),
+    "netbox_cisco_aci.acisubject": ModelSyncContract(
+        required_fields=("fabric_name", "tenant_name", "contract_name", "name"),
+        allowed_coalesce_fields=("fabric_name", "tenant_name", "contract_name", "name"),
+        default_coalesce_fields=(
+            ("fabric_name", "tenant_name", "contract_name", "name"),
+        ),
+    ),
+    "netbox_cisco_aci.acifilterentry": ModelSyncContract(
+        required_fields=("fabric_name", "tenant_name", "filter_name", "name"),
+        allowed_coalesce_fields=("fabric_name", "tenant_name", "filter_name", "name"),
+        default_coalesce_fields=(
+            ("fabric_name", "tenant_name", "filter_name", "name"),
+        ),
+    ),
 }
 
 
