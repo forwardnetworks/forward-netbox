@@ -15,56 +15,79 @@ from ..exceptions import ForwardClientError
 from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardFetchBudgetExceededError
 from ..exceptions import ForwardLicenseTierError
+from .forward_client_config import coerce_api_requests_per_minute
+from .forward_client_config import coerce_nqe_async_max_polls
+from .forward_client_config import coerce_nqe_async_poll_interval_seconds
+from .forward_client_config import coerce_nqe_fetch_all_max_pages
+from .forward_client_config import coerce_nqe_fetch_all_max_rows
+from .forward_client_config import coerce_nqe_identical_full_page_streak_limit
+from .forward_client_config import coerce_nqe_page_size
+from .forward_client_config import coerce_retry_count
+from .forward_client_config import decrypt_client_password
+from .forward_client_config import DEFAULT_FORWARD_API_REQUESTS_PER_MINUTE
+from .forward_client_config import DEFAULT_FORWARD_API_RETRIES
+from .forward_client_config import DEFAULT_FORWARD_API_TIMEOUT_SECONDS
+from .forward_client_config import DEFAULT_FORWARD_SAAS_API_REQUESTS_PER_MINUTE
+from .forward_client_config import DEFAULT_NQE_ASYNC_MAX_POLLS
+from .forward_client_config import DEFAULT_NQE_ASYNC_POLL_INTERVAL_SECONDS
+from .forward_client_config import DEFAULT_NQE_FETCH_ALL_MAX_PAGES
+from .forward_client_config import DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
+from .forward_client_config import DEFAULT_NQE_PAGE_SIZE
+from .forward_client_config import FORWARD_SAAS_API_HARD_BLOCK_REQUESTS_PER_MINUTE
+from .forward_client_config import MAX_FORWARD_API_REQUESTS_PER_MINUTE
+from .forward_client_config import MAX_NQE_ASYNC_MAX_POLLS
+from .forward_client_config import MAX_NQE_ASYNC_POLL_INTERVAL_SECONDS
+from .forward_client_config import MAX_NQE_FETCH_ALL_MAX_PAGES
+from .forward_client_config import MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
+from .forward_client_config import MAX_NQE_PAGE_SIZE
+from .forward_read_cache import shared_read_cache_scope
+from .forward_read_cache import SharedReadCache
+from .forward_throttle import _RATE_LIMIT_LAST_REQUEST_AT
+from .forward_throttle import Throttle
+from .forward_usage import ApiUsageTracker
 from .license_tier import is_license_tier_denial
 from .license_tier import license_tier_denial_message
+
+# Re-exported for forward_api.py's facade import (`from .forward_api_impl import
+# X`) and, for _RATE_LIMIT_LAST_REQUEST_AT, for a test seam patched by name at
+# forward_api_impl._RATE_LIMIT_LAST_REQUEST_AT. Listing them here rather than
+# using per-line noqa markers survives black wrapping a long import line into
+# parentheses, which moves a trailing noqa comment off the line flake8 anchors
+# the warning to.
+__all__ = [
+    "DEFAULT_FORWARD_API_REQUESTS_PER_MINUTE",
+    "DEFAULT_FORWARD_API_RETRIES",
+    "DEFAULT_FORWARD_SAAS_API_REQUESTS_PER_MINUTE",
+    "DEFAULT_NQE_ASYNC_MAX_POLLS",
+    "DEFAULT_NQE_ASYNC_POLL_INTERVAL_SECONDS",
+    "DEFAULT_NQE_FETCH_ALL_MAX_PAGES",
+    "DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT",
+    "DEFAULT_NQE_PAGE_SIZE",
+    "FORWARD_SAAS_API_HARD_BLOCK_REQUESTS_PER_MINUTE",
+    "MAX_FORWARD_API_REQUESTS_PER_MINUTE",
+    "MAX_NQE_ASYNC_MAX_POLLS",
+    "MAX_NQE_ASYNC_POLL_INTERVAL_SECONDS",
+    "MAX_NQE_FETCH_ALL_MAX_PAGES",
+    "MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT",
+    "MAX_NQE_PAGE_SIZE",
+    "_RATE_LIMIT_LAST_REQUEST_AT",
+]
 
 LATEST_PROCESSED_SNAPSHOT = "latestProcessed"
 LATEST_COLLECTED_SNAPSHOT = "latestCollected"
 # How many of the most recent processed snapshots to scan when resolving the
 # latestCollected selector before giving up.
 DEFAULT_LATEST_COLLECTED_SCAN_LIMIT = 10
-DEFAULT_FORWARD_API_TIMEOUT_SECONDS = 1200
-DEFAULT_FORWARD_API_RETRIES = 2
 DEFAULT_FORWARD_API_RETRY_BACKOFF_SECONDS = 2
 # Ceiling on a single retry wait, so a hostile/large Retry-After cannot stall a
 # sync indefinitely.
 MAX_FORWARD_API_RETRY_BACKOFF_SECONDS = 60
-MAX_NQE_PAGE_SIZE = 10000
-DEFAULT_NQE_PAGE_SIZE = 10000
-DEFAULT_NQE_FETCH_ALL_MAX_PAGES = 5000
-MAX_NQE_FETCH_ALL_MAX_PAGES = 200000
-# Absolute ceiling on rows accumulated in memory by a single fetch_all. The
-# page-count ceiling alone permits ~50M rows (10k page x 5k pages) before
-# firing, enough to OOM the worker on a large unsharded result. Abort earlier
-# with an actionable error so the operator shards the model instead of crashing.
-DEFAULT_NQE_FETCH_ALL_MAX_ROWS = 2_000_000
-MAX_NQE_FETCH_ALL_MAX_ROWS = 50_000_000
-DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT = 25
-MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT = 1000
 DEFAULT_QUERY_FETCH_CONCURRENCY = 10
 MAX_QUERY_FETCH_CONCURRENCY = 16
-DEFAULT_FORWARD_API_REQUESTS_PER_MINUTE = 0
-DEFAULT_FORWARD_SAAS_API_REQUESTS_PER_MINUTE = 1800
-FORWARD_SAAS_API_HARD_BLOCK_REQUESTS_PER_MINUTE = 2000
-MAX_FORWARD_API_REQUESTS_PER_MINUTE = 60000
-FORWARD_API_RATE_LIMIT_CACHE_TIMEOUT_SECONDS = 120
-FORWARD_API_RATE_LIMIT_LOCK_TIMEOUT_SECONDS = 5
 DEFAULT_QUERY_DIAGNOSTICS_ENABLED = True
-# Exponential async polling starts at 0.1s, preserving fast-query latency, and
-# uses this value only as the slow-query plateau. At the default 1200-poll
-# budget, a 5s ceiling permits about 100 minutes before the poll-count guard;
-# an enabled per-workload deadline remains the authoritative wall-clock guard.
-DEFAULT_NQE_ASYNC_POLL_INTERVAL_SECONDS = 5.0
-DEFAULT_NQE_ASYNC_MAX_POLLS = 1200
-MAX_NQE_ASYNC_POLL_INTERVAL_SECONDS = 60.0
-MAX_NQE_ASYNC_MAX_POLLS = 10000
 TRANSIENT_FORWARD_HTTP_STATUS_CODES = {408, 429, 502, 503, 504}
 NQE_QUERY_REPOSITORIES = {"org", "fwd"}
 NQE_LIBRARY_WRITE_ROLES = {"ADMIN", "OPERATOR"}
-READ_CACHE_TIMEOUT_SECONDS = 60
-READ_CACHE_GENERATION_KEY_SUFFIX = ":query-generation"
-_RATE_LIMIT_LOCK = threading.Lock()
-_RATE_LIMIT_LAST_REQUEST_AT = {}
 
 
 def _parse_retry_after(value):
@@ -263,51 +286,56 @@ class ForwardClient:
         self.source = source
         params = source.parameters or {}
         self.timeout = params.get("timeout") or DEFAULT_FORWARD_API_TIMEOUT_SECONDS
-        self.retries = self._coerce_retry_count(params.get("retries"))
+        self.retries = coerce_retry_count(params.get("retries"))
         self.verify = params.get("verify", True)
-        self.nqe_page_size = self._coerce_nqe_page_size(params.get("nqe_page_size"))
-        self.nqe_fetch_all_max_pages = self._coerce_nqe_fetch_all_max_pages(
+        self.nqe_page_size = coerce_nqe_page_size(params.get("nqe_page_size"))
+        self.nqe_fetch_all_max_pages = coerce_nqe_fetch_all_max_pages(
             params.get("nqe_fetch_all_max_pages")
         )
-        self.nqe_fetch_all_max_rows = self._coerce_nqe_fetch_all_max_rows(
+        self.nqe_fetch_all_max_rows = coerce_nqe_fetch_all_max_rows(
             params.get("nqe_fetch_all_max_rows")
         )
         self.nqe_identical_full_page_streak_limit = (
-            self._coerce_nqe_identical_full_page_streak_limit(
+            coerce_nqe_identical_full_page_streak_limit(
                 params.get("nqe_identical_full_page_streak_limit")
             )
         )
-        self.nqe_async_poll_interval_seconds = (
-            self._coerce_nqe_async_poll_interval_seconds(
-                params.get("nqe_async_poll_interval_seconds")
-            )
+        self.nqe_async_poll_interval_seconds = coerce_nqe_async_poll_interval_seconds(
+            params.get("nqe_async_poll_interval_seconds")
         )
-        self.nqe_async_max_polls = self._coerce_nqe_async_max_polls(
+        self.nqe_async_max_polls = coerce_nqe_async_max_polls(
             params.get("nqe_async_max_polls")
         )
         self.base_url = source.url.rstrip("/")
         self.username = params.get("username")
-        # The stored password is encrypted at rest (ForwardSource.save); decrypt it
-        # here, at the one place it is actually used for HTTP auth.
-        from .crypto import decrypt_secret
-
-        try:
-            self.password = decrypt_secret(params.get("password"))
-        except ValueError as exc:
-            raise ForwardClientError(str(exc)) from exc
-        self.api_requests_per_minute = self._coerce_api_requests_per_minute(
-            params.get("api_requests_per_minute")
+        self.password = decrypt_client_password(params.get("password"))
+        self.api_requests_per_minute = coerce_api_requests_per_minute(
+            params.get("api_requests_per_minute"),
+            source_type=getattr(self.source, "type", None),
+            base_url=self.base_url,
         )
         if self.api_requests_per_minute:
             self._api_request_min_interval = 60.0 / self.api_requests_per_minute
         else:
             self._api_request_min_interval = 0.0
-        self._api_usage_lock = threading.Lock()
+        self._usage = ApiUsageTracker(self.api_requests_per_minute)
+        self._throttle = Throttle(
+            api_request_min_interval=self._api_request_min_interval,
+            base_url=self.base_url,
+            username=self.username,
+            cache_provider=lambda: _shared_rate_limit_cache(),
+            usage=self._usage,
+        )
+        self._read_cache = SharedReadCache(
+            scope=shared_read_cache_scope(
+                source_pk=getattr(self.source, "pk", None),
+                source_type=getattr(self.source, "type", None),
+                base_url=self.base_url,
+                username=self.username,
+            ),
+            cache_provider=lambda: _shared_read_cache(),
+        )
         self._read_cache_lock = threading.Lock()
-        self._api_usage_first_http_attempt_at = None
-        self._api_usage_last_http_attempt_at = None
-        self._api_usage = self._empty_api_usage()
-        self._nqe_execution_signatures: dict[str, int] = {}
         self._latest_processed_snapshot_cache: dict[str, dict] = {}
         self._snapshots_cache: dict[tuple[str, bool, int], list[dict]] = {}
         self._snapshot_data_file_hashes_cache: dict[tuple[str, str], dict[str, str]] = (
@@ -322,56 +350,17 @@ class ForwardClient:
         self._nqe_query_history_cache: dict[str, list[dict]] = {}
         self._org_nqe_head_commit_id_cache: str | None = None
 
-    def _empty_api_usage(self):
-        return {
-            "api_requests_per_minute": self.api_requests_per_minute,
-            "http_attempts": 0,
-            "http_successes": 0,
-            "http_failures": 0,
-            "http_timeout_failures": 0,
-            "http_transport_failures": 0,
-            "http_status_failures": 0,
-            "http_transient_status_failures": 0,
-            "http_nontransient_status_failures": 0,
-            "http_429_failures": 0,
-            "http_retries": 0,
-            "http_status_classes": {},
-            "throttle_sleep_seconds": 0.0,
-            "nqe_query_calls": 0,
-            "nqe_diff_calls": 0,
-            "nqe_pages": 0,
-            "nqe_query_pages": 0,
-            "nqe_diff_pages": 0,
-            "nqe_async_query_calls": 0,
-            "nqe_async_trigger_calls": 0,
-            "nqe_async_status_calls": 0,
-            "nqe_async_result_calls": 0,
-            "read_cache_hits": 0,
-            "read_cache_misses": 0,
-        }
-
     def _record_api_usage(self, key, amount=1):
-        with self._api_usage_lock:
-            self._api_usage[key] = self._api_usage.get(key, 0) + amount
+        self._usage.record(key, amount)
 
     def _record_nqe_execution_signature(self, kind, identity):
-        encoded = json.dumps(
-            {"kind": kind, **identity},
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
-        )
-        signature = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-        with self._api_usage_lock:
-            self._nqe_execution_signatures[signature] = (
-                self._nqe_execution_signatures.get(signature, 0) + 1
-            )
+        self._usage.record_nqe_execution_signature(kind, identity)
 
     def _record_read_cache_hit(self):
-        self._record_api_usage("read_cache_hits")
+        self._usage.record_read_cache_hit()
 
     def _record_read_cache_miss(self):
-        self._record_api_usage("read_cache_misses")
+        self._usage.record_read_cache_miss()
 
     def _invalidate_nqe_query_read_caches(self):
         with self._read_cache_lock:
@@ -381,72 +370,25 @@ class ForwardClient:
             self._repository_query_index_cache.clear()
             self._nqe_query_history_cache.clear()
             self._org_nqe_head_commit_id_cache = None
-        self._bump_shared_query_read_generation()
-
-    def _shared_read_cache_scope(self) -> str:
-        scope = {
-            "source_pk": getattr(self.source, "pk", None),
-            "source_type": getattr(self.source, "type", None) or "",
-            "base_url": self.base_url,
-            "username": self.username or "",
-        }
-        encoded = json.dumps(scope, sort_keys=True, separators=(",", ":"))
-        digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-        return f"forward-netbox:forward-api-read-cache:{digest}"
+        self._read_cache.bump_generation()
 
     def _shared_read_cache(self):
         return _shared_read_cache()
 
     def _shared_read_cache_key(self, kind: str, *parts: object) -> str:
-        scope = self._shared_read_cache_scope()
-        payload = {
-            "kind": kind,
-            "scope": scope,
-            "parts": [str(part) for part in parts],
-        }
-        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
-        return f"{scope}:{kind}:{digest}"
-
-    def _shared_query_read_generation_key(self) -> str:
-        return f"{self._shared_read_cache_scope()}{READ_CACHE_GENERATION_KEY_SUFFIX}"
+        return self._read_cache.key(kind, *parts)
 
     def _shared_query_read_generation(self) -> int:
-        cache = self._shared_read_cache()
-        if cache is None:
-            return 0
-        try:
-            return int(cache.get(self._shared_query_read_generation_key()) or 0)
-        except (TypeError, ValueError):
-            return 0
+        return self._read_cache.generation()
 
     def _bump_shared_query_read_generation(self) -> None:
-        cache = self._shared_read_cache()
-        if cache is None:
-            return
-        key = self._shared_query_read_generation_key()
-        try:
-            cache.incr(key)
-        except JobTimeoutException:
-            raise
-        except Exception:
-            try:
-                current = int(cache.get(key) or 0)
-            except (TypeError, ValueError):
-                current = 0
-            cache.set(key, current + 1, timeout=READ_CACHE_TIMEOUT_SECONDS)
+        self._read_cache.bump_generation()
 
     def _shared_read_cache_get(self, key: str):
-        cache = self._shared_read_cache()
-        if cache is None:
-            return None
-        return cache.get(key)
+        return self._read_cache.get(key)
 
     def _shared_read_cache_set(self, key: str, value):
-        cache = self._shared_read_cache()
-        if cache is None:
-            return
-        cache.set(key, value, timeout=READ_CACHE_TIMEOUT_SECONDS)
+        self._read_cache.set(key, value)
 
     def _build_nqe_repository_query_index(self, rows: list[dict]) -> dict:
         by_query_id: dict[str, list[dict]] = {}
@@ -483,163 +425,16 @@ class ForwardClient:
         }
 
     def _record_http_attempt_usage(self):
-        now = time.monotonic()
-        with self._api_usage_lock:
-            self._api_usage["http_attempts"] = (
-                self._api_usage.get("http_attempts", 0) + 1
-            )
-            if self._api_usage_first_http_attempt_at is None:
-                self._api_usage_first_http_attempt_at = now
-            self._api_usage_last_http_attempt_at = now
+        self._usage.record_http_attempt()
 
     def _record_http_status_class(self, status_code):
-        if not isinstance(status_code, int):
-            return
-        class_name = f"{status_code // 100}xx"
-        with self._api_usage_lock:
-            classes = self._api_usage.setdefault("http_status_classes", {})
-            classes[class_name] = classes.get(class_name, 0) + 1
+        self._usage.record_http_status_class(status_code)
 
     def api_usage_summary(self):
-        with self._api_usage_lock:
-            summary = dict(self._api_usage)
-            summary["http_status_classes"] = dict(
-                self._api_usage.get("http_status_classes") or {}
-            )
-            first_attempt_at = self._api_usage_first_http_attempt_at
-            last_attempt_at = self._api_usage_last_http_attempt_at
-            execution_counts = tuple(self._nqe_execution_signatures.values())
-        summary["nqe_execution_signature_count"] = len(execution_counts)
-        summary["nqe_repeated_execution_count"] = sum(
-            count - 1 for count in execution_counts if count > 1
-        )
-        summary["nqe_max_execution_signature_count"] = max(
-            execution_counts,
-            default=0,
-        )
-        summary["throttle_sleep_seconds"] = round(
-            float(summary.get("throttle_sleep_seconds") or 0.0),
-            6,
-        )
-        window_seconds = (
-            max(float(last_attempt_at) - float(first_attempt_at), 0.0)
-            if first_attempt_at is not None and last_attempt_at is not None
-            else 0.0
-        )
-        http_attempts = int(summary.get("http_attempts") or 0)
-        observed_rate = (
-            round(((http_attempts - 1) * 60.0) / window_seconds, 3)
-            if http_attempts > 1 and window_seconds > 0
-            else None
-        )
-        summary["usage_window_seconds"] = round(window_seconds, 6)
-        summary["observed_http_attempts_per_minute"] = observed_rate
-        read_cache_hits = int(summary.get("read_cache_hits") or 0)
-        read_cache_misses = int(summary.get("read_cache_misses") or 0)
-        total_read_cache_lookups = read_cache_hits + read_cache_misses
-        summary["read_cache_hit_rate"] = (
-            round(read_cache_hits / float(total_read_cache_lookups), 6)
-            if total_read_cache_lookups
-            else None
-        )
-        return summary
+        return self._usage.summary()
 
     def reset_api_usage_summary(self):
-        with self._api_usage_lock:
-            self._api_usage_first_http_attempt_at = None
-            self._api_usage_last_http_attempt_at = None
-            self._api_usage = self._empty_api_usage()
-            self._nqe_execution_signatures = {}
-
-    def _coerce_nqe_page_size(self, value):
-        if value is None:
-            return DEFAULT_NQE_PAGE_SIZE
-        try:
-            size = int(value)
-        except (TypeError, ValueError):
-            return DEFAULT_NQE_PAGE_SIZE
-        return max(1, min(size, MAX_NQE_PAGE_SIZE))
-
-    def _coerce_retry_count(self, value):
-        if value is None:
-            return DEFAULT_FORWARD_API_RETRIES
-        try:
-            retries = int(value)
-        except (TypeError, ValueError):
-            return DEFAULT_FORWARD_API_RETRIES
-        return max(0, min(retries, 5))
-
-    def _coerce_nqe_fetch_all_max_pages(self, value):
-        if value is None:
-            return DEFAULT_NQE_FETCH_ALL_MAX_PAGES
-        try:
-            pages = int(value)
-        except (TypeError, ValueError):
-            return DEFAULT_NQE_FETCH_ALL_MAX_PAGES
-        return max(1, min(pages, MAX_NQE_FETCH_ALL_MAX_PAGES))
-
-    def _coerce_nqe_fetch_all_max_rows(self, value):
-        if value is None:
-            return DEFAULT_NQE_FETCH_ALL_MAX_ROWS
-        try:
-            rows = int(value)
-        except (TypeError, ValueError):
-            return DEFAULT_NQE_FETCH_ALL_MAX_ROWS
-        return max(1, min(rows, MAX_NQE_FETCH_ALL_MAX_ROWS))
-
-    def _coerce_nqe_identical_full_page_streak_limit(self, value):
-        if value is None:
-            return DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
-        try:
-            streak = int(value)
-        except (TypeError, ValueError):
-            return DEFAULT_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
-        return max(1, min(streak, MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT))
-
-    def _coerce_api_requests_per_minute(self, value):
-        if value in (None, ""):
-            return self._default_api_requests_per_minute()
-        try:
-            requests_per_minute = int(value)
-        except (TypeError, ValueError):
-            return self._default_api_requests_per_minute()
-        return max(
-            0,
-            min(requests_per_minute, MAX_FORWARD_API_REQUESTS_PER_MINUTE),
-        )
-
-    def _default_api_requests_per_minute(self):
-        source_type = str(getattr(self.source, "type", "") or "").lower()
-        if source_type == "saas" or self.base_url == "https://fwd.app":
-            return DEFAULT_FORWARD_SAAS_API_REQUESTS_PER_MINUTE
-        return DEFAULT_FORWARD_API_REQUESTS_PER_MINUTE
-
-    def _coerce_bool(self, value, default=False):
-        if value in (None, ""):
-            return bool(default)
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            return value.strip().lower() in {"1", "true", "yes", "on"}
-        return bool(value)
-
-    def _coerce_nqe_async_poll_interval_seconds(self, value):
-        if value is None:
-            return DEFAULT_NQE_ASYNC_POLL_INTERVAL_SECONDS
-        try:
-            interval = float(value)
-        except (TypeError, ValueError):
-            return DEFAULT_NQE_ASYNC_POLL_INTERVAL_SECONDS
-        return max(0.0, min(interval, MAX_NQE_ASYNC_POLL_INTERVAL_SECONDS))
-
-    def _coerce_nqe_async_max_polls(self, value):
-        if value is None:
-            return DEFAULT_NQE_ASYNC_MAX_POLLS
-        try:
-            polls = int(value)
-        except (TypeError, ValueError):
-            return DEFAULT_NQE_ASYNC_MAX_POLLS
-        return max(1, min(polls, MAX_NQE_ASYNC_MAX_POLLS))
+        self._usage.reset()
 
     def _page_signature(self, rows):
         if not rows:
@@ -672,63 +467,10 @@ class ForwardClient:
         return None
 
     def _rate_limit_key(self):
-        scope = f"{self.base_url}\0{self.username or ''}"
-        digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()
-        return f"forward-netbox:forward-api-rate-limit:{digest}"
-
-    def _sleep_for_rate_limit(self, last_request_at, now):
-        if last_request_at is None:
-            return now
-        wait_seconds = self._api_request_min_interval - (now - float(last_request_at))
-        if wait_seconds > 0:
-            self._record_api_usage("throttle_sleep_seconds", wait_seconds)
-            time.sleep(wait_seconds)
-            return time.time()
-        return now
-
-    def _throttle_with_shared_cache(self, key, cache):
-        lock_key = f"{key}:lock"
-        token = f"{id(self)}:{time.time_ns()}"
-        while not cache.add(
-            lock_key,
-            token,
-            timeout=FORWARD_API_RATE_LIMIT_LOCK_TIMEOUT_SECONDS,
-        ):
-            time.sleep(min(self._api_request_min_interval, 0.25))
-        try:
-            now = time.time()
-            last_request_at = cache.get(key)
-            now = self._sleep_for_rate_limit(last_request_at, now)
-            cache.set(
-                key,
-                now,
-                timeout=FORWARD_API_RATE_LIMIT_CACHE_TIMEOUT_SECONDS,
-            )
-        finally:
-            if cache.get(lock_key) == token:
-                cache.delete(lock_key)
-
-    def _throttle_in_process(self, key):
-        with _RATE_LIMIT_LOCK:
-            now = time.time()
-            last_request_at = _RATE_LIMIT_LAST_REQUEST_AT.get(key)
-            now = self._sleep_for_rate_limit(last_request_at, now)
-            _RATE_LIMIT_LAST_REQUEST_AT[key] = now
+        return self._throttle._rate_limit_key()
 
     def _throttle_request(self):
-        if not self._api_request_min_interval:
-            return
-        key = self._rate_limit_key()
-        cache = _shared_rate_limit_cache()
-        if cache is None:
-            self._throttle_in_process(key)
-            return
-        try:
-            self._throttle_with_shared_cache(key, cache)
-        except JobTimeoutException:
-            raise
-        except Exception:
-            self._throttle_in_process(key)
+        self._throttle.throttle()
 
     def _proxy_mounts(self, url):
         proxies = resolve_proxies(
