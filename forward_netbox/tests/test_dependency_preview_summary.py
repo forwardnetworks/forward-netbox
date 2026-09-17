@@ -57,6 +57,24 @@ class DependencyModelResultSummaryTest(SimpleTestCase):
         self.assertEqual(summary["durable_workload_state"], durable_state)
         self.assertNotIn("diagnostics", summary)
 
+    def test_delete_count_folds_in_comparison_deletes(self):
+        # `dcim.inventoryitem`'s module-native rows are Forward upsert rows
+        # the apply deletes instead - not in `data["delete_count"]` at all
+        # until the comparison classifies them (2.9.6).
+        summary = _dependency_model_result_summary(
+            self._result(),
+            comparison={
+                "creates": 2,
+                "updates": 0,
+                "unchanged": 0,
+                "rejected": 0,
+                "deletes": 5,
+            },
+        )
+        self.assertEqual(summary["delete_count"], 8)
+        self.assertEqual(summary["estimated_changes"], 2)
+        self.assertEqual(summary["change_estimate_kind"], "exact_comparison")
+
     def test_summary_rejects_noncanonical_plain_dict(self):
         with self.assertRaisesRegex(TypeError, "must be ForwardModelResult"):
             _dependency_model_result_summary(

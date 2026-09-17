@@ -1496,8 +1496,18 @@ def protecting_relations(model_class):
         )
         if getattr(relation, "field", None) is not None
         and not relation.many_to_many
-        and getattr(relation.field.remote_field, "on_delete", None)
-        in (models.PROTECT, models.RESTRICT)
+        and (
+            getattr(relation.field.remote_field, "on_delete", None)
+            in (models.PROTECT, models.RESTRICT)
+            # `release_on_operator_delete` protects on every engine path and
+            # declares so; matching by identity alone would stop the merge
+            # predicting the hold it still gets.
+            or getattr(
+                getattr(relation.field.remote_field, "on_delete", None),
+                "protects",
+                False,
+            )
+        )
     ]
 
 

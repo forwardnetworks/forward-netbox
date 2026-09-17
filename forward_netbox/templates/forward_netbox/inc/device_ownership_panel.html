@@ -59,7 +59,7 @@
       </tr>
       {% if ownership.delete_blockers %}
       <tr>
-        <th scope="row">{% trans "Would refuse a manual delete" %}</th>
+        <th scope="row">{% trans "Would refuse a delete" %}</th>
         <td>
           {# The database's own verdict, so it includes rows from other        #}
           {# plugins reached through the cascade - BGP peers attached to this  #}
@@ -128,12 +128,12 @@
     {% if ownership.holders %}
       <p class="text-muted mb-0">
         {% blocktrans trimmed %}
-          NetBox will refuse a manual delete of this device while these records
-          exist, and its dialog reports only the record names. Deleting it here
-          would also strand the ownership evidence the next sync reads. Use the
-          scope reconciliation panel on the owning sync instead: it releases
-          ownership first, applies the absence quarantine and the shrink
-          refusal, and records what it removed.
+          Deleting this device from NetBox, here or from the device list, also
+          removes these Forward records; the next sync will not look for it.
+          The scope reconciliation panel on the owning sync is the gated way:
+          it deletes only devices Forward no longer reports, applies the
+          absence quarantine and the shrink refusal, and records what it
+          removed.
         {% endblocktrans %}
       </p>
     {% endif %}
@@ -160,7 +160,7 @@
             {% endblocktrans %}
             {% for label, count in ownership.foreign_delete_blockers %}<code>{{ label }}</code>&nbsp;&times;&nbsp;{{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}
           </li>
-          <li>{% trans "Then run Prune uncovered devices on the owning sync, which releases the Forward records and performs the delete." %}</li>
+          <li>{% trans "Then delete the device, here or from Prune uncovered devices on the owning sync; either releases the Forward records." %}</li>
         </ol>
         <p class="mb-0 small">
           {% blocktrans trimmed %}

@@ -109,17 +109,20 @@ def _uncovered_prune_offer(device, identities, foreign_blockers):
 
 
 class ForwardDeviceOwnershipPanel(PluginTemplateExtension):
-    """Why NetBox refuses to delete a plugin-owned device, and what does.
+    """What the plugin holds on this device, and what a delete does about it.
 
-    The ownership tables hold their device with ``PROTECT`` and
-    ``related_name="+"``, so a manual delete raises ``ProtectedError`` and
-    NetBox renders the refusal as a list of our record names with no cause and
-    no remedy - a customer hit exactly that trying to clear an uncovered
-    device by hand. The PROTECT is deliberate (the apply path relies on it to
-    decline a delete that has not released ownership, and it is the only thing
-    standing between one sync's prune and another sync's claim), so the fix is
-    to explain it where the operator already is and link the delete that does
-    work.
+    The ownership tables held their device with ``PROTECT`` and
+    ``related_name="+"``, so a manual delete raised ``ProtectedError`` and
+    NetBox rendered the refusal as a list of our record names with no cause
+    and no remedy - a customer hit exactly that trying to clear an uncovered
+    device by hand, twice, the second time from the device list's bulk
+    delete where this panel never appears. Since 2.9.6 an operator's delete
+    on main releases the identity and tag claims itself
+    (`release_on_operator_delete`); the engine paths keep the PROTECT they
+    rely on. So the panel now says what a delete takes with it and still
+    links the gated remedy - the prune, with its quarantine and its shrink
+    refusal - and still names the records from other plugins that refuse
+    both.
 
     Read-only, local database only, and rendered only for a device the plugin
     actually holds - an unowned device gets no panel.

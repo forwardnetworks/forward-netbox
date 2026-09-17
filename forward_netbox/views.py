@@ -831,7 +831,14 @@ def _dependency_model_result_summary(
         raise TypeError("Dependency preview results must be ForwardModelResult values.")
     data = result.as_dict()
     row_count = int(data.get("row_count") or 0)
-    delete_count = int(data.get("delete_count") or 0)
+    # Forward's own declared deletes, plus any the comparison itself found -
+    # `dcim.inventoryitem`'s module-native rows arrive as upsert rows and are
+    # deleted by the apply rather than Forward's `delete_rows`, so they are
+    # not in `data["delete_count"]` at all until the comparison classifies
+    # them.
+    delete_count = int(data.get("delete_count") or 0) + int(
+        (comparison or {}).get("deletes") or 0
+    )
     durable_state = next(
         (
             diagnostic

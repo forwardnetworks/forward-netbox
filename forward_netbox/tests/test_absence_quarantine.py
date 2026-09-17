@@ -4,6 +4,7 @@
 # devices went that way in one run at a customer. These tests pin the negative
 # space: what must NOT be deleted, and when.
 from datetime import timedelta
+from unittest.mock import Mock
 from unittest.mock import patch
 
 from dcim.models import Device
@@ -18,6 +19,7 @@ from forward_netbox.models import ForwardDeviceAbsence
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.scope_reconciliation import absence_quarantine_thresholds
+from forward_netbox.utilities.scope_reconciliation import compute_scope_reconciliation
 from forward_netbox.utilities.scope_reconciliation import DEFAULT_PRUNE_ABSENCE_HOURS
 from forward_netbox.utilities.scope_reconciliation import DEFAULT_PRUNE_ABSENCE_RUNS
 from forward_netbox.utilities.scope_reconciliation import partition_quarantined_orphans
@@ -459,6 +461,61 @@ class AbsenceRowDoesNotPinItsDeviceTest(AbsenceQuarantineTestBase):
         self.devices[0].delete()
 
         self.assertFalse(ForwardDeviceAbsence.objects.filter(sync=self.sync).exists())
+
+
+class OrphanQuarantineBadgeMatchesTheButtonTest(AbsenceQuarantineTestBase):
+    """The report's own quarantine badge counts what `prune_orphan_devices`
+    will actually delete, not every orphan.
+
+    `prune_orphan_devices` has gated on cause since it shipped (see
+    `OrphanPruneGatesOnCauseTest` below) - only `kinds[name] == "absent"` is
+    eligible. But `compute_scope_reconciliation` built the "N in quarantine /
+    M prune-eligible" badge from every out-of-scope pk, absent or not, so a
+    customer's panel read "10 in quarantine / 97 prune-eligible" (97 + 10 =
+    107, every orphan) while the button only ever deletes the absent ones -
+    exactly the promise-a-deletion-the-gate-refuses failure the uncovered
+    card was already fixed for.
+    """
+
+    def test_the_quarantine_badge_excludes_present_untagged_orphans(self):
+        gone, still_there = self.devices[0], self.devices[1]
+        self._release_quarantine(gone)
+        # `still_there` needs its own absence row too, or it is not
+        # "previously managed" at all and would not appear as an orphan
+        # regardless of classification - see `previously_managed` above.
+        # Recently observed, still inside the quarantine window: irrelevant
+        # here, since `present_untagged` excludes it before quarantine timing
+        # is ever asked about.
+        self._set_absent(still_there, runs=1, hours_ago=1)
+
+        fwd_client = Mock()
+        fwd_client.run_nqe_query.return_value = [
+            {"name": "still-here", "completed": True}
+        ]
+        with (
+            patch.object(ForwardSource, "get_client", return_value=fwd_client),
+            patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+            patch(
+                "forward_netbox.utilities.scope_reconciliation._absence_census",
+                return_value=(
+                    {gone.name: "absent", still_there.name: "present_untagged"},
+                    {},
+                ),
+            ),
+        ):
+            report = compute_scope_reconciliation(self.sync)
+
+        quarantine = report["out_of_scope_quarantine"]
+        self.assertEqual(quarantine["prune_eligible"] + quarantine["held"], 1)
+        self.assertEqual(report["out_of_scope_not_prunable"], 1)
+
+    def _release_quarantine(self, *devices):
+        for device in devices:
+            self._set_absent(
+                device,
+                runs=DEFAULT_PRUNE_ABSENCE_RUNS,
+                hours_ago=DEFAULT_PRUNE_ABSENCE_HOURS + 1,
+            )
 
 
 class OrphanPruneGatesOnCauseTest(AbsenceQuarantineTestBase):

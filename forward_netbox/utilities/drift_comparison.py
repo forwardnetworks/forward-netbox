@@ -756,13 +756,19 @@ def _compare_adapter_rows(runner, rows, apply_row, *, uncomparable_outcomes=()):
     are counted as rejected, because a row the apply refuses is not a
     difference between the two systems and must never be reported as drift the
     next run would resolve.
+
+    ``uncomparable_outcomes`` names outcomes the count keys cannot express -
+    module-native `dcim.inventoryitem` rows, which the apply DELETES rather
+    than upserts. Those are counted as ``deletes`` rather than declining the
+    whole model: `dcim.module` being on is not a reason 58,606 other rows
+    should read "Not measured" every run.
     """
     from ..exceptions import ForwardDependencySkipError
     from ..exceptions import ForwardQueryError
     from ..exceptions import ForwardSearchError
     from ..exceptions import ForwardSyncDataError
 
-    counts = {"creates": 0, "updates": 0, "unchanged": 0, "rejected": 0}
+    counts = {"creates": 0, "updates": 0, "unchanged": 0, "rejected": 0, "deletes": 0}
     for row in rows:
         # One row, one record of what it would write. The paths where a row
         # means several objects read the whole record back; the flat ones do
@@ -801,12 +807,13 @@ def _compare_adapter_rows(runner, rows, apply_row, *, uncomparable_outcomes=()):
             counts["rejected"] += 1
             continue
         if outcome in uncomparable_outcomes:
-            # This row is a change the count keys cannot express - a delete,
-            # for the one path that has them. Declining the whole model keeps
-            # its upper bound, which is honest; folding it into creates or
-            # updates would be counted twice against the separate delete
-            # accounting, and unchanged would be a confident zero.
-            return None
+            # A real delete the apply performs instead of an upsert - not a
+            # rejection and not a create/update, so it gets its own key
+            # rather than either declining the whole model or double-counting
+            # against a separate delete accounting that does not exist for
+            # these rows (they arrive as upsert rows, not `delete_rows`).
+            counts["deletes"] += 1
+            continue
         if outcome is False or outcome is None:
             counts["rejected"] += 1
             continue
@@ -943,17 +950,18 @@ def _compare_ipam_fhrpgroup(runner, rows):
 
 
 def _compare_dcim_inventoryitem(runner, rows):
-    """Compare inventory items, unless the batch contains a deletion.
+    """Compare inventory items, counting module-native rows as deletes.
 
     A module-native row on a deployment with `dcim.module` enabled is DELETED
-    by the apply, not upserted, and this comparison's contract has no slot for
-    a delete - the report reads drift as `creates + updates` and accounts for
-    deletes separately. Rather than fold it into either bucket, one such row
-    declines the whole model, which keeps its honest upper bound.
-
-    The refusal is scoped to batches that actually contain one, so deployments
-    without module-native inventory still get a real measurement. That is the
-    whole reason it is detected per row rather than per deployment.
+    by the apply, not upserted. Before 2.9.6 one such row declined the whole
+    model - the honest upper bound, but a deployment with `dcim.module` on
+    (module-native rows are common wherever it is) read "Not measured" on
+    every run for its largest model, 58,606 rows on one customer's estate,
+    with nothing to distinguish it from a comparison that raised. The report
+    already has a delete accounting separate from `creates + updates`
+    (`_compare_adapter_rows`'s `deletes` key, folded into `delete_count` by
+    `_dependency_model_result_summary`), so these rows now feed it instead of
+    declining the model.
     """
     from .sync_inventory_module import MODULE_NATIVE_ROW_NOT_COMPARABLE
     from .sync_inventory_module import apply_dcim_inventoryitem
