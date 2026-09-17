@@ -1,0 +1,107 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+{% load i18n %}
+
+{% block title %}{{ object }} - {{ report.title }}{% endblock %}
+
+{% block extra_controls %}
+  <a class="btn btn-outline-secondary" href="{{ audits_url }}">
+    <i class="mdi mdi-arrow-left" aria-hidden="true"></i>&nbsp;{% trans "Audits" %}
+  </a>
+  {% if can_run %}
+    <form method="post" class="d-inline">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-primary">
+        <i class="mdi mdi-play" aria-hidden="true"></i>&nbsp;{% trans "Run audit" %}
+      </button>
+    </form>
+  {% endif %}
+{% endblock extra_controls %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col">
+    <div class="card">
+      <h5 class="card-header">{{ report.title }}</h5>
+      <div class="card-body">
+        <p class="text-muted">{{ report.description }}</p>
+        {% if generated_live %}
+          <p class="text-muted mb-2"><small>{% trans "Computed from NetBox when this page was opened." %}</small></p>
+        {% elif job %}
+          <p class="text-muted mb-2"><small>
+            {% trans "From job" %} <a href="{{ job.get_absolute_url }}">#{{ job.pk }}</a>
+            {% badge job.get_status_display bg_color=job.get_status_color %}
+            {% if job.completed %}{% trans "completed" %} {{ job.completed|isodatetime }}{% endif %}
+          </small></p>
+        {% endif %}
+        {% if error %}
+          <div class="alert alert-danger" role="alert">{{ error }}</div>
+        {% endif %}
+        {% if sections %}
+          <table class="table table-hover attr-table">
+            {% for item in sections.summary %}
+              <tr>
+                <th scope="row">{{ item.label }}</th>
+                <td>
+                  {% if item.value is True %}<span class="badge text-bg-success">{% trans "Yes" %}</span>
+                  {% elif item.value is False %}<span class="badge text-bg-warning">{% trans "No" %}</span>
+                  {% elif item.value is None %}<span class="text-muted">&mdash;</span>
+                  {% else %}{{ item.value }}{% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </table>
+          {% if sections.remediation %}
+            <div class="alert alert-warning" role="alert">{{ sections.remediation }}</div>
+          {% endif %}
+          {% if sections.note %}
+            <p class="text-muted">{{ sections.note }}</p>
+          {% endif %}
+          {% for table in sections.tables %}
+            {% if table.rows %}
+              <h6 class="mt-3">{{ table.title }}
+                {% if table.total > table.rows|length %}
+                  <small class="text-muted">({% blocktrans with shown=table.rows|length total=table.total %}{{ shown }} of {{ total }}{% endblocktrans %})</small>
+                {% else %}
+                  <small class="text-muted">({{ table.rows|length }})</small>
+                {% endif %}
+              </h6>
+              <div class="table-responsive">
+                <table class="table table-sm table-hover">
+                  <thead><tr>{% for column in table.columns %}<th>{{ column }}</th>{% endfor %}</tr></thead>
+                  <tbody>
+                    {% for row in table.rows %}
+                      <tr>
+                        {% for cell in row %}
+                          <td>
+                            {% if cell.device_id %}
+                              <a href="{% url 'dcim:device' pk=cell.device_id %}">{{ cell.label|default:cell.device_id }}</a>
+                            {% elif cell.interface_id %}
+                              <a href="{% url 'dcim:interface' pk=cell.interface_id %}">{{ cell.label|default:cell.interface_id }}</a>
+                            {% elif cell is True %}<span class="badge text-bg-warning">{% trans "Yes" %}</span>
+                            {% elif cell is False %}<span class="text-muted">{% trans "No" %}</span>
+                            {% elif cell is None %}<span class="text-muted">&mdash;</span>
+                            {% else %}{{ cell }}{% endif %}
+                          </td>
+                        {% endfor %}
+                      </tr>
+                    {% endfor %}
+                  </tbody>
+                </table>
+              </div>
+            {% endif %}
+          {% endfor %}
+        {% elif not error %}
+          <p class="text-muted mb-0">
+            {% if job %}
+              {% trans "The latest run has not produced a report yet. Reload once the job completes." %}
+            {% else %}
+              {% trans "This audit has not been run. Run it to ask Forward and store the result on a job." %}
+            {% endif %}
+          </p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock content %}

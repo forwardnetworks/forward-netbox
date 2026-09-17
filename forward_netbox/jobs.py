@@ -2206,3 +2206,94 @@ class TagDeleteEligibleIpamJob(ForwardJobRunner):
 
     def run(self, *args, **kwargs):
         _tag_delete_eligible_ipam_work(self.job)
+
+
+# --- Forward-backed audit reports (utilities/audit_reports.py) ---------------
+#
+# One work function and one runner per audit, so the button-job parity tests
+# can enumerate them like every other kind. Each stores the audit's payload
+# on the job; the report page renders the latest one.
+
+
+def _audit_primary_ip_work(job):
+    from .utilities.audit_reports import AUDIT_REPORTS, run_audit_job
+
+    run_audit_job(job, AUDIT_REPORTS["primary_ip"])
+
+
+def _audit_global_ipam_work(job):
+    from .utilities.audit_reports import AUDIT_REPORTS, run_audit_job
+
+    run_audit_job(job, AUDIT_REPORTS["global_ipam"])
+
+
+def _audit_stale_hardware_notices_work(job):
+    from .utilities.audit_reports import AUDIT_REPORTS, run_audit_job
+
+    run_audit_job(job, AUDIT_REPORTS["stale_hardware_notices"])
+
+
+def _audit_apply_identity_work(job):
+    from .utilities.audit_reports import AUDIT_REPORTS, run_audit_job
+
+    run_audit_job(job, AUDIT_REPORTS["apply_identity"])
+
+
+def _audit_apic_cimc_readiness_work(job):
+    from .utilities.audit_reports import AUDIT_REPORTS, run_audit_job
+
+    run_audit_job(job, AUDIT_REPORTS["apic_cimc_readiness"])
+
+
+def _audit_fast_baseline_preflight_work(job):
+    from .utilities.audit_reports import AUDIT_REPORTS, run_audit_job
+
+    run_audit_job(job, AUDIT_REPORTS["fast_baseline_preflight"])
+
+
+class AuditPrimaryIpJob(ForwardJobRunner):
+    class Meta:
+        name = "audit primary IP resolution"
+
+    def run(self, *args, **kwargs):
+        _audit_primary_ip_work(self.job)
+
+
+class AuditGlobalIpamJob(ForwardJobRunner):
+    class Meta:
+        name = "audit stale global IPAM"
+
+    def run(self, *args, **kwargs):
+        _audit_global_ipam_work(self.job)
+
+
+class AuditStaleHardwareNoticesJob(ForwardJobRunner):
+    class Meta:
+        name = "audit stale hardware notices"
+
+    def run(self, *args, **kwargs):
+        _audit_stale_hardware_notices_work(self.job)
+
+
+class AuditApplyIdentityJob(ForwardJobRunner):
+    class Meta:
+        name = "audit apply identity"
+
+    def run(self, *args, **kwargs):
+        _audit_apply_identity_work(self.job)
+
+
+class AuditApicCimcReadinessJob(ForwardJobRunner):
+    class Meta:
+        name = "audit APIC CIMC readiness"
+
+    def run(self, *args, **kwargs):
+        _audit_apic_cimc_readiness_work(self.job)
+
+
+class AuditFastBaselinePreflightJob(ForwardJobRunner):
+    class Meta:
+        name = "audit fast-baseline eligibility"
+
+    def run(self, *args, **kwargs):
+        _audit_fast_baseline_preflight_work(self.job)

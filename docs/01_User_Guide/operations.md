@@ -100,12 +100,26 @@ To verify what a run removed, read the per-model **delete count** on the
 ingestion page (the `delete_count` field in the support bundle): it lists exactly
 which models had out-of-scope deletions.
 
+### The Audits page
+
+Every read-only audit below is a page on the sync: open the sync and click
+**Audits**. An audit that reads only NetBox (ambiguous device names, dangling
+routing rows, interface untagged VLANs) is computed when its page opens. An
+audit that has to ask Forward (primary-IP resolution, stale global IPAM, stale
+hardware notices, apply-identity churn, APIC CIMC readiness, fast-baseline
+eligibility) runs as a job from the **Run audit** button on its page and the
+page shows the latest run, so opening a page never spends a query execution.
+The same six are REST actions (`POST /api/plugins/forward/sync/<id>/audits/<name>/`).
+The management commands remain as the scriptable equivalent.
+
 ### Auditing stale global IPAM
 
 Because global IPAM is never scope-deleted, NetBox can accumulate prefixes, VLANs,
 or VRFs that Forward no longer reports. The read-only audit lists them for manual
 review — it reuses the apply engine's own identity matching, so a "stale" verdict
 is exactly what the sync would consider the same object, and it **never deletes**:
+
+GUI: **Audits → Stale global IPAM**, then **Run audit**. Command equivalent:
 
 ```
 python manage.py forward_scope_ipam_audit --sync-name "<sync>"
@@ -295,6 +309,8 @@ The post-prune sweep only covers devices the plugin itself pruned. Devices
 deleted by hand (or other tooling) can still leave netbox-routing BGP rows
 whose device references dangle. Read-only report:
 
+GUI: **Audits → Dangling routing rows** (computed on open). Command equivalent:
+
 ```
 python manage.py forward_routing_dangling_audit [--fail-on-dangling]
 ```
@@ -396,7 +412,10 @@ ordinary single-branch workflow.
 
 Before starting the sync, enable **Auto merge**, **Use safe bulk ORM models**,
 and **Use fast first-baseline load** on the sync, verify a PostgreSQL backup,
-stop other inventory writers, then run the complete read-only preflight:
+stop other inventory writers, then run the complete read-only preflight from
+**Audits → Fast-baseline eligibility → Run audit** (the page names the exact
+rejection when the sync would not take the fast path), or its command
+equivalent:
 
 ```bash
 python manage.py forward_fast_baseline_preflight \
@@ -622,6 +641,8 @@ When `set_primary_ip_from_mgmt_tag` is on, a device's `Mgmt_<iface>` tag sets it
 primary IP from the IP on that interface. If few devices get a primary IP, this
 read-only audit shows why, per device — it reuses the resolver's own matching, so
 a verdict matches what a sync computes:
+
+GUI: **Audits → Primary IP resolution**, then **Run audit**. Command equivalent:
 
 ```
 python manage.py forward_primary_ip_audit --sync-name "<sync>"

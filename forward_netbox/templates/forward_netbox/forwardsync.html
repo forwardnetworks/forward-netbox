@@ -62,6 +62,9 @@
     <a class="btn btn-outline-secondary" href="{{ module_readiness_url }}">
       <i class="mdi mdi-server-network" aria-hidden="true"></i>&nbsp;{% trans "Module Readiness" %}
     </a>
+    <a class="btn btn-outline-secondary" href="{{ audits_url }}">
+      <i class="mdi mdi-clipboard-check-outline" aria-hidden="true"></i>&nbsp;{% trans "Audits" %}
+    </a>
     <form action="{{ refresh_device_analysis_url }}" method="post" class="d-inline">
       {% csrf_token %}
       <button type="submit" class="btn btn-outline-secondary">

@@ -6,10 +6,12 @@ from core.exceptions import SyncError
 from core.models import ObjectChange
 from django.apps import apps
 from django.contrib import messages
+from django.core.exceptions import PermissionDenied
 from django.core.exceptions import ValidationError
 from django.db import connection
 from django.db import models
 from django.db.models.functions import Greatest
+from django.http import Http404
 from django.http import HttpResponseBadRequest
 from django.http import JsonResponse
 from django.shortcuts import get_object_or_404
@@ -1484,6 +1486,10 @@ class ForwardSyncView(generic.ObjectView):
                 "plugins:forward_netbox:forwardsync_module_readiness",
                 kwargs={"pk": instance.pk},
             ),
+            "audits_url": reverse(
+                "plugins:forward_netbox:forwardsync_audits",
+                kwargs={"pk": instance.pk},
+            ),
             "refresh_device_analysis_url": reverse(
                 "plugins:forward_netbox:forwardsync_refresh_device_analysis",
                 kwargs={"pk": instance.pk},
@@ -2452,6 +2458,141 @@ class ForwardSyncPruneOrphansView(BaseObjectView):
             % {"pk": job.pk},
         )
         return redirect(sync.get_absolute_url())
+
+
+@register_model_view(ForwardSync, "audits", path="audits")
+class ForwardSyncAuditsView(BaseObjectView):
+    """The nine read-only audits, with the latest job for each Forward-backed one."""
+
+    queryset = ForwardSync.objects.all()
+    template_name = "forward_netbox/forwardsync_audits.html"
+
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardsync"
+
+    def get(self, request, pk):
+        from .utilities.audit_reports import AUDIT_REPORTS
+        from .utilities.audit_reports import latest_audit_job
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        entries = []
+        for report in AUDIT_REPORTS.values():
+            job = latest_audit_job(sync, report) if report.forward_backed else None
+            entries.append(
+                {
+                    "report": report,
+                    "job": job,
+                    "url": reverse(
+                        "plugins:forward_netbox:forwardsync_audit_report",
+                        kwargs={"pk": sync.pk, "audit": report.key},
+                    ),
+                }
+            )
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": sync,
+                "entries": entries,
+                "can_run": request.user.has_perm("forward_netbox.run_forwardsync"),
+            },
+        )
+
+
+@register_model_view(ForwardSync, "audit_report", path="audits/<slug:audit>")
+class ForwardSyncAuditReportView(BaseObjectView):
+    """One audit: rendered live when it only reads NetBox, otherwise from the
+    latest job, which the POST on this page enqueues.
+
+    A GET never calls Forward. That is the line between the two shapes, and
+    it is why the Forward-backed audits are buttons rather than pages that
+    compute on open: an operator refreshing a page must not spend NQE
+    executions.
+    """
+
+    queryset = ForwardSync.objects.all()
+    template_name = "forward_netbox/forwardsync_audit_report.html"
+
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardsync"
+
+    def _report(self, audit):
+        from .utilities.audit_reports import audit_report_or_none
+
+        report = audit_report_or_none(audit)
+        if report is None:
+            raise Http404
+        return report
+
+    def get(self, request, pk, audit):
+        from .utilities.audit_reports import audit_report_context
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        report = self._report(audit)
+        try:
+            context = audit_report_context(sync, report)
+        except Exception as exc:
+            logger.warning(
+                "Audit report %s failed (%s)", report.key, type(exc).__name__
+            )
+            messages.error(
+                request,
+                _("Audit %(title)s failed. Review server logs before retrying.")
+                % {"title": report.title},
+            )
+            return redirect(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_audits",
+                    kwargs={"pk": sync.pk},
+                )
+            )
+        return render(
+            request,
+            self.template_name,
+            {
+                "object": sync,
+                "report": report,
+                "can_run": report.forward_backed
+                and request.user.has_perm("forward_netbox.run_forwardsync"),
+                "audits_url": reverse(
+                    "plugins:forward_netbox:forwardsync_audits",
+                    kwargs={"pk": sync.pk},
+                ),
+                **context,
+            },
+        )
+
+    def post(self, request, pk, audit):
+        from .utilities.sync_facade import button_job_permission
+        from .utilities.sync_facade import enqueue_button_job
+        from .utilities.sync_facade import JobAlreadyActive
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        report = self._report(audit)
+        here = reverse(
+            "plugins:forward_netbox:forwardsync_audit_report",
+            kwargs={"pk": sync.pk, "audit": report.key},
+        )
+        if not report.forward_backed:
+            # Nothing to enqueue: the page computes it on every GET.
+            return redirect(here)
+        if not request.user.has_perm(button_job_permission(report.kind)):
+            raise PermissionDenied
+        try:
+            job = enqueue_button_job(sync, report.kind, request.user)
+        except JobAlreadyActive:
+            messages.warning(
+                request,
+                _("An equivalent audit job is already running for %(title)s.")
+                % {"title": report.title},
+            )
+            return redirect(here)
+        messages.success(
+            request,
+            _("Queued job #%(pk)d: %(title)s. Reload this page when it completes.")
+            % {"pk": job.pk, "title": report.title},
+        )
+        return redirect(here)
 
 
 @register_model_view(ForwardSync, "module_readiness", path="module-readiness")
