@@ -204,3 +204,95 @@ class ReleaseOfferTest(TestCase):
     def test_no_owning_sync_offers_nothing(self):
         offer = self._offer([("netbox_routing.OSPFInstance", 1)], primary_sync_pk=None)
         self.assertFalse(offer["offered"])
+
+
+class RealNetboxRoutingIntegrationTest(TestCase):
+    """The mocked tests above prove the release loop's own decisions against
+    controlled shapes; this proves it against the REAL netbox_routing
+    on-delete graph. `OSPFInstance.device` is CASCADE and `OSPFInterface.
+    interface` is CASCADE, but `OSPFInterface.instance` is PROTECT - so
+    deleting a device with an OSPF instance that still has interfaces is
+    refused not because the device's own relations protect it, but because
+    the CASCADE to OSPFInstance runs into a PROTECT one level further in,
+    exactly the shape `describe_delete_blockers`'s own docstring names for
+    BGPRouter. If netbox_routing ever changes that on_delete, this fails
+    LOUDLY instead of the mocked tests staying green while the real feature
+    silently stops working.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from dcim.models import Device
+        from dcim.models import DeviceRole
+        from dcim.models import DeviceType
+        from dcim.models import Interface
+        from dcim.models import Manufacturer
+        from dcim.models import Site
+
+        manufacturer = Manufacturer.objects.create(name="Mfr-RT", slug="mfr-rt")
+        device_type = DeviceType.objects.create(
+            manufacturer=manufacturer, model="dt-rt", slug="dt-rt"
+        )
+        role = DeviceRole.objects.create(name="Role-RT", slug="role-rt")
+        site = Site.objects.create(name="Site-RT", slug="site-rt")
+        cls.device = Device.objects.create(
+            name="routing-dev", device_type=device_type, role=role, site=site
+        )
+        cls.interface = Interface.objects.create(
+            device=cls.device, name="Vlan1", type="virtual"
+        )
+
+    def _ospf_instance_and_interface(self):
+        from django.apps import apps
+
+        OSPFArea = apps.get_model("netbox_routing", "OSPFArea")
+        OSPFInstance = apps.get_model("netbox_routing", "OSPFInstance")
+        OSPFInterface = apps.get_model("netbox_routing", "OSPFInterface")
+
+        area = OSPFArea.objects.create(area_id="0.0.0.0")
+        instance = OSPFInstance.objects.create(
+            name="OSPF-1",
+            router_id="1.1.1.1",
+            process_id=1,
+            device=self.device,
+        )
+        ospf_interface = OSPFInterface.objects.create(
+            instance=instance,
+            area=area,
+            interface=self.interface,
+        )
+        return instance, ospf_interface
+
+    def test_ospf_interface_really_blocks_the_device_delete(self):
+        # Establishes the premise the release feature exists for, against
+        # the real schema, before proving the release itself.
+        from forward_netbox.utilities.workload_state import describe_delete_blockers
+
+        self._ospf_instance_and_interface()
+
+        blockers = describe_delete_blockers(self.device)
+
+        self.assertIn(("netbox_routing.OSPFInterface", 1), blockers)
+
+    def test_release_clears_the_real_blocker_and_the_device_then_deletes(self):
+        from dcim.models import Device
+        from django.apps import apps
+
+        from forward_netbox.utilities.workload_state import describe_delete_blockers
+
+        OSPFInterface = apps.get_model("netbox_routing", "OSPFInterface")
+        instance, ospf_interface = self._ospf_instance_and_interface()
+
+        released = release_foreign_delete_blockers(self.device)
+
+        self.assertEqual(released, {"netbox_routing.OSPFInterface": 1})
+        self.assertFalse(OSPFInterface.objects.filter(pk=ospf_interface.pk).exists())
+        # The instance itself was never a blocker (nothing points at it with
+        # PROTECT once its one interface is gone) and is untouched - the
+        # release deletes exactly what was named, not the instance too.
+        self.assertTrue(type(instance).objects.filter(pk=instance.pk).exists())
+        self.assertEqual(describe_delete_blockers(self.device), [])
+
+        self.device.delete()
+
+        self.assertFalse(Device.objects.filter(pk=self.device.pk).exists())

@@ -218,7 +218,7 @@ endpoint_ipv4(forward_netbox_shard_keys: List<String>, sync_endpoints: Bool, syn
   foreach ifIndexEntry in ifIndexOutput.rawOidEntries
   where matches(ifIndexEntry.oid, "1.3.6.1.2.1.4.20.1.2.*")
   let hostIpRaw = substring(ifIndexEntry.oid, 21, 999)
-  where regexMatches(hostIpRaw, re`^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$`)
+  where !isEmpty(regexMatches(hostIpRaw, re`^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$`))
   let ifIndexValue = ifIndexEntry.rawValue
   let ifDescrOpt = max(
     foreach ifOutput in endpoint.snmpOutputs
