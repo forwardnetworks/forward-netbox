@@ -91,7 +91,7 @@ namespace = Collection("forward_netbox")
 namespace.configure(
     {
         "forward_netbox": {
-            "netbox_ver": os.environ.get("NETBOX_VER", "v4.7.0"),
+            "netbox_ver": os.environ.get("NETBOX_VER", "v4.7.1"),
             "project_name": os.environ.get(
                 "FORWARD_NETBOX_DOCKER_PROJECT",
                 "forward-netbox",
@@ -1225,9 +1225,9 @@ def artifact_test(context):
     version, wheel = _release_artifact_inputs()
     sbom_path = _prepare_sbom_output(version)
     netbox_version = str(context.forward_netbox.netbox_ver or "").strip()
-    if netbox_version != "v4.7.0":
+    if netbox_version != "v4.7.1":
         raise Exit(
-            "Release artifact validation requires NETBOX_VER=v4.7.0.",
+            "Release artifact validation requires NETBOX_VER=v4.7.1.",
             code=2,
         )
 
@@ -1339,9 +1339,9 @@ def artifact_upgrade_test(context, from_version=None, from_netbox_ver=None):
     """
     version, wheel = _release_artifact_inputs()
     netbox_version = str(context.forward_netbox.netbox_ver or "").strip()
-    if netbox_version != "v4.7.0":
+    if netbox_version != "v4.7.1":
         raise Exit(
-            "Release artifact validation requires NETBOX_VER=v4.7.0.",
+            "Release artifact validation requires NETBOX_VER=v4.7.1.",
             code=2,
         )
     # `invoke ci` runs this through its pre-list, which cannot pass arguments, so
