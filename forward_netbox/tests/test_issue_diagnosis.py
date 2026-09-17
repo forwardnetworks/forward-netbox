@@ -258,3 +258,161 @@ class TerminalSyncFailureDiagnosisTest(TestCase):
         self.assertEqual(issue.raw_data, {"exception_type": "RuntimeError"})
         self.assertNotIn("boom", issue.message)
         self.assertNotIn("boom", str(issue.raw_data))
+
+
+class BlockingIssueSurfaceTest(TestCase):
+    """Which issues actually hold the baseline back, in the GUI.
+
+    `blocking_issues_queryset` decides baseline readiness and was imported only
+    by `forward_blocker_audit`. An operator looking at a few hundred rows and a
+    "not ready" banner had no page that separated them.
+    """
+
+    def setUp(self):
+        from forward_netbox.models import ForwardIngestion
+        from forward_netbox.models import ForwardIngestionIssue
+        from forward_netbox.models import ForwardSource
+        from forward_netbox.models import ForwardSync
+
+        self.source = ForwardSource.objects.create(
+            name="blk-src",
+            type="saas",
+            url="https://fwd.app",
+            status="ready",
+            parameters={
+                "username": "u@example.com",
+                "password": "p",
+                "verify": True,
+                "network_id": "net-1",
+            },
+        )
+        self.sync = ForwardSync.objects.create(
+            name="blk-sync",
+            source=self.source,
+            parameters={"snapshot_id": "latestProcessed"},
+        )
+        self.ingestion = ForwardIngestion.objects.create(
+            sync=self.sync, snapshot_id="snap-blk"
+        )
+        self.blocking = ForwardIngestionIssue.objects.create(
+            ingestion=self.ingestion,
+            phase="merge",
+            model="dcim.device",
+            exception="IntegrityError",
+            message="duplicate key",
+        )
+        # Optional-plugin model: never blocks, because the integration may not
+        # be installed at all.
+        self.optional = ForwardIngestionIssue.objects.create(
+            ingestion=self.ingestion,
+            phase="merge",
+            model="dcim.module",
+            exception="IntegrityError",
+            message="optional model",
+        )
+        # A dependency skip is a deferral, not a defect.
+        self.skipped = ForwardIngestionIssue.objects.create(
+            ingestion=self.ingestion,
+            phase="sync",
+            model="dcim.interface",
+            exception="ForwardDependencySkipError",
+            message="waiting on dcim.device",
+        )
+
+    def _client(self):
+        from django.contrib.auth import get_user_model
+        from django.test import Client
+
+        user = get_user_model().objects.create_user(username="blk-admin", password="x")
+        user.is_superuser = True
+        user.is_staff = True
+        user.save()
+        client = Client()
+        client.force_login(user)
+        return client
+
+    def test_the_predicate_and_the_readiness_queryset_agree(self):
+        # One definition, two callers. They disagreeing is the failure mode the
+        # extraction exists to prevent.
+        from forward_netbox.utilities.ingestion_issues import blocking_issues_queryset
+        from forward_netbox.utilities.ingestion_issues import is_blocking_issue
+
+        by_queryset = set(
+            blocking_issues_queryset(self.ingestion).values_list("pk", flat=True)
+        )
+        by_row = {
+            issue.pk
+            for issue in self.ingestion.issues.all()
+            if is_blocking_issue(issue)
+        }
+        self.assertEqual(by_queryset, {self.blocking.pk})
+        self.assertEqual(by_row, by_queryset)
+
+    def test_a_promoted_over_rejection_is_not_called_blocking(self):
+        """The row a customer sees on every run.
+
+        A NetBox validation rejection is recorded and skipped, and the merge
+        promotes the baseline over it - `health_checks.py` says so by testing
+        `skipped_change_count` before `has_blocking_issues`. The row-level
+        column had no such ordering, so it labelled a recurring
+        `ipam.ipaddress` primary-IP rejection "Blocking" on a run whose
+        baseline had promoted.
+        """
+        from forward_netbox.utilities.ingestion_issues import (
+            issue_blocking_disposition,
+        )
+
+        # Nothing promoted yet: the class predicate stands.
+        self.assertEqual(issue_blocking_disposition(self.blocking), "blocking")
+        self.assertEqual(issue_blocking_disposition(self.optional), "none")
+        self.assertEqual(issue_blocking_disposition(self.skipped), "none")
+
+        self.ingestion.baseline_ready = True
+        self.ingestion.save(update_fields=["baseline_ready"])
+        self.blocking.refresh_from_db()
+        self.assertEqual(issue_blocking_disposition(self.blocking), "promoted_over")
+
+        response = self._client().get(
+            reverse("plugins:forward_netbox:forwardingestionissue_list")
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Promoted over")
+
+    def test_the_filter_and_the_column_agree_after_promotion(self):
+        # Filtering to Blocking and getting back rows the column calls
+        # Promoted over is the same disagreement in the other direction.
+        self.ingestion.baseline_ready = True
+        self.ingestion.save(update_fields=["baseline_ready"])
+        client = self._client()
+        url = reverse("plugins:forward_netbox:forwardingestionissue_list")
+        response = client.get(url, {"blocking": "true"})
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "duplicate key")
+
+    def test_the_list_marks_each_row(self):
+        response = self._client().get(
+            reverse("plugins:forward_netbox:forwardingestionissue_list")
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Blocking")
+        self.assertContains(response, "Non-blocking")
+
+    def test_the_list_filters_to_blocking_only(self):
+        client = self._client()
+        url = reverse("plugins:forward_netbox:forwardingestionissue_list")
+        response = client.get(url, {"blocking": "true"})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "duplicate key")
+        self.assertNotContains(response, "waiting on dcim.device")
+
+        response = client.get(url, {"blocking": "false"})
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "waiting on dcim.device")
+        self.assertNotContains(response, "duplicate key")
+
+    def test_the_filter_is_offered_in_the_form(self):
+        # A filter reachable only by hand-editing the query string is not
+        # reachable, which is the whole point of the surface.
+        from forward_netbox.forms import ForwardIngestionIssueFilterForm
+
+        self.assertIn("blocking", ForwardIngestionIssueFilterForm().fields)

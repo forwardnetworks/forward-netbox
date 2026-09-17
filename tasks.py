@@ -548,6 +548,12 @@ def sensitive_check(context):
     )
 
 
+@task(name="operator-text-check")
+def operator_text_check(context):
+    """Refuse operator-facing text that tells someone to run a command."""
+    context.run(f"{shlex.quote(sys.executable)} scripts/check_operator_text.py")
+
+
 @task(name="harness-check")
 def harness_check(context):
     context.run(f"{shlex.quote(sys.executable)} scripts/check_harness.py")
@@ -2067,6 +2073,7 @@ def sync_release_gate(
         # a missing UI dependency must be reported before any of it starts.
         release_preflight,
         sensitive_check,
+        operator_text_check,
         harness_check,
         harness_test,
         lint,

@@ -516,8 +516,8 @@ def _enqueue_post_sync_overlays(
             exception_type(exc),
         )
         raise ForwardOwnershipDispatchError(
-            "Ownership reconciliation is durable but could not be enqueued; "
-            "run forward_stuck_job_recover --apply to redispatch it."
+            "Ownership reconciliation is durable but could not be enqueued. "
+            "Use Recover stuck sync on this sync's page to redispatch it."
         ) from exc
 
 
@@ -861,6 +861,135 @@ def _validate_forwardsync_work(job):
                 sync.pk,
                 exception_type(exc),
             )
+        raise
+
+
+def _recover_stuck_sync_work(job):
+    """Recover one sync wedged by a worker that died mid-run.
+
+    An RQ worker killed during a merge leaves the sync `MERGING` with no live
+    execution behind it, and nothing times out. The classification and the
+    recovery already existed and were reachable only from a command, so the
+    only person who could unstick a sync was one with shell access - and the
+    failure that causes it is announced in a job log, where a shell is exactly
+    what the reader does not have.
+    """
+    from .utilities.stuck_recovery import classify_stuck_sync
+    from .utilities.stuck_recovery import recover_stuck_sync
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    verdict = classify_stuck_sync(sync)
+    if verdict is None:
+        # Not an error: the operator clicked a button offered by a report that
+        # has since gone stale, or another recovery got there first.
+        job.data = {
+            "recovered": False,
+            "reason": "nothing-stuck",
+            "detail": (
+                "This sync has no wedged job to recover. It either recovered on "
+                "its own or another recovery already ran."
+            ),
+        }
+        job.save(update_fields=["data"])
+        return
+
+    result = recover_stuck_sync(sync, verdict, user=job.user)
+    job.data = {
+        "recovered": True,
+        "action": verdict.get("action"),
+        "reason": verdict.get("reason"),
+        "result": result,
+    }
+    job.save(update_fields=["data"])
+
+
+def _prune_uncovered_devices_work(job, *, include_quarantined=False):
+    """Run reviewed uncovered-device pruning for a JobRunner-managed sync job.
+
+    Same shape as the orphan prune, and the same reason for the flag: it
+    arrives only from the operator button, and only when that operator ticked
+    the box beside a named list of held devices. Nothing schedules this, so
+    there is no unattended path that could override the quarantine.
+    """
+    from .utilities.scope_reconciliation import compute_scope_reconciliation
+    from .utilities.scope_reconciliation import EmptyForwardScopeError
+    from .utilities.scope_reconciliation import prune_uncovered_devices
+    from .utilities.scope_reconciliation import ScopeCensusUnavailableError
+    from .utilities.scope_reconciliation import ScopeShrinkGuardError
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    try:
+        report = compute_scope_reconciliation(sync)
+        result = prune_uncovered_devices(
+            sync,
+            report=report,
+            include_quarantined=include_quarantined,
+        )
+        job.data = {
+            "pruned_device_count": result.get("pruned_device_count", 0),
+            "pruned_object_count": result.get("pruned_object_count", 0),
+            "out_of_scope_sample": result.get("out_of_scope_sample", []),
+            "ownership_blocked_device_count": result.get(
+                "ownership_blocked_device_count", 0
+            ),
+            "protected_device_count": result.get("protected_device_count", 0),
+            # WHICH model refused, not just how many devices were refused. The
+            # orphan prune has carried this since 2.5.5 and this one shipped
+            # without it, so a device held by another plugin's rows - ten
+            # netbox_routing BGP peers on its addresses, in the case that found
+            # this - reported a bare count and named nothing to act on.
+            "protected_by_model": result.get("protected_by_model", {}),
+            "quarantine_held_device_count": result.get(
+                "quarantine_held_device_count", 0
+            ),
+            "quarantine_overridden_device_count": result.get(
+                "quarantine_overridden_device_count", 0
+            ),
+            "quarantine_required_runs": result.get("quarantine_required_runs"),
+            "quarantine_required_hours": result.get("quarantine_required_hours"),
+        }
+        job.save(update_fields=["data"])
+    except ScopeCensusUnavailableError as exc:
+        # Not a failure to hide behind a class name: without the census nothing
+        # is known about WHY these devices are uncovered, and absent is the only
+        # eligible reason. The message says exactly that.
+        job.data = {"error": str(exc), "error_type": exception_type(exc)}
+        job.save(update_fields=["data"])
+        logger.error(
+            "Forward uncovered pruning refused without a census (%s).",
+            exception_type(exc),
+        )
+        raise
+    except ScopeShrinkGuardError as exc:
+        # Counts and a percentage only, never a device name, so the operator
+        # gets the reason rather than a class name.
+        job.data = {
+            "error": str(exc),
+            "error_type": exception_type(exc),
+        }
+        job.save(update_fields=["data"])
+        logger.error(
+            "Forward uncovered pruning refused a shrinking scope (%s).",
+            exception_type(exc),
+        )
+        raise
+    except EmptyForwardScopeError as exc:
+        job.data = {
+            "error": safe_operation_failure("Forward uncovered pruning", exc),
+            "error_type": exception_type(exc),
+        }
+        job.save(update_fields=["data"])
+        logger.error(
+            "Forward uncovered pruning rejected an empty scope (%s).",
+            exception_type(exc),
+        )
+        raise
+    except Exception as exc:
+        job.data = {
+            "error": safe_operation_failure("Forward uncovered pruning", exc),
+            "error_type": exception_type(exc),
+        }
+        job.save(update_fields=["data"])
         raise
 
 
@@ -1987,6 +2116,32 @@ class VirtualParentReconciliationJob(ForwardJobRunner):
 
     def run(self, *args, **kwargs):
         _link_forward_vsys_parents_work(self.job, *args, **kwargs)
+
+
+class RecoverStuckSyncJob(ForwardJobRunner):
+    """Operator-triggered recovery of a sync wedged by a dead worker."""
+
+    class Meta:
+        # Byte-identical to BUTTON_JOB_SPECS["recover_stuck_sync"][1].
+        name = "recover stuck sync"
+
+    def run(self, *args, **kwargs):
+        _recover_stuck_sync_work(self.job)
+
+
+class PruneUncoveredDevicesJob(ForwardJobRunner):
+    """Reviewed uncovered-device prune runner used by the HTML action."""
+
+    class Meta:
+        # Byte-identical to BUTTON_JOB_SPECS["prune_uncovered"][1]: the overlap
+        # guard's exact-name arm depends on it.
+        name = "prune uncovered devices"
+
+    def run(self, *args, **kwargs):
+        extra = {}
+        if "include_quarantined" in kwargs:
+            extra["include_quarantined"] = bool(kwargs["include_quarantined"])
+        _prune_uncovered_devices_work(self.job, **extra)
 
 
 class PruneOrphansJob(ForwardJobRunner):

@@ -1127,3 +1127,169 @@ class ScopeModuleUiTest(TestCase):
                 tag_backfilled_devices(self.sync)
 
         self.assertFalse(ForwardDeviceAbsence.objects.filter(sync=self.sync).exists())
+
+
+class ForwardDeviceOwnershipPanelTest(TestCase):
+    """The device page explains a refused manual delete and links the one that
+    works. A customer hit the raw ProtectedError - three of our record names,
+    no cause, no remedy - trying to clear an uncovered device by hand."""
+
+    def setUp(self):
+        self.source = ForwardSource.objects.create(
+            name="own-src",
+            type="saas",
+            url="https://fwd.app",
+            status="ready",
+            parameters={
+                "username": "u@example.com",
+                "password": "p",
+                "verify": True,
+                "network_id": "net-1",
+            },
+        )
+        self.sync = ForwardSync.objects.create(
+            name="own-sync",
+            source=self.source,
+            parameters={"snapshot_id": "latestProcessed"},
+        )
+        self.ingestion = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_id="snap-own",
+        )
+        mfr = Manufacturer.objects.create(name="MfrO", slug="mfr-o")
+        self.dt = DeviceType.objects.create(manufacturer=mfr, model="dt-o", slug="dt-o")
+        self.role = DeviceRole.objects.create(name="RoleO", slug="role-o")
+        self.site = Site.objects.create(name="SiteO", slug="site-o")
+        self.device = Device.objects.create(
+            name="own-dev", device_type=self.dt, role=self.role, site=self.site
+        )
+
+    def _panel(self, device):
+        from forward_netbox.template_content import ForwardDeviceOwnershipPanel
+
+        return ForwardDeviceOwnershipPanel(
+            context={"object": device, "request": None}
+        ).right_page()
+
+    def test_unowned_device_gets_no_panel(self):
+        # A device the plugin does not hold deletes normally, so a panel
+        # claiming otherwise would be a false alarm on every NetBox device.
+        self.assertEqual(self._panel(self.device), "")
+
+    def test_identity_alone_renders_the_panel_and_the_remedy(self):
+        from forward_netbox.models import ForwardDeviceIdentity
+
+        ForwardDeviceIdentity.objects.create(
+            sync=self.sync,
+            ingestion=self.ingestion,
+            source_device_key="own-dev",
+            device=self.device,
+            snapshot_id="snap-own",
+        )
+        rendered = self._panel(self.device)
+        self.assertIn("Forward Ownership", rendered)
+        self.assertIn("own-sync", rendered)
+        self.assertIn("Device identity", rendered)
+        self.assertIn("refuse a manual delete", rendered)
+        self.assertIn("scope-reconciliation", rendered)
+
+    def test_uncovered_claim_is_named_with_its_absence_streak(self):
+        from extras.models import Tag
+
+        from forward_netbox.models import ForwardDeviceAbsence
+        from forward_netbox.models import ForwardDeviceTagClaim
+        from forward_netbox.utilities.scope_reconciliation import UNCOVERED_TAG_SLUG
+
+        tag = Tag.objects.create(name="Forward Uncovered", slug=UNCOVERED_TAG_SLUG)
+        ForwardDeviceTagClaim.objects.create(
+            sync=self.sync,
+            ingestion=self.ingestion,
+            device=self.device,
+            tag=tag,
+            claim_type=ForwardDeviceTagClaim.ClaimType.UNCOVERED,
+            snapshot_id="snap-own",
+        )
+        now = timezone.now()
+        ForwardDeviceAbsence.objects.create(
+            sync=self.sync,
+            device=self.device,
+            consecutive_absent_runs=4,
+            first_absent_at=now,
+            last_absent_at=now,
+        )
+        rendered = self._panel(self.device)
+        self.assertIn("Uncovered", rendered)
+        self.assertIn("Managed tag claim", rendered)
+        # The streak is the number the prune's quarantine actually reads, so
+        # the panel showing it is what makes "held" explicable on this page.
+        self.assertIn("4 consecutive runs", rendered)
+
+    def test_the_panel_names_what_would_refuse_the_delete(self):
+        # The database's own verdict via Collector, which is how a blocker
+        # belonging to another plugin is seen at all: it is reached through the
+        # cascade, not through Device's own reverse relations.
+        from forward_netbox.models import ForwardDeviceIdentity
+        from forward_netbox.utilities.workload_state import describe_delete_blockers
+
+        self.assertEqual(describe_delete_blockers(self.device), [])
+        ForwardDeviceIdentity.objects.create(
+            sync=self.sync,
+            ingestion=self.ingestion,
+            source_device_key="own-dev",
+            device=self.device,
+            snapshot_id="snap-own",
+        )
+        blockers = describe_delete_blockers(self.device)
+        self.assertEqual(blockers, [("forward_netbox.ForwardDeviceIdentity", 1)])
+
+        rendered = self._panel(self.device)
+        self.assertIn("Would refuse a manual delete", rendered)
+        self.assertIn("forward_netbox.ForwardDeviceIdentity", rendered)
+        # Ours, so the prune CAN clear it: the extra warning must not appear.
+        self.assertNotIn("belong to another plugin", rendered)
+
+    def test_a_blocker_from_another_plugin_warns_the_prune_cannot_clear_it(self):
+        # The prune releases only this plugin's rows, so a foreign blocker
+        # refuses the prune too. Sending an operator to a button that cannot
+        # help them is the failure this warning exists to prevent.
+        from forward_netbox.models import ForwardDeviceIdentity
+        from forward_netbox.template_content import ForwardDeviceOwnershipPanel
+
+        ForwardDeviceIdentity.objects.create(
+            sync=self.sync,
+            ingestion=self.ingestion,
+            source_device_key="own-dev",
+            device=self.device,
+            snapshot_id="snap-own",
+        )
+        with patch(
+            "forward_netbox.utilities.workload_state.describe_delete_blockers",
+            return_value=[
+                ("netbox_routing.BGPPeer", 10),
+                ("forward_netbox.ForwardDeviceIdentity", 1),
+            ],
+        ):
+            rendered = ForwardDeviceOwnershipPanel(
+                context={"object": self.device, "request": None}
+            ).right_page()
+        self.assertIn("netbox_routing.BGPPeer", rendered)
+        self.assertIn("belong to another plugin", rendered)
+
+    def test_a_discovery_failure_does_not_take_the_page_down(self):
+        from forward_netbox.models import ForwardDeviceIdentity
+
+        ForwardDeviceIdentity.objects.create(
+            sync=self.sync,
+            ingestion=self.ingestion,
+            source_device_key="own-dev",
+            device=self.device,
+            snapshot_id="snap-own",
+        )
+        with patch(
+            "django.db.models.deletion.Collector.collect",
+            side_effect=RuntimeError("collector exploded"),
+        ):
+            rendered = self._panel(self.device)
+        # The ownership half still renders; only the blocker row is missing.
+        self.assertIn("Forward Ownership", rendered)
+        self.assertNotIn("Would refuse a manual delete", rendered)

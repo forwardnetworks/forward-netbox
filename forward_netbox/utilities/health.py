@@ -484,8 +484,9 @@ def _database_tables_check():
         status="fail",
         message=(
             f"Installed apps have missing database tables ({detail}) — branch "
-            "provisioning will fail. Apply their migrations "
-            "(python manage.py migrate) or remove the plugin from PLUGINS."
+            "provisioning will fail. This one genuinely needs an "
+            "administrator: ask them to apply the migrations for those apps, "
+            "or to remove the plugin from PLUGINS if it is not wanted."
         ),
     )
 

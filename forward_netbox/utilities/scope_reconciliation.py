@@ -437,6 +437,16 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
     out_of_scope_pks = [
         device_id for device_id, name in previously_managed if name in out_of_scope
     ]
+    # Primary keys, never names: the panel's red Prune-orphans button deletes
+    # this exact set and the page could only ever show 25 of it, so the full
+    # list needs a route, and a route needs the ids in the PERSISTED payload
+    # (the `_`-prefixed entries below are stripped before the job is stored).
+    # Names are customer data in a job payload; keys are not.
+    present_backfilled_pks = list(
+        Device.objects.filter(name__in=sorted(present_backfilled)).values_list(
+            "pk", flat=True
+        )
+    )
 
     unmanaged, owned_untagged_names = _unmanaged_device_summary(sync, tagged_names)
 
@@ -455,6 +465,27 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
     )
     absence = _absence_summary(out_of_scope, kinds)
     unmanaged["owned_absence"] = _absence_summary(owned_untagged_names, kinds)
+    # What the uncovered cleanup would actually act on, and how much of it the
+    # quarantine is still holding. Without this the panel shows a count of 105
+    # and a button that deletes 3, with nothing on the page explaining the gap.
+    owned_absent_names = (
+        {name for name in owned_untagged_names if (kinds or {}).get(name) == "absent"}
+        if kinds is not None
+        else set()
+    )
+    owned_absent_pks = [
+        device_id
+        for device_id, name in Device.objects.filter(
+            pk__in=list(unmanaged.get("owned_untagged_device_ids") or ())
+        ).values_list("pk", "name")
+        if (name or "").strip() in owned_absent_names
+    ]
+    unmanaged["owned_prune_candidates"] = len(owned_absent_pks)
+    unmanaged["owned_quarantine"] = (
+        _quarantine_summary(sync, owned_absent_pks)
+        if kinds is not None
+        else {"available": False}
+    )
 
     # Why are the in-scope devices backfilled? Group by the Forward collection
     # error so operators can act (rotate creds for AUTHENTICATION_FAILED, check
@@ -542,6 +573,11 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         "_out_of_scope": out_of_scope,
         "_owned_untagged": owned_untagged_names,
         "_missing_in_netbox": missing_in_netbox,
+        # Persisted (no leading underscore): the two full-list views read
+        # these. `_out_of_scope_pks` is kept for the prune, which runs inside
+        # the same call and wants the unserialized form.
+        "out_of_scope_device_ids": sorted(out_of_scope_pks),
+        "present_backfilled_device_ids": sorted(present_backfilled_pks),
         "_out_of_scope_pks": out_of_scope_pks,
         # The census verdict per name. A cleanup acts only on "absent"; a device
         # Forward still reports is a scoping question, not a dead device.
@@ -1252,7 +1288,7 @@ def prune_uncovered_devices(
         ownership_blocked_ids,
     ) = _delete_prunable_devices(sync, eligible_pks)
 
-    return _prune_result(
+    result = _prune_result(
         pruned_device_count=len(pruned_device_ids),
         pruned_object_count=deleted_total,
         out_of_scope_sample=sorted(absent_names)[:SAMPLE_LIMIT],
@@ -1262,6 +1298,14 @@ def prune_uncovered_devices(
         - len(ownership_blocked_ids),
         **quarantine_counts,
     )
+    # `_delete_prunable_devices` computes this tally for both prunes and the
+    # orphan half has reported it since 2.5.5; this half discarded it, so a
+    # device another plugin's rows refuse - ten netbox_routing BGP peers on its
+    # addresses, in the case that found this - counted as protected and named
+    # nothing. The operator needs the model to act on it.
+    if protected_tally:
+        result["protected_by_model"] = protected_tally
+    return result
 
 
 def _occupied_site_ids() -> set:

@@ -4,6 +4,21 @@
 {% load i18n %}
 
 {% block extra_controls %}
+  {% comment %} A wedged sync used to be recoverable only from a shell, and the
+     failure that causes it is announced in a job log where the reader has no
+     shell. The control appears only while the classification says something is
+     actually stuck, so it is a remedy at the moment it is needed rather than a
+     button an operator is invited to try on a healthy sync. {% endcomment %}
+  {% if stuck_verdict and perms.forward_netbox.run_forwardsync %}
+    <form action="{% url 'plugins:forward_netbox:forwardsync_recover_stuck_sync' pk=object.pk %}" method="post"
+          title="{% trans 'A worker that died mid-run leaves this sync looking busy with nothing behind it. Recovery re-enqueues the merge if the branch survived, or fails the run so it can be started again.' %}"
+          onsubmit="return confirm('{% blocktrans with reason=stuck_verdict.reason %}Recover this sync? Detected: {{ reason }}.{% endblocktrans %}');">
+      {% csrf_token %}
+      <button type="submit" class="btn btn-warning">
+        <i class="mdi mdi-lifebuoy" aria-hidden="true"></i>&nbsp;{% trans "Recover stuck sync" %}
+      </button>
+    </form>
+  {% endif %}
   {% if perms.forward_netbox.run_forwardsync %}
     {% if object.ready_for_sync %}
       <form action="{% url 'plugins:forward_netbox:forwardsync_validate' pk=object.pk %}" method="post">
@@ -53,9 +68,16 @@
         <i class="mdi mdi-radar" aria-hidden="true"></i>&nbsp;{% trans "Refresh Device Analysis" %}
       </button>
     </form>
-    <a class="btn btn-outline-secondary" href="{{ support_bundle_url }}">
+    {# Say what it is for. Operators were sending screenshots because nothing #}
+    {# on the page said this file answers the same questions and more.        #}
+    <a class="btn btn-outline-secondary" href="{{ support_bundle_url }}"
+       title="{% trans 'Everything needed to diagnose this sync without shell access: the scope reconciliation report, the last run of every operator action, the ownership records behind a refused delete, why the cleanup targets cannot be deleted, the blocking ingestion issues, and the installed versions. Counts and schema identifiers only - no device names or collected values. Send this rather than screenshots.' %}">
       <i class="mdi mdi-download" aria-hidden="true"></i>&nbsp;{% trans "Export Support Bundle" %}
     </a>
+    {# Same content, compressed - and the one to send on a large estate: the #}
+    {# bundle is repetitive JSON, so deflate takes it down by roughly an     #}
+    {# order of magnitude. A password switches the archive to AES rather     #}
+    {# than plain deflate.                                                   #}
     <form action="{{ support_bundle_zip_url }}" method="post" class="d-inline-flex align-items-center gap-2">
       {% csrf_token %}
       <input
@@ -66,7 +88,8 @@
         placeholder="{% trans 'Password' %}"
         autocomplete="off"
       >
-      <button type="submit" class="btn btn-outline-secondary">
+      <button type="submit" class="btn btn-outline-secondary"
+              title="{% trans 'The same bundle, compressed - prefer this one, and on a large estate prefer it strongly. Setting a password encrypts the archive with AES instead of storing it plainly.' %}">
         <i class="mdi mdi-zip-box" aria-hidden="true"></i>&nbsp;{% trans "Export ZIP" %}
       </button>
     </form>
