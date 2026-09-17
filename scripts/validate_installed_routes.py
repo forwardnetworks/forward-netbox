@@ -22,6 +22,9 @@ from django.test import Client  # noqa: E402
 from django.urls import reverse  # noqa: E402
 
 from forward_netbox.choices import ForwardSyncStatusChoices  # noqa: E402
+from forward_netbox.models import ForwardChange  # noqa: E402
+from forward_netbox.models import ForwardChangePolicy  # noqa: E402
+from forward_netbox.models import ForwardChangePolicyRule  # noqa: E402
 from forward_netbox.models import ForwardDeviceAnalysis  # noqa: E402
 from forward_netbox.models import ForwardDriftPolicy  # noqa: E402
 from forward_netbox.models import ForwardIngestion  # noqa: E402
@@ -60,6 +63,14 @@ MENU_ROUTES = (
     (
         "plugins:forward_netbox:forwarddriftpolicy_list",
         "Artifact route smoke policy",
+    ),
+    (
+        "plugins:forward_netbox:forwardchange_list",
+        "Artifact route smoke change",
+    ),
+    (
+        "plugins:forward_netbox:forwardchangepolicy_list",
+        "Artifact route smoke change policy",
     ),
     (
         "plugins:forward_netbox:forwardingestionissue_list",
@@ -134,6 +145,14 @@ def main():
         parameters={"snapshot_id": "artifact-route-smoke"},
     )
     policy = ForwardDriftPolicy.objects.create(name="Artifact route smoke policy")
+    change_policy = ForwardChangePolicy.objects.create(
+        name="Artifact route smoke change policy"
+    )
+    change = ForwardChange.objects.create(
+        source=source,
+        title="Artifact route smoke change",
+    )
+    change_policy_rule = ForwardChangePolicyRule.objects.create(policy=change_policy)
     validation_run = ForwardValidationRun.objects.create(
         sync=sync,
         policy=policy,
@@ -219,6 +238,9 @@ def main():
         "forwarddeviceanalysis": analysis.pk,
         "forwardnqemap": nqe_map.pk,
         "forwarddriftpolicy": policy.pk,
+        "forwardchangepolicy": change_policy.pk,
+        "forwardchangepolicyrule": change_policy_rule.pk,
+        "forwardchange": change.pk,
     }
     detail = []
     for route_name, pk in _detail_routes(fixtures):
