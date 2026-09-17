@@ -1,11 +1,14 @@
 /**
  * @intent Forward ACI L3Outs
- * @description Discovers ACI L3Outs from the APIC l3extInstP custom command output.
+ * @description Discovers ACI L3Outs from the APIC `moquery -c l3extRsEctx` custom command, which carries each
+ * L3Out's distinguished name and its VRF. netbox-cisco-aci requires the VRF, and `l3extInstP` (the external
+ * EPG this map used to read) never carried it, so this map read nothing on a real fabric until the readiness
+ * diagnostic said so. Routing-protocol flags are not collected and default to static.
  */
 
 import "netbox_utilities";
 
-l3outRegex = re`(?:^|\R)#\s+l3ext\.InstP\s*\R(?:\s*[^\r\n]*\R)*?\s*dn\s*:\s*uni/tn-(?<tenant_name>[^/\s]+)/out-(?<name>[^\r\n/]+)\R(?:\s*[^\r\n]*\R)*?\s*matchT\s*:\s*(?<matchT>\S+)\R(?:\s*[^\r\n]*\R)*?\s*scope\s*:\s*(?<scope>\S+)\R(?:\s*[^\r\n]*\R)*?\s*pcEnfPref\s*:\s*(?<pcEnfPref>\S+)\R(?:\s*[^\r\n]*\R)*?\s*prefGrMemb\s*:\s*(?<prefGrMemb>\S+)\R(?:\s*[^\r\n]*\R)*?\s*targetDscp\s*:\s*(?<target_dscp>\S+)(?:\R(?:\s*[^\r\n]*\R)*?\s*tnFvCtxName\s*:\s*(?<vrf_name>\S+))?`;
+rsEctxRegex = re`(?:^|\R)#\s+l3ext\.RsEctx\s*\R(?:\s*[^\r\n]*\R)*?\s*dn\s*:\s*uni/tn-(?<tenant_name>[^/\s]+)/out-(?<name>[^\r\n/]+)/rsectx\R(?:\s*[^\r\n]*\R)*?\s*tDn\s*:\s*uni/tn-(?<vrf_tenant_name>[^/\s]+)/ctx-(?<vrf_name>[^\r\n/]+)`;
 
 aciFabricName(device) =
   if isPresent(device.locationName) && length(device.locationName) > 0
@@ -19,11 +22,10 @@ where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
 foreach command in device.outputs.commands
 where command.commandType == CommandType.CUSTOM
-where matches(toLowerCase(command.commandText), "moquery -c l3extinstp*")
-foreach l3out_match in regexMatches(command.response, l3outRegex)
+where matches(toLowerCase(command.commandText), "moquery -c l3extrsectx*")
+foreach l3out_match in regexMatches(command.response, rsEctxRegex)
 let l3out = l3out_match.data
 let fabric_name = aciFabricName(device)
-where isPresent(l3out.vrf_name)
 where isEmpty(forward_netbox_shard_keys)
   || fabric_name in forward_netbox_shard_keys
   || l3out.tenant_name in forward_netbox_shard_keys
@@ -32,13 +34,13 @@ where isEmpty(forward_netbox_shard_keys)
 select distinct {
   fabric_name: fabric_name,
   tenant_name: l3out.tenant_name,
-  vrf_tenant_name: l3out.tenant_name,
+  vrf_tenant_name: l3out.vrf_tenant_name,
   vrf_name: l3out.vrf_name,
   name: l3out.name,
   protocol_bgp: false,
   protocol_ospf: false,
   protocol_eigrp: false,
   protocol_static: true,
-  target_dscp: l3out.target_dscp,
+  target_dscp: "",
   description: ""
 };

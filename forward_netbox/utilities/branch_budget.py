@@ -101,6 +101,11 @@ APPLY_DEPENDENCY_MODEL_ORDER = (
     "netbox_cisco_aci.acibridgedomain",
     "netbox_cisco_aci.acifilter",
     "netbox_cisco_aci.acil3out",
+    "netbox_cisco_aci.aciappprofile",
+    "netbox_cisco_aci.aciendpointgroup",
+    "netbox_cisco_aci.acicontract",
+    "netbox_cisco_aci.acisubject",
+    "netbox_cisco_aci.acifilterentry",
 )
 APPLY_DEPENDENCY_MODEL_RANK = {
     model_string: index
@@ -159,6 +164,14 @@ APPLY_PARENT_MODEL_DEPENDENCIES = {
     "netbox_cisco_aci.acibridgedomain": ("netbox_cisco_aci.acivrf",),
     "netbox_cisco_aci.acifilter": ("netbox_cisco_aci.acitenant",),
     "netbox_cisco_aci.acil3out": ("netbox_cisco_aci.acitenant",),
+    "netbox_cisco_aci.aciappprofile": ("netbox_cisco_aci.acitenant",),
+    "netbox_cisco_aci.aciendpointgroup": (
+        "netbox_cisco_aci.aciappprofile",
+        "netbox_cisco_aci.acibridgedomain",
+    ),
+    "netbox_cisco_aci.acicontract": ("netbox_cisco_aci.acitenant",),
+    "netbox_cisco_aci.acisubject": ("netbox_cisco_aci.acicontract",),
+    "netbox_cisco_aci.acifilterentry": ("netbox_cisco_aci.acifilter",),
 }
 DELETE_DEPENDENCY_MODEL_ORDER = (
     "netbox_dlm.vulnerability",
@@ -184,6 +197,11 @@ DELETE_DEPENDENCY_MODEL_ORDER = (
     "netbox_routing.ospfinterface",
     "netbox_routing.ospfinstance",
     "netbox_routing.ospfarea",
+    "netbox_cisco_aci.acifilterentry",
+    "netbox_cisco_aci.acisubject",
+    "netbox_cisco_aci.acicontract",
+    "netbox_cisco_aci.aciendpointgroup",
+    "netbox_cisco_aci.aciappprofile",
     "netbox_cisco_aci.acil3out",
     "netbox_cisco_aci.acifilter",
     "netbox_cisco_aci.acibridgedomain",
@@ -316,6 +334,11 @@ STRUCTURED_SHARD_FILTER_FIELDS = {
     "netbox_cisco_aci.acibridgedomain": ("fabric_name", "tenant_name", "name"),
     "netbox_cisco_aci.acifilter": ("fabric_name", "tenant_name", "name"),
     "netbox_cisco_aci.acil3out": ("fabric_name", "tenant_name", "name"),
+    "netbox_cisco_aci.aciappprofile": ("fabric_name", "tenant_name", "name"),
+    "netbox_cisco_aci.aciendpointgroup": ("fabric_name", "tenant_name", "name"),
+    "netbox_cisco_aci.acicontract": ("fabric_name", "tenant_name", "name"),
+    "netbox_cisco_aci.acisubject": ("fabric_name", "tenant_name", "contract_name"),
+    "netbox_cisco_aci.acifilterentry": ("fabric_name", "tenant_name", "filter_name"),
     **IPAM_SHARD_FILTER_FIELDS,
 }
 
