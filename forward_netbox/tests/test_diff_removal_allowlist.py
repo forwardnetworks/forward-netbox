@@ -34,6 +34,8 @@ from forward_netbox.utilities.full_removal_reconciliation import diff_removals_a
 from forward_netbox.utilities.full_removal_reconciliation import PRUNE_REMOVAL_MODELS
 from forward_netbox.utilities.full_removal_reconciliation import prune_removals_allowed
 from forward_netbox.utilities.sync import ForwardSyncRunner
+from forward_netbox.utilities.workload_state import CATALOG_SWEEP_MODELS
+from forward_netbox.utilities.workload_state import DEVICE_OWNERSHIP_SWEEP_MODELS
 
 
 def _models_with_a_delete_handler():
@@ -370,4 +372,30 @@ class PruneRemovalPolicyTest(SimpleTestCase):
         self.assertEqual(
             set(),
             deletable - (PRUNE_REMOVAL_MODELS | DIFF_REMOVAL_REFUSED_MODELS),
+        )
+
+
+class BespokeSweepModelsAgreeWithGenericProducersTest(SimpleTestCase):
+    """`workload_state.py` has its own delete producers for two models -
+    the softwareversion catalogue sweep and the device ownership/quarantine
+    sweep - each with a bespoke attribution+reference-protection gate that
+    does not call `diff_removals_allowed`/`prune_removals_allowed` at all.
+
+    That is deliberate: those generic functions refuse both models by name,
+    so wiring them in would just disable the bespoke sweeps. But nothing
+    stops a future change from adding a THIRD model to one of these bespoke
+    sweep sets for a model the generic producers do NOT refuse - creating two
+    competing, silently-inconsistent delete authorities for the same model,
+    which is exactly the failure mode `DIFF_REMOVAL_REFUSED_MODELS` exists to
+    prevent. Pin the invariant instead of trusting it stays true by luck.
+    """
+
+    def test_catalog_sweep_models_are_refused_by_every_generic_producer(self):
+        self.assertTrue(CATALOG_SWEEP_MODELS.issubset(DIFF_REMOVAL_REFUSED_MODELS))
+
+    def test_device_ownership_sweep_models_are_refused_by_every_generic_producer(
+        self,
+    ):
+        self.assertTrue(
+            DEVICE_OWNERSHIP_SWEEP_MODELS.issubset(DIFF_REMOVAL_REFUSED_MODELS)
         )
