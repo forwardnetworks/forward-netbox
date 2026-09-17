@@ -27,6 +27,8 @@ def _report(*, orphans, previously_managed, tagged=("kept-1",)):
         "_out_of_scope_pks": list(range(1, orphans + 1)),
         "_tagged_names": set(tagged),
         "_device_tagged_names": set(tagged),
+        # Every orphan genuinely gone; the cause gate has its own tests.
+        "_absence_kinds": {name: "absent" for name in names},
         "netbox_out_of_scope": orphans,
         "forward_previously_managed": previously_managed,
     }

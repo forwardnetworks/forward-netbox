@@ -32,31 +32,48 @@ def is_blocking_issue(issue):
     )
 
 
+def row_disposition(issue):
+    """What the merge decided about THIS row: "skipped", "failed", or None.
+
+    Written by `_MergeIssueRecorder.record` and by any sync-phase recorder that
+    passes `disposition=`. ``None`` means the row predates the key, or was
+    recorded by a path that does not classify - both fall back to the
+    ingestion-wide reading below.
+    """
+    raw = getattr(issue, "raw_data", None)
+    value = raw.get("disposition") if isinstance(raw, dict) else None
+    return value if value in ("skipped", "failed") else None
+
+
 def issue_blocking_disposition(issue):
-    """What this row actually did: "blocking", "promoted_over", or "none".
+    """What this row did: "none", "blocking", "skipped" or "promoted_over".
 
     The class predicate above answers "would an issue of this kind hold the
-    baseline back". It is not the same question as "did it", and conflating the
-    two mislabels the row a customer sees most.
+    baseline back". That is not the same question as "did it", and conflating
+    them mislabels the row a customer sees most.
 
-    A NetBox validation rejection is recorded and skipped: re-running cannot
-    change it, so the merge records the row and promotes the baseline over it.
-    `health_checks.py` gets this right by testing `skipped_change_count` BEFORE
-    `has_blocking_issues`, so the ingestion reports "promoted over them". The
-    row-level column had no such ordering and would have labelled a customer's
-    recurring `ipam.ipaddress` primary-IP rejection "Blocking" on a run whose
-    baseline had promoted - the exact disagreement between a list and the
-    banner it explains that one shared predicate was meant to prevent.
+    Four states, because there are four. A NetBox validation rejection is
+    recorded and skipped: no retry can change it, so it never holds the
+    baseline back. Whether the baseline actually promoted is a separate,
+    ingestion-wide fact - one skipped row beside one retryable failure leaves
+    the run unpromoted, and the skipped row is still not what blocked it.
+    Collapsing "skipped, run not yet promoted" into either "blocking" or
+    "promoted over" is exactly the bug a customer reported: a red Blocking
+    badge on a row whose own message said it did not hold the baseline back.
 
-    `baseline_ready` is the fact that settles it: if the baseline promoted,
-    nothing was blocked, whatever class the row belongs to.
+    The ROW says whether a retry could help; `baseline_ready` says only whether
+    this run promoted. Rows with no recorded disposition keep the previous
+    behaviour, so no migration is needed for issues written before 2.9.5.
     """
     if not is_blocking_issue(issue):
         return "none"
     ingestion = getattr(issue, "ingestion", None)
-    if ingestion is not None and getattr(ingestion, "baseline_ready", False):
-        return "promoted_over"
-    return "blocking"
+    promoted = bool(
+        ingestion is not None and getattr(ingestion, "baseline_ready", False)
+    )
+    if row_disposition(issue) == "skipped":
+        return "promoted_over" if promoted else "skipped"
+    return "promoted_over" if promoted else "blocking"
 
 
 def blocking_issues_queryset(ingestion):

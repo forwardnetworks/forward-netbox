@@ -565,6 +565,16 @@ BUTTON_JOB_SPECS = {
         "prune stale hardware notices",
         "netbox_dlm.delete_hardwarenotice",
     ),
+    # Config backup shipped in 2.9.0 with no operator trigger at all: it ran
+    # only as a post-sync overlay, so verifying it meant running a whole sync,
+    # and the health check could say no more than "the data source has synced
+    # at some point". Non-destructive - it writes to a git remote the operator
+    # configured - so it takes the same permission as running the sync.
+    "config_backup": (
+        "forward_netbox.jobs.ConfigBackupJob",
+        "config backup",
+        "forward_netbox.run_forwardsync",
+    ),
 }
 
 _ACTIVE_JOB_STATUSES = (

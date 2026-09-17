@@ -329,6 +329,27 @@ class PreviewRunner:
 
         return ipaddress_assignment_skip_reason(address)
 
+    def _ensure_role(self, row):
+        """Classify a device role through the read-only upsert, never write."""
+        from dcim.models import DeviceRole
+
+        role, _ = self._upsert_values_from_defaults(
+            "dcim.devicerole",
+            DeviceRole,
+            values={"name": row["name"], "slug": row["slug"], "color": row["color"]},
+            coalesce_sets=self._coalesce_sets_for(
+                "dcim.devicerole", [("slug",), ("name",)]
+            ),
+        )
+        return role
+
+    def _platform_upsert_plan(self, row, *, manufacturer_authoritative=False):
+        from .sync_runner_adapters import ForwardSyncRunnerAdapterMixin
+
+        return ForwardSyncRunnerAdapterMixin._platform_upsert_plan(
+            self, row, manufacturer_authoritative=manufacturer_authoritative
+        )
+
     def _ensure_platform(self, row, *, manufacturer_authoritative=False):
         """Find the platform, never create it - and never create a manufacturer.
 
@@ -955,7 +976,28 @@ def _compare_dcim_virtualchassis(runner, rows):
     return _compare_adapter_rows(runner, rows, apply_dcim_virtualchassis)
 
 
+def _compare_dcim_platform(runner, rows):
+    """Low-volume catalogue rows that kept the adapter save path.
+
+    `bulk_orm_apply_simple_models` declines to preview these two (their
+    tree path has no preview mode), so they reported "Not measured" on every
+    drift page. Their adapters resolve and upsert through runner methods the
+    preview overrides, so the adapter loop measures them exactly.
+    """
+    from .sync_core_models import apply_dcim_platform
+
+    return _compare_adapter_rows(runner, rows, apply_dcim_platform)
+
+
+def _compare_dcim_devicerole(runner, rows):
+    from .sync_core_models import apply_dcim_devicerole
+
+    return _compare_adapter_rows(runner, rows, apply_dcim_devicerole)
+
+
 _ADAPTER_COMPARISONS = {
+    "dcim.platform": _compare_dcim_platform,
+    "dcim.devicerole": _compare_dcim_devicerole,
     "extras.taggeditem": _compare_extras_taggeditem,
     "dcim.cable": _compare_dcim_cable,
     "dcim.inventoryitem": _compare_dcim_inventoryitem,

@@ -302,6 +302,7 @@ class ForwardDeviceScopeReconciliationAuditCommandTest(TestCase):
             "_out_of_scope_pks": [shared.pk],
             "_device_tagged_names": {"dev-live"},
             "_tagged_names": {"dev-live"},
+            "_absence_kinds": {"dev-shared": "absent"},
         }
 
         result = prune_orphan_devices(self.sync, report=report)
@@ -496,6 +497,7 @@ class ForwardDeviceScopeReconciliationAuditCommandTest(TestCase):
             "_out_of_scope_pks": [preserved.pk],
             "_device_tagged_names": {"dev-live"},
             "_tagged_names": {"dev-live"},
+            "_absence_kinds": {preserved.name: "absent"},
         }
 
         result = prune_orphan_devices(self.sync, report=report)
@@ -624,7 +626,10 @@ class OutOfScopeAbsenceClassificationTest(TestCase):
         )
 
         client = Mock()
-        client.run_nqe_query = Mock(side_effect=[scope_rows, census_rows])
+        # Scope query, then the census: its device half and its endpoint half.
+        # The endpoint half runs whether or not endpoint sync is on, so an
+        # endpoint-derived device never reads as `absent` and prunable.
+        client.run_nqe_query = Mock(side_effect=[scope_rows, census_rows, []])
         with patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"):
             with patch.object(ForwardSource, "get_client", return_value=client):
                 return compute_scope_reconciliation(self.sync), client
@@ -649,6 +654,50 @@ class OutOfScopeAbsenceClassificationTest(TestCase):
         self.assertEqual(absence["vendor_excluded"], 1)
         self.assertEqual(absence["absent_from_snapshot_sample"], ["gone"])
         self.assertEqual(absence["present_untagged_sample"], ["untagged"])
+
+    def test_an_endpoint_derived_orphan_says_which_endpoint_rule_excludes_it(self):
+        # A console server imported as an SNMP endpoint, later tagged in
+        # Forward with something other than the include tags: Forward still
+        # has it, so it is `untagged`, never `absent` - and the report says
+        # the tag is the reason.
+        from forward_netbox.utilities.scope_reconciliation import (
+            compute_scope_reconciliation,
+        )
+
+        self.source.parameters["sync_endpoints"] = True
+        self.source.parameters["scope_endpoints_by_include_tags"] = True
+        self.source.save()
+        self.sync.refresh_from_db()
+        self._make_devices("in-scope", "cons-1")
+        self._claim_scope("in-scope", "cons-1")
+        client = Mock()
+        client.run_nqe_query = Mock(
+            side_effect=[
+                [{"name": "in-scope", "completed": True}],  # device scope
+                [],  # endpoint scope (sync_endpoints on)
+                [{"name": "in-scope", "vendor": "Vendor.CISCO"}],  # census: devices
+                [
+                    {
+                        "name": "cons-1",
+                        "has_snmp": True,
+                        "cimc": False,
+                        "console": True,
+                        "tags": ["Console"],
+                    }
+                ],  # census: endpoints
+            ]
+        )
+        with patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"):
+            with patch.object(ForwardSource, "get_client", return_value=client):
+                report = compute_scope_reconciliation(self.sync)
+
+        absence = report["out_of_scope_absence"]
+        self.assertEqual(absence["absent_from_snapshot"], 0)
+        self.assertEqual(absence["present_untagged"], 1)
+        self.assertEqual(
+            [(row["reason"], row["count"]) for row in absence["endpoint_detail"]],
+            [("endpoint_untagged", 1)],
+        )
 
     def test_no_orphans_costs_no_extra_query(self):
         # A converged sync must not pay an NQE execution for a classification

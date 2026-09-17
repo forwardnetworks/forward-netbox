@@ -1,0 +1,15 @@
+{% load i18n %}
+{# Direction of a count across the last two post-sync reconciliations.       #}
+{# "Has this number moved?" was only answerable by comparing screenshots     #}
+{# taken days apart, and a customer read a static count as a growing one.    #}
+{# Renders nothing when there is no prior run to compare against, because    #}
+{# an unknown trend must not look like a flat one.                           #}
+{% if trend %}
+  {% if trend.delta > 0 %}
+    <span class="badge text-bg-warning ms-1" title="{% blocktrans with previous=trend.previous latest=trend.latest %}{{ previous }} at the previous reconciliation, {{ latest }} now.{% endblocktrans %}">&#9650;&nbsp;+{{ trend.delta }}</span>
+  {% elif trend.delta < 0 %}
+    <span class="badge text-bg-success ms-1" title="{% blocktrans with previous=trend.previous latest=trend.latest %}{{ previous }} at the previous reconciliation, {{ latest }} now.{% endblocktrans %}">&#9660;&nbsp;{{ trend.delta }}</span>
+  {% else %}
+    <span class="badge text-bg-secondary ms-1" title="{% blocktrans with previous=trend.previous %}Unchanged since the previous reconciliation ({{ previous }}).{% endblocktrans %}">{% trans "unchanged" %}</span>
+  {% endif %}
+{% endif %}

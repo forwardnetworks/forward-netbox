@@ -82,7 +82,9 @@ class _Fixture(TestCase):
         client = Mock()
         responses = [scope_rows]
         if census_rows is not None:
-            responses.append(census_rows)
+            # The census is two halves - devices, then endpoints - and the
+            # endpoint half runs whether or not endpoint sync is on.
+            responses.extend([census_rows, []])
         client.run_nqe_query = Mock(side_effect=responses)
         with (
             patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
@@ -341,3 +343,122 @@ class RefusalsTest(_Fixture):
         )
         result = prune_uncovered_devices(self.sync, report=report)
         self.assertEqual(result["pruned_device_count"], 0)
+
+
+class RestrictedPruneAllowlistTest(_Fixture):
+    """A named device can only ever be a SUBSET of what the prune would take.
+
+    The device page narrows this prune to one device rather than running its
+    own deletion, because a second deletion path is how a delete acquires a
+    guard the other one lacks. These pin the negative space: every way a
+    specifically-requested device must be refused, and that the request can
+    never widen the set.
+    """
+
+    def _absent_report(self, *devices):
+        """A report where each named device is owned, uncovered and absent."""
+        for device in devices:
+            self._own(device)
+        return self._report(
+            [{"name": "in-scope", "completed": True, "tagNames": ["Prod_Core"]}],
+            census_rows=[{"name": "in-scope", "vendor": "Vendor.CISCO"}],
+        )
+
+    def test_a_device_this_sync_does_not_own_is_refused_and_named(self):
+        mine = self._device("mine-gone")
+        theirs = self._device("not-mine")
+        report = self._absent_report(mine)
+        self._served_quarantine(mine)
+
+        result = prune_uncovered_devices(
+            self.sync, report=report, restrict_to_device_pks=[theirs.pk]
+        )
+
+        self.assertEqual(result["pruned_device_count"], 0)
+        self.assertEqual(result["restricted_refusals"]["not_owned"], [theirs.pk])
+        self.assertTrue(Device.objects.filter(pk=theirs.pk).exists())
+        # And the device that WAS eligible is untouched, because it was not asked for.
+        self.assertTrue(Device.objects.filter(pk=mine.pk).exists())
+
+    def test_a_device_forward_still_reports_is_refused(self):
+        # Uncovered but present in the census: a scoping decision, never a delete.
+        device = self._own(self._device("still-there"))
+        report = self._report(
+            [{"name": "in-scope", "completed": True, "tagNames": ["Prod_Core"]}],
+            census_rows=[
+                {"name": "in-scope", "vendor": "Vendor.CISCO"},
+                {"name": "still-there", "vendor": "Vendor.CISCO"},
+            ],
+        )
+        self._served_quarantine(device)
+
+        result = prune_uncovered_devices(
+            self.sync, report=report, restrict_to_device_pks=[device.pk]
+        )
+
+        self.assertEqual(result["pruned_device_count"], 0)
+        self.assertEqual(result["restricted_refusals"]["not_absent"], [device.pk])
+        self.assertTrue(Device.objects.filter(pk=device.pk).exists())
+
+    def test_a_held_device_is_refused_without_the_override(self):
+        device = self._own(self._device("held-gone"))
+        report = self._absent_report()
+
+        result = prune_uncovered_devices(
+            self.sync, report=report, restrict_to_device_pks=[device.pk]
+        )
+
+        self.assertEqual(result["pruned_device_count"], 0)
+        self.assertEqual(result["restricted_refusals"]["held"], [device.pk])
+        self.assertTrue(Device.objects.filter(pk=device.pk).exists())
+
+    def test_the_override_deletes_only_the_named_held_device(self):
+        named = self._device("named-held")
+        other = self._device("other-held")
+        report = self._absent_report(named, other)
+
+        result = prune_uncovered_devices(
+            self.sync,
+            report=report,
+            restrict_to_device_pks=[named.pk],
+            include_quarantined=True,
+        )
+
+        self.assertEqual(result["pruned_device_count"], 1)
+        self.assertFalse(Device.objects.filter(pk=named.pk).exists())
+        # The other held device was equally eligible under the override and is
+        # still here, because the restriction is a subset and not a filter the
+        # override bypasses.
+        self.assertTrue(Device.objects.filter(pk=other.pk).exists())
+
+    def test_the_restriction_never_widens_the_set(self):
+        eligible = self._device("eligible-gone")
+        unrelated = self._device("unrelated-in-scope")
+        report = self._absent_report(eligible)
+        self._served_quarantine(eligible)
+
+        result = prune_uncovered_devices(
+            self.sync,
+            report=report,
+            restrict_to_device_pks=[eligible.pk, unrelated.pk],
+        )
+
+        self.assertEqual(result["pruned_device_count"], 1)
+        self.assertFalse(Device.objects.filter(pk=eligible.pk).exists())
+        self.assertTrue(Device.objects.filter(pk=unrelated.pk).exists())
+        self.assertEqual(result["restricted_refusals"]["not_owned"], [unrelated.pk])
+
+    def test_an_unrestricted_prune_still_reports_empty_refusals(self):
+        # The key is always present and always means the same thing, so a
+        # caller reading it cannot get a KeyError depending on the path taken.
+        device = self._own(self._device("bulk-gone"))
+        report = self._absent_report()
+        self._served_quarantine(device)
+
+        result = prune_uncovered_devices(self.sync, report=report)
+
+        self.assertEqual(result["pruned_device_count"], 1)
+        self.assertEqual(
+            result["restricted_refusals"],
+            {"not_owned": [], "not_absent": [], "held": []},
+        )

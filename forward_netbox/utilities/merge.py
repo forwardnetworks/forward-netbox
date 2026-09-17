@@ -165,14 +165,29 @@ class _MergeIssueRecorder:
         # merge recorder was the one left behind last time this file gained a
         # diagnostic, which is the reason for doing both together.
         message = with_raise_site(message, diagnosis)
-        if _is_destination_rule_rejection(exc):
+        # Classified ONCE, here. The verdict is persisted on the row and
+        # returned to the caller, which used to re-derive it a few frames down
+        # from the same exception - two evaluations of the same question, both
+        # discarded, so nothing downstream could tell a skipped row from a
+        # failed one.
+        skipped = _is_destination_rule_rejection(exc)
+        if skipped:
             # The issue list is where an operator actually looks, and a row that
             # was skipped reads there exactly like one that will be retried.
             # Keep the machine-readable prefix; state the disposition after it.
+            #
+            # This sentence says what happened to THIS row and stops. It used to
+            # end "so the baseline was promoted over this row" - a claim about
+            # the whole run, written per row, before the run's outcome exists.
+            # One skipped row beside one retryable failure leaves the baseline
+            # unpromoted, and every skipped row then carried a sentence its own
+            # ingestion contradicted. Whether the run promoted is the
+            # ingestion's fact, and its status line already states it.
             message = (
                 f"{message} Recorded and skipped: re-running cannot change a "
-                "NetBox validation rejection, so the baseline was promoted "
-                "over this row."
+                "NetBox validation rejection, so this row does not hold the "
+                "baseline back. Resolve the underlying row in NetBox to "
+                "converge it."
             )
         # An unsatisfiable row is resolved by editing it in NetBox, so "which
         # row" is the one thing the operator has to know and the only thing the
@@ -213,6 +228,11 @@ class _MergeIssueRecorder:
             raw_data["row_pk"] = row_identity["pk"]
             if row_identity["shape"] is not None:
                 raw_data["row"] = row_identity["shape"]
+        # The row's own verdict, so a reader never has to infer it from an
+        # ingestion-wide flag. `baseline_ready` answers "did the run promote",
+        # which is a different question and the wrong granularity: in a partial
+        # merge it labels every row by the worst row in the run.
+        raw_data["disposition"] = "skipped" if skipped else "failed"
         ForwardIngestionIssue.objects.create(
             ingestion=self._ingestion,
             phase=ForwardIngestionPhaseChoices.MERGE,
@@ -221,6 +241,7 @@ class _MergeIssueRecorder:
             exception=exc.__class__.__name__,
             raw_data=raw_data,
         )
+        return skipped
 
 
 def _attest_branch_merged(ingestion, branch, user) -> None:
@@ -583,13 +604,17 @@ def merge_branch(
         nonlocal last_heartbeat_at, last_log_at
         model_string = _model_string(collapsed_change.model_class)
         key = getattr(collapsed_change, "key", None)
-        issue_recorder.record(
+        # The recorder classifies the exception to write the row's disposition;
+        # take its answer rather than asking the same question again. The two
+        # calls could not disagree, but a row whose persisted disposition and
+        # whose counter came from separate evaluations is a row whose label can
+        # drift from its tally the moment either side gains a condition.
+        unsatisfiable = issue_recorder.record(
             model_string=model_string,
             exc=exc,
             pk=key[1] if isinstance(key, (tuple, list)) and len(key) > 1 else None,
             change_data=getattr(collapsed_change, "postchange_data", None),
         )
-        unsatisfiable = _is_destination_rule_rejection(exc)
         if unsatisfiable:
             progress_unsatisfiable += 1
         progress_failed += 1
