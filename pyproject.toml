@@ -32,6 +32,10 @@ Changelog = "https://github.com/forwardnetworks/forward-netbox/blob/main/CHANGEL
 
 [tool.poetry.dependencies]
 httpx = ">0.26,<0.29"
+# The Forward Networks API client. Pinned exactly rather than to a range:
+# pre-1.0, the surface is still moving, and a caret would let an untested
+# minor ship. Its httpx range (>=0.27,<1) is a subset of ours.
+forward-sdk = "0.1.16"
 # 1.2.0 final declares requires-python >=3.12, which the beta did not.
 # Scoped the same way as the optional plugins rather than raising the
 # project floor: NetBox 4.7 needs 3.12+ anyway, so this states a fact
