@@ -209,6 +209,185 @@ class SyncPhaseDiagnosisTest(TestCase):
         self.assertNotIn("core-1", issue.message)
 
 
+class CallerComposedMessageTest(TestCase):
+    """A caller with no exception in hand keeps its own sentence.
+
+    A customer's org recorded `ipam.ipaddress row processing skipped
+    (ForwardSyncDataError).` for the 2.9.5 unowned-primary-ip-holder skip -
+    the generic template every OTHER `record_issue` caller gets from its
+    caught exception. This caller has no exception; it composed a specific
+    sentence naming the holder device pks and the remedy, and `record_issue`
+    discarded it anyway, because the substitution only ever checked for the
+    dependency-skip-summary carve-out. Two Bulk ORM row-shape checks
+    (`apply_engine_bulk.py`) have the same shape and the same bug.
+    """
+
+    def _runner(self, ingestion):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            ingestion=ingestion,
+            logger=SimpleNamespace(
+                log_info=lambda *a, **k: None,
+                log_failure=lambda *a, **k: None,
+                log_warning=lambda *a, **k: None,
+            ),
+            _recorded_issue_ids=set(),
+            _dependency_skip_issue_counts={},
+            _dependency_skip_issue_samples={},
+            _aggregated_skip_warning_counts={},
+            # The aggregation mechanics (rollup vs per-row logging) are
+            # `test_skip_rollup_direction.py`'s job; this file is only about
+            # what `record_issue` does with the message.
+            _record_aggregated_skip_warning=lambda **kwargs: None,
+            DEPENDENCY_SKIP_ISSUE_DETAIL_LIMIT=5,
+        )
+
+    def _ingestion(self):
+        from forward_netbox.models import (
+            ForwardIngestion,
+            ForwardSource,
+            ForwardSync,
+        )
+
+        source = ForwardSource.objects.create(
+            name="caller-message-source", url="https://fwd.example.invalid"
+        )
+        sync = ForwardSync.objects.create(name="caller-message-sync", source=source)
+        return ForwardIngestion.objects.create(sync=sync)
+
+    def test_a_message_with_no_exception_is_kept_verbatim(self):
+        from forward_netbox.utilities.sync_reporting import record_issue
+
+        ingestion = self._ingestion()
+        issue = record_issue(
+            self._runner(ingestion),
+            "ipam.ipaddress",
+            "IP address #7 was not moved to device #3: device(s) #1 hold it as "
+            "a primary IP and carry no identity from this sync, so the "
+            "pointer cannot be released. Clear the primary IP on those "
+            "devices, or let this sync adopt them, to let the address move.",
+            {},
+            context={"row_pk": 7, "holder_device_pks": [1], "destination_device_pk": 3},
+            log_level="warning",
+            disposition="skipped",
+        )
+
+        self.assertEqual(
+            issue.message,
+            "IP address #7 was not moved to device #3: device(s) #1 hold it as "
+            "a primary IP and carry no identity from this sync, so the "
+            "pointer cannot be released. Clear the primary IP on those "
+            "devices, or let this sync adopt them, to let the address move.",
+        )
+        self.assertNotIn("ForwardSyncDataError", issue.message)
+        # `context` is stored as `coalesce_fields`, always shaped down to
+        # field names by `diagnostic_shape` - no caller's values survive
+        # there, pks included. The pks are readable only from the message
+        # text, which is exactly the sentence this fix restores.
+        self.assertEqual(
+            issue.coalesce_fields,
+            {
+                "type": "mapping",
+                "fields": ["destination_device_pk", "holder_device_pks", "row_pk"],
+            },
+        )
+        self.assertEqual(issue.raw_data["disposition"], "skipped")
+
+    def test_record_unowned_primary_ip_holder_skip_uses_its_own_sentence(self):
+        from forward_netbox.utilities.sync_ipam import (
+            record_unowned_primary_ip_holder_skip,
+        )
+
+        ingestion = self._ingestion()
+        runner = self._runner(ingestion)
+        record_unowned_primary_ip_holder_skip(
+            runner, ip_pk=55947, holder_pks=[12, 34], destination_device_pk=9
+        )
+
+        issue = ingestion.issues.get()
+        self.assertIn("device(s) #12, #34 hold it", issue.message)
+        self.assertIn("Clear the primary IP on those devices", issue.message)
+        self.assertNotIn("ForwardSyncDataError", issue.message)
+        self.assertIn("55947", issue.message)
+        self.assertIn("#9", issue.message)
+        self.assertEqual(
+            sorted(issue.coalesce_fields["fields"]),
+            ["destination_device_pk", "holder_device_pks", "row_pk"],
+        )
+        self.assertEqual(issue.raw_data["disposition"], "skipped")
+
+    def test_a_bulk_orm_identity_gap_names_the_missing_fields(self):
+        from forward_netbox.utilities.sync_reporting import record_issue
+
+        ingestion = self._ingestion()
+        issue = record_issue(
+            self._runner(ingestion),
+            "ipam.vlan",
+            "Bulk ORM row missing required identity fields.",
+            {"name": "vlan-1"},
+            context={"required": ["site", "vid"]},
+        )
+
+        self.assertEqual(
+            issue.message, "Bulk ORM row missing required identity fields."
+        )
+        self.assertEqual(
+            issue.coalesce_fields, {"type": "mapping", "fields": ["required"]}
+        )
+
+    def test_a_bulk_orm_device_row_names_the_missing_field(self):
+        from forward_netbox.utilities.sync_reporting import record_issue
+
+        ingestion = self._ingestion()
+        issue = record_issue(
+            self._runner(ingestion),
+            "dcim.device",
+            "Bulk ORM device row missing `name`.",
+            {"site": "site-a"},
+        )
+
+        self.assertEqual(issue.message, "Bulk ORM device row missing `name`.")
+
+    def test_an_exception_backed_call_is_unaffected(self):
+        # The generic template still applies whenever a real exception was
+        # caught, whatever string the caller passed alongside it - this is
+        # the behavior `SyncPhaseDiagnosisTest` already pins.
+        from forward_netbox.utilities.sync_reporting import record_issue
+
+        ingestion = self._ingestion()
+        issue = record_issue(
+            self._runner(ingestion),
+            "dcim.module",
+            "a message the caller composed",
+            {},
+            exception=RuntimeError("boom"),
+        )
+
+        self.assertEqual(
+            issue.message, "dcim.module row processing failed (RuntimeError)."
+        )
+
+    def test_an_empty_message_with_no_exception_stays_empty_not_generic(self):
+        # A caller passing "" and no exception (none exists today) must not
+        # regress into the generic template either - `bool("")` is False, so
+        # this falls through to the same synthesis path exception-backed
+        # callers use, which is the documented, tested behavior above.
+        from forward_netbox.utilities.sync_reporting import record_issue
+
+        ingestion = self._ingestion()
+        issue = record_issue(
+            self._runner(ingestion),
+            "dcim.site",
+            "",
+            {},
+        )
+
+        self.assertEqual(
+            issue.message, "dcim.site row processing failed (ForwardSyncDataError)."
+        )
+
+
 class TerminalSyncFailureDiagnosisTest(TestCase):
     """The failure that stops a sync must be the most explicable row, not the least.
 
