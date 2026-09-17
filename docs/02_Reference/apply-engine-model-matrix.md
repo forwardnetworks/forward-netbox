@@ -60,6 +60,8 @@ These models remain adapter-required with explicit blocker codes:
 - `netbox_cisco_aci.acil3out` | `plugin_model_dependencies`
 - `netbox_cisco_aci.acinode` | `plugin_model_dependencies`
 - `netbox_cisco_aci.acipod` | `plugin_model_dependencies`
+- `netbox_cisco_aci.acistaticportbinding` | `plugin_model_dependencies`
+- `netbox_cisco_aci.acisubjectfilter` | `plugin_model_dependencies`
 - `netbox_cisco_aci.acisubject` | `plugin_model_dependencies`
 - `netbox_cisco_aci.acitenant` | `plugin_model_dependencies`
 - `netbox_cisco_aci.acivrf` | `plugin_model_dependencies`

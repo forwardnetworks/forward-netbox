@@ -32,6 +32,10 @@ sourceKey(command) =
     && matches(toLowerCase(command.commandText), "moquery -c vzsubj*") then "moquery_vzsubj"
   else if command.commandType == CommandType.CUSTOM
     && matches(toLowerCase(command.commandText), "moquery -c vzentry*") then "moquery_vzentry"
+  else if command.commandType == CommandType.CUSTOM
+    && matches(toLowerCase(command.commandText), "moquery -c vzrssubjfiltatt*") then "moquery_vzrssubjfiltatt"
+  else if command.commandType == CommandType.CUSTOM
+    && matches(toLowerCase(command.commandText), "moquery -c fvrspathatt*") then "moquery_fvrspathatt"
   else "";
 
 foreach device in network.devices

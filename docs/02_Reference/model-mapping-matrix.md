@@ -54,6 +54,8 @@ Maps for `netbox_routing.*`, `netbox_peering_manager.*`, `netbox_cisco_aci.*`, a
 | `netbox_cisco_aci.acicontract` | `Forward ACI Contracts` | Parsed `moquery -c vzBrCP` custom command output | Best-fit; optional plugin | Requires `netbox-cisco-aci`; seeded disabled. |
 | `netbox_cisco_aci.acisubject` | `Forward ACI Contract Subjects` | Parsed `moquery -c vzSubj` custom command output | Best-fit; optional plugin | Requires `netbox-cisco-aci`; seeded disabled. Subject-to-filter attachments (`vzRsSubjFiltAtt`) are not collected and not written. |
 | `netbox_cisco_aci.acifilterentry` | `Forward ACI Filter Entries` | Parsed `moquery -c vzEntry` custom command output | Best-fit; optional plugin | Requires `netbox-cisco-aci`; seeded disabled. Named ports (`http`, `https`, ...) are stored as numbers. |
+| `netbox_cisco_aci.acisubjectfilter` | `Forward ACI Subject Filters` | Parsed `moquery -c vzRsSubjFiltAtt` custom command output | Best-fit; optional plugin | Requires `netbox-cisco-aci`; seeded disabled. Subject and filter are resolved, never created; the filter is looked up in the subject's tenant, then `common`. Attachments under `intmnl` / `outtmnl` are directional and mark their subject as not applying both ways. |
+| `netbox_cisco_aci.acistaticportbinding` | `Forward ACI Static Port Bindings` | Parsed `moquery -c fvRsPathAtt` custom command output | Best-fit; optional plugin | Requires `netbox-cisco-aci`; seeded disabled. Leaf and FEX ports bind to the node's NetBox device interface (through the ACI node's device link); vPC and port-channel policy-group paths are recorded and skipped. |
 
 ## Important Caveats
 
