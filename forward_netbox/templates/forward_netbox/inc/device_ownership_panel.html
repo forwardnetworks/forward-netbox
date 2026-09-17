@@ -1,0 +1,131 @@
+{% load i18n %}
+{# Why a device the plugin created refuses a manual delete, and where the #}
+{# supported delete lives. NetBox's own delete dialog renders the raw     #}
+{# ProtectedError - our table names and nothing else - so the explanation #}
+{# has to be on the page the operator is already looking at.              #}
+<div class="card">
+  <h5 class="card-header">{% trans "Forward Ownership" %}</h5>
+  <div class="card-body">
+    <table class="table table-hover attr-table">
+      <tr>
+        <th scope="row">{% trans "Owned by sync" %}</th>
+        <td>
+          {% for sync in ownership.syncs %}
+            <a href="{{ sync.url }}">{{ sync.name }}</a>{% if not forloop.last %}, {% endif %}
+          {% empty %}
+            &mdash;
+          {% endfor %}
+        </td>
+      </tr>
+      <tr>
+        <th scope="row">{% trans "Scope status" %}</th>
+        <td>
+          {% if ownership.uncovered %}
+            <span class="badge text-bg-warning">{% trans "Uncovered" %}</span>
+          {% endif %}
+          {% if ownership.out_of_scope %}
+            <span class="badge text-bg-warning">{% trans "Out of scope" %}</span>
+          {% endif %}
+          {% if ownership.backfilled %}
+            <span class="badge text-bg-info">{% trans "Backfilled" %}</span>
+          {% endif %}
+          {% if not ownership.uncovered and not ownership.out_of_scope and not ownership.backfilled %}
+            <span class="badge text-bg-success">{% trans "In scope" %}</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% if ownership.absence %}
+      <tr>
+        <th scope="row">{% trans "Absent from Forward for" %}</th>
+        <td>
+          {% blocktrans count runs=ownership.absence.consecutive_absent_runs trimmed %}
+            {{ runs }} consecutive run
+          {% plural %}
+            {{ runs }} consecutive runs
+          {% endblocktrans %}
+          <span class="text-muted">({% trans "since" %} {{ ownership.absence.first_absent_at }})</span>
+        </td>
+      </tr>
+      {% endif %}
+      <tr>
+        <th scope="row">{% trans "Records held" %}</th>
+        <td>
+          {% for label, count in ownership.holders %}
+            {{ label }}: {{ count }}{% if not forloop.last %}<br>{% endif %}
+          {% empty %}
+            {% trans "None" %}
+          {% endfor %}
+        </td>
+      </tr>
+      {% if ownership.delete_blockers %}
+      <tr>
+        <th scope="row">{% trans "Would refuse a manual delete" %}</th>
+        <td>
+          {# The database's own verdict, so it includes rows from other        #}
+          {# plugins reached through the cascade - BGP peers attached to this  #}
+          {# device's IP addresses, for instance - not only our records.       #}
+          {% for label, count in ownership.delete_blockers %}
+            <code>{{ label }}</code>&nbsp;&times;&nbsp;{{ count }}{% if not forloop.last %}<br>{% endif %}
+          {% endfor %}
+        </td>
+      </tr>
+      {% endif %}
+    </table>
+    {% if ownership.holders %}
+      <p class="text-muted mb-0">
+        {% blocktrans trimmed %}
+          NetBox will refuse a manual delete of this device while these records
+          exist, and its dialog reports only the record names. Deleting it here
+          would also strand the ownership evidence the next sync reads. Use the
+          scope reconciliation panel on the owning sync instead: it releases
+          ownership first, applies the absence quarantine and the shrink
+          refusal, and records what it removed.
+        {% endblocktrans %}
+      </p>
+    {% endif %}
+    {% if ownership.foreign_delete_blockers %}
+      {# Be exact about the limit: the prune releases OUR rows and then asks   #}
+      {# the database to delete the device. A row another plugin holds it with #}
+      {# is reported, not removed, so the prune refuses this device too until  #}
+      {# that row is gone. Promising otherwise would send an operator to a     #}
+      {# button that cannot help them, so this says what to do instead.        #}
+      <div class="alert alert-warning mt-2 mb-0" role="alert">
+        <p class="mb-2">
+          {% blocktrans trimmed %}
+            Some of the records holding this device belong to another plugin,
+            not to Forward. Scope reconciliation releases only its own, so it
+            will refuse this device too and report which model refused it.
+          {% endblocktrans %}
+        </p>
+        <p class="mb-1">{% trans "To delete this device:" %}</p>
+        <ol class="mb-2">
+          <li>
+            {% blocktrans trimmed %}
+              Delete these records first, from the pages their own plugin
+              provides:
+            {% endblocktrans %}
+            {% for label, count in ownership.foreign_delete_blockers %}<code>{{ label }}</code>&nbsp;&times;&nbsp;{{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}
+          </li>
+          <li>{% trans "Then run Prune uncovered devices on the owning sync, which releases the Forward records and performs the delete." %}</li>
+        </ol>
+        <p class="mb-0 small">
+          {% blocktrans trimmed %}
+            Records derived from Forward data are recreated by the next sync,
+            so deleting them is not a permanent loss. Anything you created by
+            hand is not — check before deleting. If you would rather we
+            confirm which is which, download the support bundle from the sync
+            page and send it: it carries these blockers and the counts behind
+            them.
+          {% endblocktrans %}
+        </p>
+      </div>
+    {% endif %}
+  </div>
+  {% if ownership.primary_sync_url %}
+  <div class="card-footer text-end">
+    <a class="btn btn-sm btn-outline-secondary" href="{{ ownership.primary_sync_url }}">
+      <i class="mdi mdi-broom" aria-hidden="true"></i>&nbsp;{% trans "Scope reconciliation (supported delete)" %}
+    </a>
+  </div>
+  {% endif %}
+</div>

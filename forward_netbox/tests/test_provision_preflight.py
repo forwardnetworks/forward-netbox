@@ -46,7 +46,15 @@ class ExecutorTablePreflightTest(TestCase):
         message = str(ctx.exception)
         self.assertIn("netbox_dlm", message)
         self.assertIn("netbox_dlm_contract", message)
-        self.assertIn("migrate", message)
+        # The remedy, not the command. Applying migrations genuinely needs
+        # shell access, so this message cannot name a GUI control - but it
+        # must not read as a command to paste either, because an operator
+        # who cannot run one is left with a string they can only forward.
+        # `scripts/check_operator_text.py` enforces that globally; this pins
+        # it for the one message that says who to ask.
+        self.assertIn("administrator", message)
+        self.assertIn("migrations", message)
+        self.assertNotIn("manage.py", message)
 
 
 class DatabaseTablesHealthCheckTest(TestCase):
@@ -63,7 +71,10 @@ class DatabaseTablesHealthCheckTest(TestCase):
             check = _database_tables_check()
         self.assertEqual(check["status"], "fail")
         self.assertIn("netbox_dlm_contract", check["message"])
-        self.assertIn("migrate", check["message"])
+        # Same rule as the executor's refusal above.
+        self.assertIn("administrator", check["message"])
+        self.assertIn("migrations", check["message"])
+        self.assertNotIn("manage.py", check["message"])
 
     def test_diagnostics_failure_returns_none_not_crash(self):
         with patch(

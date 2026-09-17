@@ -545,6 +545,16 @@ BUTTON_JOB_SPECS = {
         "prune orphans",
         "dcim.delete_device",
     ),
+    "recover_stuck_sync": (
+        "forward_netbox.jobs.RecoverStuckSyncJob",
+        "recover stuck sync",
+        "forward_netbox.run_forwardsync",
+    ),
+    "prune_uncovered": (
+        "forward_netbox.jobs.PruneUncoveredDevicesJob",
+        "prune uncovered devices",
+        "dcim.delete_device",
+    ),
     "tag_delete_eligible_ipam": (
         "forward_netbox.jobs.TagDeleteEligibleIpamJob",
         "tag delete-eligible IPAM",
@@ -600,7 +610,9 @@ def enqueue_button_job(
         )
         if active is not None:
             raise JobAlreadyActive(active)
-        if kind == "prune_orphans":
+        # Both prune kinds delete devices; neither may run while a sync is
+        # writing inventory. prune_uncovered was added without this block.
+        if kind in ("prune_orphans", "prune_uncovered"):
             running_sync = (
                 sync.jobs.filter(
                     name__in=sync_run_job_names(sync),
