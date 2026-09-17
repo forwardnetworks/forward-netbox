@@ -40,6 +40,7 @@ from .forward_client_config import MAX_NQE_ASYNC_POLL_INTERVAL_SECONDS
 from .forward_client_config import MAX_NQE_FETCH_ALL_MAX_PAGES
 from .forward_client_config import MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
 from .forward_client_config import MAX_NQE_PAGE_SIZE
+from .forward_client_errors import TRANSIENT_FORWARD_HTTP_STATUS_CODES
 from .forward_read_cache import shared_read_cache_scope
 from .forward_read_cache import SharedReadCache
 from .forward_throttle import _RATE_LIMIT_LAST_REQUEST_AT
@@ -85,7 +86,6 @@ MAX_FORWARD_API_RETRY_BACKOFF_SECONDS = 60
 DEFAULT_QUERY_FETCH_CONCURRENCY = 10
 MAX_QUERY_FETCH_CONCURRENCY = 16
 DEFAULT_QUERY_DIAGNOSTICS_ENABLED = True
-TRANSIENT_FORWARD_HTTP_STATUS_CODES = {408, 429, 502, 503, 504}
 NQE_QUERY_REPOSITORIES = {"org", "fwd"}
 NQE_LIBRARY_WRITE_ROLES = {"ADMIN", "OPERATOR"}
 
