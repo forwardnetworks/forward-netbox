@@ -1671,7 +1671,7 @@ class ForwardClientTest(TestCase):
             "forward_netbox.utilities.forward_api_impl._shared_read_cache",
             return_value=shared_cache,
         ):
-            rows = self.client.get_org_nqe_queries(
+            rows = self.client._get_org_nqe_queries(
                 directory="/forward_netbox_validation"
             )
 
@@ -1713,17 +1713,17 @@ class ForwardClientTest(TestCase):
             "forward_netbox.utilities.forward_api_impl._shared_read_cache",
             return_value=shared_cache,
         ):
-            org_first = self.client.get_org_nqe_queries(
+            org_first = self.client._get_org_nqe_queries(
                 directory="/forward_netbox_validation"
             )
-            org_second = self.client.get_org_nqe_queries(
+            org_second = self.client._get_org_nqe_queries(
                 directory="/forward_netbox_validation"
             )
-            repo_first = self.client.get_nqe_repository_queries(
+            repo_first = self.client._get_nqe_repository_queries(
                 repository="fwd",
                 directory="/netbox",
             )
-            repo_second = self.client.get_nqe_repository_queries(
+            repo_second = self.client._get_nqe_repository_queries(
                 repository="fwd",
                 directory="/netbox",
             )
@@ -1791,7 +1791,7 @@ class ForwardClientTest(TestCase):
             )
         )
 
-        rows = self.client.get_nqe_repository_queries(
+        rows = self.client._get_nqe_repository_queries(
             repository="fwd",
             directory="/netbox",
         )
@@ -1826,7 +1826,7 @@ class ForwardClientTest(TestCase):
             )
         )
 
-        rows = self.client.get_nqe_repository_queries(
+        rows = self.client._get_nqe_repository_queries(
             repository="org",
             directory="/forward_netbox_validation",
         )
@@ -1909,8 +1909,8 @@ class ForwardClientTest(TestCase):
             "forward_netbox.utilities.forward_api_impl._shared_read_cache",
             return_value=shared_cache,
         ):
-            org_first = self.client.get_org_nqe_queries(directory="/empty")
-            org_second = self.client.get_org_nqe_queries(directory="/empty")
+            org_first = self.client._get_org_nqe_queries(directory="/empty")
+            org_second = self.client._get_org_nqe_queries(directory="/empty")
             history_first = self.client.get_nqe_query_history("FQ/empty")
             history_second = self.client.get_nqe_query_history("FQ/empty")
 
@@ -2466,57 +2466,6 @@ class ForwardClientTest(TestCase):
         self.assertEqual(first, "commit-1")
         self.assertEqual(second, "commit-2")
         self.assertEqual(self.client._request.call_count, 3)
-
-    def test_trigger_snapshot_reachability_posts_correct_url(self):
-        self.client._request = Mock(
-            side_effect=[
-                self._response({"status": "COMPLETED"}),
-            ]
-        )
-        result = self.client.trigger_snapshot_reachability(
-            network_id="net-1", snapshot_id="snap-1"
-        )
-        self.assertEqual(result, {"status": "COMPLETED"})
-        self.client._request.assert_called_once_with(
-            "POST",
-            "/networks/net-1/snapshots/snap-1/reachability",
-        )
-
-    def test_trigger_snapshot_reachability_polls_until_complete(self):
-        self.client._request = Mock(
-            side_effect=[
-                self._response({"jobKey": "job-abc", "status": "SUBMITTED"}),
-                self._response({"status": "RUNNING"}),
-                self._response({"status": "COMPLETED"}),
-            ]
-        )
-        with patch("forward_netbox.utilities.forward_api_impl.time.sleep"):
-            result = self.client.trigger_snapshot_reachability(
-                network_id="net-1", snapshot_id="snap-1"
-            )
-        self.assertEqual(result, {"status": "COMPLETED"})
-        self.assertEqual(self.client._request.call_count, 3)
-
-    def test_trigger_snapshot_reachability_raises_on_failure(self):
-        self.client._request = Mock(
-            side_effect=[
-                self._response({"jobKey": "job-abc", "status": "SUBMITTED"}),
-                self._response({"status": "FAILED", "error": "timeout"}),
-            ]
-        )
-        with patch("forward_netbox.utilities.forward_api_impl.time.sleep"):
-            with self.assertRaisesRegex(
-                ForwardClientError, "reachability computation failed"
-            ):
-                self.client.trigger_snapshot_reachability(
-                    network_id="net-1", snapshot_id="snap-1"
-                )
-
-    def test_trigger_snapshot_reachability_requires_network_and_snapshot(self):
-        with self.assertRaisesRegex(ForwardClientError, "requires both"):
-            self.client.trigger_snapshot_reachability(network_id="", snapshot_id="s1")
-        with self.assertRaisesRegex(ForwardClientError, "requires both"):
-            self.client.trigger_snapshot_reachability(network_id="n1", snapshot_id="")
 
     def test_run_nqe_diff_returns_single_page_by_default(self):
         self.client._request = Mock(

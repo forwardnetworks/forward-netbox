@@ -818,7 +818,6 @@ class ForwardSyncHealthTest(TestCase):
     def test_sync_live_query_drift_downloads_forward_checked_diagnostics(self):
         self.client.force_login(self.user)
         client = Mock()
-        client.get_nqe_repository_queries.return_value = []
         client.get_nqe_repository_query_index.return_value = {"by_query_id": {}}
         client.get_committed_nqe_query.return_value = {
             "queryId": "Q_devices",
