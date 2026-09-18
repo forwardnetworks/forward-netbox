@@ -15,6 +15,8 @@ from forward_sdk import ForwardClient as SDKForwardClient
 
 from utilities.proxy import resolve_proxies
 
+from .forward_usage_hooks import UsageTrackingHooks
+
 USER_AGENT = "forward-netbox/0.8.6.3"
 
 
@@ -74,10 +76,18 @@ def get_client(
     retries,
     api_requests_per_minute,
     throttle,
+    usage,
     client=None,
     source=None,
 ):
-    """Build the `forward-sdk` client this plugin's `ForwardClient` wraps."""
+    """Build the `forward-sdk` client this plugin's `ForwardClient` wraps.
+
+    `hooks=UsageTrackingHooks(usage)` is what lets `evaluate_forward_api_usage`
+    keep reading an accurate `observed_http_attempts_per_minute` once this
+    client, not `_request()`, is making the actual HTTP calls - see
+    `forward_usage_hooks.py`'s module docstring for why this has to be wired
+    here, once, rather than approximated per call site.
+    """
     return SDKForwardClient(
         base_url,
         username=username,
@@ -89,4 +99,5 @@ def get_client(
         user_agent=USER_AGENT,
         proxy=_resolve_static_proxy(base_url=base_url, client=client, source=source),
         throttle=_CrossProcessThrottleAdapter(throttle),
+        hooks=UsageTrackingHooks(usage),
     )

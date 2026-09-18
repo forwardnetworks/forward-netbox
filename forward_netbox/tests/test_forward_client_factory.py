@@ -16,6 +16,7 @@ from forward_sdk import ForwardClient as SDKForwardClient
 from forward_netbox.utilities.forward_client_factory import _CrossProcessThrottleAdapter
 from forward_netbox.utilities.forward_client_factory import get_client
 from forward_netbox.utilities.forward_client_factory import USER_AGENT
+from forward_netbox.utilities.forward_usage_hooks import UsageTrackingHooks
 
 
 class CrossProcessThrottleAdapterTest(TestCase):
@@ -41,6 +42,7 @@ class GetClientTest(TestCase):
             "retries": 2,
             "api_requests_per_minute": 0,
             "throttle": Mock(),
+            "usage": Mock(),
         }
         kwargs.update(overrides)
         with patch(
@@ -104,6 +106,7 @@ class GetClientTest(TestCase):
                 retries=2,
                 api_requests_per_minute=0,
                 throttle=Mock(),
+                usage=Mock(),
             )
 
         self.assertEqual(client.config.proxy, "http://proxy.example.invalid:3128")
@@ -111,3 +114,11 @@ class GetClientTest(TestCase):
         self.assertEqual(
             mock_resolve.call_args.kwargs["url"], "https://fwd.example.invalid"
         )
+
+    def test_the_usage_tracker_is_wired_into_the_transports_hooks(self):
+        usage = Mock()
+        client = self._client(usage=usage)
+
+        self.assertIsInstance(client._transport.hooks, UsageTrackingHooks)
+        client._transport.hooks.on_request(None, None)
+        usage.record_http_attempt.assert_called_once_with()

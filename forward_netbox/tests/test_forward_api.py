@@ -61,19 +61,17 @@ class ForwardClientTest(TestCase):
         return response
 
     def test_snapshot_data_file_hashes_are_snapshot_correct_and_cached(self):
-        self.client._request = Mock(
-            return_value=self._response(
-                [
-                    {
-                        "dataFileName": "netbox_feature_tag_rules.json",
-                        "contentMd5Hex": "A1B2C3",
-                    },
-                    {
-                        "dataFileName": "netbox_device_type_aliases.json",
-                        "contentMd5Hex": "D4E5F6",
-                    },
-                ]
-            )
+        self.client._sdk_client.data_files.get_data_files = Mock(
+            return_value=[
+                {
+                    "dataFileName": "netbox_feature_tag_rules.json",
+                    "contentMd5Hex": "A1B2C3",
+                },
+                {
+                    "dataFileName": "netbox_device_type_aliases.json",
+                    "contentMd5Hex": "D4E5F6",
+                },
+            ]
         )
 
         first = self.client.get_snapshot_data_file_hashes(
@@ -95,11 +93,134 @@ class ForwardClientTest(TestCase):
             },
         )
         self.assertEqual(second, first)
-        self.client._request.assert_called_once_with(
-            "GET",
-            "/networks/network-1/data-files",
-            params={"view": "snapshot", "snapshotId": "snapshot-1"},
+        self.client._sdk_client.data_files.get_data_files.assert_called_once_with(
+            network_id="network-1",
+            view="snapshot",
+            snapshot_id="snapshot-1",
         )
+
+    def test_call_sdk_translates_an_sdk_exception(self):
+        from forward_sdk.errors import ForwardAuthError
+
+        sdk_call = Mock(
+            side_effect=ForwardAuthError(
+                "failed with HTTP 401: x", status=401, text="x"
+            )
+        )
+
+        with self.assertRaises(ForwardClientError):
+            self.client._call_sdk(sdk_call)
+
+    def test_call_sdk_records_a_transport_failure_the_hooks_cannot_see(self):
+        from forward_sdk.errors import ForwardTransportError
+
+        transport_error = ForwardTransportError("GET /x failed: boom", attempts=1)
+        transport_error.__cause__ = httpx.ConnectError("boom")
+        sdk_call = Mock(side_effect=transport_error)
+
+        with self.assertRaises(ForwardConnectivityError):
+            self.client._call_sdk(sdk_call)
+
+        summary = self.client.api_usage_summary()
+        self.assertEqual(summary["http_failures"], 1)
+        self.assertEqual(summary["http_transport_failures"], 1)
+
+    def test_get_networks_filters_incomplete_rows_and_builds_a_label(self):
+        self.client._sdk_client.networks.list = Mock(
+            return_value=[
+                SimpleNamespace(id="net-1", name="Lab"),
+                SimpleNamespace(id="", name="No id"),
+                SimpleNamespace(id="net-2", name=""),
+            ]
+        )
+
+        networks = self.client.get_networks()
+
+        self.assertEqual(
+            networks,
+            [{"id": "net-1", "name": "Lab", "label": "Lab (net-1)"}],
+        )
+        # Cached on the second call: the SDK is not called again.
+        self.client.get_networks()
+        self.client._sdk_client.networks.list.assert_called_once_with()
+
+    def test_get_snapshots_normalizes_sdk_snapshots_into_the_plugins_own_shape(self):
+        self.client._sdk_client.snapshots.list = Mock(
+            return_value=[
+                SimpleNamespace(
+                    id="snap-1",
+                    state="PROCESSED",
+                    created_at="2026-06-01T00:00:00Z",
+                    processed_at="2026-06-01T01:00:00Z",
+                ),
+            ]
+        )
+
+        snapshots = self.client.get_snapshots("net-1", include_archived=True, limit=5)
+
+        self.assertEqual(
+            snapshots,
+            [
+                {
+                    "id": "snap-1",
+                    "state": "PROCESSED",
+                    "created_at": "2026-06-01T00:00:00Z",
+                    "processed_at": "2026-06-01T01:00:00Z",
+                    "label": "snap-1 | PROCESSED | 2026-06-01T01:00:00Z",
+                }
+            ],
+        )
+        self.client._sdk_client.snapshots.list.assert_called_once_with(
+            "net-1", include_archived=True, limit=5
+        )
+
+    def test_get_latest_processed_snapshot_uses_the_plugins_own_camelcase_shape(self):
+        self.client._sdk_client.snapshots.latest_processed = Mock(
+            return_value=SimpleNamespace(
+                id="snap-1",
+                state="PROCESSED",
+                created_at="2026-06-01T00:00:00Z",
+                processed_at="2026-06-01T01:00:00Z",
+            )
+        )
+
+        snapshot = self.client.get_latest_processed_snapshot("net-1")
+
+        self.assertEqual(
+            snapshot,
+            {
+                "id": "snap-1",
+                "state": "PROCESSED",
+                "createdAt": "2026-06-01T00:00:00Z",
+                "processedAt": "2026-06-01T01:00:00Z",
+            },
+        )
+        self.client._sdk_client.snapshots.latest_processed.assert_called_once_with(
+            "net-1"
+        )
+
+    def test_get_latest_processed_snapshot_returns_empty_dict_when_none_exists(self):
+        self.client._sdk_client.snapshots.latest_processed = Mock(return_value=None)
+
+        snapshot = self.client.get_latest_processed_snapshot("net-1")
+
+        self.assertEqual(snapshot, {})
+        with self.assertRaises(ForwardClientError) as cm:
+            self.client.get_latest_processed_snapshot_id("net-1")
+        self.assertEqual(
+            str(cm.exception),
+            "Forward latestProcessed snapshot response did not include an ID.",
+        )
+
+    def test_get_snapshot_metrics_passes_through_the_sdks_dict_directly(self):
+        self.client._sdk_client.snapshots.metrics = Mock(
+            return_value={"numSuccessfulDevices": 12}
+        )
+
+        metrics = self.client.get_snapshot_metrics("snap-1")
+
+        self.assertEqual(metrics, {"numSuccessfulDevices": 12})
+        self.client._sdk_client.snapshots.metrics.assert_called_once_with("snap-1")
 
     def test_get_latest_collected_snapshot_id_skips_backfilled_newest_first(self):
         self.client.get_snapshots = Mock(
@@ -269,26 +390,18 @@ class ForwardClientTest(TestCase):
         self.assertIn("forward-api-rate-limit", key)
 
     def test_network_and_head_commit_reads_are_cached_per_client(self):
-        self.client._request = Mock(
-            side_effect=[
-                self._response(
-                    [
-                        {
-                            "id": "network-1",
-                            "name": "Network 1",
-                        }
-                    ]
-                ),
-                self._response({"id": "commit-1"}),
-            ]
+        self.client._sdk_client.networks.list = Mock(
+            return_value=[SimpleNamespace(id="network-1", name="Network 1")]
         )
+        self.client._request = Mock(return_value=self._response({"id": "commit-1"}))
 
         networks_first = self.client.get_networks()
         networks_second = self.client.get_networks()
         head_first = self.client.get_org_nqe_head_commit_id()
         head_second = self.client.get_org_nqe_head_commit_id()
 
-        self.assertEqual(self.client._request.call_count, 2)
+        self.client._sdk_client.networks.list.assert_called_once_with()
+        self.assertEqual(self.client._request.call_count, 1)
         self.assertEqual(networks_first, networks_second)
         self.assertEqual(head_first, head_second)
         self.assertEqual(networks_first[0]["label"], "Network 1 (network-1)")
@@ -318,10 +431,10 @@ class ForwardClientTest(TestCase):
                 },
             )
         )
-        client_one._request = Mock(
-            return_value=self._response([{"id": "network-1", "name": "Network 1"}])
+        client_one._sdk_client.networks.list = Mock(
+            return_value=[SimpleNamespace(id="network-1", name="Network 1")]
         )
-        client_two._request = Mock(
+        client_two._sdk_client.networks.list = Mock(
             side_effect=AssertionError("shared cache should avoid second request")
         )
 
@@ -333,8 +446,8 @@ class ForwardClientTest(TestCase):
             second = client_two.get_networks()
 
         self.assertEqual(first, second)
-        self.assertEqual(client_one._request.call_count, 1)
-        self.assertEqual(client_two._request.call_count, 0)
+        self.assertEqual(client_one._sdk_client.networks.list.call_count, 1)
+        self.assertEqual(client_two._sdk_client.networks.list.call_count, 0)
         self.assertEqual(first[0]["label"], "Network 1 (network-1)")
 
     def test_shared_query_cache_generation_invalidates_after_mutation(self):
@@ -1612,30 +1725,24 @@ class ForwardClientTest(TestCase):
         self.assertEqual(self.client._request.call_count, 4)
 
     def test_snapshot_reads_are_cached_per_client(self):
-        self.client._request = Mock(
-            side_effect=[
-                self._response(
-                    {
-                        "snapshots": [
-                            {
-                                "id": "snapshot-1",
-                                "state": "processed",
-                                "createdAt": "2026-06-01T00:00:00Z",
-                                "processedAt": "2026-06-01T01:00:00Z",
-                            }
-                        ]
-                    }
-                ),
-                self._response({"totalCount": 5}),
-                self._response(
-                    {
-                        "id": "snapshot-1",
-                        "state": "processed",
-                        "createdAt": "2026-06-01T00:00:00Z",
-                        "processedAt": "2026-06-01T01:00:00Z",
-                    }
-                ),
+        self.client._sdk_client.snapshots.list = Mock(
+            return_value=[
+                SimpleNamespace(
+                    id="snapshot-1",
+                    state="processed",
+                    created_at="2026-06-01T00:00:00Z",
+                    processed_at="2026-06-01T01:00:00Z",
+                )
             ]
+        )
+        self.client._sdk_client.snapshots.metrics = Mock(return_value={"totalCount": 5})
+        self.client._sdk_client.snapshots.latest_processed = Mock(
+            return_value=SimpleNamespace(
+                id="snapshot-1",
+                state="processed",
+                created_at="2026-06-01T00:00:00Z",
+                processed_at="2026-06-01T01:00:00Z",
+            )
         )
 
         snapshots_first = self.client.get_snapshots("network-1")
@@ -1645,7 +1752,11 @@ class ForwardClientTest(TestCase):
         latest_first = self.client.get_latest_processed_snapshot("network-1")
         latest_second = self.client.get_latest_processed_snapshot("network-1")
 
-        self.assertEqual(self.client._request.call_count, 3)
+        self.assertEqual(self.client._sdk_client.snapshots.list.call_count, 1)
+        self.assertEqual(self.client._sdk_client.snapshots.metrics.call_count, 1)
+        self.assertEqual(
+            self.client._sdk_client.snapshots.latest_processed.call_count, 1
+        )
         self.assertEqual(snapshots_first, snapshots_second)
         self.assertEqual(metrics_first, metrics_second)
         self.assertEqual(latest_first, latest_second)
