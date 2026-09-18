@@ -283,3 +283,39 @@ dependency declaration; the first with a behavioural one is the transport swap.
     `models.py`) rather than assuming consistency with `get_snapshots`'s
     own snake_case shape, which is a genuinely different convention used
     nowhere else in this method.
+- **2026-09-17** -- Step 5c: NQE library methods converted -
+  `has_nqe_library_write_permission`, `add_org_nqe_query`,
+  `edit_org_nqe_query`, `get_org_nqe_head_commit_id`,
+  `commit_org_nqe_queries`, `get_nqe_query_history`.
+  - `has_nqe_library_write_permission` -> `client.user_accounts.
+    get_current_user().roles`: the SDK's `CurrentUserRoles` model has
+    `org`/`network` fields shaped identically to what this method already
+    parsed by hand, and its own docstring says it exists for exactly this
+    check ("Integrations read both to decide whether a login may write to
+    the shared query library").
+  - `add_org_nqe_query`/`edit_org_nqe_query` -> `client.nqe.repo.
+    stage_add`/`stage_edit`, which stage a draft against the current user
+    without committing - the same two-phase stage-then-commit shape this
+    method's own `/users/current/nqe/changes` endpoint already had. These
+    stay separate methods, not folded into the SDK's all-in-one `publish()`,
+    because their caller (`query_binding_resolution.py`) decides add-vs-edit
+    per file across a loop before committing the whole batch once; changing
+    that call sequence is step 6's job, not step 5's.
+  - `commit_org_nqe_queries` -> `client.nqe.repo.commit(paths, title=,
+    body=)`, which turned out to already implement the exact same
+    no-staged-changes 409 INVALID_CHANGE_PATH retry this method hand-rolled
+    (`_unchanged_paths()` in `nqe_repo.py` parses "User has no changes at
+    the following paths: ..." almost verbatim) - so that ~40-line retry
+    block is deleted outright, not ported. One real behavior change,
+    preserved deliberately rather than left to happen by accident: the old
+    code always re-fetched `get_org_nqe_head_commit_id()` after committing;
+    `commit()`'s own `CommitReport.commit_id` already carries the fresh
+    commit when anything was actually committed, so `commit_org_nqe_queries`
+    now writes that value directly into this client's own head-commit cache
+    (mirroring exactly what a subsequent `get_org_nqe_head_commit_id()` call
+    would have cached) instead of triggering a second, redundant fetch. The
+    `CommitReport.commit_id` fallback to `get_org_nqe_head_commit_id()` is
+    kept for the one case `commit()` doesn't resolve it itself: every
+    requested path turned out to be an unchanged no-op.
+  - `get_nqe_query_history` -> `client.nqe.repo.history(query_id)`, an exact
+    shape match to what this method already returned.

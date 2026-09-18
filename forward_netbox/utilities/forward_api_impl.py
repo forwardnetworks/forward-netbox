@@ -1336,26 +1336,19 @@ class ForwardClient:
             self._record_read_cache_hit()
             return [dict(row) for row in cached_history]
         self._record_read_cache_miss()
-        response = self._request(
-            "GET",
-            f"/nqe/queries/{quote(query_id, safe='')}/history",
-        )
-        data = response.json() or {}
-        commits = data.get("commits") if isinstance(data, dict) else []
-        rows = commits or []
+        rows = self._call_sdk(self._sdk_client.nqe.repo.history, query_id) or []
         self._nqe_query_history_cache[query_id] = list(rows)
         self._shared_read_cache_set(shared_cache_key, list(rows))
         return rows
 
     def has_nqe_library_write_permission(self):
         """Return whether the current login may write the org NQE library."""
-        response = self._request("GET", "/users/current")
-        data = response.json() or {}
-        roles = data.get("roles") if isinstance(data, dict) else {}
-        if not isinstance(roles, dict):
+        current_user = self._call_sdk(self._sdk_client.user_accounts.get_current_user)
+        roles = getattr(current_user, "roles", None)
+        if roles is None:
             return False
 
-        org_roles = roles.get("org") or []
+        org_roles = getattr(roles, "org", None) or []
         if isinstance(org_roles, str):
             org_roles = [org_roles]
         normalized_org_roles = {
@@ -1366,7 +1359,7 @@ class ForwardClient:
         if normalized_org_roles.intersection(NQE_LIBRARY_WRITE_ROLES):
             return True
 
-        network_roles = roles.get("network") or {}
+        network_roles = getattr(roles, "network", None) or {}
         if not isinstance(network_roles, dict):
             return False
         network_id = str((self.source.parameters or {}).get("network_id") or "").strip()
@@ -1378,12 +1371,7 @@ class ForwardClient:
         if not query_path:
             raise ForwardClientError("Forward NQE query path is required.")
         self._invalidate_nqe_query_read_caches()
-        self._request(
-            "POST",
-            "/users/current/nqe/changes",
-            params={"action": "addQuery", "path": query_path},
-            json_body={"sourceCode": source_code},
-        )
+        self._call_sdk(self._sdk_client.nqe.repo.stage_add, query_path, source_code)
 
     def edit_org_nqe_query(self, *, query_path, source_code, query_id, commit_id):
         query_path = _normalize_nqe_query_path(query_path)
@@ -1396,17 +1384,12 @@ class ForwardClient:
                 "Forward NQE query ID and commit ID are required to update an existing query."
             )
         self._invalidate_nqe_query_read_caches()
-        self._request(
-            "POST",
-            "/users/current/nqe/changes",
-            params={"action": "editQuery", "path": query_path},
-            json_body={
-                "sourceCode": source_code,
-                "basis": {
-                    "queryId": query_id,
-                    "commitId": commit_id,
-                },
-            },
+        self._call_sdk(
+            self._sdk_client.nqe.repo.stage_edit,
+            query_path,
+            source_code,
+            query_id=query_id,
+            commit_id=commit_id,
         )
 
     def get_org_nqe_head_commit_id(self):
@@ -1424,20 +1407,14 @@ class ForwardClient:
             self._record_read_cache_hit()
             return self._org_nqe_head_commit_id_cache
         self._record_read_cache_miss()
-        response = self._request("GET", "/nqe/repos/org/commits/head")
-        data = response.json()
-        commit_id = ""
-        if isinstance(data, dict):
-            commit_id = str(data.get("id") or data.get("commitId") or "").strip()
-        else:
-            commit_id = str(data or "").strip()
+        commit_id = str(
+            self._call_sdk(self._sdk_client.nqe.repo.head_commit_id) or ""
+        ).strip()
         self._org_nqe_head_commit_id_cache = commit_id
         self._shared_read_cache_set(shared_cache_key, {"value": commit_id})
         return commit_id
 
     def commit_org_nqe_queries(self, *, query_paths, message):
-        import json as _json
-
         query_paths = [
             _normalize_nqe_query_path(query_path)
             for query_path in query_paths
@@ -1446,52 +1423,35 @@ class ForwardClient:
         if not query_paths:
             return ""
         self._invalidate_nqe_query_read_caches()
-        try:
-            self._request(
-                "POST",
-                "/nqe/repos/org/commits",
-                json_body={
-                    "paths": query_paths,
-                    "accessSettings": [],
-                    "message": _commit_message_payload(message),
-                },
-            )
-        except ForwardClientError as exc:
-            msg = str(exc)
-            if "HTTP 409" not in msg or "INVALID_CHANGE_PATH" not in msg:
-                raise
-            # Some paths had no staged changes (API accepted the edit but content
-            # was already identical). Parse the no-change paths and retry without
-            # them so the real changes still get committed.
-            try:
-                json_start = msg.index("{")
-                body = _json.loads(msg[json_start:])
-                no_change_text = body.get("message", "")
-                prefix = "User has no changes at the following paths: "
-                if prefix in no_change_text:
-                    no_change_paths = {
-                        p.strip()
-                        for p in no_change_text[
-                            no_change_text.index(prefix) + len(prefix) :
-                        ]
-                        .rstrip(".")
-                        .split(",")
-                    }
-                    query_paths = [p for p in query_paths if p not in no_change_paths]
-            except (ValueError, KeyError):
-                raise exc
-            if not query_paths:
-                return self.get_org_nqe_head_commit_id()
-            self._request(
-                "POST",
-                "/nqe/repos/org/commits",
-                json_body={
-                    "paths": query_paths,
-                    "accessSettings": [],
-                    "message": _commit_message_payload(message),
-                },
-            )
-        return self.get_org_nqe_head_commit_id()
+        # `NqeRepository.commit` already does the no-staged-changes retry this
+        # method used to hand-roll: it drops paths Forward's 409
+        # INVALID_CHANGE_PATH names as unchanged and retries with the rest,
+        # returning a `CommitReport` whose own `commit_id` is unset when
+        # every path turned out to be a no-op - fall back to
+        # `get_org_nqe_head_commit_id` in that case, matching this method's
+        # own long-standing behavior of always resolving a real commit id.
+        payload = _commit_message_payload(message)
+        report = self._call_sdk(
+            self._sdk_client.nqe.repo.commit,
+            query_paths,
+            title=payload["title"],
+            body=payload["body"],
+        )
+        if not report.commit_id:
+            return self.get_org_nqe_head_commit_id()
+        # The SDK already resolved the fresh head commit as part of
+        # `commit()`, bypassing this client's own cache entirely - populate
+        # it explicitly so a `get_org_nqe_head_commit_id()` call right after
+        # (this client's or, via the shared cache, another worker's) does
+        # not repeat a fetch this method already made.
+        self._org_nqe_head_commit_id_cache = report.commit_id
+        self._shared_read_cache_set(
+            self._shared_read_cache_key(
+                "org-head-commit", self._shared_query_read_generation()
+            ),
+            {"value": report.commit_id},
+        )
+        return report.commit_id
 
     def _parse_nqe_records(self, data):
         items = data.get("items") or []

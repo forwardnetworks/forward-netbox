@@ -393,7 +393,7 @@ class ForwardClientTest(TestCase):
         self.client._sdk_client.networks.list = Mock(
             return_value=[SimpleNamespace(id="network-1", name="Network 1")]
         )
-        self.client._request = Mock(return_value=self._response({"id": "commit-1"}))
+        self.client._sdk_client.nqe.repo.head_commit_id = Mock(return_value="commit-1")
 
         networks_first = self.client.get_networks()
         networks_second = self.client.get_networks()
@@ -401,7 +401,7 @@ class ForwardClientTest(TestCase):
         head_second = self.client.get_org_nqe_head_commit_id()
 
         self.client._sdk_client.networks.list.assert_called_once_with()
-        self.assertEqual(self.client._request.call_count, 1)
+        self.client._sdk_client.nqe.repo.head_commit_id.assert_called_once_with()
         self.assertEqual(networks_first, networks_second)
         self.assertEqual(head_first, head_second)
         self.assertEqual(networks_first[0]["label"], "Network 1 (network-1)")
@@ -485,14 +485,15 @@ class ForwardClientTest(TestCase):
                 },
             )
         )
-        client_one._request = Mock(return_value=self._response({"id": "commit-1"}))
-        client_two._request = Mock(
-            side_effect=[
-                self._response({}),
-                self._response({"id": "commit-2"}),
-            ]
+        from forward_sdk.nqe.repository import CommitReport
+
+        client_one._sdk_client.nqe.repo.head_commit_id = Mock(return_value="commit-1")
+        client_two._sdk_client.nqe.repo.commit = Mock(
+            return_value=CommitReport(
+                committed_paths=("netbox/forward_devices",), commit_id="commit-2"
+            )
         )
-        client_three._request = Mock(
+        client_three._sdk_client.nqe.repo.head_commit_id = Mock(
             side_effect=AssertionError("shared cache should avoid third request")
         )
 
@@ -510,9 +511,9 @@ class ForwardClientTest(TestCase):
         self.assertEqual(first, "commit-1")
         self.assertEqual(second, "commit-2")
         self.assertEqual(third, "commit-2")
-        self.assertEqual(client_one._request.call_count, 1)
-        self.assertEqual(client_two._request.call_count, 2)
-        self.assertEqual(client_three._request.call_count, 0)
+        self.assertEqual(client_one._sdk_client.nqe.repo.head_commit_id.call_count, 1)
+        self.assertEqual(client_two._sdk_client.nqe.repo.commit.call_count, 1)
+        self.assertEqual(client_three._sdk_client.nqe.repo.head_commit_id.call_count, 0)
 
     def test_request_throttles_each_forward_http_attempt(self):
         response = Mock()
@@ -1961,40 +1962,19 @@ class ForwardClientTest(TestCase):
         )
 
     def test_get_nqe_query_history(self):
-        self.client._request = Mock(
-            return_value=self._response(
-                {
-                    "commits": [
-                        {
-                            "id": "commit-1",
-                            "path": "/netbox/forward_devices",
-                        }
-                    ]
-                }
-            )
+        self.client._sdk_client.nqe.repo.history = Mock(
+            return_value=[{"id": "commit-1", "path": "/netbox/forward_devices"}]
         )
 
         rows = self.client.get_nqe_query_history("FQ/devices")
 
         self.assertEqual(rows[0]["id"], "commit-1")
-        self.client._request.assert_called_once_with(
-            "GET",
-            "/nqe/queries/FQ%2Fdevices/history",
-        )
+        self.client._sdk_client.nqe.repo.history.assert_called_once_with("FQ/devices")
 
     def test_nqe_query_history_is_cached_per_client(self):
         shared_cache = FakeSharedCache()
-        self.client._request = Mock(
-            return_value=self._response(
-                {
-                    "commits": [
-                        {
-                            "id": "commit-1",
-                            "path": "/netbox/forward_devices",
-                        }
-                    ]
-                }
-            )
+        self.client._sdk_client.nqe.repo.history = Mock(
+            return_value=[{"id": "commit-1", "path": "/netbox/forward_devices"}]
         )
 
         with patch(
@@ -2009,12 +1989,8 @@ class ForwardClientTest(TestCase):
 
     def test_empty_nqe_list_reads_are_cached_per_client(self):
         shared_cache = FakeSharedCache()
-        self.client._request = Mock(
-            side_effect=[
-                self._response([]),
-                self._response({"commits": []}),
-            ]
-        )
+        self.client._request = Mock(return_value=self._response([]))
+        self.client._sdk_client.nqe.repo.history = Mock(return_value=[])
 
         with patch(
             "forward_netbox.utilities.forward_api_impl._shared_read_cache",
@@ -2381,45 +2357,32 @@ class ForwardClientTest(TestCase):
         self.assertEqual(second["commitId"], "commit-2")
 
     def test_add_org_nqe_query_creates_user_workspace_change(self):
-        self.client._request = Mock(return_value=self._response({}))
+        self.client._sdk_client.nqe.repo.stage_add = Mock()
 
         self.client.add_org_nqe_query(
             query_path="netbox/forward_devices",
             source_code="select {}",
         )
 
-        self.client._request.assert_called_once_with(
-            "POST",
-            "/users/current/nqe/changes",
-            params={"action": "addQuery", "path": "/netbox/forward_devices"},
-            json_body={"sourceCode": "select {}"},
+        self.client._sdk_client.nqe.repo.stage_add.assert_called_once_with(
+            "/netbox/forward_devices", "select {}"
         )
 
     def test_nqe_library_write_permission_accepts_org_admin(self):
-        self.client._request = Mock(
-            return_value=self._response(
-                {
-                    "roles": {
-                        "org": ["ADMIN"],
-                        "network": {},
-                    }
-                }
+        self.client._sdk_client.user_accounts.get_current_user = Mock(
+            return_value=SimpleNamespace(
+                roles=SimpleNamespace(org=["ADMIN"], network={})
             )
         )
 
         self.assertTrue(self.client.has_nqe_library_write_permission())
-        self.client._request.assert_called_once_with("GET", "/users/current")
+        self.client._sdk_client.user_accounts.get_current_user.assert_called_once_with()
 
     def test_nqe_library_write_permission_accepts_selected_network_operator(self):
         self.client.source.parameters["network_id"] = "network-1"
-        self.client._request = Mock(
-            return_value=self._response(
-                {
-                    "roles": {
-                        "org": [],
-                        "network": {"network-1": "OPERATOR"},
-                    }
-                }
+        self.client._sdk_client.user_accounts.get_current_user = Mock(
+            return_value=SimpleNamespace(
+                roles=SimpleNamespace(org=[], network={"network-1": "OPERATOR"})
             )
         )
 
@@ -2427,21 +2390,16 @@ class ForwardClientTest(TestCase):
 
     def test_nqe_library_write_permission_rejects_read_only_role(self):
         self.client.source.parameters["network_id"] = "network-1"
-        self.client._request = Mock(
-            return_value=self._response(
-                {
-                    "roles": {
-                        "org": [],
-                        "network": {"network-1": "OBSERVER"},
-                    }
-                }
+        self.client._sdk_client.user_accounts.get_current_user = Mock(
+            return_value=SimpleNamespace(
+                roles=SimpleNamespace(org=[], network={"network-1": "OBSERVER"})
             )
         )
 
         self.assertFalse(self.client.has_nqe_library_write_permission())
 
     def test_edit_org_nqe_query_uses_existing_query_basis(self):
-        self.client._request = Mock(return_value=self._response({}))
+        self.client._sdk_client.nqe.repo.stage_edit = Mock()
 
         self.client.edit_org_nqe_query(
             query_path="/netbox/forward_devices",
@@ -2450,25 +2408,20 @@ class ForwardClientTest(TestCase):
             commit_id="commit-1",
         )
 
-        self.client._request.assert_called_once_with(
-            "POST",
-            "/users/current/nqe/changes",
-            params={"action": "editQuery", "path": "/netbox/forward_devices"},
-            json_body={
-                "sourceCode": "select {}",
-                "basis": {
-                    "queryId": "OQ_devices",
-                    "commitId": "commit-1",
-                },
-            },
+        self.client._sdk_client.nqe.repo.stage_edit.assert_called_once_with(
+            "/netbox/forward_devices",
+            "select {}",
+            query_id="OQ_devices",
+            commit_id="commit-1",
         )
 
     def test_commit_org_nqe_queries_commits_paths_and_returns_head(self):
-        self.client._request = Mock(
-            side_effect=[
-                self._response({}),
-                self._response("commit-2"),
-            ]
+        from forward_sdk.nqe.repository import CommitReport
+
+        self.client._sdk_client.nqe.repo.commit = Mock(
+            return_value=CommitReport(
+                committed_paths=("/netbox/forward_devices",), commit_id="commit-2"
+            )
         )
 
         commit_id = self.client.commit_org_nqe_queries(
@@ -2477,33 +2430,23 @@ class ForwardClientTest(TestCase):
         )
 
         self.assertEqual(commit_id, "commit-2")
-        self.client._request.assert_any_call(
-            "POST",
-            "/nqe/repos/org/commits",
-            json_body={
-                "paths": ["/netbox/forward_devices"],
-                "accessSettings": [],
-                "message": {
-                    "title": "Publish test queries",
-                    "body": "",
-                },
-            },
+        self.client._sdk_client.nqe.repo.commit.assert_called_once_with(
+            ["/netbox/forward_devices"], title="Publish test queries", body=""
         )
-        self.client._request.assert_any_call("GET", "/nqe/repos/org/commits/head")
 
-    def test_commit_org_nqe_queries_retries_after_409_invalid_change_path(self):
-        conflict_body = (
-            '{"message": "User has no changes at the following paths: '
-            '/netbox/forward_devices.", "reason": "INVALID_CHANGE_PATH"}'
-        )
-        self.client._request = Mock(
-            side_effect=[
-                ForwardClientError(
-                    f"Forward API request failed with HTTP 409: {conflict_body}"
-                ),
-                self._response({}),
-                self._response("commit-2"),
-            ]
+    def test_commit_org_nqe_queries_reflects_paths_the_sdk_skipped_as_unchanged(self):
+        # NqeRepository.commit does its own no-staged-changes retry internally
+        # now (dropping paths Forward's 409 INVALID_CHANGE_PATH names as
+        # unchanged) - this method only has to trust the CommitReport it
+        # gets back, not re-parse the error itself.
+        from forward_sdk.nqe.repository import CommitReport
+
+        self.client._sdk_client.nqe.repo.commit = Mock(
+            return_value=CommitReport(
+                committed_paths=("/netbox/forward_interfaces",),
+                skipped_paths=("/netbox/forward_devices",),
+                commit_id="commit-2",
+            )
         )
 
         commit_id = self.client.commit_org_nqe_queries(
@@ -2512,21 +2455,36 @@ class ForwardClientTest(TestCase):
         )
 
         self.assertEqual(commit_id, "commit-2")
-        calls = self.client._request.call_args_list
-        # First call: original paths (both)
-        self.assertIn("/netbox/forward_devices", calls[0].kwargs["json_body"]["paths"])
-        self.assertIn(
-            "/netbox/forward_interfaces", calls[0].kwargs["json_body"]["paths"]
+        self.client._sdk_client.nqe.repo.commit.assert_called_once_with(
+            ["/netbox/forward_devices", "/netbox/forward_interfaces"],
+            title="Publish test queries",
+            body="",
         )
-        # Retry call: no-change path stripped, changed path kept
-        retry_paths = calls[1].kwargs["json_body"]["paths"]
-        self.assertNotIn("/netbox/forward_devices", retry_paths)
-        self.assertIn("/netbox/forward_interfaces", retry_paths)
 
-    def test_commit_org_nqe_queries_reraises_non_409_client_errors(self):
-        self.client._request = Mock(
-            side_effect=ForwardClientError(
-                "Forward API request failed with HTTP 500: server error"
+    def test_commit_org_nqe_queries_falls_back_to_head_commit_when_everything_skipped(
+        self,
+    ):
+        from forward_sdk.nqe.repository import CommitReport
+
+        self.client._sdk_client.nqe.repo.commit = Mock(
+            return_value=CommitReport(skipped_paths=("/netbox/forward_devices",))
+        )
+        self.client._sdk_client.nqe.repo.head_commit_id = Mock(return_value="commit-1")
+
+        commit_id = self.client.commit_org_nqe_queries(
+            query_paths=["/netbox/forward_devices"],
+            message="Publish test queries",
+        )
+
+        self.assertEqual(commit_id, "commit-1")
+        self.client._sdk_client.nqe.repo.head_commit_id.assert_called_once_with()
+
+    def test_commit_org_nqe_queries_translates_an_sdk_exception(self):
+        from forward_sdk.errors import ForwardServerError
+
+        self.client._sdk_client.nqe.repo.commit = Mock(
+            side_effect=ForwardServerError(
+                "failed with HTTP 500: server error", status=500, text="server error"
             )
         )
 
@@ -2538,29 +2496,15 @@ class ForwardClientTest(TestCase):
 
         self.assertIn("HTTP 500", str(ctx.exception))
 
-    def test_commit_org_nqe_queries_reraises_409_without_invalid_change_path_reason(
-        self,
-    ):
-        self.client._request = Mock(
-            side_effect=ForwardClientError(
-                'Forward API request failed with HTTP 409: {"reason": "CONFLICT"}'
-            )
-        )
-
-        with self.assertRaises(ForwardClientError):
-            self.client.commit_org_nqe_queries(
-                query_paths=["/netbox/forward_devices"],
-                message="Publish test queries",
-            )
-
-    def test_nqe_mutations_invalidate_cached_head_commit(self):
+    def test_nqe_mutations_invalidate_and_repopulate_cached_head_commit(self):
         shared_cache = FakeSharedCache()
-        self.client._request = Mock(
-            side_effect=[
-                self._response({"id": "commit-1"}),
-                self._response({}),
-                self._response({"id": "commit-2"}),
-            ]
+        from forward_sdk.nqe.repository import CommitReport
+
+        self.client._sdk_client.nqe.repo.head_commit_id = Mock(return_value="commit-1")
+        self.client._sdk_client.nqe.repo.commit = Mock(
+            return_value=CommitReport(
+                committed_paths=("/netbox/forward_devices",), commit_id="commit-2"
+            )
         )
 
         with patch(
@@ -2576,7 +2520,7 @@ class ForwardClientTest(TestCase):
 
         self.assertEqual(first, "commit-1")
         self.assertEqual(second, "commit-2")
-        self.assertEqual(self.client._request.call_count, 3)
+        self.client._sdk_client.nqe.repo.head_commit_id.assert_called_once_with()
 
     def test_run_nqe_diff_returns_single_page_by_default(self):
         self.client._request = Mock(
