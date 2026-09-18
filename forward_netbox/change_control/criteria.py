@@ -6,6 +6,7 @@
 # would silently compare two different questions.
 from dataclasses import dataclass
 
+from ..utilities.forward_api import resolve_nqe_query_reference
 from ..utilities.query_execution_contract import query_source_sha256
 from .choices import ForwardCriterionExpectationChoices as Expectation
 
@@ -31,7 +32,8 @@ def bind_criterion(criterion, client) -> BindResult:
     if not criterion.query_path:
         return BindResult(False, error="The criterion has no query path to bind.")
     try:
-        resolved = client.resolve_nqe_query_reference(
+        resolved = resolve_nqe_query_reference(
+            client,
             repository="org",
             query_path=criterion.query_path,
             commit_id=criterion.commit_id or None,

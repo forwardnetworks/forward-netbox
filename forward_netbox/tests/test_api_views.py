@@ -170,6 +170,18 @@ class ForwardSourceAPIViewTest(TestCase):
         )
 
 
+def _forward_query_index(client, *args, **kwargs):
+    return client.get_nqe_repository_query_index(*args, **kwargs)
+
+
+def _forward_committed_query(client, *args, **kwargs):
+    return client.get_committed_nqe_query(*args, **kwargs)
+
+
+def _forward_query_history(client, *args, **kwargs):
+    return client.get_nqe_query_history(*args, **kwargs)
+
+
 class ForwardNQEMapAPIViewTest(TestCase):
     @classmethod
     def setUpTestData(cls):
@@ -209,8 +221,14 @@ class ForwardNQEMapAPIViewTest(TestCase):
             params,
         )
 
+    @patch(
+        "forward_netbox.api.views.get_nqe_repository_query_index",
+        side_effect=_forward_query_index,
+    )
     @patch("forward_netbox.api.views.ForwardSource.get_client")
-    def test_available_query_folders_returns_detected_hierarchy(self, mock_get_client):
+    def test_available_query_folders_returns_detected_hierarchy(
+        self, mock_get_client, mock_query_index
+    ):
         mock_client = Mock()
         mock_client.get_nqe_repository_query_index.return_value = {
             "rows": [
@@ -243,9 +261,13 @@ class ForwardNQEMapAPIViewTest(TestCase):
             directory="/",
         )
 
+    @patch(
+        "forward_netbox.api.views.get_nqe_repository_query_index",
+        side_effect=_forward_query_index,
+    )
     @patch("forward_netbox.api.views.ForwardSource.get_client")
     def test_available_queries_returns_repository_scoped_query_choices(
-        self, mock_get_client
+        self, mock_get_client, mock_query_index
     ):
         mock_client = Mock()
         mock_client.get_nqe_repository_query_index.return_value = {
@@ -288,8 +310,14 @@ class ForwardNQEMapAPIViewTest(TestCase):
             repository="org", directory="/forward_netbox_validation/"
         )
 
+    @patch(
+        "forward_netbox.api.views.get_nqe_repository_query_index",
+        side_effect=_forward_query_index,
+    )
     @patch("forward_netbox.api.views.ForwardSource.get_client")
-    def test_available_queries_filters_by_netbox_model(self, mock_get_client):
+    def test_available_queries_filters_by_netbox_model(
+        self, mock_get_client, mock_query_index
+    ):
         mock_client = Mock()
         mock_client.get_nqe_repository_query_index.return_value = {
             "rows": [
@@ -326,9 +354,13 @@ class ForwardNQEMapAPIViewTest(TestCase):
             "/forward_netbox_validation/forward_devices",
         )
 
+    @patch(
+        "forward_netbox.api.views.get_nqe_repository_query_index",
+        side_effect=_forward_query_index,
+    )
     @patch("forward_netbox.api.views.ForwardSource.get_client")
     def test_available_queries_filters_by_netbox_model_content_type_id(
-        self, mock_get_client
+        self, mock_get_client, mock_query_index
     ):
         mock_client = Mock()
         mock_client.get_nqe_repository_query_index.return_value = {
@@ -367,8 +399,14 @@ class ForwardNQEMapAPIViewTest(TestCase):
             "/forward_netbox_validation/forward_devices",
         )
 
+    @patch(
+        "forward_netbox.api.views.get_nqe_query_history",
+        side_effect=_forward_query_history,
+    )
     @patch("forward_netbox.api.views.ForwardSource.get_client")
-    def test_available_query_commits_returns_history_choices(self, mock_get_client):
+    def test_available_query_commits_returns_history_choices(
+        self, mock_get_client, mock_query_history
+    ):
         mock_client = Mock()
         mock_client.get_nqe_query_history.return_value = [
             {
@@ -396,9 +434,25 @@ class ForwardNQEMapAPIViewTest(TestCase):
         self.assertIn("Update NetBox query", response.data["results"][0]["display"])
         mock_client.get_nqe_query_history.assert_called_once_with("Q_interfaces")
 
+    @patch(
+        "forward_netbox.api.views.get_nqe_query_history",
+        side_effect=_forward_query_history,
+    )
+    @patch(
+        "forward_netbox.api.views.get_committed_nqe_query",
+        side_effect=_forward_committed_query,
+    )
+    @patch(
+        "forward_netbox.api.views.get_nqe_repository_query_index",
+        side_effect=_forward_query_index,
+    )
     @patch("forward_netbox.api.views.ForwardSource.get_client")
     def test_available_query_commits_resolves_path_before_history(
-        self, mock_get_client
+        self,
+        mock_get_client,
+        mock_query_index,
+        mock_committed_query,
+        mock_query_history,
     ):
         mock_client = Mock()
         mock_client.get_nqe_repository_query_index.return_value = {
@@ -439,9 +493,25 @@ class ForwardNQEMapAPIViewTest(TestCase):
         mock_client.get_committed_nqe_query.assert_not_called()
         mock_client.get_nqe_query_history.assert_called_once_with("Q_interfaces")
 
+    @patch(
+        "forward_netbox.api.views.get_nqe_query_history",
+        side_effect=_forward_query_history,
+    )
+    @patch(
+        "forward_netbox.api.views.get_committed_nqe_query",
+        side_effect=_forward_committed_query,
+    )
+    @patch(
+        "forward_netbox.api.views.get_nqe_repository_query_index",
+        side_effect=_forward_query_index,
+    )
     @patch("forward_netbox.api.views.ForwardSource.get_client")
     def test_available_query_commits_falls_back_to_committed_query_when_index_missing(
-        self, mock_get_client
+        self,
+        mock_get_client,
+        mock_query_index,
+        mock_committed_query,
+        mock_query_history,
     ):
         mock_client = Mock()
         mock_client.get_nqe_repository_query_index.return_value = {"by_path": {}}
@@ -483,9 +553,25 @@ class ForwardNQEMapAPIViewTest(TestCase):
         )
         mock_client.get_nqe_query_history.assert_called_once_with("Q_interfaces")
 
+    @patch(
+        "forward_netbox.api.views.get_nqe_query_history",
+        side_effect=_forward_query_history,
+    )
+    @patch(
+        "forward_netbox.api.views.get_committed_nqe_query",
+        side_effect=_forward_committed_query,
+    )
+    @patch(
+        "forward_netbox.api.views.get_nqe_repository_query_index",
+        side_effect=_forward_query_index,
+    )
     @patch("forward_netbox.api.views.ForwardSource.get_client")
     def test_available_query_commits_uses_fwd_query_index_before_history(
-        self, mock_get_client
+        self,
+        mock_get_client,
+        mock_query_index,
+        mock_committed_query,
+        mock_query_history,
     ):
         mock_client = Mock()
         mock_client.get_nqe_repository_query_index.return_value = {

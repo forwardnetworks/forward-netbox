@@ -608,3 +608,54 @@ dependency declaration; the first with a behavioural one is the transport swap.
   `test_scheduled_jobs`, `test_sync`, `test_sync_facade`,
   `test_sync_orchestration`; 765 tests) green against the running
   container's bind-mounted worktree.
+- **2026-09-18** -- Step 6b: the NQE query-index/repository method family
+  (`get_nqe_repository_query_index`, `get_committed_nqe_query`,
+  `resolve_nqe_query_reference`, `get_nqe_query_history`,
+  `has_nqe_library_write_permission`, `add_org_nqe_query`,
+  `edit_org_nqe_query`, `get_org_nqe_head_commit_id`,
+  `commit_org_nqe_queries`, plus the two private helpers
+  `_get_org_nqe_queries`/`_get_nqe_repository_queries` these internally
+  depend on) converted to free functions, same shape as 6a
+  (`get_committed_nqe_query(client, ...)` instead of
+  `client.get_committed_nqe_query(...)`). 32 production call sites across 4
+  files converted (`change_control/criteria.py`, `api/views.py`,
+  `query_binding_resolution.py`, `query_registry.py`) - `ForwardClient`'s
+  class-level coupling really is as small as the earlier scoping survey
+  found: no file needed anything beyond a straight method-call rename, no
+  `isinstance` checks, no constructor changes.
+  **Real bug caught before merging, not by a test**: the free functions
+  were defined and every call site converted, but `forward_api.py`'s
+  facade was never updated to re-export them - `query_registry.py`'s own
+  `from .forward_api import get_committed_nqe_query` therefore failed at
+  Django app-load time, which means EVERY test in the app would have
+  failed, not just ones touching NQE queries. Caught when running
+  `test_forward_api.py` directly (an `ImportError` at collection, not a
+  test failure) before it could reach a push. One of three parallel forks
+  fixing this step's test files hit the identical `ImportError` first and
+  correctly diagnosed it as a production bug outside its own assigned
+  scope rather than trying to work around it - a fresh instance with zero
+  context recognized "this failure blocks every test, not mine" as a
+  do-not-touch signal, exactly as intended.
+  **Test-mock rewrite** (three parallel forks + direct work, ~250 sites
+  across 10 files) followed the same "patch where it's looked up" rule as
+  6a, with one new wrinkle: `query_fetch_execution.py` doesn't call these
+  functions directly, it calls `query_registry.py`'s
+  `resolve_query_specs_for_client`, which does - so `test_sync.py`'s
+  `ForwardSyncRunnerTest` setUp (already patching 6a's functions in two
+  modules) grew two more module targets
+  (`query_registry`, `query_binding_resolution`) rather than one, tracing
+  the real call chain instead of assuming the nearest importer was the
+  right target. Two test files without a shared class-level client fixture
+  (`test_builtin_query_id_binding.py`, `test_execute_by_query_id_without_
+  commit.py`) used a `setUp`/`setUpModule` teardown-paired
+  `patch(...).start()`/`.stop()` instead of a context-manager `with`
+  block, since their client fixtures are built by a plain helper function
+  shared across many independent test methods rather than one `setUp`.
+  Full targeted suite (10 files: `test_forward_api`, `test_query_binding`,
+  `test_query_registry`, `test_api_views`,
+  `test_validation_org_query_audit_command`,
+  `test_builtin_query_id_binding`,
+  `test_execute_by_query_id_without_commit`,
+  `test_head_commit_from_listing`, `test_health`, `test_sync`; 638 tests)
+  plus all 5 `test_change_control_*` files (58 tests, covering
+  `criteria.py`'s only other production caller) green.

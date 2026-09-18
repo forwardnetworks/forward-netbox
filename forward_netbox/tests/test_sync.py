@@ -541,15 +541,47 @@ class ForwardSyncRunnerTest(TestCase):
         # `client.get_snapshots.return_value = ...` (a Mock attribute) exactly
         # as before the free-function conversion, so the patch just forwards
         # the free-function call onto that same attribute unchanged.
-        for module in (
-            "forward_netbox.utilities.sync_execution",
-            "forward_netbox.utilities.query_fetch_execution",
+        for module, names in (
+            (
+                "forward_netbox.utilities.sync_execution",
+                (
+                    "get_snapshots",
+                    "get_latest_processed_snapshot",
+                    "get_snapshot_metrics",
+                ),
+            ),
+            (
+                "forward_netbox.utilities.query_fetch_execution",
+                (
+                    "get_snapshots",
+                    "get_latest_processed_snapshot",
+                    "get_snapshot_metrics",
+                ),
+            ),
+            (
+                # step 6b: NQE query-index/repository methods, same
+                # forwarding-shim pattern as the 6a functions above.
+                "forward_netbox.utilities.query_registry",
+                (
+                    "get_committed_nqe_query",
+                    "get_nqe_query_history",
+                    "get_nqe_repository_query_index",
+                ),
+            ),
+            (
+                "forward_netbox.utilities.query_binding_resolution",
+                (
+                    "get_committed_nqe_query",
+                    "get_nqe_query_history",
+                    "get_nqe_repository_query_index",
+                    "has_nqe_library_write_permission",
+                    "add_org_nqe_query",
+                    "edit_org_nqe_query",
+                    "commit_org_nqe_queries",
+                ),
+            ),
         ):
-            for name in (
-                "get_snapshots",
-                "get_latest_processed_snapshot",
-                "get_snapshot_metrics",
-            ):
+            for name in names:
                 patcher = patch(
                     f"{module}.{name}",
                     side_effect=lambda client, *args, __name=name, **kwargs: getattr(

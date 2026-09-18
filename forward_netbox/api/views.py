@@ -40,8 +40,11 @@ from forward_netbox.models import ForwardNQEMap
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.models import ForwardValidationRun
+from forward_netbox.utilities.forward_api import get_committed_nqe_query
 from forward_netbox.utilities.forward_api import get_latest_processed_snapshot
 from forward_netbox.utilities.forward_api import get_networks
+from forward_netbox.utilities.forward_api import get_nqe_query_history
+from forward_netbox.utilities.forward_api import get_nqe_repository_query_index
 from forward_netbox.utilities.forward_api import get_snapshots
 from forward_netbox.utilities.forward_api import LATEST_COLLECTED_SNAPSHOT
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
@@ -339,7 +342,8 @@ class ForwardNQEMapViewSet(NetBoxModelViewSet):
             )
 
         try:
-            query_index = source.get_client().get_nqe_repository_query_index(
+            query_index = get_nqe_repository_query_index(
+                source.get_client(),
                 repository=repository,
                 directory="/",
             )
@@ -395,7 +399,8 @@ class ForwardNQEMapViewSet(NetBoxModelViewSet):
 
         results = []
         try:
-            query_index = source.get_client().get_nqe_repository_query_index(
+            query_index = get_nqe_repository_query_index(
+                source.get_client(),
                 repository=repository,
                 directory=directory,
             )
@@ -475,7 +480,8 @@ class ForwardNQEMapViewSet(NetBoxModelViewSet):
             client = source.get_client()
             if query_path and not query_id:
                 try:
-                    query_index = client.get_nqe_repository_query_index(
+                    query_index = get_nqe_repository_query_index(
+                        client,
                         repository=repository,
                         directory="/",
                     )
@@ -485,14 +491,15 @@ class ForwardNQEMapViewSet(NetBoxModelViewSet):
                 if indexed_query and indexed_query.get("queryId"):
                     query_id = str(indexed_query.get("queryId") or "").strip()
                 else:
-                    committed_query = client.get_committed_nqe_query(
+                    committed_query = get_committed_nqe_query(
+                        client,
                         repository=repository,
                         query_path=query_path,
                         commit_id="head",
                         query_index=query_index,
                     )
                     query_id = str(committed_query.get("queryId") or "").strip()
-            commits = client.get_nqe_query_history(query_id)
+            commits = get_nqe_query_history(client, query_id)
         except Exception:
             return Response(
                 {

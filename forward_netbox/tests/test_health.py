@@ -859,7 +859,21 @@ class ForwardSyncHealthTest(TestCase):
             "sourceCode": read_compiled_builtin_query_source("forward_devices.nqe"),
         }
 
-        with patch.object(ForwardSource, "get_client", return_value=client):
+        with (
+            patch.object(ForwardSource, "get_client", return_value=client),
+            patch(
+                "forward_netbox.utilities.query_binding_resolution."
+                "get_nqe_repository_query_index",
+                side_effect=lambda c, *a, **kw: c.get_nqe_repository_query_index(
+                    *a, **kw
+                ),
+            ),
+            patch(
+                "forward_netbox.utilities.query_binding_resolution."
+                "get_committed_nqe_query",
+                side_effect=lambda c, *a, **kw: c.get_committed_nqe_query(*a, **kw),
+            ),
+        ):
             response = self.client.get(
                 reverse(
                     "plugins:forward_netbox:forwardsync_query_drift",

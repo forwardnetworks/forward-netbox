@@ -69,7 +69,8 @@ class HeadCommitResolutionTest(TestCase):
         self.client._sdk_client.nqe.repo.queries = Mock(
             return_value=[self._committed_query()]
         )
-        resolved = self.client.get_committed_nqe_query(
+        resolved = forward_api_impl.get_committed_nqe_query(
+            self.client,
             repository="org",
             query_path=PATH,
             commit_id="head",
@@ -82,7 +83,8 @@ class HeadCommitResolutionTest(TestCase):
     def test_a_listing_row_carrying_a_commit_needs_no_request(self):
         row = dict(LISTING_ROW, lastCommitId=HEAD)
         self.client._sdk_client.nqe.repo.queries = Mock()
-        resolved = self.client.get_committed_nqe_query(
+        resolved = forward_api_impl.get_committed_nqe_query(
+            self.client,
             repository="org",
             query_path=PATH,
             commit_id="head",
@@ -95,7 +97,8 @@ class HeadCommitResolutionTest(TestCase):
         self.client._sdk_client.nqe.repo.queries = Mock(
             return_value=[self._committed_query()]
         )
-        self.client.get_committed_nqe_query(
+        forward_api_impl.get_committed_nqe_query(
+            self.client,
             repository="org",
             query_path=PATH,
             commit_id="head",
@@ -109,7 +112,8 @@ class HeadCommitResolutionTest(TestCase):
         self.client._sdk_client.nqe.repo.queries = Mock(
             return_value=[self._committed_query()]
         )
-        self.client.get_committed_nqe_query(
+        forward_api_impl.get_committed_nqe_query(
+            self.client,
             repository="org",
             query_path=PATH,
             commit_id="pinned_commit",

@@ -6,6 +6,13 @@ from django.db import transaction
 from rq.timeouts import JobTimeoutException
 
 from ..models import ForwardNQEMap
+from .forward_api import add_org_nqe_query
+from .forward_api import commit_org_nqe_queries
+from .forward_api import edit_org_nqe_query
+from .forward_api import get_committed_nqe_query
+from .forward_api import get_nqe_query_history
+from .forward_api import get_nqe_repository_query_index
+from .forward_api import has_nqe_library_write_permission
 from .plugin_integrations.registry import optional_integration_for_model
 from .query_registry import BUILTIN_SEEDED_QUERY_MAPS
 from .query_registry import get_query_specs
@@ -261,7 +268,8 @@ def live_query_binding_drift(
             query_index = repository_query_indexes.get(repository)
             if query_index is None:
                 try:
-                    query_index = client.get_nqe_repository_query_index(
+                    query_index = get_nqe_repository_query_index(
+                        client,
                         repository=repository,
                         directory="/",
                     )
@@ -272,7 +280,8 @@ def live_query_binding_drift(
                     return _live_lookup_failed(local_result, exc)
                 repository_query_indexes[repository] = query_index
         try:
-            committed_query = client.get_committed_nqe_query(
+            committed_query = get_committed_nqe_query(
+                client,
                 repository=repository,
                 query_path=query_path,
                 commit_id=requested_commit_id,
@@ -359,7 +368,8 @@ def _live_drift_for_query_id(
         )
         if query_index is None:
             try:
-                query_index = client.get_nqe_repository_query_index(
+                query_index = get_nqe_repository_query_index(
+                    client,
                     repository=repository,
                     directory="/",
                 )
@@ -412,7 +422,8 @@ def _live_drift_for_query_id(
     query_path = str(query.get("path") or "").strip()
     commit_id = str(query.get("lastCommitId") or "").strip() or "head"
     try:
-        committed_query = client.get_committed_nqe_query(
+        committed_query = get_committed_nqe_query(
+            client,
             repository=repository,
             query_path=query_path,
             commit_id=query_map.commit_id or commit_id,
@@ -644,7 +655,8 @@ def build_nqe_map_bindings(
     filename_to_query_default = builtin_filename_to_query_default()
     bindings = []
     if query_index is None:
-        query_index = client.get_nqe_repository_query_index(
+        query_index = get_nqe_repository_query_index(
+            client,
             repository=repository,
             directory=directory,
         )
@@ -691,7 +703,7 @@ def _committed_query_by_path(client, query_path: str, existing_query: dict | Non
         return existing_query
     if query_id and not commit_id:
         try:
-            history = client.get_nqe_query_history(query_id)
+            history = get_nqe_query_history(client, query_id)
         except JobTimeoutException:
             raise
         except Exception:
@@ -711,7 +723,8 @@ def _committed_query_by_path(client, query_path: str, existing_query: dict | Non
                 ).strip()
                 return existing_query
     try:
-        query = client.get_committed_nqe_query(
+        query = get_committed_nqe_query(
+            client,
             repository="org",
             query_path=query_path,
             commit_id="head",
@@ -727,7 +740,7 @@ def _committed_query_by_path(client, query_path: str, existing_query: dict | Non
     ).strip()
     if resolved_query_id and not resolved_commit_id:
         try:
-            history = client.get_nqe_query_history(resolved_query_id)
+            history = get_nqe_query_history(client, resolved_query_id)
         except JobTimeoutException:
             raise
         except Exception:
@@ -795,11 +808,16 @@ def publish_builtin_nqe_map_queries(
 
     if not map_query_paths and not publish_filenames:
         return results
-    if client.has_nqe_library_write_permission() is not True:
+    if (
+        has_nqe_library_write_permission(
+            client,
+        )
+        is not True
+    ):
         raise NQELibraryWritePermissionError(NQE_LIBRARY_WRITE_PERMISSION_MESSAGE)
 
-    query_index = client.get_nqe_repository_query_index(
-        repository="org", directory=directory
+    query_index = get_nqe_repository_query_index(
+        client, repository="org", directory=directory
     )
     existing_by_path = query_index.get("by_path", {})
     changed_paths = []
@@ -817,27 +835,29 @@ def publish_builtin_nqe_map_queries(
             )
             if _committed_query_source(committed_query).strip() == source_code.strip():
                 continue
-            client.edit_org_nqe_query(
+            edit_org_nqe_query(
+                client,
                 query_path=query_path,
                 source_code=source_code,
                 query_id=committed_query.get("queryId"),
                 commit_id=committed_query.get("lastCommitId"),
             )
         else:
-            client.add_org_nqe_query(query_path=query_path, source_code=source_code)
+            add_org_nqe_query(client, query_path=query_path, source_code=source_code)
         changed_paths.append(query_path)
 
     commit_id = ""
     if changed_paths:
-        commit_id = client.commit_org_nqe_queries(
+        commit_id = commit_org_nqe_queries(
+            client,
             query_paths=changed_paths,
             message=commit_message,
         )
 
     binding_query_index = query_index
     if changed_paths:
-        binding_query_index = client.get_nqe_repository_query_index(
-            repository="org", directory=directory
+        binding_query_index = get_nqe_repository_query_index(
+            client, repository="org", directory=directory
         )
 
     bindings = build_nqe_map_bindings(
@@ -938,7 +958,8 @@ def resolve_nqe_map_query_ids(*, client, queryset=None) -> list[NQEMapBinding]:
         repository = spec.query_repository or "org"
         if repository not in query_indexes and repository not in query_index_errors:
             try:
-                query_index = client.get_nqe_repository_query_index(
+                query_index = get_nqe_repository_query_index(
+                    client,
                     repository=repository,
                     directory="/",
                 )
@@ -1056,7 +1077,8 @@ def builtin_query_repository_sync_summary(
     normalized_directory = normalized_directory.rstrip("/") or "/"
 
     try:
-        query_index = client.get_nqe_repository_query_index(
+        query_index = get_nqe_repository_query_index(
+            client,
             repository=repository,
             directory=normalized_directory,
         )
@@ -1161,7 +1183,8 @@ def builtin_query_repository_sync_summary(
             or "head"
         )
         try:
-            committed_query = client.get_committed_nqe_query(
+            committed_query = get_committed_nqe_query(
+                client,
                 repository=repository,
                 query_path=expected_path,
                 commit_id=requested_commit_id,

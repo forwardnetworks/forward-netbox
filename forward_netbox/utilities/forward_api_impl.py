@@ -637,6 +637,434 @@ def get_snapshot_data_file_hashes(client, network_id, snapshot_id):
     return hashes
 
 
+def _get_org_nqe_queries(client, *, directory="/"):
+    directory = _normalize_nqe_directory(directory)
+    shared_cache_key = client._shared_read_cache_key(
+        "org-nqe-queries", directory, client._shared_query_read_generation()
+    )
+    cached_queries = client._org_nqe_queries_cache.get(directory)
+    if cached_queries is not None:
+        client._record_read_cache_hit()
+        return [dict(row) for row in cached_queries]
+    cached_queries = client._shared_read_cache_get(shared_cache_key)
+    if cached_queries is not None:
+        client._org_nqe_queries_cache[directory] = list(cached_queries)
+        client._record_read_cache_hit()
+        return [dict(row) for row in cached_queries]
+    client._record_read_cache_miss()
+    sdk_rows = client._call_sdk(client._sdk_client.nqe.queries, directory=directory)
+    # This listing carries no commit per query - only intent/path/queryId
+    # (`NqeQuery` has no `last_commit_id` field at all, matching the raw
+    # endpoint exactly) - `get_committed_nqe_query`'s fallback to the
+    # commits endpoint below depends on that being true.
+    rows = [
+        {
+            "queryId": str(item.query_id or ""),
+            "path": str(item.path or ""),
+            "intent": str(item.intent or ""),
+        }
+        for item in sdk_rows or []
+    ]
+    client._org_nqe_queries_cache[directory] = list(rows)
+    client._shared_read_cache_set(shared_cache_key, list(rows))
+    return rows if isinstance(rows, list) else []
+
+
+def _get_nqe_repository_queries(client, *, repository="org", directory="/"):
+    repository = _normalize_nqe_repository(repository)
+    directory = _normalize_nqe_directory(directory)
+    if repository == "org":
+        rows = _get_org_nqe_queries(client, directory=directory)
+        return [
+            normalized
+            for row in rows
+            if (normalized := _normalize_nqe_query_row(row, repository=repository))
+        ]
+
+    cache_key = (repository, directory)
+    shared_cache_key = client._shared_read_cache_key(
+        "repository-nqe-queries",
+        repository,
+        directory,
+        client._shared_query_read_generation(),
+    )
+    cached_queries = client._repository_queries_cache.get(cache_key)
+    if cached_queries is not None:
+        client._record_read_cache_hit()
+        return [dict(row) for row in cached_queries]
+    cached_queries = client._shared_read_cache_get(shared_cache_key)
+    if cached_queries is not None:
+        client._repository_queries_cache[cache_key] = [
+            dict(row) for row in cached_queries
+        ]
+        client._record_read_cache_hit()
+        return [dict(row) for row in cached_queries]
+    client._record_read_cache_miss()
+
+    sdk_rows = client._call_sdk(
+        client._sdk_client.nqe.repo.queries, repository=repository
+    )
+    rows = [
+        {
+            "queryId": str(item.query_id or ""),
+            "path": str(item.path or ""),
+            "intent": str(item.intent or ""),
+            "repository": repository,
+            "lastCommitId": str(item.last_commit_id or ""),
+        }
+        for item in sdk_rows or []
+    ]
+    normalized_rows = [
+        normalized
+        for row in rows
+        if _query_in_directory(row.get("path"), directory)
+        if (normalized := _normalize_nqe_query_row(row, repository=repository))
+    ]
+    client._repository_queries_cache[cache_key] = [dict(row) for row in normalized_rows]
+    client._shared_read_cache_set(
+        shared_cache_key, [dict(row) for row in normalized_rows]
+    )
+    return normalized_rows
+
+
+def get_nqe_repository_query_index(client, *, repository="org", directory="/"):
+    repository = _normalize_nqe_repository(repository)
+    directory = _normalize_nqe_directory(directory)
+    generation = client._shared_query_read_generation()
+    cache_key = (repository, directory, generation)
+    with client._read_cache_lock:
+        cached_index = client._repository_query_index_cache.get(cache_key)
+    if cached_index is not None:
+        client._record_read_cache_hit()
+        return client._copy_nqe_repository_query_index(cached_index)
+    shared_cache_key = client._shared_read_cache_key(
+        "repository-nqe-query-index",
+        repository,
+        directory,
+        generation,
+    )
+    cached_index = client._shared_read_cache_get(shared_cache_key)
+    if cached_index is not None:
+        with client._read_cache_lock:
+            client._repository_query_index_cache[cache_key] = (
+                client._copy_nqe_repository_query_index(cached_index)
+            )
+        client._record_read_cache_hit()
+        return client._copy_nqe_repository_query_index(cached_index)
+    rows = _get_nqe_repository_queries(
+        client,
+        repository=repository,
+        directory=directory,
+    )
+    index = client._build_nqe_repository_query_index(rows)
+    with client._read_cache_lock:
+        client._repository_query_index_cache[cache_key] = (
+            client._copy_nqe_repository_query_index(index)
+        )
+    client._shared_read_cache_set(shared_cache_key, index)
+    return index
+
+
+def get_committed_nqe_query(
+    client,
+    *,
+    repository="org",
+    query_path="",
+    commit_id="head",
+    query_index: dict | None = None,
+    require_source_code=False,
+):
+    repository = _normalize_nqe_repository(repository)
+    query_path = _normalize_nqe_query_path(query_path)
+    commit_id = str(commit_id or "head").strip() or "head"
+    if not query_path:
+        raise ForwardClientError("Forward NQE query path is required.")
+    if commit_id == "head":
+        if query_index is None:
+            try:
+                query_index = get_nqe_repository_query_index(
+                    client,
+                    repository=repository,
+                    directory="/",
+                )
+            except JobTimeoutException:
+                raise
+            except Exception:
+                query_index = {}
+        indexed_query = (query_index.get("by_path") or {}).get(query_path)
+        if indexed_query and indexed_query.get("queryId"):
+            # Ensure source code is available when requested for canonicality checks.
+            # Some API responses return directory rows without source text.
+            has_source = any(
+                indexed_query.get(key) for key in ("sourceCode", "source", "query")
+            )
+            # The directory listing carries no commit for org queries, only
+            # intent/path/queryId/repository. Returning such a row leaves the
+            # caller with an empty commit, which the execution contract
+            # rejects as unresolved_full_commit - so every org-bound map was
+            # refused and whole syncs fetched nothing. Fall through to the
+            # commits endpoint, which does report lastCommitId.
+            indexed_commit = str(
+                indexed_query.get("commitId")
+                or indexed_query.get("lastCommitId")
+                or (indexed_query.get("lastCommit") or {}).get("id")
+                or ""
+            ).strip()
+            if indexed_commit and (not require_source_code or has_source):
+                query = dict(indexed_query)
+                query.setdefault("repository", repository)
+                query.setdefault("intent", "")
+                query.setdefault("lastCommitId", "")
+                cache_key = (
+                    repository,
+                    query_path,
+                    commit_id,
+                    bool(require_source_code),
+                )
+                client._committed_nqe_query_cache[cache_key] = dict(query)
+                shared_cache_key = client._shared_read_cache_key(
+                    "committed-nqe-query",
+                    repository,
+                    query_path,
+                    commit_id,
+                    bool(require_source_code),
+                    client._shared_query_read_generation(),
+                )
+                client._shared_read_cache_set(shared_cache_key, dict(query))
+                return query
+            commit_id = (
+                str(indexed_query.get("lastCommitId") or commit_id).strip() or "head"
+            )
+
+    cache_key = (repository, query_path, commit_id, bool(require_source_code))
+    shared_cache_key = client._shared_read_cache_key(
+        "committed-nqe-query",
+        repository,
+        query_path,
+        commit_id,
+        bool(require_source_code),
+        client._shared_query_read_generation(),
+    )
+    cached_query = client._committed_nqe_query_cache.get(cache_key)
+    if cached_query is not None:
+        client._record_read_cache_hit()
+        return dict(cached_query)
+    cached_query = client._shared_read_cache_get(shared_cache_key)
+    if cached_query is not None:
+        client._committed_nqe_query_cache[cache_key] = dict(cached_query)
+        client._record_read_cache_hit()
+        return dict(cached_query)
+    client._record_read_cache_miss()
+    # `NqeRepository.queries()` already collapses Forward's two response
+    # shapes here (a wrapped `{"queries": [...]}` listing at `head`, or a
+    # bare single object for a specific commit + path) into one uniform
+    # `list[RepositoryQuery]` - see `queries_from_payload` in the SDK's
+    # own `nqe/repository.py`, which is exactly the branching this method
+    # used to hand-roll.
+    sdk_queries = client._call_sdk(
+        client._sdk_client.nqe.repo.queries,
+        repository=repository,
+        commit_id=commit_id,
+        path=query_path,
+        with_source=True,
+    )
+    matched = next(
+        (item for item in sdk_queries or [] if item.path == query_path), None
+    )
+    if matched is None:
+        raise ForwardClientError(
+            f"Forward NQE repository lookup did not include `{query_path}`."
+        )
+    # `RepositoryQuery` carries the commit under one of two names
+    # depending on what was asked for - a flat `last_commit_id` when
+    # listing at head, a nested `last_commit.id` for a specific commit -
+    # its own docstring warns that reading only one "loses the pin".
+    last_commit_id = matched.last_commit_id or (
+        matched.last_commit.id if matched.last_commit else None
+    )
+    normalized = {
+        "queryId": str(matched.query_id or ""),
+        "path": str(matched.path or ""),
+        "intent": str(matched.intent or ""),
+        "repository": repository,
+        "lastCommitId": str(last_commit_id or ""),
+        "sourceCode": matched.source_code,
+    }
+    client._committed_nqe_query_cache[cache_key] = dict(normalized)
+    client._shared_read_cache_set(shared_cache_key, dict(normalized))
+    return normalized
+
+
+def resolve_nqe_query_reference(
+    client, *, repository="org", query_path="", commit_id=None, query_index=None
+):
+    repository = _normalize_nqe_repository(repository)
+    query_path = _normalize_nqe_query_path(query_path)
+    explicit_commit_id = str(commit_id or "").strip()
+    requested_commit_id = explicit_commit_id or "head"
+    query = get_committed_nqe_query(
+        client,
+        repository=repository,
+        query_path=query_path,
+        commit_id=requested_commit_id,
+        query_index=query_index,
+    )
+    query_id = str(query.get("queryId") or "").strip()
+    if not query_id:
+        raise ForwardClientError(
+            f"Forward NQE query `{repository}:{query_path}` did not include a query ID."
+        )
+    last_commit = query.get("lastCommit") or {}
+    resolved_commit_id = str(
+        explicit_commit_id or last_commit.get("id") or query.get("lastCommitId") or ""
+    ).strip()
+    return {
+        "queryId": query_id,
+        "commitId": resolved_commit_id,
+        "repository": str(query.get("repository") or repository).strip(),
+        "path": str(query.get("path") or query_path).strip(),
+        "intent": str(query.get("intent") or "").strip(),
+    }
+
+
+def get_nqe_query_history(client, query_id):
+    query_id = str(query_id or "").strip()
+    if not query_id:
+        return []
+    shared_cache_key = client._shared_read_cache_key(
+        "nqe-query-history", query_id, client._shared_query_read_generation()
+    )
+    cached_history = client._nqe_query_history_cache.get(query_id)
+    if cached_history is not None:
+        client._record_read_cache_hit()
+        return [dict(row) for row in cached_history]
+    cached_history = client._shared_read_cache_get(shared_cache_key)
+    if cached_history is not None:
+        client._nqe_query_history_cache[query_id] = list(cached_history)
+        client._record_read_cache_hit()
+        return [dict(row) for row in cached_history]
+    client._record_read_cache_miss()
+    rows = client._call_sdk(client._sdk_client.nqe.repo.history, query_id) or []
+    client._nqe_query_history_cache[query_id] = list(rows)
+    client._shared_read_cache_set(shared_cache_key, list(rows))
+    return rows
+
+
+def has_nqe_library_write_permission(client):
+    """Return whether the current login may write the org NQE library."""
+    current_user = client._call_sdk(client._sdk_client.user_accounts.get_current_user)
+    roles = getattr(current_user, "roles", None)
+    if roles is None:
+        return False
+
+    org_roles = getattr(roles, "org", None) or []
+    if isinstance(org_roles, str):
+        org_roles = [org_roles]
+    normalized_org_roles = {
+        str(role or "").strip().upper() for role in org_roles if str(role or "").strip()
+    }
+    if normalized_org_roles.intersection(NQE_LIBRARY_WRITE_ROLES):
+        return True
+
+    network_roles = getattr(roles, "network", None) or {}
+    if not isinstance(network_roles, dict):
+        return False
+    network_id = str((client.source.parameters or {}).get("network_id") or "").strip()
+    network_role = str(network_roles.get(network_id) or "").strip().upper()
+    return network_role in NQE_LIBRARY_WRITE_ROLES
+
+
+def add_org_nqe_query(client, *, query_path, source_code):
+    query_path = _normalize_nqe_query_path(query_path)
+    if not query_path:
+        raise ForwardClientError("Forward NQE query path is required.")
+    client._invalidate_nqe_query_read_caches()
+    client._call_sdk(client._sdk_client.nqe.repo.stage_add, query_path, source_code)
+
+
+def edit_org_nqe_query(client, *, query_path, source_code, query_id, commit_id):
+    query_path = _normalize_nqe_query_path(query_path)
+    query_id = str(query_id or "").strip()
+    commit_id = str(commit_id or "").strip()
+    if not query_path:
+        raise ForwardClientError("Forward NQE query path is required.")
+    if not query_id or not commit_id:
+        raise ForwardClientError(
+            "Forward NQE query ID and commit ID are required to update an existing query."
+        )
+    client._invalidate_nqe_query_read_caches()
+    client._call_sdk(
+        client._sdk_client.nqe.repo.stage_edit,
+        query_path,
+        source_code,
+        query_id=query_id,
+        commit_id=commit_id,
+    )
+
+
+def get_org_nqe_head_commit_id(client):
+    shared_cache_key = client._shared_read_cache_key(
+        "org-head-commit", client._shared_query_read_generation()
+    )
+    if client._org_nqe_head_commit_id_cache is not None:
+        client._record_read_cache_hit()
+        return client._org_nqe_head_commit_id_cache
+    cached_commit = client._shared_read_cache_get(shared_cache_key)
+    if cached_commit is not None:
+        client._org_nqe_head_commit_id_cache = str(
+            (cached_commit or {}).get("value") or ""
+        )
+        client._record_read_cache_hit()
+        return client._org_nqe_head_commit_id_cache
+    client._record_read_cache_miss()
+    commit_id = str(
+        client._call_sdk(client._sdk_client.nqe.repo.head_commit_id) or ""
+    ).strip()
+    client._org_nqe_head_commit_id_cache = commit_id
+    client._shared_read_cache_set(shared_cache_key, {"value": commit_id})
+    return commit_id
+
+
+def commit_org_nqe_queries(client, *, query_paths, message):
+    query_paths = [
+        _normalize_nqe_query_path(query_path)
+        for query_path in query_paths
+        if _normalize_nqe_query_path(query_path)
+    ]
+    if not query_paths:
+        return ""
+    client._invalidate_nqe_query_read_caches()
+    # `NqeRepository.commit` already does the no-staged-changes retry this
+    # method used to hand-roll: it drops paths Forward's 409
+    # INVALID_CHANGE_PATH names as unchanged and retries with the rest,
+    # returning a `CommitReport` whose own `commit_id` is unset when
+    # every path turned out to be a no-op - fall back to
+    # `get_org_nqe_head_commit_id` in that case, matching this method's
+    # own long-standing behavior of always resolving a real commit id.
+    payload = _commit_message_payload(message)
+    report = client._call_sdk(
+        client._sdk_client.nqe.repo.commit,
+        query_paths,
+        title=payload["title"],
+        body=payload["body"],
+    )
+    if not report.commit_id:
+        return get_org_nqe_head_commit_id(client)
+    # The SDK already resolved the fresh head commit as part of
+    # `commit()`, bypassing this client's own cache entirely - populate
+    # it explicitly so a `get_org_nqe_head_commit_id()` call right after
+    # (this client's or, via the shared cache, another worker's) does
+    # not repeat a fetch this method already made.
+    client._org_nqe_head_commit_id_cache = report.commit_id
+    client._shared_read_cache_set(
+        client._shared_read_cache_key(
+            "org-head-commit", client._shared_query_read_generation()
+        ),
+        {"value": report.commit_id},
+    )
+    return report.commit_id
+
+
 class ForwardClient:
     def __init__(self, source):
         self.source = source
@@ -842,428 +1270,6 @@ class ForwardClient:
             raise translate_client_exception(exc) from exc
         except SDKForwardError as exc:
             raise translate_client_exception(exc) from exc
-
-    def _get_org_nqe_queries(self, *, directory="/"):
-        directory = _normalize_nqe_directory(directory)
-        shared_cache_key = self._shared_read_cache_key(
-            "org-nqe-queries", directory, self._shared_query_read_generation()
-        )
-        cached_queries = self._org_nqe_queries_cache.get(directory)
-        if cached_queries is not None:
-            self._record_read_cache_hit()
-            return [dict(row) for row in cached_queries]
-        cached_queries = self._shared_read_cache_get(shared_cache_key)
-        if cached_queries is not None:
-            self._org_nqe_queries_cache[directory] = list(cached_queries)
-            self._record_read_cache_hit()
-            return [dict(row) for row in cached_queries]
-        self._record_read_cache_miss()
-        sdk_rows = self._call_sdk(self._sdk_client.nqe.queries, directory=directory)
-        # This listing carries no commit per query - only intent/path/queryId
-        # (`NqeQuery` has no `last_commit_id` field at all, matching the raw
-        # endpoint exactly) - `get_committed_nqe_query`'s fallback to the
-        # commits endpoint below depends on that being true.
-        rows = [
-            {
-                "queryId": str(item.query_id or ""),
-                "path": str(item.path or ""),
-                "intent": str(item.intent or ""),
-            }
-            for item in sdk_rows or []
-        ]
-        self._org_nqe_queries_cache[directory] = list(rows)
-        self._shared_read_cache_set(shared_cache_key, list(rows))
-        return rows if isinstance(rows, list) else []
-
-    def _get_nqe_repository_queries(self, *, repository="org", directory="/"):
-        repository = _normalize_nqe_repository(repository)
-        directory = _normalize_nqe_directory(directory)
-        if repository == "org":
-            rows = self._get_org_nqe_queries(directory=directory)
-            return [
-                normalized
-                for row in rows
-                if (normalized := _normalize_nqe_query_row(row, repository=repository))
-            ]
-
-        cache_key = (repository, directory)
-        shared_cache_key = self._shared_read_cache_key(
-            "repository-nqe-queries",
-            repository,
-            directory,
-            self._shared_query_read_generation(),
-        )
-        cached_queries = self._repository_queries_cache.get(cache_key)
-        if cached_queries is not None:
-            self._record_read_cache_hit()
-            return [dict(row) for row in cached_queries]
-        cached_queries = self._shared_read_cache_get(shared_cache_key)
-        if cached_queries is not None:
-            self._repository_queries_cache[cache_key] = [
-                dict(row) for row in cached_queries
-            ]
-            self._record_read_cache_hit()
-            return [dict(row) for row in cached_queries]
-        self._record_read_cache_miss()
-
-        sdk_rows = self._call_sdk(
-            self._sdk_client.nqe.repo.queries, repository=repository
-        )
-        rows = [
-            {
-                "queryId": str(item.query_id or ""),
-                "path": str(item.path or ""),
-                "intent": str(item.intent or ""),
-                "repository": repository,
-                "lastCommitId": str(item.last_commit_id or ""),
-            }
-            for item in sdk_rows or []
-        ]
-        normalized_rows = [
-            normalized
-            for row in rows
-            if _query_in_directory(row.get("path"), directory)
-            if (normalized := _normalize_nqe_query_row(row, repository=repository))
-        ]
-        self._repository_queries_cache[cache_key] = [
-            dict(row) for row in normalized_rows
-        ]
-        self._shared_read_cache_set(
-            shared_cache_key, [dict(row) for row in normalized_rows]
-        )
-        return normalized_rows
-
-    def get_nqe_repository_query_index(self, *, repository="org", directory="/"):
-        repository = _normalize_nqe_repository(repository)
-        directory = _normalize_nqe_directory(directory)
-        generation = self._shared_query_read_generation()
-        cache_key = (repository, directory, generation)
-        with self._read_cache_lock:
-            cached_index = self._repository_query_index_cache.get(cache_key)
-        if cached_index is not None:
-            self._record_read_cache_hit()
-            return self._copy_nqe_repository_query_index(cached_index)
-        shared_cache_key = self._shared_read_cache_key(
-            "repository-nqe-query-index",
-            repository,
-            directory,
-            generation,
-        )
-        cached_index = self._shared_read_cache_get(shared_cache_key)
-        if cached_index is not None:
-            with self._read_cache_lock:
-                self._repository_query_index_cache[cache_key] = (
-                    self._copy_nqe_repository_query_index(cached_index)
-                )
-            self._record_read_cache_hit()
-            return self._copy_nqe_repository_query_index(cached_index)
-        rows = self._get_nqe_repository_queries(
-            repository=repository,
-            directory=directory,
-        )
-        index = self._build_nqe_repository_query_index(rows)
-        with self._read_cache_lock:
-            self._repository_query_index_cache[cache_key] = (
-                self._copy_nqe_repository_query_index(index)
-            )
-        self._shared_read_cache_set(shared_cache_key, index)
-        return index
-
-    def get_committed_nqe_query(
-        self,
-        *,
-        repository="org",
-        query_path="",
-        commit_id="head",
-        query_index: dict | None = None,
-        require_source_code=False,
-    ):
-        repository = _normalize_nqe_repository(repository)
-        query_path = _normalize_nqe_query_path(query_path)
-        commit_id = str(commit_id or "head").strip() or "head"
-        if not query_path:
-            raise ForwardClientError("Forward NQE query path is required.")
-        if commit_id == "head":
-            if query_index is None:
-                try:
-                    query_index = self.get_nqe_repository_query_index(
-                        repository=repository,
-                        directory="/",
-                    )
-                except JobTimeoutException:
-                    raise
-                except Exception:
-                    query_index = {}
-            indexed_query = (query_index.get("by_path") or {}).get(query_path)
-            if indexed_query and indexed_query.get("queryId"):
-                # Ensure source code is available when requested for canonicality checks.
-                # Some API responses return directory rows without source text.
-                has_source = any(
-                    indexed_query.get(key) for key in ("sourceCode", "source", "query")
-                )
-                # The directory listing carries no commit for org queries, only
-                # intent/path/queryId/repository. Returning such a row leaves the
-                # caller with an empty commit, which the execution contract
-                # rejects as unresolved_full_commit - so every org-bound map was
-                # refused and whole syncs fetched nothing. Fall through to the
-                # commits endpoint, which does report lastCommitId.
-                indexed_commit = str(
-                    indexed_query.get("commitId")
-                    or indexed_query.get("lastCommitId")
-                    or (indexed_query.get("lastCommit") or {}).get("id")
-                    or ""
-                ).strip()
-                if indexed_commit and (not require_source_code or has_source):
-                    query = dict(indexed_query)
-                    query.setdefault("repository", repository)
-                    query.setdefault("intent", "")
-                    query.setdefault("lastCommitId", "")
-                    cache_key = (
-                        repository,
-                        query_path,
-                        commit_id,
-                        bool(require_source_code),
-                    )
-                    self._committed_nqe_query_cache[cache_key] = dict(query)
-                    shared_cache_key = self._shared_read_cache_key(
-                        "committed-nqe-query",
-                        repository,
-                        query_path,
-                        commit_id,
-                        bool(require_source_code),
-                        self._shared_query_read_generation(),
-                    )
-                    self._shared_read_cache_set(shared_cache_key, dict(query))
-                    return query
-                commit_id = (
-                    str(indexed_query.get("lastCommitId") or commit_id).strip()
-                    or "head"
-                )
-
-        cache_key = (repository, query_path, commit_id, bool(require_source_code))
-        shared_cache_key = self._shared_read_cache_key(
-            "committed-nqe-query",
-            repository,
-            query_path,
-            commit_id,
-            bool(require_source_code),
-            self._shared_query_read_generation(),
-        )
-        cached_query = self._committed_nqe_query_cache.get(cache_key)
-        if cached_query is not None:
-            self._record_read_cache_hit()
-            return dict(cached_query)
-        cached_query = self._shared_read_cache_get(shared_cache_key)
-        if cached_query is not None:
-            self._committed_nqe_query_cache[cache_key] = dict(cached_query)
-            self._record_read_cache_hit()
-            return dict(cached_query)
-        self._record_read_cache_miss()
-        # `NqeRepository.queries()` already collapses Forward's two response
-        # shapes here (a wrapped `{"queries": [...]}` listing at `head`, or a
-        # bare single object for a specific commit + path) into one uniform
-        # `list[RepositoryQuery]` - see `queries_from_payload` in the SDK's
-        # own `nqe/repository.py`, which is exactly the branching this method
-        # used to hand-roll.
-        sdk_queries = self._call_sdk(
-            self._sdk_client.nqe.repo.queries,
-            repository=repository,
-            commit_id=commit_id,
-            path=query_path,
-            with_source=True,
-        )
-        matched = next(
-            (item for item in sdk_queries or [] if item.path == query_path), None
-        )
-        if matched is None:
-            raise ForwardClientError(
-                f"Forward NQE repository lookup did not include `{query_path}`."
-            )
-        # `RepositoryQuery` carries the commit under one of two names
-        # depending on what was asked for - a flat `last_commit_id` when
-        # listing at head, a nested `last_commit.id` for a specific commit -
-        # its own docstring warns that reading only one "loses the pin".
-        last_commit_id = matched.last_commit_id or (
-            matched.last_commit.id if matched.last_commit else None
-        )
-        normalized = {
-            "queryId": str(matched.query_id or ""),
-            "path": str(matched.path or ""),
-            "intent": str(matched.intent or ""),
-            "repository": repository,
-            "lastCommitId": str(last_commit_id or ""),
-            "sourceCode": matched.source_code,
-        }
-        self._committed_nqe_query_cache[cache_key] = dict(normalized)
-        self._shared_read_cache_set(shared_cache_key, dict(normalized))
-        return normalized
-
-    def resolve_nqe_query_reference(
-        self, *, repository="org", query_path="", commit_id=None, query_index=None
-    ):
-        repository = _normalize_nqe_repository(repository)
-        query_path = _normalize_nqe_query_path(query_path)
-        explicit_commit_id = str(commit_id or "").strip()
-        requested_commit_id = explicit_commit_id or "head"
-        query = self.get_committed_nqe_query(
-            repository=repository,
-            query_path=query_path,
-            commit_id=requested_commit_id,
-            query_index=query_index,
-        )
-        query_id = str(query.get("queryId") or "").strip()
-        if not query_id:
-            raise ForwardClientError(
-                f"Forward NQE query `{repository}:{query_path}` did not include a query ID."
-            )
-        last_commit = query.get("lastCommit") or {}
-        resolved_commit_id = str(
-            explicit_commit_id
-            or last_commit.get("id")
-            or query.get("lastCommitId")
-            or ""
-        ).strip()
-        return {
-            "queryId": query_id,
-            "commitId": resolved_commit_id,
-            "repository": str(query.get("repository") or repository).strip(),
-            "path": str(query.get("path") or query_path).strip(),
-            "intent": str(query.get("intent") or "").strip(),
-        }
-
-    def get_nqe_query_history(self, query_id):
-        query_id = str(query_id or "").strip()
-        if not query_id:
-            return []
-        shared_cache_key = self._shared_read_cache_key(
-            "nqe-query-history", query_id, self._shared_query_read_generation()
-        )
-        cached_history = self._nqe_query_history_cache.get(query_id)
-        if cached_history is not None:
-            self._record_read_cache_hit()
-            return [dict(row) for row in cached_history]
-        cached_history = self._shared_read_cache_get(shared_cache_key)
-        if cached_history is not None:
-            self._nqe_query_history_cache[query_id] = list(cached_history)
-            self._record_read_cache_hit()
-            return [dict(row) for row in cached_history]
-        self._record_read_cache_miss()
-        rows = self._call_sdk(self._sdk_client.nqe.repo.history, query_id) or []
-        self._nqe_query_history_cache[query_id] = list(rows)
-        self._shared_read_cache_set(shared_cache_key, list(rows))
-        return rows
-
-    def has_nqe_library_write_permission(self):
-        """Return whether the current login may write the org NQE library."""
-        current_user = self._call_sdk(self._sdk_client.user_accounts.get_current_user)
-        roles = getattr(current_user, "roles", None)
-        if roles is None:
-            return False
-
-        org_roles = getattr(roles, "org", None) or []
-        if isinstance(org_roles, str):
-            org_roles = [org_roles]
-        normalized_org_roles = {
-            str(role or "").strip().upper()
-            for role in org_roles
-            if str(role or "").strip()
-        }
-        if normalized_org_roles.intersection(NQE_LIBRARY_WRITE_ROLES):
-            return True
-
-        network_roles = getattr(roles, "network", None) or {}
-        if not isinstance(network_roles, dict):
-            return False
-        network_id = str((self.source.parameters or {}).get("network_id") or "").strip()
-        network_role = str(network_roles.get(network_id) or "").strip().upper()
-        return network_role in NQE_LIBRARY_WRITE_ROLES
-
-    def add_org_nqe_query(self, *, query_path, source_code):
-        query_path = _normalize_nqe_query_path(query_path)
-        if not query_path:
-            raise ForwardClientError("Forward NQE query path is required.")
-        self._invalidate_nqe_query_read_caches()
-        self._call_sdk(self._sdk_client.nqe.repo.stage_add, query_path, source_code)
-
-    def edit_org_nqe_query(self, *, query_path, source_code, query_id, commit_id):
-        query_path = _normalize_nqe_query_path(query_path)
-        query_id = str(query_id or "").strip()
-        commit_id = str(commit_id or "").strip()
-        if not query_path:
-            raise ForwardClientError("Forward NQE query path is required.")
-        if not query_id or not commit_id:
-            raise ForwardClientError(
-                "Forward NQE query ID and commit ID are required to update an existing query."
-            )
-        self._invalidate_nqe_query_read_caches()
-        self._call_sdk(
-            self._sdk_client.nqe.repo.stage_edit,
-            query_path,
-            source_code,
-            query_id=query_id,
-            commit_id=commit_id,
-        )
-
-    def get_org_nqe_head_commit_id(self):
-        shared_cache_key = self._shared_read_cache_key(
-            "org-head-commit", self._shared_query_read_generation()
-        )
-        if self._org_nqe_head_commit_id_cache is not None:
-            self._record_read_cache_hit()
-            return self._org_nqe_head_commit_id_cache
-        cached_commit = self._shared_read_cache_get(shared_cache_key)
-        if cached_commit is not None:
-            self._org_nqe_head_commit_id_cache = str(
-                (cached_commit or {}).get("value") or ""
-            )
-            self._record_read_cache_hit()
-            return self._org_nqe_head_commit_id_cache
-        self._record_read_cache_miss()
-        commit_id = str(
-            self._call_sdk(self._sdk_client.nqe.repo.head_commit_id) or ""
-        ).strip()
-        self._org_nqe_head_commit_id_cache = commit_id
-        self._shared_read_cache_set(shared_cache_key, {"value": commit_id})
-        return commit_id
-
-    def commit_org_nqe_queries(self, *, query_paths, message):
-        query_paths = [
-            _normalize_nqe_query_path(query_path)
-            for query_path in query_paths
-            if _normalize_nqe_query_path(query_path)
-        ]
-        if not query_paths:
-            return ""
-        self._invalidate_nqe_query_read_caches()
-        # `NqeRepository.commit` already does the no-staged-changes retry this
-        # method used to hand-roll: it drops paths Forward's 409
-        # INVALID_CHANGE_PATH names as unchanged and retries with the rest,
-        # returning a `CommitReport` whose own `commit_id` is unset when
-        # every path turned out to be a no-op - fall back to
-        # `get_org_nqe_head_commit_id` in that case, matching this method's
-        # own long-standing behavior of always resolving a real commit id.
-        payload = _commit_message_payload(message)
-        report = self._call_sdk(
-            self._sdk_client.nqe.repo.commit,
-            query_paths,
-            title=payload["title"],
-            body=payload["body"],
-        )
-        if not report.commit_id:
-            return self.get_org_nqe_head_commit_id()
-        # The SDK already resolved the fresh head commit as part of
-        # `commit()`, bypassing this client's own cache entirely - populate
-        # it explicitly so a `get_org_nqe_head_commit_id()` call right after
-        # (this client's or, via the shared cache, another worker's) does
-        # not repeat a fetch this method already made.
-        self._org_nqe_head_commit_id_cache = report.commit_id
-        self._shared_read_cache_set(
-            self._shared_read_cache_key(
-                "org-head-commit", self._shared_query_read_generation()
-            ),
-            {"value": report.commit_id},
-        )
-        return report.commit_id
 
     def _parse_nqe_records(self, data):
         items = data.get("items") or []

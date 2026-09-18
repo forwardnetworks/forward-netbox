@@ -13,6 +13,18 @@ from forward_netbox.utilities.query_binding_resolution import (
 from forward_netbox.utilities.query_registry import read_compiled_builtin_query_source
 
 
+def _forward_query_index(client, *args, **kwargs):
+    return client.get_nqe_repository_query_index(*args, **kwargs)
+
+
+def _forward_committed_query(client, *args, **kwargs):
+    return client.get_committed_nqe_query(*args, **kwargs)
+
+
+def _forward_query_history(client, *args, **kwargs):
+    return client.get_nqe_query_history(*args, **kwargs)
+
+
 class ValidationOrgQueryAuditTest(TestCase):
     def _query_defaults(self):
         return [
@@ -73,9 +85,19 @@ class ValidationOrgQueryAuditTest(TestCase):
 
         client.get_committed_nqe_query.side_effect = committed_query
 
-        with patch(
-            "forward_netbox.utilities.query_binding_resolution.query_contract_summary_for_maps"
-        ) as query_contract_summary_for_maps:
+        with (
+            patch(
+                "forward_netbox.utilities.query_binding_resolution.query_contract_summary_for_maps"
+            ) as query_contract_summary_for_maps,
+            patch(
+                "forward_netbox.utilities.query_binding_resolution.get_nqe_repository_query_index",
+                side_effect=_forward_query_index,
+            ),
+            patch(
+                "forward_netbox.utilities.query_binding_resolution.get_committed_nqe_query",
+                side_effect=_forward_committed_query,
+            ),
+        ):
             query_contract_summary_for_maps.return_value = {
                 "status": "pass",
                 "model_count": len(query_defaults),
@@ -155,6 +177,14 @@ class ValidationOrgQueryAuditTest(TestCase):
             patch(
                 "forward_netbox.utilities.query_binding_resolution.query_contract_summary_for_maps"
             ) as query_contract_summary_for_maps,
+            patch(
+                "forward_netbox.utilities.query_binding_resolution.get_nqe_repository_query_index",
+                side_effect=_forward_query_index,
+            ),
+            patch(
+                "forward_netbox.utilities.query_binding_resolution.get_committed_nqe_query",
+                side_effect=_forward_committed_query,
+            ),
         ):
             query_contract_summary_for_maps.return_value = {
                 "status": "pass",
@@ -199,9 +229,23 @@ class ValidationOrgQueryAuditTest(TestCase):
             "path": "/forward_netbox_validation/forward_devices",
         }
 
-        with patch(
-            "forward_netbox.utilities.query_binding_resolution.query_contract_summary_for_maps"
-        ) as query_contract_summary_for_maps:
+        with (
+            patch(
+                "forward_netbox.utilities.query_binding_resolution.query_contract_summary_for_maps"
+            ) as query_contract_summary_for_maps,
+            patch(
+                "forward_netbox.utilities.query_binding_resolution.get_nqe_repository_query_index",
+                side_effect=_forward_query_index,
+            ),
+            patch(
+                "forward_netbox.utilities.query_binding_resolution.get_committed_nqe_query",
+                side_effect=_forward_committed_query,
+            ),
+            patch(
+                "forward_netbox.utilities.query_binding_resolution.get_nqe_query_history",
+                side_effect=_forward_query_history,
+            ),
+        ):
             query_contract_summary_for_maps.return_value = {
                 "status": "pass",
                 "model_count": 1,
@@ -251,9 +295,19 @@ class ValidationOrgQueryAuditTest(TestCase):
             "path": "/forward_netbox_validation/forward_devices",
         }
 
-        with patch(
-            "forward_netbox.utilities.query_binding_resolution.query_contract_summary_for_maps"
-        ) as query_contract_summary_for_maps:
+        with (
+            patch(
+                "forward_netbox.utilities.query_binding_resolution.query_contract_summary_for_maps"
+            ) as query_contract_summary_for_maps,
+            patch(
+                "forward_netbox.utilities.query_binding_resolution.get_nqe_repository_query_index",
+                side_effect=_forward_query_index,
+            ),
+            patch(
+                "forward_netbox.utilities.query_binding_resolution.get_committed_nqe_query",
+                side_effect=_forward_committed_query,
+            ),
+        ):
             query_contract_summary_for_maps.return_value = {
                 "status": "pass",
                 "model_count": len(query_defaults),
@@ -313,9 +367,19 @@ class ValidationOrgQueryAuditTest(TestCase):
             "lastCommitId": "commit-1",
         }
 
-        with patch(
-            "forward_netbox.utilities.query_binding_resolution.query_contract_summary_for_maps"
-        ) as query_contract_summary_for_maps:
+        with (
+            patch(
+                "forward_netbox.utilities.query_binding_resolution.query_contract_summary_for_maps"
+            ) as query_contract_summary_for_maps,
+            patch(
+                "forward_netbox.utilities.query_binding_resolution.get_nqe_repository_query_index",
+                side_effect=_forward_query_index,
+            ),
+            patch(
+                "forward_netbox.utilities.query_binding_resolution.get_committed_nqe_query",
+                side_effect=_forward_committed_query,
+            ),
+        ):
             query_contract_summary_for_maps.return_value = {
                 "status": "pass",
                 "model_count": len(query_defaults),

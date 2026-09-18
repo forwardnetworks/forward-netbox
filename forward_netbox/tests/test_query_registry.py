@@ -3,6 +3,7 @@ import re
 import unittest
 from pathlib import Path
 from unittest.mock import Mock
+from unittest.mock import patch
 
 from django.apps import apps
 from django.contrib.contenttypes.models import ContentType
@@ -219,6 +220,36 @@ def _network_device_loop_blocks(query):
 
 
 class QueryRegistryTest(TestCase):
+    def setUp(self):
+        # Step 6b of the forward-sdk migration converted
+        # get_committed_nqe_query/get_nqe_query_history/
+        # get_nqe_repository_query_index from ForwardClient instance methods
+        # to free functions in query_registry.py's own module namespace
+        # (imported as `from .forward_api import get_committed_nqe_query`
+        # etc.), called as `get_committed_nqe_query(client, ...)` instead of
+        # `client.get_committed_nqe_query(...)`. Tests below still build a
+        # local `client = Mock()` per test and configure
+        # `client.get_committed_nqe_query.return_value = ...` /
+        # `.assert_called_once_with(...)` exactly as before - these
+        # forwarding shims patch the free function to call through to
+        # whatever client Mock is actually passed at call time, so every
+        # existing per-test line keeps working unchanged.
+        for name in (
+            "get_committed_nqe_query",
+            "get_nqe_query_history",
+            "get_nqe_repository_query_index",
+        ):
+
+            def _forward(client, *args, __name=name, **kwargs):
+                return getattr(client, __name)(*args, **kwargs)
+
+            patcher = patch(
+                f"forward_netbox.utilities.query_registry.{name}",
+                side_effect=_forward,
+            )
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def test_tier2_maps_declare_one_central_ownership_contract(self):
         specs_by_key = {}
         for query_default in [
