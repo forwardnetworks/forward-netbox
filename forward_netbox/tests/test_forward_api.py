@@ -1767,16 +1767,14 @@ class ForwardClientTest(TestCase):
 
     def test_get_org_nqe_queries_normalizes_directory(self):
         shared_cache = FakeSharedCache()
-        self.client._request = Mock(
-            return_value=self._response(
-                [
-                    {
-                        "queryId": "Q_devices",
-                        "path": "/forward_netbox_validation/forward_devices",
-                        "intent": "Forward Devices",
-                    }
-                ]
-            )
+        self.client._sdk_client.nqe.queries = Mock(
+            return_value=[
+                SimpleNamespace(
+                    query_id="Q_devices",
+                    path="/forward_netbox_validation/forward_devices",
+                    intent="Forward Devices",
+                )
+            ]
         )
 
         with patch(
@@ -1788,36 +1786,29 @@ class ForwardClientTest(TestCase):
             )
 
         self.assertEqual(rows[0]["queryId"], "Q_devices")
-        self.client._request.assert_called_once_with(
-            "GET",
-            "/nqe/queries",
-            params={"dir": "/forward_netbox_validation/"},
+        self.client._sdk_client.nqe.queries.assert_called_once_with(
+            directory="/forward_netbox_validation/"
         )
 
     def test_nqe_query_lists_are_cached_per_client(self):
         shared_cache = FakeSharedCache()
-        self.client._request = Mock(
-            side_effect=[
-                self._response(
-                    [
-                        {
-                            "queryId": "Q_devices",
-                            "path": "/forward_netbox_validation/forward_devices",
-                            "intent": "Forward Devices",
-                        }
-                    ]
-                ),
-                self._response(
-                    {
-                        "queries": [
-                            {
-                                "queryId": "FQ_devices",
-                                "path": "/netbox/forward_devices",
-                                "lastCommitId": "commit-1",
-                            }
-                        ]
-                    }
-                ),
+        self.client._sdk_client.nqe.queries = Mock(
+            return_value=[
+                SimpleNamespace(
+                    query_id="Q_devices",
+                    path="/forward_netbox_validation/forward_devices",
+                    intent="Forward Devices",
+                )
+            ]
+        )
+        self.client._sdk_client.nqe.repo.queries = Mock(
+            return_value=[
+                SimpleNamespace(
+                    query_id="FQ_devices",
+                    path="/netbox/forward_devices",
+                    intent="",
+                    last_commit_id="commit-1",
+                )
             ]
         )
 
@@ -1847,18 +1838,15 @@ class ForwardClientTest(TestCase):
 
     def test_nqe_repository_query_index_is_cached_per_client(self):
         shared_cache = FakeSharedCache()
-        self.client._request = Mock(
-            return_value=self._response(
-                {
-                    "queries": [
-                        {
-                            "queryId": "Q_devices",
-                            "path": "/netbox/forward_devices",
-                            "lastCommitId": "commit-1",
-                        }
-                    ]
-                }
-            )
+        self.client._sdk_client.nqe.repo.queries = Mock(
+            return_value=[
+                SimpleNamespace(
+                    query_id="Q_devices",
+                    path="/netbox/forward_devices",
+                    intent="",
+                    last_commit_id="commit-1",
+                )
+            ]
         )
 
         with patch(
@@ -1874,7 +1862,7 @@ class ForwardClientTest(TestCase):
                 directory="/netbox",
             )
 
-        self.assertEqual(self.client._request.call_count, 1)
+        self.assertEqual(self.client._sdk_client.nqe.repo.queries.call_count, 1)
         self.assertEqual(
             first["by_query_id"]["Q_devices"][0]["path"],
             second["by_query_id"]["Q_devices"][0]["path"],
@@ -1884,23 +1872,21 @@ class ForwardClientTest(TestCase):
         )
 
     def test_get_nqe_repository_queries_reads_forward_library(self):
-        self.client._request = Mock(
-            return_value=self._response(
-                {
-                    "queries": [
-                        {
-                            "queryId": "FQ_devices",
-                            "path": "/netbox/forward_devices",
-                            "lastCommitId": "commit-1",
-                        },
-                        {
-                            "queryId": "FQ_other",
-                            "path": "/other/query",
-                            "lastCommitId": "commit-2",
-                        },
-                    ]
-                }
-            )
+        self.client._sdk_client.nqe.repo.queries = Mock(
+            return_value=[
+                SimpleNamespace(
+                    query_id="FQ_devices",
+                    path="/netbox/forward_devices",
+                    intent="",
+                    last_commit_id="commit-1",
+                ),
+                SimpleNamespace(
+                    query_id="FQ_other",
+                    path="/other/query",
+                    intent="",
+                    last_commit_id="commit-2",
+                ),
+            ]
         )
 
         rows = self.client._get_nqe_repository_queries(
@@ -1920,22 +1906,19 @@ class ForwardClientTest(TestCase):
                 }
             ],
         )
-        self.client._request.assert_called_once_with(
-            "GET",
-            "/nqe/repos/fwd/commits/head/queries",
+        self.client._sdk_client.nqe.repo.queries.assert_called_once_with(
+            repository="fwd"
         )
 
     def test_get_nqe_repository_queries_uses_org_query_list_without_fallback(self):
-        self.client._request = Mock(
-            return_value=self._response(
-                [
-                    {
-                        "queryId": "Q_devices",
-                        "path": "/forward_netbox_validation/forward_devices",
-                        "intent": "Forward Devices",
-                    }
-                ]
-            )
+        self.client._sdk_client.nqe.queries = Mock(
+            return_value=[
+                SimpleNamespace(
+                    query_id="Q_devices",
+                    path="/forward_netbox_validation/forward_devices",
+                    intent="Forward Devices",
+                )
+            ]
         )
 
         rows = self.client._get_nqe_repository_queries(
@@ -1955,10 +1938,8 @@ class ForwardClientTest(TestCase):
                 }
             ],
         )
-        self.client._request.assert_called_once_with(
-            "GET",
-            "/nqe/queries",
-            params={"dir": "/forward_netbox_validation/"},
+        self.client._sdk_client.nqe.queries.assert_called_once_with(
+            directory="/forward_netbox_validation/"
         )
 
     def test_get_nqe_query_history(self):
@@ -1989,7 +1970,7 @@ class ForwardClientTest(TestCase):
 
     def test_empty_nqe_list_reads_are_cached_per_client(self):
         shared_cache = FakeSharedCache()
-        self.client._request = Mock(return_value=self._response([]))
+        self.client._sdk_client.nqe.queries = Mock(return_value=[])
         self.client._sdk_client.nqe.repo.history = Mock(return_value=[])
 
         with patch(
@@ -2007,14 +1988,17 @@ class ForwardClientTest(TestCase):
         self.assertEqual(history_first, [])
 
     def test_get_committed_nqe_query_resolves_repository_path(self):
-        self.client._request = Mock(
-            return_value=self._response(
-                {
-                    "queryId": "Q_devices",
-                    "path": "/netbox/forward_devices",
-                    "lastCommit": {"id": "commit-1"},
-                }
-            )
+        self.client._sdk_client.nqe.repo.queries = Mock(
+            return_value=[
+                SimpleNamespace(
+                    query_id="Q_devices",
+                    path="/netbox/forward_devices",
+                    intent="",
+                    last_commit_id=None,
+                    last_commit=SimpleNamespace(id="commit-1"),
+                    source_code=None,
+                )
+            ]
         )
 
         query = self.client.get_committed_nqe_query(
@@ -2024,27 +2008,24 @@ class ForwardClientTest(TestCase):
         )
 
         self.assertEqual(query["queryId"], "Q_devices")
-        self.client._request.assert_called_once_with(
-            "GET",
-            "/nqe/repos/org/commits/commit-1/queries",
-            params={"path": "/netbox/forward_devices", "with": "sourceCode"},
+        self.client._sdk_client.nqe.repo.queries.assert_called_once_with(
+            repository="org",
+            commit_id="commit-1",
+            path="/netbox/forward_devices",
+            with_source=True,
         )
 
     def test_get_committed_nqe_query_uses_repository_index_for_fwd_head(self):
         shared_cache = FakeSharedCache()
-        self.client._request = Mock(
-            return_value=self._response(
-                {
-                    "queries": [
-                        {
-                            "queryId": "FQ_devices",
-                            "path": "/netbox/forward_devices",
-                            "lastCommitId": "commit-1",
-                            "intent": "Forward Devices",
-                        }
-                    ]
-                }
-            )
+        self.client._sdk_client.nqe.repo.queries = Mock(
+            return_value=[
+                SimpleNamespace(
+                    query_id="FQ_devices",
+                    path="/netbox/forward_devices",
+                    intent="Forward Devices",
+                    last_commit_id="commit-1",
+                )
+            ]
         )
 
         with patch(
@@ -2060,24 +2041,21 @@ class ForwardClientTest(TestCase):
         self.assertEqual(query["queryId"], "FQ_devices")
         self.assertEqual(query["lastCommitId"], "commit-1")
         self.assertEqual(query["intent"], "Forward Devices")
-        self.assertEqual(self.client._request.call_count, 1)
+        # The repository index already carried a usable commit, so no
+        # separate commits-endpoint fetch was needed.
+        self.assertEqual(self.client._sdk_client.nqe.repo.queries.call_count, 1)
 
     def test_get_committed_nqe_query_requests_source_for_head_when_requested(self):
         shared_cache = FakeSharedCache()
-        self.client._request = Mock(
-            side_effect=[
-                self._response(
-                    {
-                        "queries": [
-                            {
-                                "queryId": "FQ_devices",
-                                "path": "/netbox/forward_devices",
-                                "lastCommitId": "commit-1",
-                                "intent": "Forward Devices",
-                                "sourceCode": "select {}",
-                            }
-                        ]
-                    }
+        self.client._sdk_client.nqe.repo.queries = Mock(
+            return_value=[
+                SimpleNamespace(
+                    query_id="FQ_devices",
+                    path="/netbox/forward_devices",
+                    intent="Forward Devices",
+                    last_commit_id="commit-1",
+                    last_commit=None,
+                    source_code="select {}",
                 )
             ]
         )
@@ -2107,22 +2085,25 @@ class ForwardClientTest(TestCase):
 
         self.assertEqual(query["queryId"], "FQ_devices")
         self.assertEqual(query["sourceCode"], "select {}")
-        self.assertEqual(self.client._request.call_count, 1)
-        self.client._request.assert_called_once_with(
-            "GET",
-            "/nqe/repos/fwd/commits/commit-1/queries",
-            params={"path": "/netbox/forward_devices", "with": "sourceCode"},
+        self.client._sdk_client.nqe.repo.queries.assert_called_once_with(
+            repository="fwd",
+            commit_id="commit-1",
+            path="/netbox/forward_devices",
+            with_source=True,
         )
 
     def test_get_committed_nqe_query_reuses_provided_query_index_on_miss(self):
-        self.client._request = Mock(
-            return_value=self._response(
-                {
-                    "queryId": "Q_devices",
-                    "path": "/netbox/forward_devices",
-                    "lastCommit": {"id": "commit-1"},
-                }
-            )
+        self.client._sdk_client.nqe.repo.queries = Mock(
+            return_value=[
+                SimpleNamespace(
+                    query_id="Q_devices",
+                    path="/netbox/forward_devices",
+                    intent="",
+                    last_commit_id=None,
+                    last_commit=SimpleNamespace(id="commit-1"),
+                    source_code=None,
+                )
+            ]
         )
 
         query = self.client.get_committed_nqe_query(
@@ -2134,25 +2115,39 @@ class ForwardClientTest(TestCase):
 
         self.assertEqual(query["queryId"], "Q_devices")
         self.assertEqual(query["lastCommitId"], "commit-1")
-        self.client._request.assert_called_once_with(
-            "GET",
-            "/nqe/repos/org/commits/head/queries",
-            params={"path": "/netbox/forward_devices", "with": "sourceCode"},
+        self.client._sdk_client.nqe.repo.queries.assert_called_once_with(
+            repository="org",
+            commit_id="head",
+            path="/netbox/forward_devices",
+            with_source=True,
         )
 
     def test_get_committed_nqe_query_uses_org_query_list_for_head(self):
         shared_cache = FakeSharedCache()
-        self.client._request = Mock(
-            return_value=self._response(
-                [
-                    {
-                        "queryId": "Q_devices",
-                        "path": "/netbox/forward_devices",
-                        "lastCommitId": "commit-2",
-                        "intent": "Forward Devices",
-                    }
-                ]
-            )
+        # The org repository's directory listing carries no commit per query
+        # (real Forward behavior, matching `NqeQuery` having no
+        # `last_commit_id` field at all) - the index always misses on commit
+        # for org, and this always falls through to the commits endpoint.
+        self.client._sdk_client.nqe.queries = Mock(
+            return_value=[
+                SimpleNamespace(
+                    query_id="Q_devices",
+                    path="/netbox/forward_devices",
+                    intent="Forward Devices",
+                )
+            ]
+        )
+        self.client._sdk_client.nqe.repo.queries = Mock(
+            return_value=[
+                SimpleNamespace(
+                    query_id="Q_devices",
+                    path="/netbox/forward_devices",
+                    intent="Forward Devices",
+                    last_commit_id="commit-2",
+                    last_commit=None,
+                    source_code=None,
+                )
+            ]
         )
 
         with patch(
@@ -2168,27 +2163,31 @@ class ForwardClientTest(TestCase):
         self.assertEqual(query["queryId"], "Q_devices")
         self.assertEqual(query["lastCommitId"], "commit-2")
         self.assertEqual(query["intent"], "Forward Devices")
-        self.assertEqual(self.client._request.call_count, 1)
+        self.assertEqual(self.client._sdk_client.nqe.queries.call_count, 1)
+        self.assertEqual(self.client._sdk_client.nqe.repo.queries.call_count, 1)
 
     def test_get_committed_nqe_query_selects_matching_query_from_list_response(self):
         shared_cache = FakeSharedCache()
-        self.client._request = Mock(
-            return_value=self._response(
-                {
-                    "queries": [
-                        {
-                            "queryId": "Q_sites",
-                            "path": "/netbox/forward_sites",
-                            "lastCommitId": "commit-1",
-                        },
-                        {
-                            "queryId": "Q_devices",
-                            "path": "/netbox/forward_devices",
-                            "lastCommitId": "commit-2",
-                        },
-                    ]
-                }
-            )
+        self.client._sdk_client.nqe.queries = Mock(return_value=[])
+        self.client._sdk_client.nqe.repo.queries = Mock(
+            return_value=[
+                SimpleNamespace(
+                    query_id="Q_sites",
+                    path="/netbox/forward_sites",
+                    intent="",
+                    last_commit_id="commit-1",
+                    last_commit=None,
+                    source_code=None,
+                ),
+                SimpleNamespace(
+                    query_id="Q_devices",
+                    path="/netbox/forward_devices",
+                    intent="",
+                    last_commit_id="commit-2",
+                    last_commit=None,
+                    source_code=None,
+                ),
+            ]
         )
 
         with patch(
@@ -2206,17 +2205,18 @@ class ForwardClientTest(TestCase):
 
     def test_resolve_nqe_query_reference_returns_query_id_and_commit(self):
         shared_cache = FakeSharedCache()
-        self.client._request = Mock(
-            return_value=self._response(
-                [
-                    {
-                        "queryId": "Q_devices",
-                        "path": "/netbox/forward_devices",
-                        "lastCommitId": "commit-1",
-                        "intent": "Forward Devices",
-                    }
-                ]
-            )
+        self.client._sdk_client.nqe.queries = Mock(return_value=[])
+        self.client._sdk_client.nqe.repo.queries = Mock(
+            return_value=[
+                SimpleNamespace(
+                    query_id="Q_devices",
+                    path="/netbox/forward_devices",
+                    intent="Forward Devices",
+                    last_commit_id="commit-1",
+                    last_commit=None,
+                    source_code=None,
+                )
+            ]
         )
 
         with patch(
@@ -2243,27 +2243,17 @@ class ForwardClientTest(TestCase):
         self,
     ):
         shared_cache = FakeSharedCache()
-        self.client._request = Mock(
-            side_effect=[
-                self._response({"queries": []}),
-                self._response(
-                    {
-                        "queries": [
-                            {
-                                "queryId": "Q_devices",
-                                "path": "/netbox/forward_devices",
-                                "lastCommitId": "commit-1",
-                            }
-                        ]
-                    }
-                ),
-                self._response(
-                    {
-                        "queryId": "Q_devices",
-                        "path": "/netbox/forward_devices",
-                        "lastCommit": {"id": "commit-1"},
-                    }
-                ),
+        self.client._sdk_client.nqe.queries = Mock(return_value=[])
+        self.client._sdk_client.nqe.repo.queries = Mock(
+            return_value=[
+                SimpleNamespace(
+                    query_id="Q_devices",
+                    path="/netbox/forward_devices",
+                    intent="",
+                    last_commit_id="commit-1",
+                    last_commit=None,
+                    source_code=None,
+                )
             ]
         )
 
@@ -2289,18 +2279,17 @@ class ForwardClientTest(TestCase):
 
     def test_committed_nqe_query_reads_are_cached_per_client(self):
         shared_cache = FakeSharedCache()
-        self.client._request = Mock(
-            return_value=self._response(
-                {
-                    "queries": [
-                        {
-                            "queryId": "Q_devices",
-                            "path": "/netbox/forward_devices",
-                            "lastCommitId": "commit-1",
-                        }
-                    ]
-                }
-            )
+        self.client._sdk_client.nqe.repo.queries = Mock(
+            return_value=[
+                SimpleNamespace(
+                    query_id="Q_devices",
+                    path="/netbox/forward_devices",
+                    intent="",
+                    last_commit_id="commit-1",
+                    last_commit=None,
+                    source_code=None,
+                )
+            ]
         )
 
         with patch(
@@ -2322,21 +2311,30 @@ class ForwardClientTest(TestCase):
         self.assertEqual(second["queryId"], "Q_devices")
         self.assertEqual(first["lastCommitId"], "commit-1")
         self.assertEqual(second["lastCommitId"], "commit-1")
+        self.assertEqual(self.client._sdk_client.nqe.repo.queries.call_count, 1)
 
     def test_resolve_nqe_query_reference_uses_cached_repository_index(self):
         shared_cache = FakeSharedCache()
-        self.client._request = Mock(
-            return_value=self._response(
-                {
-                    "queries": [
-                        {
-                            "queryId": "Q_devices",
-                            "path": "/netbox/forward_devices",
-                            "lastCommitId": "commit-2",
-                        }
-                    ]
-                }
-            )
+        self.client._sdk_client.nqe.queries = Mock(
+            return_value=[
+                SimpleNamespace(
+                    query_id="Q_devices",
+                    path="/netbox/forward_devices",
+                    intent="",
+                )
+            ]
+        )
+        self.client._sdk_client.nqe.repo.queries = Mock(
+            return_value=[
+                SimpleNamespace(
+                    query_id="Q_devices",
+                    path="/netbox/forward_devices",
+                    intent="",
+                    last_commit_id="commit-2",
+                    last_commit=None,
+                    source_code=None,
+                )
+            ]
         )
 
         with patch(
@@ -2355,6 +2353,10 @@ class ForwardClientTest(TestCase):
         self.assertEqual(first["queryId"], "Q_devices")
         self.assertEqual(second["queryId"], "Q_devices")
         self.assertEqual(second["commitId"], "commit-2")
+        # Both the org index and the resolved commit are cached, so the
+        # second resolve makes no further SDK calls.
+        self.assertEqual(self.client._sdk_client.nqe.queries.call_count, 1)
+        self.assertEqual(self.client._sdk_client.nqe.repo.queries.call_count, 1)
 
     def test_add_org_nqe_query_creates_user_workspace_change(self):
         self.client._sdk_client.nqe.repo.stage_add = Mock()
