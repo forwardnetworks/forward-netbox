@@ -429,8 +429,19 @@ class ReleaseProvenanceTest(unittest.TestCase):
             if repository is not None:
                 command.extend(["-C", str(repository)])
             command.extend(arguments)
+            # `-C <repository>` alone does not clear an ambient GIT_DIR - see
+            # test_sensitive_content.py's `_git` for the confirmed corruption
+            # this caused there. Not implicated here (this fixture's own
+            # commits are authored "Release Tagger", a different signature),
+            # but scrub it anyway rather than trust the calling environment.
+            env = {
+                key: value
+                for key, value in os.environ.items()
+                if not key.startswith("GIT_")
+            }
             return subprocess.run(
                 command,
+                env=env,
                 check=True,
                 capture_output=True,
                 text=True,
