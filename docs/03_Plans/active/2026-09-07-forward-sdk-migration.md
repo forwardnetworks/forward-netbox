@@ -708,3 +708,51 @@ dependency declaration; the first with a behavioural one is the transport swap.
   setUp` (already patching 6a/6b functions) simply grew two more names in
   its existing per-module tuples, needing zero new structure.
   Full targeted suite (22 files, 1015 tests) green.
+- **2026-09-18** -- Step 6d, closing out step 6 entirely: the cleanup and
+  verification pass, not a new conversion. Findings:
+  - The two duck-typed sites the original scoping survey flagged
+    (`api_usage.py`'s `getattr(client, "api_usage_summary", None)`,
+    `sync_orchestration.py`'s `getattr(executor, "client", None)`) needed
+    NO fix. `api_usage_summary`/`reset_api_usage_summary` were never part
+    of the 6a/6b/6c conversions - they stayed internal-state accessors on
+    `ForwardClient` throughout, exactly as designed, so the `getattr` still
+    resolves a real bound method. These were a note-for-thoroughness in
+    the survey, not a live bug.
+  - Removed the dead `ForwardClient` entry from `utilities/__init__.py`'s
+    lazy `__getattr__` re-export (`from forward_netbox.utilities import
+    ForwardClient`) - confirmed zero callers anywhere in the tree.
+    `BUILTIN_QUERY_SPECS`'s entry in the same file is untouched: also
+    dead (every real caller imports it directly from `query_registry.py`
+    instead), but that is a pre-existing, unrelated condition outside
+    this migration's scope, not something to bundle in here.
+  - Comprehensive tree-wide grep for all 19 removed method names (the
+    full set from 6a+6b+6c) across every production and test file: zero
+    remaining call sites of the removed OO calling convention anywhere.
+  **The plan's original step-6 framing ("ForwardClient class deletion")
+  does not literally apply, and that is the correct outcome, not
+  incomplete work.** `ForwardClient` still exists and is still
+  constructed exactly once (`models.py`'s `ForwardSource.get_client()`)
+  - it is now a pure state container: the SDK client, the four extracted
+  cross-process concerns (read cache, throttle, usage tracker, credential
+  decrypt), and the per-resource in-memory caches, exposed only through
+  the internal-plumbing methods (`_call_sdk`, `_record_*`,
+  `_shared_read_cache_*`, cache-copy helpers) that the free functions in
+  `forward_api_impl.py` operate on via an explicit `client` argument.
+  Deleting this container class outright was never actually possible
+  without deleting the state it holds - something has to own the SDK
+  client, the caches, and the throttle, and renaming or restructuring
+  that container for its own sake would touch every one of the ~104 call
+  sites across steps 6a-6c a second time for zero functional or
+  architectural benefit. What step 6 was actually FOR - "its removal is
+  what proves no call site was missed" - is fully satisfied: **zero
+  public methods remain on `ForwardClient`**, every one of the ~104
+  external call sites converted across 6a/6b/6c calls a free function
+  with an explicit `client` argument, and this cleanup pass found nothing
+  left to convert. Step 6 is complete in substance; `forward_api_impl.py`
+  is not deleted (per the plan's original, pre-this-session vision) because
+  it still holds every free function's implementation, the scope-predicate
+  builders, and this now-lean state container - there is no remaining
+  code to delete, only a class that changed shape.
+  Full targeted suite unchanged from step 6c (no behavioral change in this
+  pass) - re-ran `invoke ci` in full to confirm the `__init__.py` edit and
+  the plan-doc-only change introduce no regression.
