@@ -151,15 +151,14 @@ class QueryIdWithoutCommitTest(SimpleTestCase):
         self.assertEqual(refused.full_reason_code, "unsupported_full_parameters")
 
     def test_the_execution_payload_omits_commit_id_entirely(self):
-        payload = ForwardClient._nqe_async_execution_payload(
+        ref = ForwardClient._nqe_query_ref(
             Mock(),
             query_id=QUERY_ID,
             commit_id=None,
-            parameters={"scope": []},
         )
 
-        self.assertNotIn("commitId", payload)
-        self.assertEqual(payload["queryId"], QUERY_ID)
+        self.assertIsNone(ref.commit_id)
+        self.assertEqual(ref.query_id, QUERY_ID)
 
     def test_a_stored_commit_is_still_honoured_exactly(self):
         client = _client()
@@ -175,13 +174,12 @@ class QueryIdWithoutCommitTest(SimpleTestCase):
             effective_parameters={"scope": ["device-a"]},
         )
         self.assertFalse(contract.full_unpinned_head)
-        payload = ForwardClient._nqe_async_execution_payload(
+        ref = ForwardClient._nqe_query_ref(
             Mock(),
             query_id=QUERY_ID,
             commit_id=contract.full_revision.commit_id,
-            parameters={"scope": []},
         )
-        self.assertEqual(payload["commitId"], PINNED_COMMIT)
+        self.assertEqual(ref.commit_id, PINNED_COMMIT)
 
     def test_a_path_bound_builtin_map_still_resolves_a_verified_commit(self):
         # A path is not an identity: the folder may now hold a different query,

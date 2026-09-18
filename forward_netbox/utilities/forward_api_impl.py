@@ -1,13 +1,12 @@
 import hashlib
-import io
 import json
 import random
 import threading
 import time
-from urllib.parse import quote
 
 import httpx
 from django.core.cache import cache as django_cache
+from forward_sdk import QueryRef
 from forward_sdk.errors import ForwardError as SDKForwardError
 from forward_sdk.errors import ForwardTransportError as SDKForwardTransportError
 from rq.timeouts import JobTimeoutException
@@ -1489,24 +1488,6 @@ class ForwardClient:
                 records.append(json.loads(json.dumps(item)))
         return records, data.get("totalNumItems")
 
-    def _parse_nqe_lines(self, text):
-        records = []
-        for line in io.StringIO(str(text or "")):
-            line = line.rstrip("\r\n")
-            if not line:
-                continue
-            records.append(json.loads(line))
-        return records, None
-
-    def _parse_nqe_async_result(self, response):
-        content_type = str(
-            (getattr(response, "headers", {}) or {}).get("content-type") or ""
-        ).lower()
-        if "jsonl" in content_type or "ndjson" in content_type:
-            return self._parse_nqe_lines(getattr(response, "text", ""))
-        payload = response.json() or {}
-        return self._parse_nqe_records(payload)
-
     def _parse_nqe_diff_rows(self, data):
         rows = data.get("rows") or []
         parsed_rows = []
@@ -1523,43 +1504,25 @@ class ForwardClient:
             )
         return parsed_rows, data.get("totalNumRows")
 
-    def _nqe_async_execution_payload(
-        self,
-        *,
-        query=None,
-        query_id=None,
-        commit_id=None,
-        parameters=None,
-    ):
-        payload = {"parameters": parameters or {}}
-        if query_id:
-            payload["queryId"] = query_id
-            execution_commit_id = _commit_id_for_nqe_execution(commit_id)
-            if execution_commit_id:
-                payload["commitId"] = execution_commit_id
-        else:
-            payload["query"] = query
-        return payload
+    def _nqe_query_ref(self, *, query=None, query_id=None, commit_id=None):
+        """Build the `QueryRef` (or raw source string) `execute()` takes.
 
-    def _nqe_async_status_state(self, status_payload):
-        return str((status_payload or {}).get("status") or "").strip().upper()
+        `_commit_id_for_nqe_execution` runs first so an abbreviated hash
+        falls back to head exactly as it always has. The SDK's own
+        `QueryRef.by_id` sanitizes commit ids too, but by *raising* on an
+        abbreviated one - deliberately, on the theory that silently
+        discarding a pin answers a different question and reports success.
+        Right as a new default; a behavior change for an existing one, so
+        this method keeps making the choice `_commit_id_for_nqe_execution`
+        already encoded rather than adopting the SDK's stricter one here.
+        """
+        if not query_id:
+            return query
+        return QueryRef.by_id(
+            query_id, commit_id=_commit_id_for_nqe_execution(commit_id) or None
+        )
 
-    def _nqe_async_outcome(self, status_payload):
-        return str((status_payload or {}).get("outcome") or "").strip().upper()
-
-    def _nqe_async_error_summary(self, status_payload):
-        error = (status_payload or {}).get("error")
-        if isinstance(error, dict):
-            return (
-                error.get("message")
-                or error.get("reason")
-                or json.dumps(error, sort_keys=True, default=str)
-            )
-        if error:
-            return str(error)
-        return json.dumps(status_payload or {}, sort_keys=True, default=str)
-
-    def _start_nqe_async_execution(
+    def _start_nqe_execution(
         self,
         *,
         query=None,
@@ -1568,121 +1531,42 @@ class ForwardClient:
         network_id,
         snapshot_id,
         parameters=None,
-        deadline=None,
     ):
-        payload = self._nqe_async_execution_payload(
-            query=query,
-            query_id=query_id,
-            commit_id=commit_id,
-            parameters=parameters,
-        )
         self._record_api_usage("nqe_async_trigger_calls")
-        request_kwargs = {
-            "params": {"snapshotId": snapshot_id},
-            "json_body": payload,
-        }
-        if deadline is not None:
-            request_kwargs["deadline"] = deadline
-        response = self._request(
-            "POST",
-            f"/networks/{quote(str(network_id), safe='')}/nqe-executions",
-            **request_kwargs,
+        ref = self._nqe_query_ref(query=query, query_id=query_id, commit_id=commit_id)
+        return self._call_sdk(
+            self._sdk_client.nqe.execute,
+            ref,
+            network_id=network_id,
+            snapshot_id=snapshot_id,
+            parameters=parameters or None,
         )
-        data = response.json() or {}
-        execution_key = str(data.get("executionKey") or "").strip()
-        if not execution_key:
-            raise ForwardClientError(
-                "Forward async NQE execution did not return `executionKey`."
-            )
-        return execution_key, data
 
-    def _get_nqe_async_status(self, *, network_id, execution_key, deadline=None):
+    def _wait_for_nqe_execution(self, execution, *, deadline=None):
+        # `NqeExecution.wait(timeout=...)` is purely time-based; there is no
+        # poll-COUNT ceiling to hand it, and `timeout=None` means "wait
+        # forever" - unlike the poll loop this replaces, which always had a
+        # hard stop via `nqe_async_max_polls` even with no `deadline` set.
+        # Derive an equivalent duration ceiling from the same operator-
+        # configured knobs so a runaway execution still cannot hang a
+        # worker indefinitely when no per-workload deadline is in play.
+        poll_interval = self.nqe_async_poll_interval_seconds or 5.0
+        poll_budget_seconds = self.nqe_async_max_polls * poll_interval
+        if deadline is None:
+            timeout = poll_budget_seconds
+        else:
+            timeout = min(poll_budget_seconds, max(0.0, deadline - time.monotonic()))
         self._record_api_usage("nqe_async_status_calls")
-        request_kwargs = {}
-        if deadline is not None:
-            request_kwargs["deadline"] = deadline
-        response = self._request(
-            "GET",
-            "/networks/{network_id}/nqe-executions/{execution_key}".format(
-                network_id=quote(str(network_id), safe=""),
-                execution_key=quote(str(execution_key), safe=""),
-            ),
-            **request_kwargs,
-        )
-        return response.json() or {}
+        self._call_sdk(execution.wait, poll_interval=poll_interval, timeout=timeout)
 
-    def _wait_for_nqe_async_completion(
-        self, *, network_id, execution_key, status, deadline=None
-    ):
-        current_status = status or {}
-        poll_ceiling = self.nqe_async_poll_interval_seconds
-        for poll_index in range(self.nqe_async_max_polls + 1):
-            if deadline is not None and time.monotonic() >= deadline:
-                raise ForwardFetchBudgetExceededError(
-                    "Forward NQE fetch exceeded the per-workload wall-clock budget"
-                )
-            state = self._nqe_async_status_state(current_status)
-            outcome = self._nqe_async_outcome(current_status)
-            if state == "COMPLETED":
-                if outcome == "OK":
-                    return current_status
-                raise ForwardClientError(
-                    "Forward async NQE execution completed with outcome "
-                    f"`{outcome or '<unknown>'}`: "
-                    f"{self._nqe_async_error_summary(current_status)}"
-                )
-            if poll_index >= self.nqe_async_max_polls:
-                break
-            if poll_ceiling:
-                # Exponential backoff: 0.1s → 0.2 → 0.4 → 0.8 → ceiling.
-                # Fast queries return in <0.1s; slow ones plateau at the
-                # configured ceiling so the poll budget stays meaningful.
-                sleep_seconds = min(poll_ceiling, 0.1 * (2**poll_index))
-                if deadline is not None:
-                    sleep_seconds = min(
-                        sleep_seconds,
-                        max(0.0, deadline - time.monotonic()),
-                    )
-                time.sleep(sleep_seconds)
-            current_status = self._get_nqe_async_status(
-                network_id=network_id,
-                execution_key=execution_key,
-                deadline=deadline,
-            )
-        raise ForwardClientError(
-            "Forward async NQE execution did not complete after "
-            f"{self.nqe_async_max_polls} status poll(s)."
-        )
-
-    def _fetch_nqe_async_result_page(
-        self,
-        *,
-        network_id,
-        execution_key,
-        limit,
-        offset,
-        deadline=None,
-    ):
+    def _fetch_nqe_async_result_page(self, execution, *, limit, offset):
         self._record_api_usage("nqe_pages")
         self._record_api_usage("nqe_query_pages")
         self._record_api_usage("nqe_async_result_calls")
-        request_kwargs = {
-            "params": {"offset": offset, "limit": limit},
-            "headers": {
-                "Accept": "application/x-ndjson, application/jsonl;q=0.9, application/json;q=0.1"
-            },
-        }
-        if deadline is not None:
-            request_kwargs["deadline"] = deadline
-        response = self._request(
-            "GET",
-            "/networks/{network_id}/nqe-executions/{execution_key}/result".format(
-                network_id=quote(str(network_id), safe=""),
-                execution_key=quote(str(execution_key), safe=""),
-            ),
-            **request_kwargs,
+        result = self._call_sdk(execution.result_page, offset=offset, limit=limit)
+        return self._parse_nqe_records(
+            {"items": result.items or [], "totalNumItems": result.total_num_items}
         )
-        return self._parse_nqe_async_result(response)
 
     def run_nqe_query(
         self,
@@ -1755,27 +1639,25 @@ class ForwardClient:
     ):
         self._record_api_usage("nqe_query_calls")
         self._record_api_usage("nqe_async_query_calls")
-        execution_key, initial_status = self._start_nqe_async_execution(
+        execution = self._start_nqe_execution(
             query=query,
             query_id=query_id,
             commit_id=commit_id,
             network_id=network_id,
             snapshot_id=snapshot_id,
             parameters=parameters,
-            deadline=deadline,
         )
-        self._wait_for_nqe_async_completion(
-            network_id=network_id,
-            execution_key=execution_key,
-            status=initial_status,
-            deadline=deadline,
-        )
+        self._wait_for_nqe_execution(execution, deadline=deadline)
+        # `execution.result_page` has no per-call deadline of its own -
+        # `wait()`'s own timeout already covers the execute-then-wait phase,
+        # but a slow wait that used almost the whole budget could still let
+        # this first fetch run unbounded without this check.
+        if deadline is not None and time.monotonic() >= deadline:
+            raise ForwardFetchBudgetExceededError(
+                "Forward NQE fetch exceeded the per-workload wall-clock budget"
+            )
         records, total_num_items = self._fetch_nqe_async_result_page(
-            network_id=network_id,
-            execution_key=execution_key,
-            limit=limit,
-            offset=offset,
-            deadline=deadline,
+            execution, limit=limit, offset=offset
         )
         if not fetch_all:
             return records
@@ -1816,11 +1698,7 @@ class ForwardClient:
 
             next_offset = offset + len(all_records)
             page_records, page_total = self._fetch_nqe_async_result_page(
-                network_id=network_id,
-                execution_key=execution_key,
-                limit=limit,
-                offset=next_offset,
-                deadline=deadline,
+                execution, limit=limit, offset=next_offset
             )
             fetched_pages += 1
             if expected_total is None and page_total is not None:
@@ -1874,6 +1752,12 @@ class ForwardClient:
             raise ForwardClientError(
                 "Both `before_snapshot_id` and `after_snapshot_id` must be supplied."
             )
+        # `client.nqe.diff_page` has no item-format option at all - no real
+        # caller has ever requested anything but the default, but silently
+        # dropping the parameter would turn an unsupported request into one
+        # that looks like it succeeded.
+        if str(item_format or "JSON").upper() != "JSON":
+            raise ForwardClientError("NQE diff only supports JSON item format.")
         if limit is None:
             limit = self.nqe_page_size
         if limit < 1:
@@ -1889,29 +1773,48 @@ class ForwardClient:
             },
         )
 
+        # Same abbreviated-hash-falls-back-to-head treatment as
+        # run_nqe_query's _nqe_query_ref: QueryRef.by_id raises on one
+        # rather than silently discarding the pin, and this method never
+        # checked for one at all before, so this is a deliberate applied
+        # consistency fix, not a preserved quirk.
+        ref = QueryRef.by_id(
+            query_id, commit_id=_commit_id_for_nqe_execution(commit_id) or None
+        )
+
         def fetch_page(page_offset):
             self._record_api_usage("nqe_pages")
             self._record_api_usage("nqe_diff_pages")
-            payload = {
-                "queryId": query_id,
-                "options": {
-                    "limit": limit,
-                    "offset": page_offset,
-                    "itemFormat": item_format,
-                },
-            }
-            if commit_id:
-                payload["commitId"] = commit_id
-            request_kwargs = {"json_body": payload}
-            if deadline is not None:
-                request_kwargs["deadline"] = deadline
-            response = self._request(
-                "POST",
-                f"/nqe-diffs/{before_snapshot_id}/{after_snapshot_id}",
-                **request_kwargs,
+            result = self._call_sdk(
+                self._sdk_client.nqe.diff_page,
+                ref,
+                before=before_snapshot_id,
+                after=after_snapshot_id,
+                offset=page_offset,
+                limit=limit,
             )
-            return self._parse_nqe_diff_rows(response.json() or {})
+            data = {
+                "rows": [
+                    {
+                        "type": str(row.type) if row.type is not None else None,
+                        "before": row.before,
+                        "after": row.after,
+                    }
+                    for row in result.rows or []
+                ],
+                "totalNumRows": result.total_num_rows,
+            }
+            return self._parse_nqe_diff_rows(data)
 
+        # `client.nqe.diff_page` has no per-call deadline of its own (unlike
+        # `_request()`, which checked one on every retry attempt) - checked
+        # explicitly here so an already-exceeded deadline is still honored
+        # before the first page fetch, not just before the second and later
+        # ones the loop below already guards.
+        if deadline is not None and time.monotonic() >= deadline:
+            raise ForwardFetchBudgetExceededError(
+                "Forward NQE fetch exceeded the per-workload wall-clock budget"
+            )
         self._record_api_usage("nqe_diff_calls")
         rows, total_num_rows = fetch_page(offset)
         if not fetch_all:
