@@ -802,9 +802,6 @@ select {name: x}
         data_file = "netbox_feature_tag_rules"
         content_hash = "md5:" + ("a" * 32)
         client = Mock()
-        client.get_snapshot_data_file_hashes.return_value = {
-            data_file: content_hash,
-        }
         fetcher = ForwardQueryFetcher(
             sync=SimpleNamespace(pk=1),
             client=client,
@@ -816,10 +813,15 @@ select {name: x}
             required_data_files=(data_file,),
         )
 
-        (hydrated,) = fetcher._hydrate_snapshot_data_file_hashes(
-            [spec],
-            _context(),
-        )
+        with patch(
+            "forward_netbox.utilities.query_fetch_execution."
+            "get_snapshot_data_file_hashes",
+            return_value={data_file: content_hash},
+        ) as mock_get_hashes:
+            (hydrated,) = fetcher._hydrate_snapshot_data_file_hashes(
+                [spec],
+                _context(),
+            )
         contract = resolve_execution_contract(
             hydrated,
             effective_parameters=hydrated.parameters,
@@ -827,7 +829,8 @@ select {name: x}
 
         self.assertTrue(contract.diff_eligible)
         self.assertEqual(contract.data_file_hashes, ((data_file, content_hash),))
-        client.get_snapshot_data_file_hashes.assert_called_once_with(
+        mock_get_hashes.assert_called_once_with(
+            client,
             "network",
             "snapshot-after",
         )

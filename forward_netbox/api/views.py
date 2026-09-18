@@ -40,6 +40,9 @@ from forward_netbox.models import ForwardNQEMap
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.models import ForwardValidationRun
+from forward_netbox.utilities.forward_api import get_latest_processed_snapshot
+from forward_netbox.utilities.forward_api import get_networks
+from forward_netbox.utilities.forward_api import get_snapshots
 from forward_netbox.utilities.forward_api import LATEST_COLLECTED_SNAPSHOT
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.query_binding import builtin_filename_to_query_default
@@ -139,7 +142,7 @@ class ForwardSourceViewSet(NetBoxModelViewSet):
         results = []
         if source is not None:
             try:
-                for network in source.get_client().get_networks():
+                for network in get_networks(source.get_client()):
                     if (
                         q
                         and q not in network["label"].lower()
@@ -245,7 +248,7 @@ class ForwardSourceViewSet(NetBoxModelViewSet):
         tag_set = set()
         try:
             client = source.get_client()
-            snapshot = client.get_latest_processed_snapshot(network_id)
+            snapshot = get_latest_processed_snapshot(client, network_id)
             snapshot_id = str(snapshot.get("id") or "").strip()
             if not snapshot_id:
                 return Response(
@@ -592,7 +595,7 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
             return Response({"count": len(results), "results": results})
 
         try:
-            for snapshot in source.get_client().get_snapshots(network_id):
+            for snapshot in get_snapshots(source.get_client(), network_id):
                 display = snapshot["label"]
                 if q and q not in display.lower() and q not in snapshot["id"].lower():
                     continue

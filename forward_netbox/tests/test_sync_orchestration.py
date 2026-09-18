@@ -134,15 +134,18 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
     def test_latest_processed_catchup_decision_skips_when_snapshot_is_current(self):
         self.sync.status = ForwardSyncStatusChoices.COMPLETED
         self.sync.save(update_fields=["status"])
-        client = SimpleNamespace(
-            get_latest_processed_snapshot_id=Mock(return_value="snapshot-1")
-        )
+        client = SimpleNamespace()
 
-        decision = latest_processed_catchup_decision(
-            self.sync,
-            current_snapshot_id="snapshot-1",
-            client=client,
-        )
+        with patch(
+            "forward_netbox.utilities.snapshot_freshness."
+            "get_latest_processed_snapshot_id",
+            return_value="snapshot-1",
+        ):
+            decision = latest_processed_catchup_decision(
+                self.sync,
+                current_snapshot_id="snapshot-1",
+                client=client,
+            )
 
         self.assertFalse(decision["should_queue"])
         self.assertEqual(decision["reason"], "already_current")
@@ -150,17 +153,18 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
     def test_latest_processed_catchup_decision_ignores_lookup_failure(self):
         self.sync.status = ForwardSyncStatusChoices.COMPLETED
         self.sync.save(update_fields=["status"])
-        client = SimpleNamespace(
-            get_latest_processed_snapshot_id=Mock(
-                side_effect=ForwardClientError("boom")
-            )
-        )
+        client = SimpleNamespace()
 
-        decision = latest_processed_catchup_decision(
-            self.sync,
-            current_snapshot_id="snapshot-1",
-            client=client,
-        )
+        with patch(
+            "forward_netbox.utilities.snapshot_freshness."
+            "get_latest_processed_snapshot_id",
+            side_effect=ForwardClientError("boom"),
+        ):
+            decision = latest_processed_catchup_decision(
+                self.sync,
+                current_snapshot_id="snapshot-1",
+                client=client,
+            )
 
         self.assertFalse(decision["should_queue"])
         self.assertEqual(decision["reason"], "latest_processed_lookup_failed")
@@ -174,18 +178,25 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
         }
         self.sync.status = ForwardSyncStatusChoices.COMPLETED
         self.sync.save(update_fields=["parameters", "status"])
-        client = SimpleNamespace(
-            get_latest_collected_snapshot_id=Mock(
-                return_value="snapshot-collected-new"
-            ),
-            get_latest_processed_snapshot_id=Mock(return_value="snapshot-processed"),
-        )
+        client = SimpleNamespace()
 
-        decision = latest_processed_catchup_decision(
-            self.sync,
-            current_snapshot_id="snapshot-collected-old",
-            client=client,
-        )
+        with (
+            patch(
+                "forward_netbox.utilities.snapshot_freshness."
+                "get_latest_collected_snapshot_id",
+                return_value="snapshot-collected-new",
+            ) as mock_get_collected_id,
+            patch(
+                "forward_netbox.utilities.snapshot_freshness."
+                "get_latest_processed_snapshot_id",
+                return_value="snapshot-processed",
+            ) as mock_get_processed_id,
+        ):
+            decision = latest_processed_catchup_decision(
+                self.sync,
+                current_snapshot_id="snapshot-collected-old",
+                client=client,
+            )
 
         self.assertTrue(decision["should_queue"])
         self.assertEqual(decision["reason"], "latest_processed_advanced")
@@ -194,8 +205,8 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
             decision["latest_processed_snapshot_id"], "snapshot-collected-new"
         )
         # latestCollected must resolve via the collected probe, not latestProcessed.
-        client.get_latest_collected_snapshot_id.assert_called_once()
-        client.get_latest_processed_snapshot_id.assert_not_called()
+        mock_get_collected_id.assert_called_once()
+        mock_get_processed_id.assert_not_called()
 
     def test_latest_collected_catchup_skips_when_probe_finds_no_collected(self):
         from forward_netbox.utilities.forward_api import LATEST_COLLECTED_SNAPSHOT
@@ -206,17 +217,18 @@ class ForwardSyncOrchestrationHelperTest(TestCase):
         }
         self.sync.status = ForwardSyncStatusChoices.COMPLETED
         self.sync.save(update_fields=["parameters", "status"])
-        client = SimpleNamespace(
-            get_latest_collected_snapshot_id=Mock(
-                side_effect=ForwardClientError("all backfilled")
-            )
-        )
+        client = SimpleNamespace()
 
-        decision = latest_processed_catchup_decision(
-            self.sync,
-            current_snapshot_id="snapshot-collected-old",
-            client=client,
-        )
+        with patch(
+            "forward_netbox.utilities.snapshot_freshness."
+            "get_latest_collected_snapshot_id",
+            side_effect=ForwardClientError("all backfilled"),
+        ):
+            decision = latest_processed_catchup_decision(
+                self.sync,
+                current_snapshot_id="snapshot-collected-old",
+                client=client,
+            )
 
         self.assertFalse(decision["should_queue"])
         self.assertEqual(decision["reason"], "latest_processed_lookup_failed")

@@ -44,6 +44,10 @@ from .forward_api import build_device_tag_scope_where
 from .forward_api import build_endpoint_device_eligibility_where
 from .forward_api import build_endpoint_tag_scope_where
 from .forward_api import DEFAULT_QUERY_FETCH_CONCURRENCY
+from .forward_api import get_latest_processed_snapshot
+from .forward_api import get_snapshot_data_file_hashes
+from .forward_api import get_snapshot_metrics
+from .forward_api import get_snapshots
 from .forward_api import LATEST_COLLECTED_SNAPSHOT
 from .forward_api import LATEST_PROCESSED_SNAPSHOT
 from .forward_api import MAX_QUERY_FETCH_CONCURRENCY
@@ -484,7 +488,7 @@ class ForwardQueryFetcher:
         )
         snapshot_metrics = {}
         try:
-            snapshot_metrics = self.client.get_snapshot_metrics(snapshot_id)
+            snapshot_metrics = get_snapshot_metrics(self.client, snapshot_id)
         except JobTimeoutException:
             raise
         except Exception as exc:  # noqa: BLE001 - metrics are best-effort
@@ -1695,7 +1699,8 @@ class ForwardQueryFetcher:
         if not required:
             return specs
         try:
-            available = self.client.get_snapshot_data_file_hashes(
+            available = get_snapshot_data_file_hashes(
+                self.client,
                 context.network_id,
                 context.snapshot_id,
             )
@@ -2397,7 +2402,7 @@ class ForwardQueryFetcher:
             snapshot_selector == snapshot_id
             or snapshot_selector == LATEST_COLLECTED_SNAPSHOT
         ):
-            for snapshot in self.client.get_snapshots(network_id):
+            for snapshot in get_snapshots(self.client, network_id):
                 if snapshot["id"] == snapshot_id:
                     return {
                         "id": snapshot["id"],
@@ -2407,7 +2412,7 @@ class ForwardQueryFetcher:
                     }
             return {}
         if snapshot_selector == LATEST_PROCESSED_SNAPSHOT:
-            return self.client.get_latest_processed_snapshot(network_id)
+            return get_latest_processed_snapshot(self.client, network_id)
         return {}
 
     def _run_nqe_provenance_query(

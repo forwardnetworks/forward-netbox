@@ -1,3 +1,5 @@
+from unittest.mock import patch
+
 from dcim.models import Device
 from dcim.models import DeviceRole
 from dcim.models import DeviceType
@@ -65,7 +67,14 @@ class PrimaryIpAuditTest(TestCase):
         )
 
     def test_buckets_unresolved_by_reason(self):
-        payload = audit_primary_ip_resolution(self.sync, _FakeClient(), snapshot_id="1")
+        client = _FakeClient()
+        with patch(
+            "forward_netbox.utilities.primary_ip_audit.get_device_mgmt_tags",
+            side_effect=lambda c, *args, **kwargs: c.get_device_mgmt_tags(
+                *args, **kwargs
+            ),
+        ):
+            payload = audit_primary_ip_resolution(self.sync, client, snapshot_id="1")
         self.assertEqual(payload["mgmt_tagged_devices"], 4)
         self.assertEqual(payload["resolvable"], 1)
         self.assertEqual(payload["unresolved"], 3)

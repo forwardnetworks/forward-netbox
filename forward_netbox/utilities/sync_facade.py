@@ -12,6 +12,8 @@ from ..choices import ForwardDiffFallbackModeChoices
 from ..choices import ForwardSyncStatusChoices
 from ..exceptions import ForwardSyncError
 from .branch_budget import DEFAULT_MAX_CHANGES_PER_STAGING_ITEM
+from .forward_api import get_latest_collected_snapshot_id
+from .forward_api import get_latest_processed_snapshot_id
 from .forward_api import LATEST_COLLECTED_SNAPSHOT
 from .forward_api import LATEST_PROCESSED_SNAPSHOT
 from .job_queue import enqueue_forward_job
@@ -87,13 +89,14 @@ def resolve_snapshot_id(sync, client=None):
         )
     if snapshot_id == LATEST_COLLECTED_SNAPSHOT:
         include_tags, exclude_tags, include_match = device_tag_scope(sync)
-        return client.get_latest_collected_snapshot_id(
+        return get_latest_collected_snapshot_id(
+            client,
             network_id,
             include_tags=include_tags,
             exclude_tags=exclude_tags,
             include_match=include_match,
         )
-    return client.get_latest_processed_snapshot_id(network_id)
+    return get_latest_processed_snapshot_id(client, network_id)
 
 
 def get_maps(sync):

@@ -8,6 +8,9 @@ from ..exceptions import ForwardSyncDataError
 from .apply_engine import select_apply_engine
 from .delete_policy import should_suppress_aci_deletes
 from .diagnostics import safe_operation_failure
+from .forward_api import get_latest_processed_snapshot
+from .forward_api import get_snapshot_metrics
+from .forward_api import get_snapshots
 from .forward_api import LATEST_COLLECTED_SNAPSHOT
 from .ingestion_merge import suppress_ingest_side_effect_signals
 from .model_contracts import architecture_default_coalesce_fields_for_model
@@ -44,7 +47,7 @@ def run_sync_stage(runner):
         snapshot_selector == snapshot_id
         or snapshot_selector == LATEST_COLLECTED_SNAPSHOT
     ):
-        for snapshot in runner.client.get_snapshots(network_id):
+        for snapshot in get_snapshots(runner.client, network_id):
             if snapshot["id"] == snapshot_id:
                 snapshot_info = {
                     "id": snapshot["id"],
@@ -54,11 +57,11 @@ def run_sync_stage(runner):
                 }
                 break
     else:
-        snapshot_info = runner.client.get_latest_processed_snapshot(network_id)
+        snapshot_info = get_latest_processed_snapshot(runner.client, network_id)
 
     snapshot_metrics = {}
     try:
-        snapshot_metrics = runner.client.get_snapshot_metrics(snapshot_id)
+        snapshot_metrics = get_snapshot_metrics(runner.client, snapshot_id)
     except JobTimeoutException:
         raise
     except Exception as exc:

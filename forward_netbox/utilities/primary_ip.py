@@ -11,6 +11,7 @@ from ipaddress import ip_interface
 from rq.timeouts import JobTimeoutException
 
 from .diagnostics import failure_classifier
+from .forward_api import get_device_mgmt_tags
 from .interface_naming import parse_mgmt_tag
 from .interface_naming import resolve_mgmt_interface_name
 
@@ -165,7 +166,8 @@ def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
             logger.log_info("primary_ip-from-tag: no network on the source; skipping.")
             return 0
         include_tags, exclude_tags, include_match = device_tag_scope(sync)
-        device_mgmt_tags = executor.client.get_device_mgmt_tags(
+        device_mgmt_tags = get_device_mgmt_tags(
+            executor.client,
             network_id,
             snapshot_id,
             include_tags=include_tags,

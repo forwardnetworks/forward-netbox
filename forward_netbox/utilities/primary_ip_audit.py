@@ -11,6 +11,7 @@
 #                                is not on the device in NetBox
 #   interface_present_no_ip    - target interface present, but no IP is assigned to
 #                                it in NetBox (the apply/assignment gap)
+from .forward_api import get_device_mgmt_tags
 from .interface_naming import resolve_mgmt_interface_name
 from .primary_ip import _branch_interface_ips
 from .primary_ip import resolve_primary_ip_assignments
@@ -22,7 +23,8 @@ def audit_primary_ip_resolution(sync, client, *, snapshot_id=None, sample_limit=
     network_id = sync.get_network_id()
     snapshot_id = snapshot_id or sync.resolve_snapshot_id(client)
     include_tags, exclude_tags, include_match = device_tag_scope(sync)
-    device_mgmt_tags = client.get_device_mgmt_tags(
+    device_mgmt_tags = get_device_mgmt_tags(
+        client,
         network_id,
         snapshot_id,
         include_tags=include_tags,

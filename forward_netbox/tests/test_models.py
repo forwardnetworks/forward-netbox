@@ -586,7 +586,6 @@ class ForwardSyncModelTest(TestCase):
         self.source.save(update_fields=["parameters"])
 
         client = Mock()
-        client.get_latest_processed_snapshot.return_value = {"id": "snap-1"}
         client.run_nqe_query.side_effect = [
             [
                 {"name": "dev-a"},
@@ -600,7 +599,11 @@ class ForwardSyncModelTest(TestCase):
         ]
         mock_get_client.return_value = client
 
-        preview = self.source.get_tag_scope_preview()
+        with patch(
+            "forward_netbox.models.get_latest_processed_snapshot",
+            return_value={"id": "snap-1"},
+        ):
+            preview = self.source.get_tag_scope_preview()
         self.assertTrue(preview["enabled"])
         self.assertEqual(preview["total_devices"], 3)
         self.assertEqual(preview["matched_devices"], 2)
@@ -615,10 +618,13 @@ class ForwardSyncModelTest(TestCase):
         self.source.save(update_fields=["parameters"])
 
         client = Mock()
-        client.get_latest_processed_snapshot.return_value = {"id": ""}
         mock_get_client.return_value = client
 
-        preview = self.source.get_tag_scope_preview()
+        with patch(
+            "forward_netbox.models.get_latest_processed_snapshot",
+            return_value={"id": ""},
+        ):
+            preview = self.source.get_tag_scope_preview()
         self.assertTrue(preview["enabled"])
         self.assertIn("No processed snapshot", preview["error"])
 
@@ -627,12 +633,13 @@ class ForwardSyncModelTest(TestCase):
         self.source.parameters.update({"device_tag_include_tags": ["scope-alpha"]})
         self.source.save(update_fields=["parameters"])
         client = Mock()
-        client.get_latest_processed_snapshot.side_effect = ForwardQueryError(
-            "sentinel-private-detail"
-        )
         mock_get_client.return_value = client
 
-        preview = self.source.get_tag_scope_preview()
+        with patch(
+            "forward_netbox.models.get_latest_processed_snapshot",
+            side_effect=ForwardQueryError("sentinel-private-detail"),
+        ):
+            preview = self.source.get_tag_scope_preview()
 
         self.assertEqual(
             preview["error"], "Tag scope preview failed (ForwardQueryError)."
@@ -2030,18 +2037,21 @@ class ForwardSyncModelTest(TestCase):
             )
         ]
         client = Mock()
-        client.get_snapshots.return_value = [
-            {"id": "snapshot-current", "state": "PROCESSED"},
-            {"id": "snapshot-old", "state": "PROCESSED"},
-        ]
 
-        self.assertIsNone(
-            sync.incremental_diff_baseline(
-                specs=specs,
-                current_snapshot_id="snapshot-current",
-                client=client,
+        with patch(
+            "forward_netbox.models.get_snapshots",
+            return_value=[
+                {"id": "snapshot-current", "state": "PROCESSED"},
+                {"id": "snapshot-old", "state": "PROCESSED"},
+            ],
+        ):
+            self.assertIsNone(
+                sync.incremental_diff_baseline(
+                    specs=specs,
+                    current_snapshot_id="snapshot-current",
+                    client=client,
+                )
             )
-        )
 
     def test_incremental_diff_baseline_ignores_non_iterable_snapshot_payload(self):
         sync = ForwardSync.objects.create(
@@ -2067,15 +2077,15 @@ class ForwardSyncModelTest(TestCase):
             )
         ]
         client = Mock()
-        client.get_snapshots.return_value = Mock()
 
-        self.assertIsNone(
-            sync.incremental_diff_baseline(
-                specs=specs,
-                current_snapshot_id="snapshot-current",
-                client=client,
+        with patch("forward_netbox.models.get_snapshots", return_value=Mock()):
+            self.assertIsNone(
+                sync.incremental_diff_baseline(
+                    specs=specs,
+                    current_snapshot_id="snapshot-current",
+                    client=client,
+                )
             )
-        )
 
 
 class ForwardIngestionSnapshotSummaryTest(TestCase):

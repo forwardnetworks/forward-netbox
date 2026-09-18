@@ -14,6 +14,7 @@ from django.utils.text import slugify
 from forward_netbox.exceptions import ForwardClientError
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
+from forward_netbox.utilities.forward_api import get_latest_processed_snapshot_id
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.module_readiness import summarize_module_readiness
 from forward_netbox.utilities.query_registry import get_query_specs
@@ -136,7 +137,7 @@ class Command(BaseCommand):
     def _resolve_snapshot_id(self, client, *, network_id, snapshot_selector):
         if snapshot_selector != LATEST_PROCESSED_SNAPSHOT:
             return snapshot_selector
-        return client.get_latest_processed_snapshot_id(network_id)
+        return get_latest_processed_snapshot_id(client, network_id)
 
     def _fetch_module_rows(self, sync, client, *, network_id, snapshot_id):
         specs = get_query_specs("dcim.module", maps=sync.get_maps() if sync else None)

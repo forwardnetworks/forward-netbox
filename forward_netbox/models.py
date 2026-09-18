@@ -43,6 +43,9 @@ from .exceptions import ForwardSyncError
 from .utilities.branch_budget import DEFAULT_MAX_CHANGES_PER_STAGING_ITEM
 from .utilities.diagnostics import safe_operation_failure
 from .utilities.forward_api import ForwardClient
+from .utilities.forward_api import get_latest_processed_snapshot
+from .utilities.forward_api import get_networks
+from .utilities.forward_api import get_snapshots
 from .utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from .utilities.ingestion_merge import (
     cleanup_merged_branch as cleanup_forward_merged_branch,
@@ -288,7 +291,7 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
 
     def validate_connection(self):
         client = self.get_client()
-        networks = client.get_networks()
+        networks = get_networks(client)
         if not networks:
             raise ForwardSyncError(
                 "Forward credentials are valid, but no networks are available."
@@ -327,7 +330,7 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
 
         try:
             client = self.get_client()
-            snapshot = client.get_latest_processed_snapshot(network_id)
+            snapshot = get_latest_processed_snapshot(client, network_id)
             snapshot_id = str(snapshot.get("id") or "").strip()
             if not snapshot_id:
                 preview["error"] = (
@@ -609,7 +612,7 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
         if not network_id:
             return False
         try:
-            snapshots = client.get_snapshots(network_id)
+            snapshots = get_snapshots(client, network_id)
         except JobTimeoutException:
             raise
         except Exception:
