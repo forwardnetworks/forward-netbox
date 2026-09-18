@@ -354,3 +354,65 @@ dependency declaration; the first with a behavioural one is the transport swap.
     dict") is dropped rather than ported: the SDK's own pydantic validation
     already rejects a malformed response with `ForwardResponseError`, which
     `_call_sdk` translates like any other failure.
+- **2026-09-17** -- Step 5e: `run_nqe_query`/`run_nqe_diff`, the single
+  most-called pair of methods in the client (27+ internal callers of
+  `run_nqe_query` alone) and the last piece of the transport swap. The
+  plugin's own hand-rolled execute/poll/paginate state machine is deleted
+  outright, not ported: `client.nqe.execute()`/`execution.wait()`/
+  `execution.result_page()` replace it, and the plugin's OWN pagination
+  safety loop (identical-page-streak detection, row/page ceilings) is kept
+  completely unchanged, just fed by `execution.result_page()` instead of a
+  raw HTTP call - the exact same "swap the leaf fetch, keep the policy"
+  pattern every other method in this sequence has followed.
+  - **Real, unavoidable behavior change, not glossed over**: the plugin's
+    own poll loop had a hard ceiling by POLL COUNT
+    (`nqe_async_max_polls`); `NqeExecution.wait(timeout=...)` is purely
+    TIME-based, with no poll-count concept at all, and `timeout=None` means
+    "wait forever" - a real regression from the old hard stop if used
+    naively. `_wait_for_nqe_execution` derives an equivalent duration
+    ceiling (`nqe_async_max_polls * nqe_async_poll_interval_seconds`) and
+    takes the smaller of that and any remaining time to an explicit
+    `deadline`, so a runaway execution still cannot hang a worker
+    indefinitely even with no per-workload deadline configured. `wait()`'s
+    own `ForwardTimeoutError` on either bound already translates to
+    `ForwardFetchBudgetExceededError` via step 4's translator - no new
+    mapping needed.
+  - **Abbreviated commit hashes**: the SDK's `QueryRef.by_id` sanitizes a
+    commit id too, but by *raising* `ForwardConfigurationError` on an
+    abbreviated one, on the theory that silently discarding a pin answers a
+    different question and reports success. The plugin's own
+    `_commit_id_for_nqe_execution` (silently falls back to head) runs
+    first, so the SDK never sees an abbreviated hash to reject -
+    `run_nqe_query` already had this guard; `run_nqe_diff` never checked
+    for one at all, so applying the same guard there is a deliberate
+    consistency fix, not a preserved behavior.
+  - **NDJSON removed**: `_fetch_nqe_async_result_page`'s content-negotiated
+    Accept header (preferring `application/x-ndjson`) has no SDK
+    equivalent - `execution.result_page()`'s underlying op always requests
+    plain JSON; only `execution.stream()`, a different, non-paginated
+    method this plugin cannot use (its own pagination-safety loop needs
+    page-at-a-time control), requests ndjson. Accepted as a minor,
+    documented transport-efficiency change, not a correctness one: same
+    records, plainer wire format.
+  - **New deadline pre-flight checks added**: neither `execution.result_page`
+    nor `client.nqe.diff_page` takes a per-call deadline (unlike `_request`,
+    which checked one on every retry attempt), so an explicit
+    `time.monotonic() >= deadline` check was added before the first page
+    fetch in both methods - closing a gap the fetch_all loop's own
+    per-iteration check didn't cover for page one.
+  - Dead code deleted outright (fully superseded, no callers left):
+    `_start_nqe_async_execution`, `_get_nqe_async_status`,
+    `_wait_for_nqe_async_completion`, `_nqe_async_execution_payload`,
+    `_nqe_async_status_state`, `_nqe_async_outcome`,
+    `_nqe_async_error_summary`, `_parse_nqe_async_result`, `_parse_nqe_lines`.
+  - Tests for internals that no longer exist were deleted, not adapted -
+    the SDK's own poll-backoff schedule and its own NDJSON/JSON
+    content-negotiation are the SDK's testing responsibility now, not this
+    plugin's: `test_run_nqe_query_async_prefers_ndjson_for_results`,
+    `test_parse_nqe_async_result_falls_back_to_json`,
+    `test_run_nqe_query_async_poll_uses_exponential_backoff`,
+    `test_run_nqe_query_async_default_poll_backoff_reaches_five_second_ceiling`,
+    `test_run_nqe_query_async_poll_backoff_caps_at_ceiling`. A new test
+    (`test_run_nqe_query_derives_a_wait_ceiling_from_poll_config_without_a_deadline`)
+    replaces the old poll-limit test, pinning the new duration-ceiling
+    arithmetic instead.
