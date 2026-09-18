@@ -5,17 +5,8 @@
 # failures, with nothing saying the license is the problem or which capability is
 # missing. The tier is not exposed over Forward's API, so the denial is the only
 # signal available.
-from types import SimpleNamespace
-from unittest.mock import Mock
-from unittest.mock import patch
-
-import httpx
 from django.test import TestCase
 
-from forward_netbox.exceptions import ForwardClientError
-from forward_netbox.exceptions import ForwardLicenseTierError
-from forward_netbox.utilities.crypto import encrypt_secret
-from forward_netbox.utilities.forward_api import ForwardClient
 from forward_netbox.utilities.license_tier import denied_query_name
 from forward_netbox.utilities.license_tier import is_license_tier_denial
 from forward_netbox.utilities.license_tier import license_tier_denial_message
@@ -69,63 +60,3 @@ class LicenseTierDenialTest(TestCase):
         # Guards against a future change that adds a pre-flight tier check on
         # the assumption the API exposes it. It does not.
         self.assertIn("does not expose", license_tier_denial_message(DENIAL))
-
-
-class LicenseTierClientTest(TestCase):
-    """Drives the real `ForwardClient._request`, not a copy of its branch.
-
-    Re-implementing the classification here would pass even if the client were
-    never wired to it, which is the whole thing this test exists to prove.
-    """
-
-    def setUp(self):
-        self.client = ForwardClient(
-            SimpleNamespace(
-                url="https://fwd.app",
-                parameters={
-                    "username": "user@example.com",
-                    "password": encrypt_secret("secret"),
-                    "verify": True,
-                    "timeout": 1200,
-                },
-            )
-        )
-
-    def _request_returning(self, status_code, body):
-        """Run `_request` against a transport that answers with `status_code`."""
-        request = httpx.Request("POST", "https://fwd.app/api/nqe")
-        response = httpx.Response(status_code, text=body, request=request)
-        transport = Mock()
-        transport.request.return_value = response
-        transport.__enter__ = Mock(return_value=transport)
-        transport.__exit__ = Mock(return_value=None)
-
-        with (
-            patch(
-                "forward_netbox.utilities.forward_api_impl.httpx.Client",
-                return_value=transport,
-            ),
-            patch.object(self.client, "_throttle_request"),
-            patch("forward_netbox.utilities.forward_api_impl.time.sleep"),
-        ):
-            return self.client._request("POST", "/nqe")
-
-    def test_license_denial_raises_the_specific_error(self):
-        with self.assertRaises(ForwardLicenseTierError) as caught:
-            self._request_returning(403, DENIAL)
-
-        rendered = str(caught.exception)
-        self.assertIn("/Forward/NetBox/forward_devices", rendered)
-        self.assertIn("NETWORK facet", rendered)
-
-    def test_license_error_is_still_a_client_error(self):
-        # Existing sync handlers catch ForwardClientError; the new class must
-        # not escape them and turn a capability limit into a crash.
-        self.assertTrue(issubclass(ForwardLicenseTierError, ForwardClientError))
-
-    def test_other_403s_keep_the_generic_error(self):
-        with self.assertRaises(ForwardClientError) as caught:
-            self._request_returning(403, "forbidden: insufficient permissions")
-
-        self.assertNotIsInstance(caught.exception, ForwardLicenseTierError)
-        self.assertIn("HTTP 403", str(caught.exception))

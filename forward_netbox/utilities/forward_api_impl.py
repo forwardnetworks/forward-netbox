@@ -1,6 +1,5 @@
 import hashlib
 import json
-import random
 import threading
 import time
 
@@ -10,12 +9,9 @@ from forward_sdk import QueryRef
 from forward_sdk.errors import ForwardError as SDKForwardError
 from forward_sdk.errors import ForwardTransportError as SDKForwardTransportError
 from rq.timeouts import JobTimeoutException
-from utilities.proxy import resolve_proxies
 
 from ..exceptions import ForwardClientError
-from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardFetchBudgetExceededError
-from ..exceptions import ForwardLicenseTierError
 from .forward_client_config import coerce_api_requests_per_minute
 from .forward_client_config import coerce_nqe_async_max_polls
 from .forward_client_config import coerce_nqe_async_poll_interval_seconds
@@ -49,8 +45,6 @@ from .forward_read_cache import SharedReadCache
 from .forward_throttle import _RATE_LIMIT_LAST_REQUEST_AT
 from .forward_throttle import Throttle
 from .forward_usage import ApiUsageTracker
-from .license_tier import is_license_tier_denial
-from .license_tier import license_tier_denial_message
 
 # Re-exported for forward_api.py's facade import (`from .forward_api_impl import
 # X`) and, for _RATE_LIMIT_LAST_REQUEST_AT, for a test seam patched by name at
@@ -74,6 +68,7 @@ __all__ = [
     "MAX_NQE_FETCH_ALL_MAX_PAGES",
     "MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT",
     "MAX_NQE_PAGE_SIZE",
+    "TRANSIENT_FORWARD_HTTP_STATUS_CODES",
     "_RATE_LIMIT_LAST_REQUEST_AT",
 ]
 
@@ -82,47 +77,11 @@ LATEST_COLLECTED_SNAPSHOT = "latestCollected"
 # How many of the most recent processed snapshots to scan when resolving the
 # latestCollected selector before giving up.
 DEFAULT_LATEST_COLLECTED_SCAN_LIMIT = 10
-DEFAULT_FORWARD_API_RETRY_BACKOFF_SECONDS = 2
-# Ceiling on a single retry wait, so a hostile/large Retry-After cannot stall a
-# sync indefinitely.
-MAX_FORWARD_API_RETRY_BACKOFF_SECONDS = 60
 DEFAULT_QUERY_FETCH_CONCURRENCY = 10
 MAX_QUERY_FETCH_CONCURRENCY = 16
 DEFAULT_QUERY_DIAGNOSTICS_ENABLED = True
 NQE_QUERY_REPOSITORIES = {"org", "fwd"}
 NQE_LIBRARY_WRITE_ROLES = {"ADMIN", "OPERATOR"}
-
-
-def _parse_retry_after(value):
-    """Parse an HTTP ``Retry-After`` header into non-negative seconds.
-
-    Handles the delta-seconds form (an integer). The HTTP-date form is not honored
-    (we fall back to backoff) to avoid clock-skew surprises. Returns ``None`` when
-    absent or unparseable.
-    """
-    if value is None:
-        return None
-    try:
-        seconds = int(str(value).strip())
-    except (TypeError, ValueError):
-        return None
-    return max(0, seconds)
-
-
-def _retry_wait_seconds(attempt, retry_after=None):
-    """Compute a retry wait: honor Retry-After if given, else linear backoff, with
-    additive jitter and a hard ceiling.
-
-    Jitter (0..base) avoids many concurrent workers retrying in lockstep and
-    thundering-herd-ing a throttled endpoint.
-    """
-    base = DEFAULT_FORWARD_API_RETRY_BACKOFF_SECONDS
-    if retry_after is not None:
-        wait = float(retry_after)
-    else:
-        wait = base * (attempt + 1)
-    wait += random.uniform(0, base)
-    return min(wait, MAX_FORWARD_API_RETRY_BACKOFF_SECONDS)
 
 
 def _shared_rate_limit_cache():
@@ -443,9 +402,6 @@ class ForwardClient:
     def _record_http_attempt_usage(self):
         self._usage.record_http_attempt()
 
-    def _record_http_status_class(self, status_code):
-        self._usage.record_http_status_class(status_code)
-
     def api_usage_summary(self):
         return self._usage.summary()
 
@@ -463,49 +419,11 @@ class ForwardClient:
             json.dumps(last, sort_keys=True, default=str),
         )
 
-    def _api_url(self, path):
-        base_url = self.base_url
-        if base_url.endswith("/api"):
-            return f"{base_url}{path}"
-        return f"{base_url}/api{path}"
-
-    def _headers(self, *, accept=None):
-        headers = {
-            "Accept": accept or "application/json",
-            "Content-Type": "application/json",
-            "User-Agent": "forward-netbox/0.8.6.3",
-        }
-        return headers
-
-    def _auth(self):
-        if self.username and self.password:
-            return (self.username, self.password)
-        return None
-
     def _rate_limit_key(self):
         return self._throttle._rate_limit_key()
 
     def _throttle_request(self):
         self._throttle.throttle()
-
-    def _proxy_mounts(self, url):
-        proxies = resolve_proxies(
-            url=url,
-            context={
-                "client": self,
-                "source": self.source,
-            },
-        )
-        if not proxies:
-            return None
-
-        mounts = {}
-        for protocol, proxy_url in proxies.items():
-            if not proxy_url:
-                continue
-            protocol = str(protocol).rstrip(":/")
-            mounts[f"{protocol}://"] = httpx.HTTPTransport(proxy=proxy_url)
-        return mounts or None
 
     def _call_sdk(self, fn, *args, **kwargs):
         """Call an `forward-sdk` service method, translating its exceptions.
@@ -530,137 +448,6 @@ class ForwardClient:
             raise translate_client_exception(exc) from exc
         except SDKForwardError as exc:
             raise translate_client_exception(exc) from exc
-
-    def _request(
-        self,
-        method,
-        path,
-        *,
-        params=None,
-        json_body=None,
-        headers=None,
-        deadline=None,
-    ):
-        url = self._api_url(path)
-        last_connectivity_error = None
-        for attempt in range(self.retries + 1):
-            retry_after = None
-            deadline_limited_timeout = False
-            try:
-                request_timeout = self.timeout
-                if deadline is not None:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise ForwardFetchBudgetExceededError(
-                            "Forward NQE fetch exceeded its wall-clock budget"
-                        )
-                    try:
-                        configured_timeout = float(self.timeout)
-                    except (TypeError, ValueError):
-                        configured_timeout = remaining
-                    deadline_limited_timeout = remaining <= configured_timeout
-                    request_timeout = min(configured_timeout, remaining)
-                self._throttle_request()
-                if deadline is not None:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise ForwardFetchBudgetExceededError(
-                            "Forward NQE fetch exceeded its wall-clock budget"
-                        )
-                    try:
-                        configured_timeout = float(self.timeout)
-                    except (TypeError, ValueError):
-                        configured_timeout = remaining
-                    deadline_limited_timeout = remaining <= configured_timeout
-                    request_timeout = min(configured_timeout, remaining)
-                with httpx.Client(
-                    timeout=request_timeout,
-                    verify=self.verify,
-                    mounts=self._proxy_mounts(url),
-                ) as client:
-                    self._record_http_attempt_usage()
-                    response = client.request(
-                        method,
-                        url,
-                        params=params,
-                        json=json_body,
-                        headers={**self._headers(), **(headers or {})},
-                        auth=self._auth(),
-                    )
-                if deadline is not None and time.monotonic() >= deadline:
-                    raise ForwardFetchBudgetExceededError(
-                        "Forward NQE fetch exceeded its wall-clock budget"
-                    )
-                response.raise_for_status()
-                self._record_api_usage("http_successes")
-                self._record_http_status_class(getattr(response, "status_code", None))
-                return response
-            except httpx.TimeoutException as exc:
-                self._record_api_usage("http_failures")
-                self._record_api_usage("http_timeout_failures")
-                if deadline_limited_timeout:
-                    raise ForwardFetchBudgetExceededError(
-                        "Forward NQE fetch exceeded its wall-clock budget"
-                    ) from exc
-                last_connectivity_error = ForwardConnectivityError(
-                    "Forward API request timed out while connecting to Forward."
-                )
-                last_connectivity_error.__cause__ = exc
-            except httpx.RequestError as exc:
-                self._record_api_usage("http_failures")
-                self._record_api_usage("http_transport_failures")
-                last_connectivity_error = ForwardConnectivityError(
-                    f"Could not connect to Forward API endpoint: {exc}"
-                )
-                last_connectivity_error.__cause__ = exc
-            except httpx.HTTPStatusError as exc:
-                status_code = exc.response.status_code
-                self._record_api_usage("http_failures")
-                self._record_api_usage("http_status_failures")
-                self._record_http_status_class(status_code)
-                if status_code in TRANSIENT_FORWARD_HTTP_STATUS_CODES:
-                    self._record_api_usage("http_transient_status_failures")
-                    if status_code == 429:
-                        self._record_api_usage("http_429_failures")
-                    retry_after = _parse_retry_after(
-                        exc.response.headers.get("Retry-After")
-                    )
-                    last_connectivity_error = ForwardConnectivityError(
-                        "Forward API request returned transient HTTP "
-                        f"{status_code}; retry attempts were exhausted."
-                    )
-                    last_connectivity_error.__cause__ = exc
-                else:
-                    self._record_api_usage("http_nontransient_status_failures")
-                    body = exc.response.text
-                    # A license-tier refusal is a capability limit, not a
-                    # transport or auth fault; retrying can never clear it, and
-                    # the raw body names a query without saying what the license
-                    # lacks.
-                    if is_license_tier_denial(body):
-                        self._record_api_usage("license_tier_denials")
-                        raise ForwardLicenseTierError(
-                            license_tier_denial_message(body)
-                        ) from exc
-                    raise ForwardClientError(
-                        f"Forward API request failed with HTTP {status_code}: {body}"
-                    ) from exc
-            except httpx.HTTPError as exc:
-                self._record_api_usage("http_failures")
-                self._record_api_usage("http_transport_failures")
-                raise ForwardClientError(f"Forward API request failed: {exc}") from exc
-            if attempt < self.retries:
-                self._record_api_usage("http_retries")
-                wait_seconds = _retry_wait_seconds(attempt, retry_after)
-                if deadline is not None:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise ForwardFetchBudgetExceededError(
-                            "Forward NQE fetch exceeded its wall-clock budget"
-                        )
-                    wait_seconds = min(wait_seconds, remaining)
-                time.sleep(wait_seconds)
-        raise last_connectivity_error
 
     def get_networks(self):
         shared_cache_key = self._shared_read_cache_key("networks")
