@@ -659,3 +659,52 @@ dependency declaration; the first with a behavioural one is the transport swap.
   `test_head_commit_from_listing`, `test_health`, `test_sync`; 638 tests)
   plus all 5 `test_change_control_*` files (58 tests, covering
   `criteria.py`'s only other production caller) green.
+- **2026-09-18** -- Step 6c: `run_nqe_query`/`run_nqe_diff` - the largest
+  cluster (29 production call sites, more than 6a and 6b combined) -
+  converted to free functions, along with their private helper chain
+  (`_run_nqe_query_async`, `_start_nqe_execution`, `_wait_for_nqe_execution`,
+  `_fetch_nqe_async_result_page`, `_page_signature`, `_parse_nqe_records`,
+  `_parse_nqe_diff_rows`, `_nqe_query_ref`) that only these two methods
+  ever called. This is the LAST method family: after this conversion,
+  `ForwardClient` retains only `__init__` and pure internal-state plumbing
+  (`_call_sdk`, `_record_*`, `_shared_read_cache_*`, cache-copy helpers) -
+  no public method survives on the class, confirming the whole migration's
+  "step 5 preserves the contract, step 6 removes it" split is now complete
+  in substance; only the formal class deletion (step 6d) remains.
+  `_nqe_query_ref` takes no `client` argument at all (its body never used
+  `self`), so its two direct test call sites
+  (`ForwardClient._nqe_query_ref(Mock(), ...)`) simplified to
+  `forward_api_impl._nqe_query_ref(...)` with the now-pointless `Mock()`
+  placeholder dropped entirely, rather than gaining one.
+  29 production call sites across 16 files converted (15 external plus
+  `forward_api_impl.py`'s own two internal callers,
+  `get_latest_collected_snapshot_id` and `get_device_mgmt_tags` from step
+  6a, which had been calling `client.run_nqe_query(...)` as a bound method
+  the whole time). Eight files needed a brand-new `from .forward_api import
+  run_nqe_query` where none existed before, matching each file's own
+  existing import style exactly (module-level for most; local
+  function-body imports for the two files - `apic_cimc_readiness.py`,
+  `dlm_notice_audit.py` - that already imported everything else that way).
+  **That local-import style produced one real test-patching lesson**: a
+  function-body `from .forward_api import run_nqe_query` is not a module
+  attribute at patch time, so `patch("...apic_cimc_readiness.run_nqe_query")`
+  raised `AttributeError: ... does not have the attribute`. Fixed by
+  patching the SOURCE (`forward_api.run_nqe_query`) instead of the
+  importing module - correct here specifically because the import
+  statement re-executes fresh on every function call, so it picks up
+  whatever the patched source currently is. This is the exception to
+  "patch where it's looked up," and only applies to function-body imports,
+  never module-level ones.
+  Test-mock rewrite: ~233 matches across 21 files, split across four
+  parallel forks plus direct work on `test_forward_api.py` and eleven
+  smaller files. One structural finding the forks and direct work both hit
+  independently: several call sites reach `run_nqe_query` through
+  MULTIPLE layers of indirection - `query_fetch_execution.py`'s
+  `ForwardQueryFetcher._run_nqe_query`/`_run_nqe_diff` wrapper methods call
+  the free function via `self.client`, and other modules (`scope_
+  reconciliation.py`, `sync_execution.py`) call it directly - so the
+  correct patch target had to be traced per call site, not assumed from
+  the test file's name. `test_sync.py`'s existing `ForwardSyncRunnerTest.
+  setUp` (already patching 6a/6b functions) simply grew two more names in
+  its existing per-module tuples, needing zero new structure.
+  Full targeted suite (22 files, 1015 tests) green.

@@ -7,6 +7,7 @@ from .branching import missing_branch_table_report
 from .forward_api import get_latest_processed_snapshot_id
 from .forward_api import get_networks
 from .forward_api import LATEST_PROCESSED_SNAPSHOT
+from .forward_api import run_nqe_query
 from .health_apply_fetch import apply_engine_summary as _apply_engine_summary_impl
 from .health_apply_fetch import fetch_contract_summary as _fetch_contract_summary_impl
 from .health_apply_fetch import model_summary as _model_summary_impl
@@ -994,7 +995,8 @@ def _probe_data_file(
 ):
     query = _data_file_probe_query(data_file_name=data_file_name, extension=extension)
     try:
-        rows = client.run_nqe_query(
+        rows = run_nqe_query(
+            client,
             query=query,
             network_id=network_id,
             snapshot_id=snapshot_id,

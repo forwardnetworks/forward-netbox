@@ -18,6 +18,7 @@ from .bulk_delete import lock_related_writes_for_delete
 from .forward_api import build_device_tag_scope_where
 from .forward_api import build_endpoint_device_eligibility_where
 from .forward_api import build_endpoint_tag_scope_where
+from .forward_api import run_nqe_query
 from .json_safe import json_safe_value
 from .post_sync import current_post_sync_snapshot
 from .sync_facade import device_tag_scope
@@ -337,7 +338,8 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
             "}",
         ]
     )
-    rows = client.run_nqe_query(
+    rows = run_nqe_query(
+        client,
         query=query,
         network_id=network_id,
         snapshot_id=snapshot_id,
@@ -862,7 +864,8 @@ def _absence_census(names, *, client, network_id, snapshot_id, endpoint_scope=No
         ]
     )
     try:
-        rows = client.run_nqe_query(
+        rows = run_nqe_query(
+            client,
             query=query,
             network_id=network_id,
             snapshot_id=snapshot_id,
@@ -871,7 +874,8 @@ def _absence_census(names, *, client, network_id, snapshot_id, endpoint_scope=No
         # Unfiltered by tag on purpose, exactly like the device half: a name
         # Forward still reports anywhere is not `absent`, whatever scope it has
         # fallen out of.
-        endpoint_rows = client.run_nqe_query(
+        endpoint_rows = run_nqe_query(
+            client,
             query=endpoint_query,
             network_id=network_id,
             snapshot_id=snapshot_id,
@@ -1014,7 +1018,8 @@ def _endpoint_scope_names(
             "select { name: endpoint.name, tagNames: endpoint.tagNames }",
         ]
     )
-    rows = client.run_nqe_query(
+    rows = run_nqe_query(
+        client,
         query=query,
         network_id=network_id,
         snapshot_id=snapshot_id,

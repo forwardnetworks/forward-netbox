@@ -6,6 +6,7 @@
 # an empty ACI map to explain.
 from types import SimpleNamespace
 from unittest.mock import Mock
+from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
@@ -44,6 +45,23 @@ _CONTEXT = SimpleNamespace(
 
 
 class AciSourceReadinessTest(SimpleTestCase):
+    def setUp(self):
+        # `run_nqe_query` is a module-level free function imported by name
+        # into `query_diagnostics.py` (forward-sdk migration step 6c),
+        # called as `run_nqe_query(fetcher.client, ...)` rather than
+        # `fetcher.client.run_nqe_query(...)`. Every test below still
+        # configures behavior via `fetcher.client.run_nqe_query.return_value
+        # = ...` (a Mock attribute), so this patch just forwards the
+        # free-function call onto that same attribute unchanged.
+        patcher = patch(
+            "forward_netbox.utilities.query_diagnostics.run_nqe_query",
+            side_effect=lambda client, *args, **kwargs: client.run_nqe_query(
+                *args, **kwargs
+            ),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_every_bundled_aci_map_declares_its_source(self):
         aci_maps = {
             entry["name"]

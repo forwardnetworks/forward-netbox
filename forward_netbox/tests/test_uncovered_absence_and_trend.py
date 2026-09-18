@@ -91,6 +91,10 @@ class _Fixture(TestCase):
         with (
             patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
             patch.object(ForwardSource, "get_client", return_value=client),
+            patch(
+                "forward_netbox.utilities.scope_reconciliation.run_nqe_query",
+                side_effect=lambda c, *a, **kw: c.run_nqe_query(*a, **kw),
+            ),
         ):
             return compute_scope_reconciliation(self.sync), client
 
@@ -192,6 +196,10 @@ class OwnedAbsenceIsClassifiedTest(_Fixture):
         with (
             patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
             patch.object(ForwardSource, "get_client", return_value=client),
+            patch(
+                "forward_netbox.utilities.scope_reconciliation.run_nqe_query",
+                side_effect=lambda c, *a, **kw: c.run_nqe_query(*a, **kw),
+            ),
         ):
             report = compute_scope_reconciliation(self.sync)
 
@@ -310,6 +318,10 @@ class UncoveredListPagesTest(_Fixture):
         with (
             patch.object(ForwardSource, "get_client", return_value=fwd_client),
             patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+            patch(
+                "forward_netbox.utilities.scope_reconciliation.run_nqe_query",
+                side_effect=lambda c, *a, **kw: c.run_nqe_query(*a, **kw),
+            ),
         ):
             from forward_netbox.jobs import _scope_reconciliation_work
 
@@ -423,6 +435,10 @@ class OrphanAndBackfilledListPagesTest(_Fixture):
         with (
             patch.object(ForwardSource, "get_client", return_value=fwd_client),
             patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+            patch(
+                "forward_netbox.utilities.scope_reconciliation.run_nqe_query",
+                side_effect=lambda c, *a, **kw: c.run_nqe_query(*a, **kw),
+            ),
         ):
             from forward_netbox.jobs import _scope_reconciliation_work
 

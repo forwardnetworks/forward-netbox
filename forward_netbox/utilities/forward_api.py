@@ -42,6 +42,8 @@ from .forward_api_impl import MAX_NQE_PAGE_SIZE  # noqa: F401
 from .forward_api_impl import MAX_QUERY_FETCH_CONCURRENCY  # noqa: F401
 from .forward_api_impl import NQE_QUERY_REPOSITORIES  # noqa: F401
 from .forward_api_impl import resolve_nqe_query_reference  # noqa: F401
+from .forward_api_impl import run_nqe_diff  # noqa: F401
+from .forward_api_impl import run_nqe_query  # noqa: F401
 from .forward_api_impl import TRANSIENT_FORWARD_HTTP_STATUS_CODES  # noqa: F401
 
 FORWARD_SAAS_API_HARD_BLOCK_REQUESTS_PER_MINUTE = (

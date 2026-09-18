@@ -6,6 +6,7 @@
 # APIs (not device NQE); see forward_netbox/queries/forward_device_analysis.nqe.
 from pathlib import Path
 
+from .forward_api import run_nqe_query
 from .post_sync import current_post_sync_snapshot
 from .scope_reconciliation import _collection_failure_reason
 
@@ -28,7 +29,8 @@ def fetch_device_analysis_rows(sync, *, snapshot_id=None):
     client = sync.source.get_client()
     network_id = sync.get_network_id()
     snapshot_id = str(snapshot_id or "").strip() or sync.resolve_snapshot_id(client)
-    rows = client.run_nqe_query(
+    rows = run_nqe_query(
+        client,
         query=_analysis_query_text(),
         network_id=network_id,
         snapshot_id=snapshot_id,

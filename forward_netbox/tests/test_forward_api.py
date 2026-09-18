@@ -242,23 +242,26 @@ class ForwardClientTest(TestCase):
             "snap-new": [],
             "snap-mid": [{"name": "device-1"}],
         }
-        self.client.run_nqe_query = Mock(
-            side_effect=lambda **kwargs: probe_results.get(kwargs["snapshot_id"], [])
+        run_nqe_query_mock = Mock(
+            side_effect=lambda client, **kwargs: probe_results.get(
+                kwargs["snapshot_id"], []
+            )
         )
 
-        with patch.object(forward_api_impl, "get_snapshots", snapshots_mock):
+        with (
+            patch.object(forward_api_impl, "get_snapshots", snapshots_mock),
+            patch.object(forward_api_impl, "run_nqe_query", run_nqe_query_mock),
+        ):
             snapshot_id = forward_api_impl.get_latest_collected_snapshot_id(
                 self.client, "net-1", include_tags=["Prod_Core"], include_match="any"
             )
 
         self.assertEqual(snapshot_id, "snap-mid")
-        probed = [
-            call.kwargs["snapshot_id"] for call in self.client.run_nqe_query.mock_calls
-        ]
+        probed = [call.kwargs["snapshot_id"] for call in run_nqe_query_mock.mock_calls]
         # Newest first, unprocessed skipped, stops once collected snapshot found.
         self.assertEqual(probed, ["snap-new", "snap-mid"])
         # Probe carries the completed filter and the tag scope.
-        probe_query = self.client.run_nqe_query.mock_calls[0].kwargs["query"]
+        probe_query = run_nqe_query_mock.mock_calls[0].kwargs["query"]
         self.assertIn("DeviceSnapshotResult.completed", probe_query)
         self.assertIn('"Prod_Core" in device.tagNames', probe_query)
 
@@ -269,16 +272,19 @@ class ForwardClientTest(TestCase):
                 {"id": "snap-b", "state": "PROCESSED", "processed_at": "2026-06-16"},
             ]
         )
-        self.client.run_nqe_query = Mock(return_value=[])
+        run_nqe_query_mock = Mock(return_value=[])
 
         with self.assertRaises(ForwardClientError) as ctx:
-            with patch.object(forward_api_impl, "get_snapshots", snapshots_mock):
+            with (
+                patch.object(forward_api_impl, "get_snapshots", snapshots_mock),
+                patch.object(forward_api_impl, "run_nqe_query", run_nqe_query_mock),
+            ):
                 forward_api_impl.get_latest_collected_snapshot_id(
                     self.client, "net-1", include_tags=["Prod_Core"]
                 )
 
         self.assertIn("backfilled", str(ctx.exception).lower())
-        self.assertEqual(self.client.run_nqe_query.call_count, 2)
+        self.assertEqual(run_nqe_query_mock.call_count, 2)
 
     def test_get_latest_collected_snapshot_id_respects_scan_limit(self):
         snapshots_mock = Mock(
@@ -291,28 +297,34 @@ class ForwardClientTest(TestCase):
                 for i in range(5)
             ]
         )
-        self.client.run_nqe_query = Mock(return_value=[])
+        run_nqe_query_mock = Mock(return_value=[])
 
         with self.assertRaises(ForwardClientError):
-            with patch.object(forward_api_impl, "get_snapshots", snapshots_mock):
+            with (
+                patch.object(forward_api_impl, "get_snapshots", snapshots_mock),
+                patch.object(forward_api_impl, "run_nqe_query", run_nqe_query_mock),
+            ):
                 forward_api_impl.get_latest_collected_snapshot_id(
                     self.client, "net-1", scan_limit=2
                 )
 
-        self.assertEqual(self.client.run_nqe_query.call_count, 2)
+        self.assertEqual(run_nqe_query_mock.call_count, 2)
 
     def test_get_latest_collected_snapshot_id_raises_without_processed_snapshots(self):
         snapshots_mock = Mock(
             return_value=[{"id": "snap-x", "state": "PROCESSING", "processed_at": ""}]
         )
-        self.client.run_nqe_query = Mock(return_value=[])
+        run_nqe_query_mock = Mock(return_value=[])
 
         with self.assertRaises(ForwardClientError) as ctx:
-            with patch.object(forward_api_impl, "get_snapshots", snapshots_mock):
+            with (
+                patch.object(forward_api_impl, "get_snapshots", snapshots_mock),
+                patch.object(forward_api_impl, "run_nqe_query", run_nqe_query_mock),
+            ):
                 forward_api_impl.get_latest_collected_snapshot_id(self.client, "net-1")
 
         self.assertIn("processed snapshot", str(ctx.exception).lower())
-        self.client.run_nqe_query.assert_not_called()
+        run_nqe_query_mock.assert_not_called()
 
     def test_api_request_rate_limit_defaults_for_forward_saas(self):
         self.assertEqual(self.client.api_requests_per_minute, 1800)
@@ -609,7 +621,8 @@ class ForwardClientTest(TestCase):
         )
         self.client._sdk_client.nqe.execute = Mock(return_value=execution)
 
-        rows = self.client.run_nqe_query(
+        rows = forward_api_impl.run_nqe_query(
+            self.client,
             query="select {n: 1}",
             network_id="network-1",
             snapshot_id="snapshot-1",
@@ -631,7 +644,8 @@ class ForwardClientTest(TestCase):
         execution = self._fake_nqe_execution(pages=[([{"n": 1}], 1)])
         self.client._sdk_client.nqe.execute = Mock(return_value=execution)
 
-        rows = self.client.run_nqe_query(
+        rows = forward_api_impl.run_nqe_query(
+            self.client,
             query_id="Q_devices",
             commit_id="1a2b",
             network_id="network-1",
@@ -647,7 +661,8 @@ class ForwardClientTest(TestCase):
         execution = self._fake_nqe_execution(pages=[([{"n": 1}], 1)])
         self.client._sdk_client.nqe.execute = Mock(return_value=execution)
 
-        rows = self.client.run_nqe_query(
+        rows = forward_api_impl.run_nqe_query(
+            self.client,
             query_id="Q_devices",
             commit_id="head",
             network_id="network-1",
@@ -663,7 +678,8 @@ class ForwardClientTest(TestCase):
         execution = self._fake_nqe_execution(pages=[([{"n": 1}, {"n": 2}], 2)])
         self.client._sdk_client.nqe.execute = Mock(return_value=execution)
 
-        rows = self.client.run_nqe_query(
+        rows = forward_api_impl.run_nqe_query(
+            self.client,
             query_id="Q_devices",
             commit_id="commit-1",
             network_id="network-1",
@@ -703,8 +719,8 @@ class ForwardClientTest(TestCase):
             "parameters": {"forward_netbox_shard_keys": ["device-1"]},
         }
 
-        self.client.run_nqe_query(**call)
-        self.client.run_nqe_query(**call)
+        forward_api_impl.run_nqe_query(self.client, **call)
+        forward_api_impl.run_nqe_query(self.client, **call)
 
         summary = self.client.api_usage_summary()
         self.assertEqual(summary["nqe_query_calls"], 2)
@@ -727,7 +743,8 @@ class ForwardClientTest(TestCase):
         )
         self.client._sdk_client.nqe.execute = Mock(return_value=execution)
 
-        rows = self.client.run_nqe_query(
+        rows = forward_api_impl.run_nqe_query(
+            self.client,
             query="foreach d in network.devices select { n: 1 }",
             network_id="network-1",
             snapshot_id="snapshot-1",
@@ -759,7 +776,8 @@ class ForwardClientTest(TestCase):
             ForwardClientError,
             "finished with outcome USER_ERROR: bad query",
         ):
-            self.client.run_nqe_query(
+            forward_api_impl.run_nqe_query(
+                self.client,
                 query_id="Q_devices",
                 network_id="network-1",
                 snapshot_id="snapshot-1",
@@ -777,7 +795,8 @@ class ForwardClientTest(TestCase):
         self.client._sdk_client.nqe.execute = Mock(return_value=execution)
 
         with self.assertRaises(ForwardFetchBudgetExceededError):
-            self.client.run_nqe_query(
+            forward_api_impl.run_nqe_query(
+                self.client,
                 query_id="Q_devices",
                 network_id="network-1",
                 snapshot_id="snapshot-1",
@@ -791,7 +810,8 @@ class ForwardClientTest(TestCase):
         execution = self._fake_nqe_execution(pages=[([], 0)])
         self.client._sdk_client.nqe.execute = Mock(return_value=execution)
 
-        self.client.run_nqe_query(
+        forward_api_impl.run_nqe_query(
+            self.client,
             query_id="Q_devices",
             network_id="network-1",
             snapshot_id="snapshot-1",
@@ -814,7 +834,9 @@ class ForwardClientTest(TestCase):
             ForwardClientError,
             "Async NQE requires both `network_id` and `snapshot_id`.",
         ):
-            client.run_nqe_query(query_id="Q_devices", network_id="network-1")
+            forward_api_impl.run_nqe_query(
+                client, query_id="Q_devices", network_id="network-1"
+            )
 
     def test_run_nqe_query_async_requires_json_item_format(self):
         client = ForwardClient(
@@ -832,7 +854,8 @@ class ForwardClientTest(TestCase):
             ForwardClientError,
             "Async NQE only supports JSON item format.",
         ):
-            client.run_nqe_query(
+            forward_api_impl.run_nqe_query(
+                client,
                 query_id="Q_devices",
                 network_id="network-1",
                 snapshot_id="snapshot-1",
@@ -849,7 +872,8 @@ class ForwardClientTest(TestCase):
         )
         self.client._sdk_client.nqe.execute = Mock(return_value=execution)
 
-        rows = self.client.run_nqe_query(
+        rows = forward_api_impl.run_nqe_query(
+            self.client,
             query="select {n: 1}",
             network_id="network-1",
             snapshot_id="snapshot-1",
@@ -887,7 +911,8 @@ class ForwardClientTest(TestCase):
         )
         self.client._sdk_client.nqe.execute = Mock(return_value=execution)
 
-        rows = self.client.run_nqe_query(
+        rows = forward_api_impl.run_nqe_query(
+            self.client,
             query="select {n: 1}",
             network_id="network-1",
             snapshot_id="snapshot-1",
@@ -911,7 +936,8 @@ class ForwardClientTest(TestCase):
             ForwardClientError,
             "Forward async NQE result pagination ended early: fetched 2 rows but API reported 5.",
         ):
-            self.client.run_nqe_query(
+            forward_api_impl.run_nqe_query(
+                self.client,
                 query="select {n: 1}",
                 network_id="network-1",
                 snapshot_id="snapshot-1",
@@ -933,7 +959,8 @@ class ForwardClientTest(TestCase):
             ForwardClientError,
             "Forward async NQE result pagination exceeded 2 page\\(s\\)",
         ):
-            self.client.run_nqe_query(
+            forward_api_impl.run_nqe_query(
+                self.client,
                 query_id="Q_devices",
                 network_id="network-1",
                 snapshot_id="snapshot-1",
@@ -958,7 +985,8 @@ class ForwardClientTest(TestCase):
             ForwardClientError,
             "exceeded the in-memory row ceiling",
         ):
-            self.client.run_nqe_query(
+            forward_api_impl.run_nqe_query(
+                self.client,
                 query_id="Q_devices",
                 network_id="network-1",
                 snapshot_id="snapshot-1",
@@ -983,7 +1011,8 @@ class ForwardClientTest(TestCase):
             ForwardClientError,
             "Forward async NQE result pagination did not advance",
         ):
-            self.client.run_nqe_query(
+            forward_api_impl.run_nqe_query(
+                self.client,
                 query_id="Q_devices",
                 network_id="network-1",
                 snapshot_id="snapshot-1",
@@ -1859,7 +1888,8 @@ class ForwardClientTest(TestCase):
             )
         )
 
-        rows = self.client.run_nqe_diff(
+        rows = forward_api_impl.run_nqe_diff(
+            self.client,
             query_id="Q_sites",
             before_snapshot_id="snapshot-before",
             after_snapshot_id="snapshot-after",
@@ -1891,7 +1921,8 @@ class ForwardClientTest(TestCase):
             ]
         )
 
-        rows = self.client.run_nqe_diff(
+        rows = forward_api_impl.run_nqe_diff(
+            self.client,
             query_id="Q_sites",
             before_snapshot_id="snapshot-before",
             after_snapshot_id="snapshot-after",
@@ -1925,7 +1956,8 @@ class ForwardClientTest(TestCase):
             ForwardClientError,
             "Forward NQE diff pagination ended early: fetched 2 rows but API reported 5.",
         ):
-            self.client.run_nqe_diff(
+            forward_api_impl.run_nqe_diff(
+                self.client,
                 query_id="Q_sites",
                 before_snapshot_id="snapshot-before",
                 after_snapshot_id="snapshot-after",
@@ -1946,7 +1978,8 @@ class ForwardClientTest(TestCase):
             ForwardClientError,
             "Forward NQE diff pagination exceeded 2 page\\(s\\)",
         ):
-            self.client.run_nqe_diff(
+            forward_api_impl.run_nqe_diff(
+                self.client,
                 query_id="Q_sites",
                 before_snapshot_id="snapshot-before",
                 after_snapshot_id="snapshot-after",
@@ -1971,7 +2004,8 @@ class ForwardClientTest(TestCase):
             ForwardClientError,
             "Forward NQE diff pagination did not advance",
         ):
-            self.client.run_nqe_diff(
+            forward_api_impl.run_nqe_diff(
+                self.client,
                 query_id="Q_sites",
                 before_snapshot_id="snapshot-before",
                 after_snapshot_id="snapshot-after",
@@ -1985,7 +2019,8 @@ class ForwardClientTest(TestCase):
             return_value=self._fake_diff_page([("ADDED", None, {"n": 1})], total=1)
         )
 
-        self.client.run_nqe_diff(
+        forward_api_impl.run_nqe_diff(
+            self.client,
             query_id="Q_sites",
             commit_id="commit-1",
             before_snapshot_id="snapshot-before",
@@ -2001,7 +2036,8 @@ class ForwardClientTest(TestCase):
             ForwardClientError,
             "NQE diff only supports JSON item format.",
         ):
-            self.client.run_nqe_diff(
+            forward_api_impl.run_nqe_diff(
+                self.client,
                 query_id="Q_sites",
                 before_snapshot_id="snapshot-before",
                 after_snapshot_id="snapshot-after",
@@ -2014,7 +2050,8 @@ class ForwardClientTest(TestCase):
         self.client._sdk_client.nqe.diff_page = Mock()
 
         with self.assertRaises(ForwardFetchBudgetExceededError):
-            self.client.run_nqe_diff(
+            forward_api_impl.run_nqe_diff(
+                self.client,
                 query_id="Q_sites",
                 before_snapshot_id="snapshot-before",
                 after_snapshot_id="snapshot-after",
@@ -2080,7 +2117,7 @@ class WorkloadFetchBudgetTest(TestCase):
         execution = Mock()
         past = time.monotonic() - 1
 
-        client._wait_for_nqe_execution(execution, deadline=past)
+        forward_api_impl._wait_for_nqe_execution(client, execution, deadline=past)
 
         # `NqeExecution.wait()` treats `timeout=0` as "already out of time" and
         # raises `ForwardTimeoutError` itself - clamped rather than negative

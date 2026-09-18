@@ -548,6 +548,8 @@ class ForwardSyncRunnerTest(TestCase):
                     "get_snapshots",
                     "get_latest_processed_snapshot",
                     "get_snapshot_metrics",
+                    "run_nqe_query",
+                    "run_nqe_diff",
                 ),
             ),
             (
@@ -556,6 +558,8 @@ class ForwardSyncRunnerTest(TestCase):
                     "get_snapshots",
                     "get_latest_processed_snapshot",
                     "get_snapshot_metrics",
+                    "run_nqe_query",
+                    "run_nqe_diff",
                 ),
             ),
             (
@@ -9389,6 +9393,26 @@ class EventsClearerTest(TestCase):
 
 
 class QueryParameterContractTest(TestCase):
+    def setUp(self):
+        # See ForwardSyncRunnerTest.setUp: run_nqe_query/run_nqe_diff are
+        # module-level free functions imported by name into
+        # query_fetch_execution.py (forward-sdk migration step 6c), called
+        # as `run_nqe_query(client, ...)` rather than `client.run_nqe_query(...)`.
+        # Every test below still configures behavior via
+        # `client.run_nqe_query.return_value = ...` / `fetcher.client.run_nqe_query...`
+        # (a Mock attribute) exactly as before the free-function conversion,
+        # so the patch just forwards the free-function call onto that same
+        # attribute unchanged.
+        for name in ("run_nqe_query", "run_nqe_diff"):
+            patcher = patch(
+                f"forward_netbox.utilities.query_fetch_execution.{name}",
+                side_effect=lambda client, *args, __name=name, **kwargs: getattr(
+                    client, __name
+                )(*args, **kwargs),
+            )
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     @patch(
         "forward_netbox.utilities.plugin_integrations.registry.integration_capability",
         return_value={

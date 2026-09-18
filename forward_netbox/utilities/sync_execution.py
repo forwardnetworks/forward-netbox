@@ -12,6 +12,8 @@ from .forward_api import get_latest_processed_snapshot
 from .forward_api import get_snapshot_metrics
 from .forward_api import get_snapshots
 from .forward_api import LATEST_COLLECTED_SNAPSHOT
+from .forward_api import run_nqe_diff
+from .forward_api import run_nqe_query
 from .ingestion_merge import suppress_ingest_side_effect_signals
 from .model_contracts import architecture_default_coalesce_fields_for_model
 from .query_execution_contract import _model_contract_issue_rows
@@ -216,7 +218,8 @@ def run_sync_stage(runner):
                                 f"between snapshots `{model_baseline.snapshot_id}` and `{snapshot_id}`.",
                                 obj=runner.sync,
                             )
-                            diff_rows = runner.client.run_nqe_diff(
+                            diff_rows = run_nqe_diff(
+                                runner.client,
                                 query_id=contract.diff_revision.query_id,
                                 commit_id=contract.diff_revision.commit_id,
                                 before_snapshot_id=model_baseline.snapshot_id,
@@ -254,7 +257,8 @@ def run_sync_stage(runner):
                             f"Running Forward {spec.execution_mode} `{spec.execution_value}` for {model_string}.",
                             obj=runner.sync,
                         )
-                        rows = runner.client.run_nqe_query(
+                        rows = run_nqe_query(
+                            runner.client,
                             query=spec.query,
                             query_id=contract.full_revision.query_id or None,
                             commit_id=contract.full_revision.commit_id or None,

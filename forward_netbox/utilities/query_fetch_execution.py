@@ -51,6 +51,8 @@ from .forward_api import get_snapshots
 from .forward_api import LATEST_COLLECTED_SNAPSHOT
 from .forward_api import LATEST_PROCESSED_SNAPSHOT
 from .forward_api import MAX_QUERY_FETCH_CONCURRENCY
+from .forward_api import run_nqe_diff
+from .forward_api import run_nqe_query
 from .full_removal_reconciliation import coalesce_identity
 from .full_removal_reconciliation import compute_full_removals
 from .full_removal_reconciliation import network_complete_removals
@@ -575,7 +577,8 @@ class ForwardQueryFetcher:
             ]
         )
         try:
-            rows = self.client.run_nqe_query(
+            rows = run_nqe_query(
+                self.client,
                 query=query,
                 network_id=network_id,
                 snapshot_id=snapshot_id,
@@ -755,7 +758,8 @@ class ForwardQueryFetcher:
             ]
         )
         try:
-            rows = self.client.run_nqe_query(
+            rows = run_nqe_query(
+                self.client,
                 query=query,
                 network_id=network_id,
                 snapshot_id=snapshot_id,
@@ -837,7 +841,8 @@ class ForwardQueryFetcher:
             ]
         )
         try:
-            probe_rows = self.client.run_nqe_query(
+            probe_rows = run_nqe_query(
+                self.client,
                 query=probe_query,
                 network_id=network_id,
                 snapshot_id=snapshot_id,
@@ -2427,7 +2432,8 @@ class ForwardQueryFetcher:
             raise ContributorBaselineUnavailable(
                 "Tier 3 full provenance requires a verified diff revision."
             )
-        return self.client.run_nqe_query(
+        return run_nqe_query(
+            self.client,
             query_id=diff_revision.query_id,
             commit_id=diff_revision.commit_id,
             network_id=context.network_id,
@@ -3563,7 +3569,7 @@ class ForwardQueryFetcher:
             "deadline": deadline,
         }
         try:
-            return self.client.run_nqe_query(**call_kwargs)
+            return run_nqe_query(self.client, **call_kwargs)
         except JobTimeoutException:
             raise
         except ForwardClientError as exc:
@@ -3580,11 +3586,12 @@ class ForwardQueryFetcher:
                 f"{spec.model_string} without unsupported default parameters.",
                 obj=self.sync,
             )
-            return self.client.run_nqe_query(
+            return run_nqe_query(
+                self.client,
                 **{
                     **call_kwargs,
                     "parameters": {},
-                }
+                },
             )
 
     def _run_nqe_diff(
@@ -3614,7 +3621,8 @@ class ForwardQueryFetcher:
                 f"{getattr(spec, 'model_string', 'unknown model')}: "
                 "unresolved_diff_revision."
             )
-        return self.client.run_nqe_diff(
+        return run_nqe_diff(
+            self.client,
             query_id=diff_revision.query_id or None,
             commit_id=diff_revision.commit_id or None,
             before_snapshot_id=before_snapshot_id,

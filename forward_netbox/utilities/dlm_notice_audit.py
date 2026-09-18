@@ -55,6 +55,7 @@ def fetch_emitted_hardware_notice_rows(sync, *, client=None):
     from django.contrib.contenttypes.models import ContentType
 
     from ..models import ForwardNQEMap
+    from .forward_api import run_nqe_query
 
     app_label, model_name = "netbox_dlm", "hardwarenotice"
     try:
@@ -80,7 +81,8 @@ def fetch_emitted_hardware_notice_rows(sync, *, client=None):
                 "this audit cannot reproduce what the sync executes"
             )
         rows.extend(
-            client.run_nqe_query(
+            run_nqe_query(
+                client,
                 query_id=nqe_map.query_id,
                 commit_id=nqe_map.commit_id or None,
                 network_id=network_id,

@@ -33,13 +33,15 @@ select {
 
 def audit_apic_cimc_readiness(sync, client=None):
     from ..exceptions import ForwardSyncError
+    from .forward_api import run_nqe_query
 
     network_id = sync.get_network_id()
     if not network_id:
         raise ForwardSyncError("Sync source has no network configured.")
     client = client or sync.source.get_client()
     snapshot_id = sync.resolve_snapshot_id(client)
-    rows = client.run_nqe_query(
+    rows = run_nqe_query(
+        client,
         query=READINESS_QUERY,
         network_id=network_id,
         snapshot_id=snapshot_id,

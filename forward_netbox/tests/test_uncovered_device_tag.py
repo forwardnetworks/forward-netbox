@@ -96,10 +96,13 @@ class UncoveredDeviceTagTest(TestCase):
 
     def _run(self, rows):
         fwd_client = Mock()
-        fwd_client.run_nqe_query = Mock(return_value=rows)
         with (
             patch.object(ForwardSource, "get_client", return_value=fwd_client),
             patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+            patch(
+                "forward_netbox.utilities.scope_reconciliation.run_nqe_query",
+                return_value=rows,
+            ),
         ):
             return tag_backfilled_devices(self.sync)
 
@@ -368,7 +371,6 @@ class UncoveredPanelTest(TestCase):
             name="dev-unclaimed", device_type=self.dt, role=self.role, site=self.site
         )
         fwd_client = Mock()
-        fwd_client.run_nqe_query = Mock(return_value=[])
         user = get_user_model().objects.create_user(username="admin-unc", password="x")
         user.is_superuser = True
         user.is_staff = True
@@ -378,6 +380,10 @@ class UncoveredPanelTest(TestCase):
         with (
             patch.object(ForwardSource, "get_client", return_value=fwd_client),
             patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+            patch(
+                "forward_netbox.utilities.scope_reconciliation.run_nqe_query",
+                return_value=[],
+            ),
         ):
             from forward_netbox.jobs import _scope_reconciliation_work
 

@@ -20,6 +20,7 @@ The negative space matters most here:
 
 import tempfile
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from core.models import DataSource
 from dcim.models import Device
@@ -55,6 +56,22 @@ class _FakeClient:
     ):
         self.calls.append({"limit": limit, "offset": offset, "parameters": parameters})
         return self.rows[offset : offset + limit]
+
+
+_run_nqe_query_patcher = None
+
+
+def setUpModule():
+    global _run_nqe_query_patcher
+    _run_nqe_query_patcher = patch(
+        "forward_netbox.utilities.config_backup.run_nqe_query",
+        side_effect=lambda client, **kwargs: client.run_nqe_query(**kwargs),
+    )
+    _run_nqe_query_patcher.start()
+
+
+def tearDownModule():
+    _run_nqe_query_patcher.stop()
 
 
 def _read_config_blob(repo_path, file_name):

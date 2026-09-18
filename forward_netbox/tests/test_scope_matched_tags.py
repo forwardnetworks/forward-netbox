@@ -1,4 +1,5 @@
 from unittest.mock import Mock
+from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -41,15 +42,19 @@ class ScopeMatchedTagsResolveTest(TestCase):
             {"name": "d3", "site": "s", "tagNames": ["TagA", "TagB"]},
             {"name": "d4", "site": "s", "tagNames": ["TagX"]},
         ]
-        names, sites, matched, _failed = self._fetcher(
-            client
-        )._resolve_scoped_tag_scope(
-            network_id="net-1",
-            snapshot_id="snap",
-            include_tags=["TagA", "TagB"],
-            exclude_tags=[],
-            include_match="any",
-        )
+        with patch(
+            "forward_netbox.utilities.query_fetch_execution.run_nqe_query",
+            side_effect=lambda c, **kw: c.run_nqe_query(**kw),
+        ):
+            names, sites, matched, _failed = self._fetcher(
+                client
+            )._resolve_scoped_tag_scope(
+                network_id="net-1",
+                snapshot_id="snap",
+                include_tags=["TagA", "TagB"],
+                exclude_tags=[],
+                include_match="any",
+            )
         self.assertEqual(
             matched, {"d1": ["TagA"], "d2": ["TagB"], "d3": ["TagA", "TagB"]}
         )

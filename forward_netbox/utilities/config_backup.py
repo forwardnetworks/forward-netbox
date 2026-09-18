@@ -43,6 +43,7 @@ from urllib.parse import urlunsplit
 from rq.timeouts import JobTimeoutException
 
 from ..exceptions import ForwardSyncError
+from .forward_api import run_nqe_query
 
 CONFIG_BACKUP_PARAMETER_NAME = "config_backup_data_source"
 CONFIG_BACKUP_QUERY_FILENAME = "forward_config_backup.nqe"
@@ -356,7 +357,8 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
             # the surplus is transferred only to be discarded.
             shard_keys = [] if include_unmanaged else sorted(name_map)
             while True:
-                rows = client.run_nqe_query(
+                rows = run_nqe_query(
+                    client,
                     query=query,
                     network_id=network_id,
                     snapshot_id=snapshot_id,

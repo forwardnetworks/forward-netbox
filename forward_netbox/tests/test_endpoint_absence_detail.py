@@ -5,6 +5,7 @@
 # report of 189 console servers and SNMP endpoints among 550 uncovered devices
 # is what this split is for.
 from unittest.mock import Mock
+from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
@@ -114,6 +115,12 @@ class AbsenceCensusEndpointsTest(SimpleTestCase):
     def _client(self, device_rows, endpoint_rows):
         client = Mock()
         client.run_nqe_query = Mock(side_effect=[device_rows, endpoint_rows])
+        patcher = patch(
+            "forward_netbox.utilities.scope_reconciliation.run_nqe_query",
+            side_effect=lambda c, *a, **kw: c.run_nqe_query(*a, **kw),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
         return client
 
     def test_the_endpoint_table_is_probed_even_with_endpoint_sync_off(self):
@@ -179,8 +186,7 @@ class AbsenceCensusEndpointsTest(SimpleTestCase):
         )
 
     def test_a_failed_endpoint_probe_leaves_the_census_unavailable(self):
-        client = Mock()
-        client.run_nqe_query = Mock(side_effect=[[], RuntimeError("boom")])
+        client = self._client([], RuntimeError("boom"))
         self.assertIsNone(
             _absence_census({"x"}, client=client, network_id="n", snapshot_id="s")
         )

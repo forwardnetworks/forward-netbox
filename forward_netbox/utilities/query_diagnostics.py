@@ -5,6 +5,7 @@ from ipaddress import ip_network
 
 from rq.timeouts import JobTimeoutException
 
+from .forward_api import run_nqe_query
 from .query_registry import aci_source_readiness_query
 from .query_registry import ACI_SOURCE_READINESS_QUERY_NAME
 from .query_registry import ipaddress_unassignable_diagnostic_query
@@ -196,7 +197,8 @@ def _ip_is_in_intervals(
 
 def run_ipaddress_unassignable_diagnostic(fetcher, context):
     try:
-        rows = fetcher.client.run_nqe_query(
+        rows = run_nqe_query(
+            fetcher.client,
             query=ipaddress_unassignable_diagnostic_query(),
             network_id=context.network_id,
             snapshot_id=context.snapshot_id,
@@ -286,7 +288,8 @@ def append_routing_diagnostics(fetcher, context):
 
 def run_routing_import_diagnostic(fetcher, context):
     try:
-        rows = fetcher.client.run_nqe_query(
+        rows = run_nqe_query(
+            fetcher.client,
             query=routing_import_diagnostic_query(),
             network_id=context.network_id,
             snapshot_id=context.snapshot_id,
@@ -505,7 +508,8 @@ def append_aci_source_diagnostics(fetcher, context):
 
 def run_aci_source_readiness(fetcher, context):
     try:
-        rows = fetcher.client.run_nqe_query(
+        rows = run_nqe_query(
+            fetcher.client,
             query=aci_source_readiness_query(),
             network_id=context.network_id,
             snapshot_id=context.snapshot_id,

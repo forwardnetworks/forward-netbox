@@ -489,12 +489,13 @@ class OrphanQuarantineBadgeMatchesTheButtonTest(AbsenceQuarantineTestBase):
         self._set_absent(still_there, runs=1, hours_ago=1)
 
         fwd_client = Mock()
-        fwd_client.run_nqe_query.return_value = [
-            {"name": "still-here", "completed": True}
-        ]
         with (
             patch.object(ForwardSource, "get_client", return_value=fwd_client),
             patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+            patch(
+                "forward_netbox.utilities.scope_reconciliation.run_nqe_query",
+                return_value=[{"name": "still-here", "completed": True}],
+            ),
             patch(
                 "forward_netbox.utilities.scope_reconciliation._absence_census",
                 return_value=(

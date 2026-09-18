@@ -6,6 +6,8 @@ from typing import Iterable
 
 from rq.timeouts import JobTimeoutException
 
+from .forward_api import run_nqe_query
+
 
 @dataclass(frozen=True)
 class ModuleReadinessReport:
@@ -132,7 +134,8 @@ def fetch_module_rows_for_sync(sync) -> list[dict]:
     rows: list[dict] = []
     for spec in specs:
         rows.extend(
-            client.run_nqe_query(
+            run_nqe_query(
+                client,
                 query=spec.query,
                 query_id=spec.run_query_id,
                 commit_id=spec.commit_id,

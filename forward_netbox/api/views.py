@@ -48,6 +48,7 @@ from forward_netbox.utilities.forward_api import get_nqe_repository_query_index
 from forward_netbox.utilities.forward_api import get_snapshots
 from forward_netbox.utilities.forward_api import LATEST_COLLECTED_SNAPSHOT
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
+from forward_netbox.utilities.forward_api import run_nqe_query
 from forward_netbox.utilities.query_binding import builtin_filename_to_query_default
 from forward_netbox.utilities.query_binding import query_filename_from_path
 
@@ -265,7 +266,8 @@ class ForwardSourceViewSet(NetBoxModelViewSet):
                     }
                 )
 
-            rows = client.run_nqe_query(
+            rows = run_nqe_query(
+                client,
                 query=(
                     "foreach device in network.devices\n"
                     "where device.snapshotInfo.result == DeviceSnapshotResult.completed\n"

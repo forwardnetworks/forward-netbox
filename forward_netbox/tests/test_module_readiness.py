@@ -149,10 +149,14 @@ class ForwardModuleReadinessCommandTest(TestCase):
             }
         ]
 
-        with TemporaryDirectory() as temp_dir, patch.object(
-            ForwardSource,
-            "get_client",
-            return_value=client,
+        with (
+            TemporaryDirectory() as temp_dir,
+            patch.object(ForwardSource, "get_client", return_value=client),
+            patch(
+                "forward_netbox.management.commands.forward_module_readiness."
+                "run_nqe_query",
+                side_effect=lambda c, *a, **kw: c.run_nqe_query(*a, **kw),
+            ),
         ):
             stdout = StringIO()
             call_command(
@@ -203,6 +207,10 @@ class ForwardModuleReadinessCommandTest(TestCase):
             patch(
                 "forward_netbox.utilities.query_registry.resolve_query_specs_for_client",
                 side_effect=RuntimeError("stale repository path"),
+            ),
+            patch(
+                "forward_netbox.utilities.module_readiness.run_nqe_query",
+                side_effect=lambda c, *a, **kw: c.run_nqe_query(*a, **kw),
             ),
         ):
             rows = fetch_module_rows_for_sync(self.sync)
