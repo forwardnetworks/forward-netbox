@@ -16,6 +16,7 @@ from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.forward_api import get_latest_processed_snapshot_id
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
+from forward_netbox.utilities.forward_api import run_nqe_query
 from forward_netbox.utilities.module_readiness import summarize_module_readiness
 from forward_netbox.utilities.query_registry import get_query_specs
 from forward_netbox.utilities.query_registry import get_seeded_builtin_query_spec
@@ -151,7 +152,8 @@ class Command(BaseCommand):
         for spec in specs:
             try:
                 rows.extend(
-                    client.run_nqe_query(
+                    run_nqe_query(
+                        client,
                         query=spec.query,
                         query_id=spec.run_query_id,
                         commit_id=spec.commit_id,

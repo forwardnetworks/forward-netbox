@@ -127,10 +127,16 @@ class VsysParentTest(TestCase):
             {"name": vsys.name, "parent": chassis.name}
         ]
 
-        with patch(
-            "forward_netbox.utilities.post_sync.current_post_sync_snapshot",
-            return_value=nullcontext(
-                {"generation": self.ingestion.pk, "snapshot_id": "snapshot-1"}
+        with (
+            patch(
+                "forward_netbox.utilities.post_sync.current_post_sync_snapshot",
+                return_value=nullcontext(
+                    {"generation": self.ingestion.pk, "snapshot_id": "snapshot-1"}
+                ),
+            ),
+            patch(
+                "forward_netbox.utilities.vsys_parent.run_nqe_query",
+                side_effect=lambda c, **kw: c.run_nqe_query(**kw),
             ),
         ):
             result = link_vsys_parents(

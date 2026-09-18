@@ -3641,10 +3641,16 @@ class SingleBranchExecutorTest(CleanTransactionTestCase):
         logger = Mock()
         self.sync.logger = logger
 
-        with patch.object(
-            ForwardQueryFetcher,
-            "resolve_context",
-            return_value=context,
+        with (
+            patch.object(
+                ForwardQueryFetcher,
+                "resolve_context",
+                return_value=context,
+            ),
+            patch(
+                "forward_netbox.utilities.query_fetch_execution.run_nqe_query",
+                side_effect=lambda c, **kw: c.run_nqe_query(**kw),
+            ),
         ):
             ingestions = ForwardSingleBranchExecutor(
                 self.sync,

@@ -1,7 +1,29 @@
+from unittest.mock import patch
+
 from django.test import SimpleTestCase
 
 from forward_netbox.utilities.query_registry import _default_query_parameters
 from forward_netbox.utilities.query_registry import _read_query
+
+
+def _patch_run_nqe_functions(testcase):
+    # `run_nqe_query`/`run_nqe_diff` are module-level free functions imported
+    # by name into query_fetch_execution.py (forward-sdk migration step 6c),
+    # called as `run_nqe_query(client, ...)` rather than
+    # `client.run_nqe_query(...)`. Every test using this helper still
+    # configures behavior via `client.run_nqe_query.return_value = ...` (a
+    # Mock attribute) exactly as before the free-function conversion, so this
+    # patch just forwards the free-function call onto that same attribute
+    # unchanged.
+    for name in ("run_nqe_query", "run_nqe_diff"):
+        patcher = patch(
+            f"forward_netbox.utilities.query_fetch_execution.{name}",
+            side_effect=lambda client, *args, __name=name, **kwargs: getattr(
+                client, __name
+            )(*args, **kwargs),
+        )
+        patcher.start()
+        testcase.addCleanup(patcher.stop)
 
 
 class EndpointImportWiringTest(SimpleTestCase):
@@ -205,6 +227,9 @@ class EndpointScopeUnionTest(TestCase):
     sync_endpoints on, endpoint names join the scoped set; exclude tags still
     apply to the endpoint probe.
     """
+
+    def setUp(self):
+        _patch_run_nqe_functions(self)
 
     def _fetcher(self, client):
         from unittest.mock import Mock
@@ -597,6 +622,9 @@ class EndpointIncludeScopeProbeTest(TestCase):
     emits — with prune enabled, DELETEs of previously imported endpoints).
     """
 
+    def setUp(self):
+        _patch_run_nqe_functions(self)
+
     def _fetcher(self, client):
         from unittest.mock import Mock
 
@@ -749,6 +777,9 @@ class ScopeMaskingWarningTest(TestCase):
     import used to present as a confusing partial import (devices appear,
     interfaces/IPs empty). The resolver must say so explicitly.
     """
+
+    def setUp(self):
+        _patch_run_nqe_functions(self)
 
     def _fetcher(self, client):
         from unittest.mock import Mock

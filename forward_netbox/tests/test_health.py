@@ -757,6 +757,10 @@ class ForwardSyncHealthTest(TestCase):
                 "forward_netbox.utilities.sync_facade.get_latest_processed_snapshot_id",
                 return_value="snapshot-1",
             ),
+            patch(
+                "forward_netbox.utilities.health.run_nqe_query",
+                side_effect=lambda c, *a, **kw: c.run_nqe_query(*a, **kw),
+            ),
         ):
             result = live_data_file_health_check(self.sync)
 
@@ -788,6 +792,10 @@ class ForwardSyncHealthTest(TestCase):
                 "forward_netbox.utilities.sync_facade.get_latest_processed_snapshot_id",
                 return_value="snapshot-1",
             ),
+            patch(
+                "forward_netbox.utilities.health.run_nqe_query",
+                side_effect=lambda c, *a, **kw: c.run_nqe_query(*a, **kw),
+            ),
         ):
             result = live_data_file_health_check(self.sync)
 
@@ -804,6 +812,10 @@ class ForwardSyncHealthTest(TestCase):
             patch(
                 "forward_netbox.utilities.sync_facade.get_latest_processed_snapshot_id",
                 return_value="snapshot-1",
+            ),
+            patch(
+                "forward_netbox.utilities.health.run_nqe_query",
+                side_effect=lambda c, *a, **kw: c.run_nqe_query(*a, **kw),
             ),
         ):
             result = live_data_file_health_check(self.sync)
@@ -830,6 +842,10 @@ class ForwardSyncHealthTest(TestCase):
             patch(
                 "forward_netbox.utilities.sync_facade.get_latest_processed_snapshot_id",
                 return_value="snapshot-1",
+            ),
+            patch(
+                "forward_netbox.utilities.health.run_nqe_query",
+                side_effect=lambda c, *a, **kw: c.run_nqe_query(*a, **kw),
             ),
         ):
             response = self.client.get(

@@ -47,6 +47,7 @@ from .utilities.forward_api import get_latest_processed_snapshot
 from .utilities.forward_api import get_networks
 from .utilities.forward_api import get_snapshots
 from .utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
+from .utilities.forward_api import run_nqe_query
 from .utilities.ingestion_merge import (
     cleanup_merged_branch as cleanup_forward_merged_branch,
 )
@@ -342,7 +343,8 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
                 "where device.snapshotInfo.result == DeviceSnapshotResult.completed\n"
                 "where device.platform.vendor != Vendor.FORWARD_CUSTOM\n"
             )
-            total_rows = client.run_nqe_query(
+            total_rows = run_nqe_query(
+                client,
                 query=(
                     "foreach device in network.devices\n"
                     f"{base_where}"
@@ -372,7 +374,8 @@ class ForwardSource(ForwardPluginModelDocsMixin, JobsMixin, PrimaryModel):
                     f"where !({_nqe_string_literal(tag)} in device.tagNames)"
                 )
 
-            scoped_rows = client.run_nqe_query(
+            scoped_rows = run_nqe_query(
+                client,
                 query=(
                     "foreach device in network.devices\n"
                     f"{base_where}"

@@ -28,6 +28,28 @@ from forward_netbox.utilities.ownership import reconcile_sync_scope_tag_claims
 
 class ScopeModuleUiTest(TestCase):
     def setUp(self):
+        # `run_nqe_query` is a module-level free function imported by name
+        # into both scope_reconciliation.py and module_readiness.py
+        # (forward-sdk migration step 6c), called as
+        # `run_nqe_query(client, ...)` rather than `client.run_nqe_query(...)`.
+        # Every test below still configures behavior via
+        # `fwd_client.run_nqe_query.return_value = ...` (a Mock attribute)
+        # exactly as before the free-function conversion, so the patch just
+        # forwards the free-function call onto that same attribute unchanged.
+        for module in (
+            "forward_netbox.utilities.scope_reconciliation",
+            "forward_netbox.utilities.module_readiness",
+            "forward_netbox.utilities.device_analysis",
+        ):
+            patcher = patch(
+                f"{module}.run_nqe_query",
+                side_effect=lambda client, *args, **kwargs: client.run_nqe_query(
+                    *args, **kwargs
+                ),
+            )
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
         self.source = ForwardSource.objects.create(
             name="ui-src",
             type="saas",

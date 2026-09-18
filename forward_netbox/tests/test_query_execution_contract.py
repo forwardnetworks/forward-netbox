@@ -164,6 +164,25 @@ def _baseline(model_contract, *, snapshot_id="snapshot-before"):
 
 
 class ResolvedExecutionContractTest(SimpleTestCase):
+    def setUp(self):
+        # `run_nqe_query`/`run_nqe_diff` are module-level free functions
+        # imported by name into query_fetch_execution.py (forward-sdk
+        # migration step 6c), called as `run_nqe_query(client, ...)` rather
+        # than `client.run_nqe_query(...)`. Every test below still configures
+        # behavior via `client.run_nqe_query.return_value = ...` (a Mock
+        # attribute) exactly as before the free-function conversion, so this
+        # patch just forwards the free-function call onto that same
+        # attribute unchanged.
+        for name in ("run_nqe_query", "run_nqe_diff"):
+            patcher = patch(
+                f"forward_netbox.utilities.query_fetch_execution.{name}",
+                side_effect=lambda client, *args, __name=name, **kwargs: getattr(
+                    client, __name
+                )(*args, **kwargs),
+            )
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def test_implicit_primary_key_query_is_verified_parameterless(self):
         source = """
 helper(device: Device) =
@@ -1013,6 +1032,17 @@ class Tier2OwnershipReducerTest(SimpleTestCase):
         "netbox_routing.ospfinterface",
     )
 
+    def setUp(self):
+        for name in ("run_nqe_query", "run_nqe_diff"):
+            patcher = patch(
+                f"forward_netbox.utilities.query_fetch_execution.{name}",
+                side_effect=lambda client, *args, __name=name, **kwargs: getattr(
+                    client, __name
+                )(*args, **kwargs),
+            )
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def _fetcher(self, *, client=None, source_parameters=None):
         return ForwardQueryFetcher(
             sync=SimpleNamespace(
@@ -1396,6 +1426,17 @@ class Tier2OwnershipReducerTest(SimpleTestCase):
 
 
 class DiffArtifactStoreTest(SimpleTestCase):
+    def setUp(self):
+        for name in ("run_nqe_query", "run_nqe_diff"):
+            patcher = patch(
+                f"forward_netbox.utilities.query_fetch_execution.{name}",
+                side_effect=lambda client, *args, __name=name, **kwargs: getattr(
+                    client, __name
+                )(*args, **kwargs),
+            )
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     def test_concurrent_consumers_build_once(self):
         store = DiffArtifactStore()
         key = DiffArtifactKey("dcim.site", "before", "after", "maps", "scope")

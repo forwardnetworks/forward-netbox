@@ -141,13 +141,17 @@ class ForwardSourceAPIViewTest(TestCase):
         self.assertEqual(response.data["count"], 0)
         self.assertIn("saved Forward source is required", response.data["detail"])
 
+    @patch("forward_netbox.api.views.run_nqe_query")
     @patch("forward_netbox.api.views.get_latest_processed_snapshot")
     @patch("forward_netbox.api.views.ForwardSource.get_client")
     def test_available_tags_returns_distinct_tags(
-        self, mock_get_client, mock_get_latest_processed_snapshot
+        self,
+        mock_get_client,
+        mock_get_latest_processed_snapshot,
+        mock_run_nqe_query,
     ):
         mock_client = Mock()
-        mock_client.run_nqe_query.return_value = [
+        mock_run_nqe_query.return_value = [
             {"tagNames": ["Core", "Branch"]},
             {"tagNames": ["Core", "Edge"]},
         ]

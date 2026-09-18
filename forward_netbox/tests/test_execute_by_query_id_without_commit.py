@@ -18,7 +18,7 @@ from unittest.mock import patch
 from django.test import SimpleTestCase
 
 from forward_netbox.exceptions import ForwardQueryError
-from forward_netbox.utilities.forward_api_impl import ForwardClient
+from forward_netbox.utilities import forward_api_impl
 from forward_netbox.utilities.query_execution_contract import query_source_sha256
 from forward_netbox.utilities.query_execution_contract import resolve_execution_contract
 from forward_netbox.utilities.query_fetch_execution import ForwardQueryFetcher
@@ -176,8 +176,7 @@ class QueryIdWithoutCommitTest(SimpleTestCase):
         self.assertEqual(refused.full_reason_code, "unsupported_full_parameters")
 
     def test_the_execution_payload_omits_commit_id_entirely(self):
-        ref = ForwardClient._nqe_query_ref(
-            Mock(),
+        ref = forward_api_impl._nqe_query_ref(
             query_id=QUERY_ID,
             commit_id=None,
         )
@@ -199,8 +198,7 @@ class QueryIdWithoutCommitTest(SimpleTestCase):
             effective_parameters={"scope": ["device-a"]},
         )
         self.assertFalse(contract.full_unpinned_head)
-        ref = ForwardClient._nqe_query_ref(
-            Mock(),
+        ref = forward_api_impl._nqe_query_ref(
             query_id=QUERY_ID,
             commit_id=contract.full_revision.commit_id,
         )

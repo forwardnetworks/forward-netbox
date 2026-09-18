@@ -9,6 +9,7 @@
 # whose parent left NetBox) is unlinked.
 from django.db import transaction
 
+from .forward_api import run_nqe_query
 
 PARENT_DEVICE_CF = "forward_parent_device"
 
@@ -37,7 +38,8 @@ def _virtual_device_rows(sync, client=None, *, fetch_rows=None, snapshot_id=None
                 "}",
             ]
         )
-        rows = client.run_nqe_query(
+        rows = run_nqe_query(
+            client,
             query=query,
             network_id=network_id,
             snapshot_id=snapshot_id,

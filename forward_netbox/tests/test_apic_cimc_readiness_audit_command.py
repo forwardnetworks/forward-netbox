@@ -32,11 +32,14 @@ class ForwardApicCimcReadinessAuditCommandTest(TestCase):
 
     def _run(self, rows, **kwargs):
         client = Mock()
-        client.run_nqe_query = Mock(return_value=rows)
         out = StringIO()
         with (
             patch.object(ForwardSource, "get_client", return_value=client),
             patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
+            patch(
+                "forward_netbox.utilities.forward_api.run_nqe_query",
+                return_value=rows,
+            ),
         ):
             call_command(
                 "forward_apic_cimc_readiness_audit",

@@ -9,6 +9,7 @@ from forward_netbox.exceptions import ForwardConnectivityError
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.branch_budget import row_shard_key
 from forward_netbox.utilities.branch_budget import shard_fetch_contract
+from forward_netbox.utilities.forward_api import run_nqe_query
 from forward_netbox.utilities.query_fetch import ForwardQueryFetcher
 from forward_netbox.utilities.query_registry import get_query_specs
 from forward_netbox.utilities.query_registry import resolve_query_specs_for_client
@@ -133,7 +134,8 @@ class Command(BaseCommand):
         merged_parameters = spec.merged_parameters(context.query_parameters)
 
         full_start = time.perf_counter()
-        full_rows = client.run_nqe_query(
+        full_rows = run_nqe_query(
+            client,
             query=spec.query,
             query_id=spec.run_query_id,
             commit_id=spec.commit_id,
@@ -167,7 +169,8 @@ class Command(BaseCommand):
         pushdown_error = ""
         pushdown_supported = True
         try:
-            pushdown_rows = client.run_nqe_query(
+            pushdown_rows = run_nqe_query(
+                client,
                 query=spec.query,
                 query_id=spec.run_query_id,
                 commit_id=spec.commit_id,

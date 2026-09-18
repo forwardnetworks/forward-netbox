@@ -24,6 +24,23 @@ from forward_netbox.utilities.ownership import reconcile_sync_scope_tag_claims
 
 class ForwardDeviceScopeReconciliationAuditCommandTest(TestCase):
     def setUp(self):
+        # `run_nqe_query` is a module-level free function imported by name
+        # into scope_reconciliation.py (forward-sdk migration step 6c),
+        # called as `run_nqe_query(client, ...)` rather than
+        # `client.run_nqe_query(...)`. Every test below still configures
+        # behavior via `client.run_nqe_query.return_value = ...` /
+        # `.side_effect = ...` (a Mock attribute) exactly as before the
+        # free-function conversion, so the patch just forwards the
+        # free-function call onto that same attribute unchanged.
+        patcher = patch(
+            "forward_netbox.utilities.scope_reconciliation.run_nqe_query",
+            side_effect=lambda client, *args, **kwargs: client.run_nqe_query(
+                *args, **kwargs
+            ),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
         self.source = ForwardSource.objects.create(
             name="recon-source",
             type="saas",
@@ -578,6 +595,15 @@ class OutOfScopeAbsenceClassificationTest(TestCase):
     makes Prune orphans dangerous when a query has merely narrowed."""
 
     def setUp(self):
+        patcher = patch(
+            "forward_netbox.utilities.scope_reconciliation.run_nqe_query",
+            side_effect=lambda client, *args, **kwargs: client.run_nqe_query(
+                *args, **kwargs
+            ),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
         self.source = ForwardSource.objects.create(
             name="absence-source",
             type="saas",
@@ -758,6 +784,15 @@ class UntaggedDeviceOwnershipSplitTest(TestCase):
     """
 
     def setUp(self):
+        patcher = patch(
+            "forward_netbox.utilities.scope_reconciliation.run_nqe_query",
+            side_effect=lambda client, *args, **kwargs: client.run_nqe_query(
+                *args, **kwargs
+            ),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
         self.source = ForwardSource.objects.create(
             name="untagged-source",
             type="saas",

@@ -89,6 +89,10 @@ class _Fixture(TestCase):
         with (
             patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
             patch.object(ForwardSource, "get_client", return_value=client),
+            patch(
+                "forward_netbox.utilities.scope_reconciliation.run_nqe_query",
+                side_effect=lambda c, **kw: c.run_nqe_query(**kw),
+            ),
         ):
             return compute_scope_reconciliation(self.sync)
 
@@ -297,6 +301,10 @@ class RefusalsTest(_Fixture):
         with (
             patch.object(ForwardSync, "resolve_snapshot_id", return_value="snap-1"),
             patch.object(ForwardSource, "get_client", return_value=client),
+            patch(
+                "forward_netbox.utilities.scope_reconciliation.run_nqe_query",
+                side_effect=lambda c, **kw: c.run_nqe_query(**kw),
+            ),
         ):
             report = compute_scope_reconciliation(self.sync)
 

@@ -599,9 +599,15 @@ class ForwardSyncModelTest(TestCase):
         ]
         mock_get_client.return_value = client
 
-        with patch(
-            "forward_netbox.models.get_latest_processed_snapshot",
-            return_value={"id": "snap-1"},
+        with (
+            patch(
+                "forward_netbox.models.get_latest_processed_snapshot",
+                return_value={"id": "snap-1"},
+            ),
+            patch(
+                "forward_netbox.models.run_nqe_query",
+                side_effect=lambda c, **kw: c.run_nqe_query(**kw),
+            ),
         ):
             preview = self.source.get_tag_scope_preview()
         self.assertTrue(preview["enabled"])
