@@ -672,12 +672,18 @@ class ForwardSyncHealthTest(TestCase):
 
     def test_live_source_health_check_reports_reachability_without_ids(self):
         client = Mock()
-        client.get_networks.return_value = [
-            {"id": "test-network", "name": "Visible Network"},
-        ]
-        client.get_latest_processed_snapshot_id.return_value = "snapshot-1"
 
-        with patch.object(ForwardSource, "get_client", return_value=client):
+        with (
+            patch.object(ForwardSource, "get_client", return_value=client),
+            patch(
+                "forward_netbox.utilities.health.get_networks",
+                return_value=[{"id": "test-network", "name": "Visible Network"}],
+            ),
+            patch(
+                "forward_netbox.utilities.health.get_latest_processed_snapshot_id",
+                return_value="snapshot-1",
+            ),
+        ):
             result = live_source_health_check(self.sync)
 
         self.assertTrue(result["reachable"])
@@ -689,11 +695,14 @@ class ForwardSyncHealthTest(TestCase):
 
     def test_live_source_health_check_does_not_export_exception_details(self):
         client = Mock()
-        client.get_networks.side_effect = RuntimeError("sentinel-private-detail")
 
         with (
             self.assertLogs("forward_netbox.utilities.health", level="WARNING") as logs,
             patch.object(ForwardSource, "get_client", return_value=client),
+            patch(
+                "forward_netbox.utilities.health.get_networks",
+                side_effect=RuntimeError("sentinel-private-detail"),
+            ),
         ):
             result = live_source_health_check(self.sync)
 
@@ -706,12 +715,18 @@ class ForwardSyncHealthTest(TestCase):
     def test_sync_live_source_health_downloads_reachability_diagnostics(self):
         self.client.force_login(self.user)
         client = Mock()
-        client.get_networks.return_value = [
-            {"id": "test-network", "name": "Visible Network"},
-        ]
-        client.get_latest_processed_snapshot_id.return_value = "snapshot-1"
 
-        with patch.object(ForwardSource, "get_client", return_value=client):
+        with (
+            patch.object(ForwardSource, "get_client", return_value=client),
+            patch(
+                "forward_netbox.utilities.health.get_networks",
+                return_value=[{"id": "test-network", "name": "Visible Network"}],
+            ),
+            patch(
+                "forward_netbox.utilities.health.get_latest_processed_snapshot_id",
+                return_value="snapshot-1",
+            ),
+        ):
             response = self.client.get(
                 reverse(
                     "plugins:forward_netbox:forwardsync_source_health",
@@ -728,7 +743,6 @@ class ForwardSyncHealthTest(TestCase):
 
     def test_live_data_file_health_check_reports_snapshot_captured_rows(self):
         client = Mock()
-        client.get_latest_processed_snapshot_id.return_value = "snapshot-1"
         client.run_nqe_query.return_value = [
             {
                 "data_file": "netbox_device_type_aliases",
@@ -737,7 +751,13 @@ class ForwardSyncHealthTest(TestCase):
             }
         ]
 
-        with patch.object(ForwardSource, "get_client", return_value=client):
+        with (
+            patch.object(ForwardSource, "get_client", return_value=client),
+            patch(
+                "forward_netbox.utilities.sync_facade.get_latest_processed_snapshot_id",
+                return_value="snapshot-1",
+            ),
+        ):
             result = live_data_file_health_check(self.sync)
 
         self.assertEqual(
@@ -754,7 +774,6 @@ class ForwardSyncHealthTest(TestCase):
 
     def test_live_data_file_health_check_reports_missing_snapshot_value(self):
         client = Mock()
-        client.get_latest_processed_snapshot_id.return_value = "snapshot-1"
         client.run_nqe_query.return_value = [
             {
                 "data_file": "netbox_device_type_aliases",
@@ -763,7 +782,13 @@ class ForwardSyncHealthTest(TestCase):
             }
         ]
 
-        with patch.object(ForwardSource, "get_client", return_value=client):
+        with (
+            patch.object(ForwardSource, "get_client", return_value=client),
+            patch(
+                "forward_netbox.utilities.sync_facade.get_latest_processed_snapshot_id",
+                return_value="snapshot-1",
+            ),
+        ):
             result = live_data_file_health_check(self.sync)
 
         self.assertEqual(result["results"][0]["status"], "not_captured")
@@ -771,12 +796,15 @@ class ForwardSyncHealthTest(TestCase):
 
     def test_live_data_file_health_check_does_not_export_exception_details(self):
         client = Mock()
-        client.get_latest_processed_snapshot_id.return_value = "snapshot-1"
         client.run_nqe_query.side_effect = RuntimeError("sentinel-private-detail")
 
         with (
             self.assertLogs("forward_netbox.utilities.health", level="WARNING") as logs,
             patch.object(ForwardSource, "get_client", return_value=client),
+            patch(
+                "forward_netbox.utilities.sync_facade.get_latest_processed_snapshot_id",
+                return_value="snapshot-1",
+            ),
         ):
             result = live_data_file_health_check(self.sync)
 
@@ -789,7 +817,6 @@ class ForwardSyncHealthTest(TestCase):
     def test_sync_live_data_file_health_downloads_freshness_diagnostics(self):
         self.client.force_login(self.user)
         client = Mock()
-        client.get_latest_processed_snapshot_id.return_value = "snapshot-1"
         client.run_nqe_query.return_value = [
             {
                 "data_file": "netbox_device_type_aliases",
@@ -798,7 +825,13 @@ class ForwardSyncHealthTest(TestCase):
             }
         ]
 
-        with patch.object(ForwardSource, "get_client", return_value=client):
+        with (
+            patch.object(ForwardSource, "get_client", return_value=client),
+            patch(
+                "forward_netbox.utilities.sync_facade.get_latest_processed_snapshot_id",
+                return_value="snapshot-1",
+            ),
+        ):
             response = self.client.get(
                 reverse(
                     "plugins:forward_netbox:forwardsync_data_file_health",

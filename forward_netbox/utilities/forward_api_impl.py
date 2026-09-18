@@ -243,6 +243,400 @@ def build_endpoint_device_eligibility_where(*, sync_generic_endpoints=False):
     ]
 
 
+def get_networks(client):
+    shared_cache_key = client._shared_read_cache_key("networks")
+    with client._read_cache_lock:
+        cached_networks = client._networks_cache
+    if cached_networks is not None:
+        client._record_read_cache_hit()
+        return [dict(item) for item in cached_networks]
+    cached_networks = client._shared_read_cache_get(shared_cache_key)
+    if cached_networks is not None:
+        with client._read_cache_lock:
+            client._networks_cache = [dict(item) for item in cached_networks]
+        client._record_read_cache_hit()
+        return [dict(item) for item in cached_networks]
+    client._record_read_cache_miss()
+    sdk_networks = client._call_sdk(client._sdk_client.networks.list)
+    networks = []
+    for item in sdk_networks or []:
+        network_id = str(item.id or "").strip()
+        name = str(item.name or "").strip()
+        if not network_id or not name:
+            continue
+        networks.append(
+            {
+                "id": network_id,
+                "name": name,
+                "label": f"{name} ({network_id})",
+            }
+        )
+    with client._read_cache_lock:
+        client._networks_cache = [dict(item) for item in networks]
+    client._shared_read_cache_set(shared_cache_key, [dict(item) for item in networks])
+    return networks
+
+
+def get_snapshots(client, network_id, *, include_archived=False, limit=100):
+    network_id = str(network_id or "").strip()
+    cache_key = (network_id, bool(include_archived), int(limit))
+    shared_cache_key = client._shared_read_cache_key(
+        "snapshots", network_id, bool(include_archived), int(limit)
+    )
+    with client._read_cache_lock:
+        cached_snapshots = client._snapshots_cache.get(cache_key)
+    if cached_snapshots is not None:
+        client._record_read_cache_hit()
+        return [dict(item) for item in cached_snapshots]
+    cached_snapshots = client._shared_read_cache_get(shared_cache_key)
+    if cached_snapshots is not None:
+        with client._read_cache_lock:
+            client._snapshots_cache[cache_key] = [
+                dict(item) for item in cached_snapshots
+            ]
+        client._record_read_cache_hit()
+        return [dict(item) for item in cached_snapshots]
+    client._record_read_cache_miss()
+    sdk_snapshots = client._call_sdk(
+        client._sdk_client.snapshots.list,
+        network_id,
+        include_archived=bool(include_archived),
+        limit=limit,
+    )
+    snapshots = []
+    for item in sdk_snapshots or []:
+        snapshot_id = str(item.id or "").strip()
+        if not snapshot_id:
+            continue
+        state = str(item.state or "").strip()
+        created = str(item.created_at or "").strip()
+        processed = str(item.processed_at or "").strip()
+        label_parts = [snapshot_id]
+        if state:
+            label_parts.append(state)
+        if processed:
+            label_parts.append(processed)
+        elif created:
+            label_parts.append(created)
+        snapshots.append(
+            {
+                "id": snapshot_id,
+                "state": state,
+                "created_at": created,
+                "processed_at": processed,
+                "label": " | ".join(label_parts),
+            }
+        )
+    with client._read_cache_lock:
+        client._snapshots_cache[cache_key] = [dict(item) for item in snapshots]
+    client._shared_read_cache_set(shared_cache_key, [dict(item) for item in snapshots])
+    return snapshots
+
+
+def get_latest_processed_snapshot(client, network_id):
+    network_id = str(network_id or "").strip()
+    shared_cache_key = client._shared_read_cache_key(
+        "latest-processed-snapshot", network_id
+    )
+    with client._read_cache_lock:
+        cached_snapshot = client._latest_processed_snapshot_cache.get(network_id)
+    if cached_snapshot is not None:
+        client._record_read_cache_hit()
+        return dict(cached_snapshot)
+    cached_snapshot = client._shared_read_cache_get(shared_cache_key)
+    if cached_snapshot is not None:
+        with client._read_cache_lock:
+            client._latest_processed_snapshot_cache[network_id] = dict(cached_snapshot)
+        client._record_read_cache_hit()
+        return dict(cached_snapshot)
+    client._record_read_cache_miss()
+    # `include_predicted=False` (the SDK default) excludes a snapshot
+    # Forward created to analyse a change set - a network using Predict
+    # would otherwise very often resolve "latest processed" to a
+    # simulation rather than a state the network was ever actually in.
+    # Forward's own now-deprecated `latestProcessed` selector, which this
+    # replaces, had no such filter; adopted deliberately as a
+    # correctness fix, not preserved as a quirk - see this plan's
+    # Decision Log.
+    sdk_snapshot = client._call_sdk(
+        client._sdk_client.snapshots.latest_processed, network_id
+    )
+    snapshot = (
+        {}
+        if sdk_snapshot is None
+        else {
+            "id": str(sdk_snapshot.id or ""),
+            "state": str(sdk_snapshot.state or ""),
+            "createdAt": str(sdk_snapshot.created_at or ""),
+            "processedAt": str(sdk_snapshot.processed_at or ""),
+        }
+    )
+    if snapshot:
+        with client._read_cache_lock:
+            client._latest_processed_snapshot_cache[network_id] = dict(snapshot)
+        client._shared_read_cache_set(shared_cache_key, dict(snapshot))
+    return snapshot
+
+
+def get_latest_processed_snapshot_id(client, network_id):
+    snapshot = get_latest_processed_snapshot(client, network_id)
+    snapshot_id = str(snapshot.get("id", "")).strip()
+    if not snapshot_id:
+        raise ForwardClientError(
+            "Forward latestProcessed snapshot response did not include an ID."
+        )
+    return snapshot_id
+
+
+def _processed_snapshots_newest_first(client, network_id):
+    """Return processed snapshots for a network, newest processed first."""
+    snapshots = [
+        dict(snapshot)
+        for snapshot in get_snapshots(client, network_id)
+        if str(snapshot.get("state", "")).strip().upper() == "PROCESSED"
+    ]
+    snapshots.sort(
+        key=lambda snapshot: (
+            str(snapshot.get("processed_at") or "").strip(),
+            str(snapshot.get("created_at") or "").strip(),
+            str(snapshot.get("id") or "").strip(),
+        ),
+        reverse=True,
+    )
+    return snapshots
+
+
+def get_latest_collected_snapshot_id(
+    client,
+    network_id,
+    *,
+    include_tags=None,
+    exclude_tags=None,
+    include_match="any",
+    scan_limit=DEFAULT_LATEST_COLLECTED_SCAN_LIMIT,
+):
+    """Resolve the newest processed snapshot that has a freshly-collected
+    in-scope device.
+
+    Walks the most recent processed snapshots (newest first, bounded by
+    ``scan_limit``) and returns the first whose device-tag scope contains at
+    least one device with ``snapshotInfo.result == completed``. This skips
+    snapshots where the in-scope devices were backfilled because collection
+    was canceled. Raises ``ForwardClientError`` when no scanned snapshot has
+    a collected in-scope device.
+    """
+    network_id = str(network_id or "").strip()
+    if not network_id:
+        raise ForwardClientError(
+            "get_latest_collected_snapshot_id requires a network_id."
+        )
+    include_tags = [
+        str(tag).strip() for tag in (include_tags or []) if str(tag).strip()
+    ]
+    exclude_tags = [
+        str(tag).strip() for tag in (exclude_tags or []) if str(tag).strip()
+    ]
+    if include_match not in {"any", "all"}:
+        include_match = "any"
+    try:
+        scan_limit = int(scan_limit)
+    except (TypeError, ValueError):
+        scan_limit = DEFAULT_LATEST_COLLECTED_SCAN_LIMIT
+    if scan_limit < 1:
+        scan_limit = 1
+
+    scope_where = build_device_tag_scope_where(
+        include_tags, exclude_tags, include_match
+    )
+    probe_query = "\n".join(
+        [
+            "foreach device in network.devices",
+            "where device.snapshotInfo.result == DeviceSnapshotResult.completed",
+            "where device.platform.vendor != Vendor.FORWARD_CUSTOM",
+            *scope_where,
+            "select {name: device.name}",
+        ]
+    )
+
+    snapshots = _processed_snapshots_newest_first(client, network_id)
+    if not snapshots:
+        raise ForwardClientError(
+            "No processed snapshot is available for the configured network "
+            "to resolve the latestCollected selector."
+        )
+
+    scanned = 0
+    for snapshot in snapshots[:scan_limit]:
+        snapshot_id = str(snapshot.get("id") or "").strip()
+        if not snapshot_id:
+            continue
+        scanned += 1
+        rows = client.run_nqe_query(
+            query=probe_query,
+            network_id=network_id,
+            snapshot_id=snapshot_id,
+            limit=1,
+            fetch_all=False,
+        )
+        if any(str(row.get("name") or "").strip() for row in rows):
+            return snapshot_id
+
+    scope_hint = (
+        f" matching device tag scope (include={include_tags or ['-']}, "
+        f"include_match={include_match}, exclude={exclude_tags or ['-']})"
+        if (include_tags or exclude_tags)
+        else ""
+    )
+    raise ForwardClientError(
+        f"None of the {scanned} most recent processed snapshot(s) have a "
+        f"collected device{scope_hint}; every in-scope device appears "
+        "backfilled (collection canceled). Pin a specific snapshot, widen "
+        "the device tag scope, or re-run collection in Forward."
+    )
+
+
+def get_device_mgmt_tags(
+    client,
+    network_id,
+    snapshot_id,
+    *,
+    include_tags=None,
+    exclude_tags=None,
+    include_match="any",
+):
+    """Return ``{device_name: [Mgmt_* tag, ...]}`` for the in-scope devices.
+
+    Used by the primary-IP-from-tag feature: the ``Mgmt_<iface>`` device tags
+    are not synced into NetBox, so they are read directly from Forward. Only
+    management tags are returned; the device-tag scope mirrors the sync's
+    include/exclude scope so the same devices are considered.
+    """
+    network_id = str(network_id or "").strip()
+    if not network_id:
+        raise ForwardClientError("get_device_mgmt_tags requires a network_id.")
+    snapshot_id = str(snapshot_id or "").strip()
+    if not snapshot_id:
+        raise ForwardClientError("get_device_mgmt_tags requires a snapshot_id.")
+    include_tags = [
+        str(tag).strip() for tag in (include_tags or []) if str(tag).strip()
+    ]
+    exclude_tags = [
+        str(tag).strip() for tag in (exclude_tags or []) if str(tag).strip()
+    ]
+    if include_match not in {"any", "all"}:
+        include_match = "any"
+    scope_where = build_device_tag_scope_where(
+        include_tags, exclude_tags, include_match
+    )
+    query = "\n".join(
+        [
+            "foreach device in network.devices",
+            "where device.snapshotInfo.result == DeviceSnapshotResult.completed",
+            "where device.platform.vendor != Vendor.FORWARD_CUSTOM",
+            *scope_where,
+            "foreach tag in device.tagNames",
+            "select {device: device.name, tag: tag}",
+        ]
+    )
+    rows = client.run_nqe_query(
+        query=query,
+        network_id=network_id,
+        snapshot_id=snapshot_id,
+        fetch_all=True,
+    )
+    device_tags: dict[str, list[str]] = {}
+    for row in rows or []:
+        device = str(row.get("device") or "").strip()
+        tag = str(row.get("tag") or "").strip()
+        if not device or not tag or not tag.lower().startswith("mgmt_"):
+            continue
+        tags = device_tags.setdefault(device, [])
+        if tag not in tags:
+            tags.append(tag)
+    return device_tags
+
+
+def get_snapshot_metrics(client, snapshot_id):
+    snapshot_id = str(snapshot_id or "").strip()
+    shared_cache_key = client._shared_read_cache_key("snapshot-metrics", snapshot_id)
+    with client._read_cache_lock:
+        cached_metrics = client._snapshot_metrics_cache.get(snapshot_id)
+    if cached_metrics is not None:
+        client._record_read_cache_hit()
+        return dict(cached_metrics)
+    cached_metrics = client._shared_read_cache_get(shared_cache_key)
+    if cached_metrics is not None:
+        with client._read_cache_lock:
+            client._snapshot_metrics_cache[snapshot_id] = dict(cached_metrics)
+        client._record_read_cache_hit()
+        return dict(cached_metrics)
+    client._record_read_cache_miss()
+    metrics = client._call_sdk(client._sdk_client.snapshots.metrics, snapshot_id)
+    if isinstance(metrics, dict):
+        with client._read_cache_lock:
+            client._snapshot_metrics_cache[snapshot_id] = dict(metrics)
+        client._shared_read_cache_set(shared_cache_key, dict(metrics))
+    return metrics
+
+
+def get_snapshot_data_file_hashes(client, network_id, snapshot_id):
+    """Return snapshot-correct NQE data-file content hashes by file name."""
+
+    network_id = str(network_id or "").strip()
+    snapshot_id = str(snapshot_id or "").strip()
+    if not network_id or not snapshot_id:
+        raise ForwardClientError(
+            "Snapshot data-file hashes require network and snapshot IDs."
+        )
+    cache_key = (network_id, snapshot_id)
+    with client._read_cache_lock:
+        cached = client._snapshot_data_file_hashes_cache.get(cache_key)
+    if cached is not None:
+        client._record_read_cache_hit()
+        return dict(cached)
+    client._record_read_cache_miss()
+    payload = (
+        client._call_sdk(
+            client._sdk_client.data_files.get_data_files,
+            network_id=network_id,
+            view="snapshot",
+            snapshot_id=snapshot_id,
+        )
+        or []
+    )
+    if isinstance(payload, dict):
+        rows = (
+            payload.get("dataFiles")
+            or payload.get("items")
+            or payload.get("results")
+            or []
+        )
+    else:
+        rows = payload
+    if not isinstance(rows, list):
+        raise ForwardClientError(
+            "Forward snapshot data-file response had an unsupported shape."
+        )
+    hashes = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = str(
+            row.get("dataFileName") or row.get("name") or row.get("fileName") or ""
+        ).strip()
+        content_hash = str(
+            row.get("contentMd5Hex") or row.get("contentHash") or row.get("md5") or ""
+        ).strip()
+        if name and content_hash:
+            normalized_hash = f"md5:{content_hash.lower()}"
+            hashes[name] = normalized_hash
+            if name.lower().endswith(".json"):
+                hashes[name[:-5]] = normalized_hash
+    with client._read_cache_lock:
+        client._snapshot_data_file_hashes_cache[cache_key] = dict(hashes)
+    return hashes
+
+
 class ForwardClient:
     def __init__(self, source):
         self.source = source
@@ -448,398 +842,6 @@ class ForwardClient:
             raise translate_client_exception(exc) from exc
         except SDKForwardError as exc:
             raise translate_client_exception(exc) from exc
-
-    def get_networks(self):
-        shared_cache_key = self._shared_read_cache_key("networks")
-        with self._read_cache_lock:
-            cached_networks = self._networks_cache
-        if cached_networks is not None:
-            self._record_read_cache_hit()
-            return [dict(item) for item in cached_networks]
-        cached_networks = self._shared_read_cache_get(shared_cache_key)
-        if cached_networks is not None:
-            with self._read_cache_lock:
-                self._networks_cache = [dict(item) for item in cached_networks]
-            self._record_read_cache_hit()
-            return [dict(item) for item in cached_networks]
-        self._record_read_cache_miss()
-        sdk_networks = self._call_sdk(self._sdk_client.networks.list)
-        networks = []
-        for item in sdk_networks or []:
-            network_id = str(item.id or "").strip()
-            name = str(item.name or "").strip()
-            if not network_id or not name:
-                continue
-            networks.append(
-                {
-                    "id": network_id,
-                    "name": name,
-                    "label": f"{name} ({network_id})",
-                }
-            )
-        with self._read_cache_lock:
-            self._networks_cache = [dict(item) for item in networks]
-        self._shared_read_cache_set(shared_cache_key, [dict(item) for item in networks])
-        return networks
-
-    def get_snapshots(self, network_id, *, include_archived=False, limit=100):
-        network_id = str(network_id or "").strip()
-        cache_key = (network_id, bool(include_archived), int(limit))
-        shared_cache_key = self._shared_read_cache_key(
-            "snapshots", network_id, bool(include_archived), int(limit)
-        )
-        with self._read_cache_lock:
-            cached_snapshots = self._snapshots_cache.get(cache_key)
-        if cached_snapshots is not None:
-            self._record_read_cache_hit()
-            return [dict(item) for item in cached_snapshots]
-        cached_snapshots = self._shared_read_cache_get(shared_cache_key)
-        if cached_snapshots is not None:
-            with self._read_cache_lock:
-                self._snapshots_cache[cache_key] = [
-                    dict(item) for item in cached_snapshots
-                ]
-            self._record_read_cache_hit()
-            return [dict(item) for item in cached_snapshots]
-        self._record_read_cache_miss()
-        sdk_snapshots = self._call_sdk(
-            self._sdk_client.snapshots.list,
-            network_id,
-            include_archived=bool(include_archived),
-            limit=limit,
-        )
-        snapshots = []
-        for item in sdk_snapshots or []:
-            snapshot_id = str(item.id or "").strip()
-            if not snapshot_id:
-                continue
-            state = str(item.state or "").strip()
-            created = str(item.created_at or "").strip()
-            processed = str(item.processed_at or "").strip()
-            label_parts = [snapshot_id]
-            if state:
-                label_parts.append(state)
-            if processed:
-                label_parts.append(processed)
-            elif created:
-                label_parts.append(created)
-            snapshots.append(
-                {
-                    "id": snapshot_id,
-                    "state": state,
-                    "created_at": created,
-                    "processed_at": processed,
-                    "label": " | ".join(label_parts),
-                }
-            )
-        with self._read_cache_lock:
-            self._snapshots_cache[cache_key] = [dict(item) for item in snapshots]
-        self._shared_read_cache_set(
-            shared_cache_key, [dict(item) for item in snapshots]
-        )
-        return snapshots
-
-    def get_latest_processed_snapshot(self, network_id):
-        network_id = str(network_id or "").strip()
-        shared_cache_key = self._shared_read_cache_key(
-            "latest-processed-snapshot", network_id
-        )
-        with self._read_cache_lock:
-            cached_snapshot = self._latest_processed_snapshot_cache.get(network_id)
-        if cached_snapshot is not None:
-            self._record_read_cache_hit()
-            return dict(cached_snapshot)
-        cached_snapshot = self._shared_read_cache_get(shared_cache_key)
-        if cached_snapshot is not None:
-            with self._read_cache_lock:
-                self._latest_processed_snapshot_cache[network_id] = dict(
-                    cached_snapshot
-                )
-            self._record_read_cache_hit()
-            return dict(cached_snapshot)
-        self._record_read_cache_miss()
-        # `include_predicted=False` (the SDK default) excludes a snapshot
-        # Forward created to analyse a change set - a network using Predict
-        # would otherwise very often resolve "latest processed" to a
-        # simulation rather than a state the network was ever actually in.
-        # Forward's own now-deprecated `latestProcessed` selector, which this
-        # replaces, had no such filter; adopted deliberately as a
-        # correctness fix, not preserved as a quirk - see this plan's
-        # Decision Log.
-        sdk_snapshot = self._call_sdk(
-            self._sdk_client.snapshots.latest_processed, network_id
-        )
-        snapshot = (
-            {}
-            if sdk_snapshot is None
-            else {
-                "id": str(sdk_snapshot.id or ""),
-                "state": str(sdk_snapshot.state or ""),
-                "createdAt": str(sdk_snapshot.created_at or ""),
-                "processedAt": str(sdk_snapshot.processed_at or ""),
-            }
-        )
-        if snapshot:
-            with self._read_cache_lock:
-                self._latest_processed_snapshot_cache[network_id] = dict(snapshot)
-            self._shared_read_cache_set(shared_cache_key, dict(snapshot))
-        return snapshot
-
-    def get_latest_processed_snapshot_id(self, network_id):
-        snapshot = self.get_latest_processed_snapshot(network_id)
-        snapshot_id = str(snapshot.get("id", "")).strip()
-        if not snapshot_id:
-            raise ForwardClientError(
-                "Forward latestProcessed snapshot response did not include an ID."
-            )
-        return snapshot_id
-
-    def _processed_snapshots_newest_first(self, network_id):
-        """Return processed snapshots for a network, newest processed first."""
-        snapshots = [
-            dict(snapshot)
-            for snapshot in self.get_snapshots(network_id)
-            if str(snapshot.get("state", "")).strip().upper() == "PROCESSED"
-        ]
-        snapshots.sort(
-            key=lambda snapshot: (
-                str(snapshot.get("processed_at") or "").strip(),
-                str(snapshot.get("created_at") or "").strip(),
-                str(snapshot.get("id") or "").strip(),
-            ),
-            reverse=True,
-        )
-        return snapshots
-
-    def get_latest_collected_snapshot_id(
-        self,
-        network_id,
-        *,
-        include_tags=None,
-        exclude_tags=None,
-        include_match="any",
-        scan_limit=DEFAULT_LATEST_COLLECTED_SCAN_LIMIT,
-    ):
-        """Resolve the newest processed snapshot that has a freshly-collected
-        in-scope device.
-
-        Walks the most recent processed snapshots (newest first, bounded by
-        ``scan_limit``) and returns the first whose device-tag scope contains at
-        least one device with ``snapshotInfo.result == completed``. This skips
-        snapshots where the in-scope devices were backfilled because collection
-        was canceled. Raises ``ForwardClientError`` when no scanned snapshot has
-        a collected in-scope device.
-        """
-        network_id = str(network_id or "").strip()
-        if not network_id:
-            raise ForwardClientError(
-                "get_latest_collected_snapshot_id requires a network_id."
-            )
-        include_tags = [
-            str(tag).strip() for tag in (include_tags or []) if str(tag).strip()
-        ]
-        exclude_tags = [
-            str(tag).strip() for tag in (exclude_tags or []) if str(tag).strip()
-        ]
-        if include_match not in {"any", "all"}:
-            include_match = "any"
-        try:
-            scan_limit = int(scan_limit)
-        except (TypeError, ValueError):
-            scan_limit = DEFAULT_LATEST_COLLECTED_SCAN_LIMIT
-        if scan_limit < 1:
-            scan_limit = 1
-
-        scope_where = build_device_tag_scope_where(
-            include_tags, exclude_tags, include_match
-        )
-        probe_query = "\n".join(
-            [
-                "foreach device in network.devices",
-                "where device.snapshotInfo.result == DeviceSnapshotResult.completed",
-                "where device.platform.vendor != Vendor.FORWARD_CUSTOM",
-                *scope_where,
-                "select {name: device.name}",
-            ]
-        )
-
-        snapshots = self._processed_snapshots_newest_first(network_id)
-        if not snapshots:
-            raise ForwardClientError(
-                "No processed snapshot is available for the configured network "
-                "to resolve the latestCollected selector."
-            )
-
-        scanned = 0
-        for snapshot in snapshots[:scan_limit]:
-            snapshot_id = str(snapshot.get("id") or "").strip()
-            if not snapshot_id:
-                continue
-            scanned += 1
-            rows = self.run_nqe_query(
-                query=probe_query,
-                network_id=network_id,
-                snapshot_id=snapshot_id,
-                limit=1,
-                fetch_all=False,
-            )
-            if any(str(row.get("name") or "").strip() for row in rows):
-                return snapshot_id
-
-        scope_hint = (
-            f" matching device tag scope (include={include_tags or ['-']}, "
-            f"include_match={include_match}, exclude={exclude_tags or ['-']})"
-            if (include_tags or exclude_tags)
-            else ""
-        )
-        raise ForwardClientError(
-            f"None of the {scanned} most recent processed snapshot(s) have a "
-            f"collected device{scope_hint}; every in-scope device appears "
-            "backfilled (collection canceled). Pin a specific snapshot, widen "
-            "the device tag scope, or re-run collection in Forward."
-        )
-
-    def get_device_mgmt_tags(
-        self,
-        network_id,
-        snapshot_id,
-        *,
-        include_tags=None,
-        exclude_tags=None,
-        include_match="any",
-    ):
-        """Return ``{device_name: [Mgmt_* tag, ...]}`` for the in-scope devices.
-
-        Used by the primary-IP-from-tag feature: the ``Mgmt_<iface>`` device tags
-        are not synced into NetBox, so they are read directly from Forward. Only
-        management tags are returned; the device-tag scope mirrors the sync's
-        include/exclude scope so the same devices are considered.
-        """
-        network_id = str(network_id or "").strip()
-        if not network_id:
-            raise ForwardClientError("get_device_mgmt_tags requires a network_id.")
-        snapshot_id = str(snapshot_id or "").strip()
-        if not snapshot_id:
-            raise ForwardClientError("get_device_mgmt_tags requires a snapshot_id.")
-        include_tags = [
-            str(tag).strip() for tag in (include_tags or []) if str(tag).strip()
-        ]
-        exclude_tags = [
-            str(tag).strip() for tag in (exclude_tags or []) if str(tag).strip()
-        ]
-        if include_match not in {"any", "all"}:
-            include_match = "any"
-        scope_where = build_device_tag_scope_where(
-            include_tags, exclude_tags, include_match
-        )
-        query = "\n".join(
-            [
-                "foreach device in network.devices",
-                "where device.snapshotInfo.result == DeviceSnapshotResult.completed",
-                "where device.platform.vendor != Vendor.FORWARD_CUSTOM",
-                *scope_where,
-                "foreach tag in device.tagNames",
-                "select {device: device.name, tag: tag}",
-            ]
-        )
-        rows = self.run_nqe_query(
-            query=query,
-            network_id=network_id,
-            snapshot_id=snapshot_id,
-            fetch_all=True,
-        )
-        device_tags: dict[str, list[str]] = {}
-        for row in rows or []:
-            device = str(row.get("device") or "").strip()
-            tag = str(row.get("tag") or "").strip()
-            if not device or not tag or not tag.lower().startswith("mgmt_"):
-                continue
-            tags = device_tags.setdefault(device, [])
-            if tag not in tags:
-                tags.append(tag)
-        return device_tags
-
-    def get_snapshot_metrics(self, snapshot_id):
-        snapshot_id = str(snapshot_id or "").strip()
-        shared_cache_key = self._shared_read_cache_key("snapshot-metrics", snapshot_id)
-        with self._read_cache_lock:
-            cached_metrics = self._snapshot_metrics_cache.get(snapshot_id)
-        if cached_metrics is not None:
-            self._record_read_cache_hit()
-            return dict(cached_metrics)
-        cached_metrics = self._shared_read_cache_get(shared_cache_key)
-        if cached_metrics is not None:
-            with self._read_cache_lock:
-                self._snapshot_metrics_cache[snapshot_id] = dict(cached_metrics)
-            self._record_read_cache_hit()
-            return dict(cached_metrics)
-        self._record_read_cache_miss()
-        metrics = self._call_sdk(self._sdk_client.snapshots.metrics, snapshot_id)
-        if isinstance(metrics, dict):
-            with self._read_cache_lock:
-                self._snapshot_metrics_cache[snapshot_id] = dict(metrics)
-            self._shared_read_cache_set(shared_cache_key, dict(metrics))
-        return metrics
-
-    def get_snapshot_data_file_hashes(self, network_id, snapshot_id):
-        """Return snapshot-correct NQE data-file content hashes by file name."""
-
-        network_id = str(network_id or "").strip()
-        snapshot_id = str(snapshot_id or "").strip()
-        if not network_id or not snapshot_id:
-            raise ForwardClientError(
-                "Snapshot data-file hashes require network and snapshot IDs."
-            )
-        cache_key = (network_id, snapshot_id)
-        with self._read_cache_lock:
-            cached = self._snapshot_data_file_hashes_cache.get(cache_key)
-        if cached is not None:
-            self._record_read_cache_hit()
-            return dict(cached)
-        self._record_read_cache_miss()
-        payload = (
-            self._call_sdk(
-                self._sdk_client.data_files.get_data_files,
-                network_id=network_id,
-                view="snapshot",
-                snapshot_id=snapshot_id,
-            )
-            or []
-        )
-        if isinstance(payload, dict):
-            rows = (
-                payload.get("dataFiles")
-                or payload.get("items")
-                or payload.get("results")
-                or []
-            )
-        else:
-            rows = payload
-        if not isinstance(rows, list):
-            raise ForwardClientError(
-                "Forward snapshot data-file response had an unsupported shape."
-            )
-        hashes = {}
-        for row in rows:
-            if not isinstance(row, dict):
-                continue
-            name = str(
-                row.get("dataFileName") or row.get("name") or row.get("fileName") or ""
-            ).strip()
-            content_hash = str(
-                row.get("contentMd5Hex")
-                or row.get("contentHash")
-                or row.get("md5")
-                or ""
-            ).strip()
-            if name and content_hash:
-                normalized_hash = f"md5:{content_hash.lower()}"
-                hashes[name] = normalized_hash
-                if name.lower().endswith(".json"):
-                    hashes[name[:-5]] = normalized_hash
-        with self._read_cache_lock:
-            self._snapshot_data_file_hashes_cache[cache_key] = dict(hashes)
-        return hashes
 
     def _get_org_nqe_queries(self, *, directory="/"):
         directory = _normalize_nqe_directory(directory)

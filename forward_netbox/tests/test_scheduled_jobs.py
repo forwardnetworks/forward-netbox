@@ -273,12 +273,15 @@ class CatchupGateNameScopingTest(TestCase):
 
         self.sync.status = ForwardSyncStatusChoices.COMPLETED
         self.sync.save(update_fields=["status"])
-        client = SimpleNamespace(
-            get_latest_processed_snapshot_id=Mock(return_value="snapshot-2")
-        )
-        return latest_processed_catchup_decision(
-            self.sync, current_snapshot_id="snapshot-1", client=client
-        )
+        client = SimpleNamespace()
+        with patch(
+            "forward_netbox.utilities.snapshot_freshness."
+            "get_latest_processed_snapshot_id",
+            return_value="snapshot-2",
+        ):
+            return latest_processed_catchup_decision(
+                self.sync, current_snapshot_id="snapshot-1", client=client
+            )
 
     def _job(self, name, status, suffix):
         return Job.objects.create(
@@ -1113,8 +1116,10 @@ class SyncFormScheduleTest(TestCase):
     def test_save_persists_intent_and_reconciles(self):
         from forward_netbox.forms import ForwardSyncForm
 
-        with patch.object(self.sync.source.__class__, "get_client") as get_client:
-            get_client.return_value.get_snapshots.return_value = []
+        with (
+            patch.object(self.sync.source.__class__, "get_client"),
+            patch("forward_netbox.forms.get_snapshots", return_value=[]),
+        ):
             form = ForwardSyncForm(
                 data=self._form_data(validation_schedule_interval=720),
                 instance=self.sync,

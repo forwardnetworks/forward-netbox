@@ -4,6 +4,8 @@ from ..choices import ForwardSyncStatusChoices
 from ..exceptions import ForwardClientError
 from ..exceptions import ForwardConnectivityError
 from ..exceptions import ForwardQueryError
+from .forward_api import get_latest_collected_snapshot_id
+from .forward_api import get_latest_processed_snapshot_id
 from .forward_api import LATEST_COLLECTED_SNAPSHOT
 from .forward_api import LATEST_PROCESSED_SNAPSHOT
 from .sync_facade import device_tag_scope
@@ -29,7 +31,8 @@ def _resolve_latest_snapshot_id(sync, selector, network_id, client):
     if selector == LATEST_COLLECTED_SNAPSHOT:
         include_tags, exclude_tags, include_match = device_tag_scope(sync)
         return str(
-            client.get_latest_collected_snapshot_id(
+            get_latest_collected_snapshot_id(
+                client,
                 network_id,
                 include_tags=include_tags,
                 exclude_tags=exclude_tags,
@@ -37,7 +40,7 @@ def _resolve_latest_snapshot_id(sync, selector, network_id, client):
             )
             or ""
         ).strip()
-    return str(client.get_latest_processed_snapshot_id(network_id) or "").strip()
+    return str(get_latest_processed_snapshot_id(client, network_id) or "").strip()
 
 
 def latest_processed_catchup_decision(

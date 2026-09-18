@@ -532,6 +532,33 @@ class ForwardBranchBudgetPlanTest(TestCase):
 
 class ForwardSyncRunnerTest(TestCase):
     def setUp(self):
+        # `get_snapshots`/`get_latest_processed_snapshot`/`get_snapshot_metrics`
+        # are module-level free functions imported by name into both
+        # sync_execution.py (run_sync_stage) and query_fetch_execution.py
+        # (ForwardQueryFetcher) (forward-sdk migration step 6a), called as
+        # `get_snapshots(client, ...)` rather than `client.get_snapshots(...)`.
+        # Every test below still configures behavior via
+        # `client.get_snapshots.return_value = ...` (a Mock attribute) exactly
+        # as before the free-function conversion, so the patch just forwards
+        # the free-function call onto that same attribute unchanged.
+        for module in (
+            "forward_netbox.utilities.sync_execution",
+            "forward_netbox.utilities.query_fetch_execution",
+        ):
+            for name in (
+                "get_snapshots",
+                "get_latest_processed_snapshot",
+                "get_snapshot_metrics",
+            ):
+                patcher = patch(
+                    f"{module}.{name}",
+                    side_effect=lambda client, *args, __name=name, **kwargs: getattr(
+                        client, __name
+                    )(*args, **kwargs),
+                )
+                patcher.start()
+                self.addCleanup(patcher.stop)
+
         self.source = ForwardSource.objects.create(
             name="source-1",
             type="saas",
@@ -9717,7 +9744,25 @@ class QueryParameterContractTest(TestCase):
         sync.get_query_parameters = Mock(return_value={})
         sync.get_maps = Mock(return_value=[])
 
-        context = fetcher.resolve_context()
+        # See ForwardSyncRunnerTest.setUp for why these free functions are
+        # patched to forward onto the client mock's own attributes.
+        with patch.multiple(
+            "forward_netbox.utilities.query_fetch_execution",
+            get_snapshots=Mock(
+                side_effect=lambda client, *a, **kw: client.get_snapshots(*a, **kw)
+            ),
+            get_latest_processed_snapshot=Mock(
+                side_effect=lambda client, *a, **kw: client.get_latest_processed_snapshot(
+                    *a, **kw
+                )
+            ),
+            get_snapshot_metrics=Mock(
+                side_effect=lambda client, *a, **kw: client.get_snapshot_metrics(
+                    *a, **kw
+                )
+            ),
+        ):
+            context = fetcher.resolve_context()
         scoped_queries = [
             call.kwargs["query"]
             for call in client.run_nqe_query.call_args_list

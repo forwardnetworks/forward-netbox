@@ -416,6 +416,74 @@ dependency declaration; the first with a behavioural one is the transport swap.
     (`test_run_nqe_query_derives_a_wait_ceiling_from_poll_config_without_a_deadline`)
     replaces the old poll-limit test, pinning the new duration-ceiling
     arithmetic instead.
+- **2026-09-18** -- Step 6 scoping, before any implementation. A tree-wide
+  survey found the real size is larger than this plan's original "~60+"
+  estimate: roughly 84 literal `.method(` call sites across 23 production
+  files (28 files call `source.get_client()`, but 5 of those only acquire a
+  client and hand it to another object without calling methods on it
+  themselves), plus two duck-typed sites a literal grep would miss
+  (`api_usage.py`'s `getattr(client, "api_usage_summary", None)`,
+  `sync_orchestration.py`'s `getattr(executor, "client", None)`).
+  `run_nqe_query`/`run_nqe_diff` alone account for 29 of the 84.
+  **Class-level coupling is smaller than the call-site count suggests**:
+  only `models.py` (constructs it) and a dead lazy re-export in
+  `utilities/__init__.py` (zero production callers) reference `ForwardClient`
+  as a type; no `isinstance` checks anywhere. This means step 6's actual
+  work is almost entirely call-site renames, not untangling type
+  dependencies - and the plan's flagged "data-loss path" scope predicates
+  (`build_device_tag_scope_where` et al.) turn out to already be
+  module-level free functions in `forward_api.py`, never `ForwardClient`
+  methods, so they need zero changes here.
+  **The client is held as long-lived instance state in four classes**
+  (`executor_base.py`, `sync.py`, `validation.py`, and - the real hot spot -
+  `query_fetch_execution.py`'s `ForwardQueryFetcher`, which alone makes 6 of
+  the 29 `run_nqe_query`/`run_nqe_diff` calls against `self.client` across a
+  multi-step fetch pipeline). Everywhere else the pattern is
+  `client = sync.source.get_client()` once per function, several calls
+  against that local variable, not threaded further - mechanical to convert
+  to a free-function-plus-explicit-client-argument shape almost everywhere
+  except `ForwardQueryFetcher`, whose constructor signature change ripples
+  into every place that builds one.
+  **Test-mocking finding that sets the real sub-step boundary**: no test
+  anywhere uses `Mock(spec=ForwardClient)` - every one of the ~20 test files
+  that touch this mocks loosely via
+  `patch.object(ForwardSource, "get_client", return_value=Mock())` and then
+  stubs individual methods on that Mock. Changing the call shape from
+  `client.method(...)` to `module.method(client, ...)` breaks every one of
+  those stubs, so the true size of each sub-step is the production renames
+  PLUS a parallel, roughly 1:1 test-mock rewrite - not the production
+  renames alone.
+  **Sub-step breakdown**, grouped by method-family (natural risk boundary
+  here tracks call-site concentration, not per-method complexity, so this
+  beats either a risk-tier split or one-PR-per-file):
+  - **6a** - snapshot/network free functions (`get_networks`,
+    `get_snapshots`, `get_latest_processed_snapshot(_id)`,
+    `get_latest_collected_snapshot_id`, `get_snapshot_metrics`,
+    `get_snapshot_data_file_hashes`, `get_device_mgmt_tags`): ~20 call
+    sites, lowest risk, no long-lived-object complications. Goes first to
+    prove the free-function shape and its test-mock-rewrite pattern before
+    the bigger NQE surface.
+  - **6b** - NQE query-index/repository functions
+    (`get_nqe_repository_query_index`, `get_committed_nqe_query`,
+    `resolve_nqe_query_reference`, `get_nqe_query_history`,
+    `has_nqe_library_write_permission`, `add_org_nqe_query`,
+    `edit_org_nqe_query`, `commit_org_nqe_queries`,
+    `get_org_nqe_head_commit_id`): ~23 call sites. Medium risk - feeds the
+    head-commit-resolution logic step 5d already found two real bugs in, so
+    conversion here needs the same care as that step, not mechanical
+    renaming.
+  - **6c** - `run_nqe_query`/`run_nqe_diff` (29 call sites, the largest
+    single cluster): split into `ForwardQueryFetcher` (6 sites, the
+    long-lived-client class whose constructor signature changes and
+    ripples into every caller that builds one) as its own pass, then the
+    remaining ~23 scattered one-off callers as a second pass.
+  - **6d** - the two duck-typed usage-tracking sites, `ForwardClient` class
+    deletion (`forward_api_impl.py`), `models.py`'s construction/import, the
+    dead `utilities/__init__.py` re-export, and a final tree-wide
+    `grep -rn "ForwardClient"` sweep proving nothing survives outside
+    `exceptions.py`'s unrelated `ForwardClientError` family - the sub-step
+    that "proves no call site was missed," done last once 6a-6c convert
+    every real caller.
 - **2026-09-17** -- Step 5f: final step-5 cleanup, deleting the now-fully-dead
   raw-HTTP transport that 5a-5e's method-by-method conversion left behind
   with zero remaining callers. Confirmed via `grep -n "self\._request("`
@@ -472,3 +540,71 @@ dependency declaration; the first with a behavioural one is the transport swap.
   bind mount rather than assuming it. This closes out step 5 entirely -
   step 6 removes `ForwardClient` as a class and converts every call site to
   the SDK's own shapes directly.
+- **2026-09-18** -- Step 6a: the lowest-risk method family from the scoping
+  survey above (`get_networks`, `get_snapshots`, `get_latest_processed_snapshot`,
+  `get_latest_processed_snapshot_id`, `get_latest_collected_snapshot_id`,
+  `get_device_mgmt_tags`, `get_snapshot_metrics`, `get_snapshot_data_file_hashes`,
+  plus the private helper `_processed_snapshots_newest_first` these
+  internally depend on) converted from `ForwardClient` instance methods
+  (`client.get_networks()`) to module-level free functions in
+  `forward_api_impl.py` taking the client as an explicit first argument
+  (`get_networks(client)`), re-exported from `forward_api.py`'s facade by
+  the same names. **`ForwardClient` itself is NOT deleted or renamed yet** -
+  it keeps `__init__` and every private helper (`_call_sdk`,
+  `_shared_read_cache_key`, `_read_cache_lock`, `_record_read_cache_hit`,
+  etc.) as bound methods; only the public, externally-called surface moves
+  to free functions. This is a deliberate, narrower reading of "the
+  compatibility passthrough" than a full class deletion in one step: the
+  object genuinely still needs somewhere to hold its per-resource caches,
+  throttle, usage tracker and SDK client, and untangling that from whether
+  callers invoke it via `.method()` or `function(client, ...)` are separable
+  concerns. Full class removal (and whatever replaces the state container)
+  is deferred to 6d, once every method family has made this same move and
+  the actual remaining shape of "what `source.get_client()` returns" is
+  fully visible.
+  **22 production call sites across 11 files** converted (`models.py`,
+  `forms.py`, `api/views.py`, `forward_module_readiness.py`, `primary_ip.py`,
+  `primary_ip_audit.py`, `sync_execution.py`, `query_fetch_execution.py`,
+  `health.py`, `snapshot_freshness.py`, `sync_facade.py`) - close to the
+  scoping survey's ~20 estimate. `_processed_snapshots_newest_first` and
+  `get_latest_collected_snapshot_id` still call `client.run_nqe_query(...)`
+  as a bound method (untouched, that's step 6c) since a free function can
+  call methods still bound to the same object just as freely as it can call
+  other free functions - no ordering dependency between sub-steps here.
+  **Test-mock rewrite, the real size of this step per the scoping survey**:
+  every test that previously did `client.get_snapshots.return_value = X`
+  (or similar) on a bare `Mock()` stopped working, since nothing calls that
+  attribute as a method anymore - `unittest.mock.patch` must target the free
+  function's name in whichever module actually imported and calls it
+  (`patch("<caller module>.get_snapshots", ...)`), per the standard
+  "patch where it's looked up, not where it's defined" rule. Two patterns
+  emerged across ~15 test files: (1) individual `with patch(...)` blocks per
+  test, used where a handful of sites needed fixing; (2) for
+  `test_sync.py`'s ~50 sites (by far the largest concentration, spread
+  across one `TestCase` exercising both `sync_execution.py` and
+  `query_fetch_execution.py`), a `setUp`-level patch replacing the free
+  function with a forwarding `side_effect` lambda
+  (`lambda client, *a, **kw: client.get_snapshots(*a, **kw)`) in both
+  modules at once - this meant every existing per-test
+  `client.get_X.return_value = ...` / `.assert_called_once_with(...)` line
+  needed ZERO changes, since they still configure/assert on the same Mock
+  attribute, just reached one level of indirection later. The same
+  forwarding-shim pattern fixed `test_primary_ip_audit.py`'s hand-written
+  `_FakeClient` fake (not a `Mock`) with a single `side_effect`.
+  **Real bug this conversion surfaced, not introduced**: three tests
+  (`test_api_views.py`'s `test_available_tags_returns_distinct_tags`, and
+  two `snapshot_freshness`-adjacent catch-up-decision tests) had been
+  silently relying on a broad `except Exception:` handler in
+  `available_tags`/`latest_processed_catchup_decision` swallowing a
+  `TypeError` from calling the real (unmocked) snapshot-lookup path against
+  a bare `Mock()`/`SimpleNamespace()`, and asserting on the resulting
+  fallback response rather than the real success path - the tests passed
+  before this conversion for the wrong reason. Fixed by actually mocking
+  the snapshot lookup, which is what each test's own name and assertions
+  already claimed to be doing.
+  Full targeted suite (12 files: `test_forward_api`, `test_api_views`,
+  `test_forms`, `test_health`, `test_models`, `test_primary_ip_audit`,
+  `test_primary_ip_integration`, `test_query_execution_contract`,
+  `test_scheduled_jobs`, `test_sync`, `test_sync_facade`,
+  `test_sync_orchestration`; 765 tests) green against the running
+  container's bind-mounted worktree.

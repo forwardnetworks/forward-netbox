@@ -75,11 +75,13 @@ class ForwardClientTest(TestCase):
             ]
         )
 
-        first = self.client.get_snapshot_data_file_hashes(
+        first = forward_api_impl.get_snapshot_data_file_hashes(
+            self.client,
             "network-1",
             "snapshot-1",
         )
-        second = self.client.get_snapshot_data_file_hashes(
+        second = forward_api_impl.get_snapshot_data_file_hashes(
+            self.client,
             "network-1",
             "snapshot-1",
         )
@@ -135,14 +137,14 @@ class ForwardClientTest(TestCase):
             ]
         )
 
-        networks = self.client.get_networks()
+        networks = forward_api_impl.get_networks(self.client)
 
         self.assertEqual(
             networks,
             [{"id": "net-1", "name": "Lab", "label": "Lab (net-1)"}],
         )
         # Cached on the second call: the SDK is not called again.
-        self.client.get_networks()
+        forward_api_impl.get_networks(self.client)
         self.client._sdk_client.networks.list.assert_called_once_with()
 
     def test_get_snapshots_normalizes_sdk_snapshots_into_the_plugins_own_shape(self):
@@ -157,7 +159,9 @@ class ForwardClientTest(TestCase):
             ]
         )
 
-        snapshots = self.client.get_snapshots("net-1", include_archived=True, limit=5)
+        snapshots = forward_api_impl.get_snapshots(
+            self.client, "net-1", include_archived=True, limit=5
+        )
 
         self.assertEqual(
             snapshots,
@@ -185,7 +189,7 @@ class ForwardClientTest(TestCase):
             )
         )
 
-        snapshot = self.client.get_latest_processed_snapshot("net-1")
+        snapshot = forward_api_impl.get_latest_processed_snapshot(self.client, "net-1")
 
         self.assertEqual(
             snapshot,
@@ -203,11 +207,11 @@ class ForwardClientTest(TestCase):
     def test_get_latest_processed_snapshot_returns_empty_dict_when_none_exists(self):
         self.client._sdk_client.snapshots.latest_processed = Mock(return_value=None)
 
-        snapshot = self.client.get_latest_processed_snapshot("net-1")
+        snapshot = forward_api_impl.get_latest_processed_snapshot(self.client, "net-1")
 
         self.assertEqual(snapshot, {})
         with self.assertRaises(ForwardClientError) as cm:
-            self.client.get_latest_processed_snapshot_id("net-1")
+            forward_api_impl.get_latest_processed_snapshot_id(self.client, "net-1")
         self.assertEqual(
             str(cm.exception),
             "Forward latestProcessed snapshot response did not include an ID.",
@@ -218,13 +222,13 @@ class ForwardClientTest(TestCase):
             return_value={"numSuccessfulDevices": 12}
         )
 
-        metrics = self.client.get_snapshot_metrics("snap-1")
+        metrics = forward_api_impl.get_snapshot_metrics(self.client, "snap-1")
 
         self.assertEqual(metrics, {"numSuccessfulDevices": 12})
         self.client._sdk_client.snapshots.metrics.assert_called_once_with("snap-1")
 
     def test_get_latest_collected_snapshot_id_skips_backfilled_newest_first(self):
-        self.client.get_snapshots = Mock(
+        snapshots_mock = Mock(
             return_value=[
                 {"id": "snap-old", "state": "PROCESSED", "processed_at": "2026-06-15"},
                 {"id": "snap-new", "state": "PROCESSED", "processed_at": "2026-06-17"},
@@ -242,9 +246,10 @@ class ForwardClientTest(TestCase):
             side_effect=lambda **kwargs: probe_results.get(kwargs["snapshot_id"], [])
         )
 
-        snapshot_id = self.client.get_latest_collected_snapshot_id(
-            "net-1", include_tags=["Prod_Core"], include_match="any"
-        )
+        with patch.object(forward_api_impl, "get_snapshots", snapshots_mock):
+            snapshot_id = forward_api_impl.get_latest_collected_snapshot_id(
+                self.client, "net-1", include_tags=["Prod_Core"], include_match="any"
+            )
 
         self.assertEqual(snapshot_id, "snap-mid")
         probed = [
@@ -258,7 +263,7 @@ class ForwardClientTest(TestCase):
         self.assertIn('"Prod_Core" in device.tagNames', probe_query)
 
     def test_get_latest_collected_snapshot_id_raises_when_all_backfilled(self):
-        self.client.get_snapshots = Mock(
+        snapshots_mock = Mock(
             return_value=[
                 {"id": "snap-a", "state": "PROCESSED", "processed_at": "2026-06-17"},
                 {"id": "snap-b", "state": "PROCESSED", "processed_at": "2026-06-16"},
@@ -267,15 +272,16 @@ class ForwardClientTest(TestCase):
         self.client.run_nqe_query = Mock(return_value=[])
 
         with self.assertRaises(ForwardClientError) as ctx:
-            self.client.get_latest_collected_snapshot_id(
-                "net-1", include_tags=["Prod_Core"]
-            )
+            with patch.object(forward_api_impl, "get_snapshots", snapshots_mock):
+                forward_api_impl.get_latest_collected_snapshot_id(
+                    self.client, "net-1", include_tags=["Prod_Core"]
+                )
 
         self.assertIn("backfilled", str(ctx.exception).lower())
         self.assertEqual(self.client.run_nqe_query.call_count, 2)
 
     def test_get_latest_collected_snapshot_id_respects_scan_limit(self):
-        self.client.get_snapshots = Mock(
+        snapshots_mock = Mock(
             return_value=[
                 {
                     "id": f"snap-{i}",
@@ -288,18 +294,22 @@ class ForwardClientTest(TestCase):
         self.client.run_nqe_query = Mock(return_value=[])
 
         with self.assertRaises(ForwardClientError):
-            self.client.get_latest_collected_snapshot_id("net-1", scan_limit=2)
+            with patch.object(forward_api_impl, "get_snapshots", snapshots_mock):
+                forward_api_impl.get_latest_collected_snapshot_id(
+                    self.client, "net-1", scan_limit=2
+                )
 
         self.assertEqual(self.client.run_nqe_query.call_count, 2)
 
     def test_get_latest_collected_snapshot_id_raises_without_processed_snapshots(self):
-        self.client.get_snapshots = Mock(
+        snapshots_mock = Mock(
             return_value=[{"id": "snap-x", "state": "PROCESSING", "processed_at": ""}]
         )
         self.client.run_nqe_query = Mock(return_value=[])
 
         with self.assertRaises(ForwardClientError) as ctx:
-            self.client.get_latest_collected_snapshot_id("net-1")
+            with patch.object(forward_api_impl, "get_snapshots", snapshots_mock):
+                forward_api_impl.get_latest_collected_snapshot_id(self.client, "net-1")
 
         self.assertIn("processed snapshot", str(ctx.exception).lower())
         self.client.run_nqe_query.assert_not_called()
@@ -396,8 +406,8 @@ class ForwardClientTest(TestCase):
         )
         self.client._sdk_client.nqe.repo.head_commit_id = Mock(return_value="commit-1")
 
-        networks_first = self.client.get_networks()
-        networks_second = self.client.get_networks()
+        networks_first = forward_api_impl.get_networks(self.client)
+        networks_second = forward_api_impl.get_networks(self.client)
         head_first = self.client.get_org_nqe_head_commit_id()
         head_second = self.client.get_org_nqe_head_commit_id()
 
@@ -443,8 +453,8 @@ class ForwardClientTest(TestCase):
             "forward_netbox.utilities.forward_api_impl._shared_read_cache",
             return_value=shared_cache,
         ):
-            first = client_one.get_networks()
-            second = client_two.get_networks()
+            first = forward_api_impl.get_networks(client_one)
+            second = forward_api_impl.get_networks(client_two)
 
         self.assertEqual(first, second)
         self.assertEqual(client_one._sdk_client.networks.list.call_count, 1)
@@ -994,12 +1004,18 @@ class ForwardClientTest(TestCase):
             )
         )
 
-        snapshots_first = self.client.get_snapshots("network-1")
-        snapshots_second = self.client.get_snapshots("network-1")
-        metrics_first = self.client.get_snapshot_metrics("snapshot-1")
-        metrics_second = self.client.get_snapshot_metrics("snapshot-1")
-        latest_first = self.client.get_latest_processed_snapshot("network-1")
-        latest_second = self.client.get_latest_processed_snapshot("network-1")
+        snapshots_first = forward_api_impl.get_snapshots(self.client, "network-1")
+        snapshots_second = forward_api_impl.get_snapshots(self.client, "network-1")
+        metrics_first = forward_api_impl.get_snapshot_metrics(self.client, "snapshot-1")
+        metrics_second = forward_api_impl.get_snapshot_metrics(
+            self.client, "snapshot-1"
+        )
+        latest_first = forward_api_impl.get_latest_processed_snapshot(
+            self.client, "network-1"
+        )
+        latest_second = forward_api_impl.get_latest_processed_snapshot(
+            self.client, "network-1"
+        )
 
         self.assertEqual(self.client._sdk_client.snapshots.list.call_count, 1)
         self.assertEqual(self.client._sdk_client.snapshots.metrics.call_count, 1)

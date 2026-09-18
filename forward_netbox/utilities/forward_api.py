@@ -15,6 +15,14 @@ from .forward_api_impl import DEFAULT_NQE_PAGE_SIZE  # noqa: F401
 from .forward_api_impl import DEFAULT_QUERY_DIAGNOSTICS_ENABLED  # noqa: F401
 from .forward_api_impl import DEFAULT_QUERY_FETCH_CONCURRENCY  # noqa: F401
 from .forward_api_impl import ForwardClient  # noqa: F401
+from .forward_api_impl import get_device_mgmt_tags  # noqa: F401
+from .forward_api_impl import get_latest_collected_snapshot_id  # noqa: F401
+from .forward_api_impl import get_latest_processed_snapshot  # noqa: F401
+from .forward_api_impl import get_latest_processed_snapshot_id  # noqa: F401
+from .forward_api_impl import get_networks  # noqa: F401
+from .forward_api_impl import get_snapshot_data_file_hashes  # noqa: F401
+from .forward_api_impl import get_snapshot_metrics  # noqa: F401
+from .forward_api_impl import get_snapshots  # noqa: F401
 from .forward_api_impl import LATEST_COLLECTED_SNAPSHOT  # noqa: F401
 from .forward_api_impl import LATEST_PROCESSED_SNAPSHOT  # noqa: F401
 from .forward_api_impl import MAX_FORWARD_API_REQUESTS_PER_MINUTE  # noqa: F401

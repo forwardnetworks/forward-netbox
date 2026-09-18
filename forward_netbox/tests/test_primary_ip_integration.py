@@ -6,6 +6,7 @@
 import logging
 import uuid
 from unittest.mock import Mock
+from unittest.mock import patch
 
 from dcim.models import Device
 from dcim.models import DeviceRole
@@ -87,14 +88,20 @@ class PrimaryIpFromMgmtTagIntegrationTest(TransactionTestCase):
         )
 
     def _executor(self, mgmt_tags):
-        client = Mock()
-        client.get_device_mgmt_tags.return_value = mgmt_tags
-        return Mock(
+        patcher = patch(
+            "forward_netbox.utilities.primary_ip.get_device_mgmt_tags",
+            return_value=mgmt_tags,
+        )
+        mock_get_device_mgmt_tags = patcher.start()
+        self.addCleanup(patcher.stop)
+        executor = Mock(
             sync=self.sync,
-            client=client,
+            client=Mock(),
             user=self.user,
             logger=Mock(),
         )
+        executor.get_device_mgmt_tags = mock_get_device_mgmt_tags
+        return executor
 
     def _target_device(self):
         return Device.objects.create(
@@ -174,7 +181,7 @@ class PrimaryIpFromMgmtTagIntegrationTest(TransactionTestCase):
             executor, branch, snapshot_id="snap-1"
         )
         self.assertEqual(updated, 1)
-        executor.client.get_device_mgmt_tags.assert_called_once()
+        executor.get_device_mgmt_tags.assert_called_once()
 
         # Staged in the branch, not yet in main.
         with activate_branch(branch):

@@ -86,13 +86,15 @@ class ForwardSourceAPIViewTest(TestCase):
         self.assertNotIn("sentinel-private-detail", str(response.data))
         mock_get_client.assert_not_called()
 
+    @patch("forward_netbox.api.views.get_networks")
     @patch("forward_netbox.api.views.ForwardSource.get_client")
-    def test_available_networks_shows_auth_message_on_401(self, mock_get_client):
-        mock_client = Mock()
-        mock_client.get_networks.side_effect = ForwardSyncError(
+    def test_available_networks_shows_auth_message_on_401(
+        self, mock_get_client, mock_get_networks
+    ):
+        mock_get_client.return_value = Mock()
+        mock_get_networks.side_effect = ForwardSyncError(
             "Forward API request failed with HTTP 401: unauthorized"
         )
-        mock_get_client.return_value = mock_client
 
         response = self._invoke(
             self.user,
@@ -108,15 +110,15 @@ class ForwardSourceAPIViewTest(TestCase):
             response.data["detail"],
         )
 
+    @patch("forward_netbox.api.views.get_networks")
     @patch("forward_netbox.api.views.ForwardSource.get_client")
     def test_available_networks_shows_connectivity_message_on_network_error(
-        self, mock_get_client
+        self, mock_get_client, mock_get_networks
     ):
-        mock_client = Mock()
-        mock_client.get_networks.side_effect = ForwardConnectivityError(
+        mock_get_client.return_value = Mock()
+        mock_get_networks.side_effect = ForwardConnectivityError(
             "Could not connect to Forward API endpoint: DNS resolution failure"
         )
-        mock_get_client.return_value = mock_client
 
         response = self._invoke(
             self.user,
@@ -139,14 +141,18 @@ class ForwardSourceAPIViewTest(TestCase):
         self.assertEqual(response.data["count"], 0)
         self.assertIn("saved Forward source is required", response.data["detail"])
 
+    @patch("forward_netbox.api.views.get_latest_processed_snapshot")
     @patch("forward_netbox.api.views.ForwardSource.get_client")
-    def test_available_tags_returns_distinct_tags(self, mock_get_client):
+    def test_available_tags_returns_distinct_tags(
+        self, mock_get_client, mock_get_latest_processed_snapshot
+    ):
         mock_client = Mock()
         mock_client.run_nqe_query.return_value = [
             {"tagNames": ["Core", "Branch"]},
             {"tagNames": ["Core", "Edge"]},
         ]
         mock_get_client.return_value = mock_client
+        mock_get_latest_processed_snapshot.return_value = {"id": "snapshot-1"}
 
         response = self._invoke_tags(
             self.user,

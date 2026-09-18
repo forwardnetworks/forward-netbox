@@ -44,6 +44,7 @@ from .utilities.forward_api import DEFAULT_NQE_PAGE_SIZE
 from .utilities.forward_api import DEFAULT_QUERY_DIAGNOSTICS_ENABLED
 from .utilities.forward_api import DEFAULT_QUERY_FETCH_CONCURRENCY
 from .utilities.forward_api import FORWARD_SAAS_API_HARD_BLOCK_REQUESTS_PER_MINUTE
+from .utilities.forward_api import get_snapshots
 from .utilities.forward_api import LATEST_COLLECTED_SNAPSHOT
 from .utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from .utilities.forward_api import MAX_FORWARD_API_REQUESTS_PER_MINUTE
@@ -1467,7 +1468,7 @@ class ForwardSyncForm(NetBoxModelForm):
         if source and snapshot_id not in dynamic_snapshot_selectors:
             snapshot_ids = {
                 snapshot["id"]
-                for snapshot in source.get_client().get_snapshots(network_id)
+                for snapshot in get_snapshots(source.get_client(), network_id)
             }
             if snapshot_id not in snapshot_ids:
                 raise forms.ValidationError(

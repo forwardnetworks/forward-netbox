@@ -4,6 +4,8 @@ from collections import Counter
 from rq.timeouts import JobTimeoutException
 
 from .branching import missing_branch_table_report
+from .forward_api import get_latest_processed_snapshot_id
+from .forward_api import get_networks
 from .forward_api import LATEST_PROCESSED_SNAPSHOT
 from .health_apply_fetch import apply_engine_summary as _apply_engine_summary_impl
 from .health_apply_fetch import fetch_contract_summary as _fetch_contract_summary_impl
@@ -802,7 +804,7 @@ def live_source_health_check(sync):
     }
     try:
         client = source.get_client()
-        networks = client.get_networks()
+        networks = get_networks(client)
     except Exception as exc:
         logger.warning("Forward API health lookup failed (%s)", type(exc).__name__)
         result["checks"].append(
@@ -852,7 +854,7 @@ def live_source_health_check(sync):
         return result
 
     try:
-        client.get_latest_processed_snapshot_id(configured_network_id)
+        get_latest_processed_snapshot_id(client, configured_network_id)
     except Exception as exc:
         logger.warning(
             "Latest processed snapshot health lookup failed (%s)",

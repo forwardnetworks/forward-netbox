@@ -56,7 +56,7 @@ class ForwardSourceFormTest(TestCase):
         }
 
     @patch(
-        "forward_netbox.utilities.forward_api_impl.ForwardClient.get_networks",
+        "forward_netbox.models.get_networks",
         return_value=[{"id": "test-network"}],
     )
     def test_plaintext_form_credential_validates_then_persists_encrypted(

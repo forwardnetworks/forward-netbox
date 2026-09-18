@@ -326,12 +326,15 @@ class ForwardSyncFacadeHelperTest(TestCase):
             },
         )
         client = Mock()
-        client.get_latest_processed_snapshot_id.return_value = "snapshot-123"
 
-        snapshot_id = resolve_snapshot_id(sync, client=client)
+        with patch(
+            "forward_netbox.utilities.sync_facade.get_latest_processed_snapshot_id",
+            return_value="snapshot-123",
+        ) as mock_get_id:
+            snapshot_id = resolve_snapshot_id(sync, client=client)
 
         self.assertEqual(snapshot_id, "snapshot-123")
-        client.get_latest_processed_snapshot_id.assert_called_once_with("test-network")
+        mock_get_id.assert_called_once_with(client, "test-network")
 
     def test_resolve_snapshot_id_uses_latest_collected_with_tag_scope(self):
         self.source.parameters = {
@@ -350,18 +353,27 @@ class ForwardSyncFacadeHelperTest(TestCase):
             },
         )
         client = Mock()
-        client.get_latest_collected_snapshot_id.return_value = "snapshot-collected"
 
-        snapshot_id = resolve_snapshot_id(sync, client=client)
+        with (
+            patch(
+                "forward_netbox.utilities.sync_facade.get_latest_collected_snapshot_id",
+                return_value="snapshot-collected",
+            ) as mock_get_collected_id,
+            patch(
+                "forward_netbox.utilities.sync_facade.get_latest_processed_snapshot_id"
+            ) as mock_get_processed_id,
+        ):
+            snapshot_id = resolve_snapshot_id(sync, client=client)
 
         self.assertEqual(snapshot_id, "snapshot-collected")
-        client.get_latest_collected_snapshot_id.assert_called_once_with(
+        mock_get_collected_id.assert_called_once_with(
+            client,
             "test-network",
             include_tags=["Prod_Core"],
             exclude_tags=["Decommissioned"],
             include_match="any",
         )
-        client.get_latest_processed_snapshot_id.assert_not_called()
+        mock_get_processed_id.assert_not_called()
 
     def test_resolve_snapshot_id_returns_fixed_snapshot_without_lookup(self):
         sync = ForwardSync.objects.create(
@@ -371,8 +383,16 @@ class ForwardSyncFacadeHelperTest(TestCase):
         )
         client = Mock()
 
-        snapshot_id = resolve_snapshot_id(sync, client=client)
+        with (
+            patch(
+                "forward_netbox.utilities.sync_facade.get_latest_processed_snapshot_id"
+            ) as mock_get_processed_id,
+            patch(
+                "forward_netbox.utilities.sync_facade.get_latest_collected_snapshot_id"
+            ) as mock_get_collected_id,
+        ):
+            snapshot_id = resolve_snapshot_id(sync, client=client)
 
         self.assertEqual(snapshot_id, "snapshot-fixed")
-        client.get_latest_processed_snapshot_id.assert_not_called()
-        client.get_latest_collected_snapshot_id.assert_not_called()
+        mock_get_processed_id.assert_not_called()
+        mock_get_collected_id.assert_not_called()
