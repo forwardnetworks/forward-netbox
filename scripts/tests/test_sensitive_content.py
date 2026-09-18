@@ -28,9 +28,25 @@ from scripts.sensitive_content import scan_text
 class SensitiveContentTest(TestCase):
     @staticmethod
     def _git(repo_root: Path, *args: str) -> str:
+        # `cwd=` alone scopes the working directory to the throwaway repo, but
+        # git sets GIT_DIR/GIT_WORK_TREE in the environment for the duration
+        # of hook execution (so a hook's own child processes reliably operate
+        # on the repo that triggered it), and GIT_DIR, when present, overrides
+        # normal directory-based discovery. A direct shell run has no GIT_DIR
+        # ambient, so `cwd=` alone worked; inside the pre-push hook, this
+        # fixture's own git calls inherited the REAL repo's GIT_DIR and
+        # committed "Scanner Test" fixtures onto it instead of the temp dir.
+        # Scrub every GIT_* var so this fixture is isolated regardless of what
+        # process invokes it.
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("GIT_")
+        }
         return subprocess.run(
             ["git", *args],
             cwd=repo_root,
+            env=env,
             check=True,
             capture_output=True,
             text=True,
@@ -50,6 +66,51 @@ class SensitiveContentTest(TestCase):
         self._git(repo_root, "add", "-A")
         self._git(repo_root, "commit", "-qm", message)
         return self._git(repo_root, "rev-parse", "HEAD")
+
+    def test_git_helper_is_immune_to_an_ambient_git_dir(self):
+        # Regression test for a real incident: the pre-push hook sets
+        # GIT_DIR/GIT_WORK_TREE for the duration of hook execution so its
+        # child processes reliably operate on the repo that triggered it.
+        # `_git`'s bare `cwd=repo_root` (no `env=`) let that ambient GIT_DIR
+        # win, so this fixture's "Scanner Test" commits landed on the REAL
+        # repo instead of the temp dir - 5/5 push-triggered `invoke ci` runs
+        # corrupted the pushed branch's ref, while 8/8 direct runs (no
+        # ambient GIT_DIR) were clean.
+        with TemporaryDirectory() as decoy_str, TemporaryDirectory() as real_str:
+            decoy_root = Path(decoy_str)
+            real_root = Path(real_str)
+            decoy_head = self._init_repo(decoy_root)
+
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "GIT_DIR": str(decoy_root / ".git"),
+                    "GIT_WORK_TREE": str(decoy_root),
+                },
+            ):
+                self._git(real_root, "init", "-q")
+                self._git(real_root, "config", "user.name", "Scanner Test")
+                self._git(real_root, "config", "user.email", "scanner@example.invalid")
+                (real_root / "real-only.txt").write_text("real\n", encoding="utf-8")
+                self._git(real_root, "add", ".")
+                self._git(real_root, "commit", "-qm", "real repo commit")
+                real_head = self._git(real_root, "rev-parse", "HEAD")
+
+            # The decoy (simulating the real repo under an ambient GIT_DIR)
+            # must still have exactly its original commit - not a second one
+            # from this fixture's own "real_root" git calls.
+            self.assertEqual(
+                decoy_head,
+                self._git(decoy_root, "rev-parse", "HEAD"),
+                "the decoy repo must be untouched by the fixture's own git calls",
+            )
+            self.assertEqual("1", self._git(decoy_root, "rev-list", "--count", "HEAD"))
+            self.assertFalse((decoy_root / "real-only.txt").exists())
+
+            # And the fixture's own commit must have actually landed in its
+            # OWN temp dir, not silently vanished into the decoy.
+            self.assertEqual(real_head, self._git(real_root, "rev-parse", "HEAD"))
+            self.assertTrue((real_root / "real-only.txt").exists())
 
     def test_protected_history_baseline_is_full_hash_and_ancestor(self):
         baseline = load_protected_history_baseline(Path.cwd())
