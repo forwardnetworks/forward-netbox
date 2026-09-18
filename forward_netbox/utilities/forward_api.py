@@ -4,7 +4,6 @@ from .forward_api_impl import build_endpoint_device_eligibility_where  # noqa: F
 from .forward_api_impl import build_endpoint_tag_scope_where  # noqa: F401
 from .forward_api_impl import DEFAULT_FORWARD_API_REQUESTS_PER_MINUTE  # noqa: F401
 from .forward_api_impl import DEFAULT_FORWARD_API_RETRIES  # noqa: F401
-from .forward_api_impl import DEFAULT_FORWARD_API_RETRY_BACKOFF_SECONDS  # noqa: F401
 from .forward_api_impl import DEFAULT_FORWARD_API_TIMEOUT_SECONDS  # noqa: F401
 from .forward_api_impl import DEFAULT_FORWARD_SAAS_API_REQUESTS_PER_MINUTE  # noqa: F401
 from .forward_api_impl import DEFAULT_LATEST_COLLECTED_SCAN_LIMIT  # noqa: F401

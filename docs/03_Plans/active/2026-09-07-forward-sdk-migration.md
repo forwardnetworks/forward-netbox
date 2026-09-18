@@ -416,3 +416,59 @@ dependency declaration; the first with a behavioural one is the transport swap.
     (`test_run_nqe_query_derives_a_wait_ceiling_from_poll_config_without_a_deadline`)
     replaces the old poll-limit test, pinning the new duration-ceiling
     arithmetic instead.
+- **2026-09-17** -- Step 5f: final step-5 cleanup, deleting the now-fully-dead
+  raw-HTTP transport that 5a-5e's method-by-method conversion left behind
+  with zero remaining callers. Confirmed via `grep -n "self\._request("`
+  that no production method still calls it before deleting anything.
+  Removed from `forward_api_impl.py`: `_request` itself, its four private
+  helpers (`_api_url`, `_headers`, `_auth`, `_proxy_mounts`),
+  `_record_http_status_class` (only ever called from inside `_request`,
+  no direct test), the module-level retry-backoff helpers
+  (`_parse_retry_after`, `_retry_wait_seconds`) and their two constants
+  (`DEFAULT_FORWARD_API_RETRY_BACKOFF_SECONDS`,
+  `MAX_FORWARD_API_RETRY_BACKOFF_SECONDS`), and the now-unused `random`,
+  `httpx`-adjacent (`resolve_proxies`), `ForwardConnectivityError`,
+  `ForwardLicenseTierError`, `is_license_tier_denial`, and
+  `license_tier_denial_message` imports - the license-tier classification
+  these last two powered already lives in `forward_client_errors.py`'s
+  `translate_client_exception`, wired in since step 5b. `_rate_limit_key`/
+  `_throttle_request` were kept: they're thin delegating wrappers, not
+  `_request` internals, and remain legitimate test seams. `httpx` itself
+  stays imported - `_call_sdk` still checks
+  `isinstance(exc.__cause__, httpx.TimeoutException)` to classify a
+  transport failure the SDK's hooks can't see.
+  `forward_api.py`'s facade dropped its now-broken re-export of
+  `DEFAULT_FORWARD_API_RETRY_BACKOFF_SECONDS` (grepped repo-wide first to
+  confirm nothing outside that one facade line referenced it).
+  `TRANSIENT_FORWARD_HTTP_STATUS_CODES` stays imported into
+  `forward_api_impl.py` despite no remaining internal use, because
+  `forward_api.py` still re-exports it by name; added it to this module's
+  own `__all__` list (the file's established convention for a name that's
+  only "unused" because another module imports it by attribute) rather than
+  a per-line `noqa`.
+  In `test_forward_api.py`, deleted the 10 tests that drove `_request`
+  directly plus the entire `RetryBackoffHelperTest` class (5 more, testing
+  `_parse_retry_after`/`_retry_wait_seconds` directly) - all testing
+  internals that no longer exist. Kept
+  `test_reset_api_usage_summary_preserves_rate_limit_configuration` and
+  `test_api_usage_summary_reports_observed_http_attempt_rate`, since both
+  call `_record_api_usage`/`_record_http_attempt_usage` directly and those
+  methods are still very much alive (called from `_call_sdk`'s hooks path).
+  In `test_license_tier.py`, deleted `LicenseTierClientTest` outright
+  (it drove `self.client._request(...)` against a mocked `httpx.Client` to
+  prove the classification was actually wired into the client, not just
+  correct in isolation) - `LicenseTierDenialTest` (pure
+  `is_license_tier_denial`/`license_tier_denial_message` unit tests, no
+  `_request` dependency) is untouched, and the "is it actually wired in"
+  property this class existed to prove now has its SDK-path equivalent in
+  `test_forward_client_errors.py`
+  (`test_a_permission_error_with_a_license_denial_body_becomes_license_tier_error`,
+  `test_a_permission_error_without_a_license_denial_body_is_generic`).
+  Full targeted suite (`test_forward_api`, `test_head_commit_from_listing`,
+  `test_forward_client_factory`, `test_forward_usage_hooks`,
+  `test_forward_client_errors`, `test_health`, `test_license_tier`,
+  `test_execute_by_query_id_without_commit`; 199 tests) green against the
+  edited worktree, confirmed by inspecting the running test container's
+  bind mount rather than assuming it. This closes out step 5 entirely -
+  step 6 removes `ForwardClient` as a class and converts every call site to
+  the SDK's own shapes directly.
