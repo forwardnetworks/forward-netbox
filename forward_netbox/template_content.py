@@ -59,6 +59,8 @@ def _uncovered_prune_offer(device, identities, foreign_blockers):
         "required_hours": None,
         "endpoint_detail": "",
         "endpoint_detail_label": "",
+        "absent_detail": "",
+        "absent_detail_label": "",
     }
     sync_ids = {row.sync_id for row in identities}
     if len(sync_ids) != 1:
@@ -89,10 +91,20 @@ def _uncovered_prune_offer(device, identities, foreign_blockers):
             ),
         }
     )
+    detail = (unmanaged.get("owned_detail_by_id") or {}).get(str(device.pk), "")
     if device.pk in absent_ids:
+        from .utilities.scope_reconciliation import ABSENT_DETAILS
+
         partition = partition_quarantined_orphans(sync, [device.pk])
         offer["held"] = device.pk not in set(partition["eligible_pks"])
         offer["offered"] = not foreign_blockers
+        # Gone from the snapshot, but Forward's configuration may still list
+        # it under an include tag - which is what the operator sees in Forward's
+        # UI, and why "still tagged in Forward" reads as a sync bug. Name the
+        # configuration fact next to the button, so enabling collection is as
+        # visible a remedy as deleting.
+        offer["absent_detail"] = detail
+        offer["absent_detail_label"] = ABSENT_DETAILS.get(detail, "")
     elif device.pk in uncovered_ids:
         # Uncovered, but Forward still reports it: a scoping decision, and the
         # prune will never touch it. Say that instead of offering a button -
@@ -100,9 +112,6 @@ def _uncovered_prune_offer(device, identities, foreign_blockers):
         from .utilities.scope_reconciliation import ENDPOINT_ABSENCE_DETAILS
 
         offer["still_reported"] = True
-        detail = (unmanaged.get("owned_endpoint_detail_by_id") or {}).get(
-            str(device.pk), ""
-        )
         offer["endpoint_detail"] = detail
         offer["endpoint_detail_label"] = ENDPOINT_ABSENCE_DETAILS.get(detail, "")
     return offer

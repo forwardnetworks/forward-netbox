@@ -208,6 +208,15 @@
             {% if payload.out_of_scope_absence.present_untagged %}
               <p class="text-muted small mb-2">{% trans "Devices Forward still has but no longer reports under these tags. A Forward-side tag edit and a narrowed query look identical here — confirm in Forward before pruning." %}</p>
             {% endif %}
+            {% if payload.out_of_scope_absence.absent_detail %}
+              <p class="text-muted small mb-2">
+                {% blocktrans count counter=payload.out_of_scope_absence.absent_still_tagged %}Of those gone from the snapshot, Forward's device configuration still lists {{ counter }} under an include tag:{% plural %}Of those gone from the snapshot, Forward's device configuration still lists {{ counter }} under an include tag:{% endblocktrans %}
+                {% for row in payload.out_of_scope_absence.absent_detail %}
+                  <span class="badge text-bg-light border" title="{{ row.sample|join:', ' }}">{{ row.count }} — {{ row.label }}</span>
+                {% endfor %}
+                {% trans "Forward's UI shows these as tagged; the sync reads the snapshot, which does not carry them. A disabled device stays here until collection is re-enabled or it is pruned." %}
+              </p>
+            {% endif %}
           {% endif %}
           {% comment %} How long the absence has lasted, which is a different question
              from what kind of absence it is, and the one that decides whether the
@@ -431,6 +440,19 @@
                   <span class="badge text-bg-light border" title="{{ row.sample|join:', ' }}">{{ row.count }} — {{ row.label }}</span>
                 {% endfor %}
                 {% trans "A console server in that list means its endpoint tags match none of the include tags; a generic endpoint or CIMC controller is excluded by design." %}
+              </p>
+            {% endif %}
+            {% if payload.unmanaged.owned_absence.absent_detail %}
+              {% comment %} "Tagged in Forward but not in NetBox" is what a customer reads off
+                 Forward's Device Tags page, which shows the configuration; the sync reads
+                 the snapshot. Name the configuration fact so the gap is not filed as a
+                 sync bug. {% endcomment %}
+              <p class="text-muted small mb-2">
+                {% blocktrans count counter=payload.unmanaged.owned_absence.absent_still_tagged %}Of those gone from Forward, its device configuration still lists {{ counter }} under an include tag:{% plural %}Of those gone from Forward, its device configuration still lists {{ counter }} under an include tag:{% endblocktrans %}
+                {% for row in payload.unmanaged.owned_absence.absent_detail %}
+                  <span class="badge text-bg-light border" title="{{ row.sample|join:', ' }}">{{ row.count }} — {{ row.label }}</span>
+                {% endfor %}
+                {% trans "Forward's UI shows these as tagged; the snapshot the sync reads does not carry them, so they cannot be tagged or updated in NetBox. Re-enable collection in Forward to cover a disabled device again." %}
               </p>
             {% endif %}
           {% elif payload.unmanaged.owned_absence %}

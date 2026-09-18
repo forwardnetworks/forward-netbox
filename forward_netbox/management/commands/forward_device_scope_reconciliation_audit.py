@@ -115,6 +115,16 @@ class Command(BaseCommand):
                 "sources. Only the first group unambiguously left; a large "
                 "second group is what a narrowed query or a Forward-side tag "
                 "edit looks like. "
+                + (
+                    f"Forward's device configuration still lists "
+                    f"{absence['absent_still_tagged']} of the first group under "
+                    "an include tag (disabled, not collected, or a tag entry "
+                    "that outlived the device) - those show as tagged in "
+                    "Forward's UI while the snapshot the sync reads does not "
+                    "carry them. "
+                    if absence.get("absent_still_tagged")
+                    else ""
+                )
             )
         )
         payload["remediation"] = (
