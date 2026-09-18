@@ -16,6 +16,7 @@ it, because a mock more permissive than the live API is what let this ship.
 """
 
 from unittest.mock import Mock
+from unittest.mock import patch
 
 from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
@@ -79,6 +80,14 @@ class MovedQueryHeadResolutionTest(TestCase):
             }
 
         client.get_committed_nqe_query.side_effect = committed
+
+        for name in ("get_nqe_query_history", "get_committed_nqe_query"):
+            patcher = patch(
+                f"forward_netbox.utilities.query_registry.{name}",
+                side_effect=lambda c, *a, name=name, **kw: getattr(c, name)(*a, **kw),
+            )
+            patcher.start()
+            self.addCleanup(patcher.stop)
         return client
 
     def test_a_moved_query_resolves_through_its_historical_path(self):

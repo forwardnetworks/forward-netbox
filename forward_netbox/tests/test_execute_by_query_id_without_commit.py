@@ -13,6 +13,7 @@ required, and nothing goes looking for one.
 """
 
 from unittest.mock import Mock
+from unittest.mock import patch
 
 from django.test import SimpleTestCase
 
@@ -96,6 +97,30 @@ def _client(*, committed_source=BUNDLED_SOURCE):
 
     client.get_committed_nqe_query.side_effect = committed
     return client
+
+
+_PATCHED_QUERY_REGISTRY_FUNCTIONS = (
+    "get_nqe_query_history",
+    "get_committed_nqe_query",
+    "get_nqe_repository_query_index",
+)
+_active_patchers = []
+
+
+def setUpModule():
+    for name in _PATCHED_QUERY_REGISTRY_FUNCTIONS:
+        patcher = patch(
+            f"forward_netbox.utilities.query_registry.{name}",
+            side_effect=lambda c, *a, name=name, **kw: getattr(c, name)(*a, **kw),
+        )
+        patcher.start()
+        _active_patchers.append(patcher)
+
+
+def tearDownModule():
+    for patcher in _active_patchers:
+        patcher.stop()
+    _active_patchers.clear()
 
 
 class QueryIdWithoutCommitTest(SimpleTestCase):

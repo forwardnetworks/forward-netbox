@@ -25,6 +25,37 @@ from forward_netbox.views import ForwardNQEMapBulkEditView
 
 
 class NQEMapBindingTest(TestCase):
+    def setUp(self):
+        # Step 6b of the forward-sdk migration converted these from
+        # ForwardClient methods to free functions taking client as an
+        # explicit first argument (`get_X(client, ...)` instead of
+        # `client.get_X(...)`). query_binding_resolution.py now calls the
+        # free functions directly, so every test's `client = Mock()` fixture
+        # (built ad hoc per test, not in a shared object) needs the free
+        # function names patched here to forward onto the mock's own
+        # same-named attribute - this keeps every existing
+        # `client.get_X.return_value = ...` / `.assert_called_once_with(...)`
+        # line below working unchanged.
+        for name in (
+            "get_nqe_repository_query_index",
+            "get_committed_nqe_query",
+            "get_nqe_query_history",
+            "has_nqe_library_write_permission",
+            "add_org_nqe_query",
+            "edit_org_nqe_query",
+            "commit_org_nqe_queries",
+        ):
+            patcher = patch(
+                f"forward_netbox.utilities.query_binding_resolution.{name}",
+                side_effect=self._forward_to_client(name),
+            )
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def _forward_to_client(name):
+        return lambda client, *args, **kwargs: getattr(client, name)(*args, **kwargs)
+
     def test_build_bindings_matches_repository_queries_to_builtin_models(self):
         client = Mock()
         client.get_nqe_repository_query_index.return_value = {

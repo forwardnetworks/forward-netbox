@@ -408,8 +408,12 @@ class ForwardClientTest(TestCase):
 
         networks_first = forward_api_impl.get_networks(self.client)
         networks_second = forward_api_impl.get_networks(self.client)
-        head_first = self.client.get_org_nqe_head_commit_id()
-        head_second = self.client.get_org_nqe_head_commit_id()
+        head_first = forward_api_impl.get_org_nqe_head_commit_id(
+            self.client,
+        )
+        head_second = forward_api_impl.get_org_nqe_head_commit_id(
+            self.client,
+        )
 
         self.client._sdk_client.networks.list.assert_called_once_with()
         self.client._sdk_client.nqe.repo.head_commit_id.assert_called_once_with()
@@ -512,12 +516,17 @@ class ForwardClientTest(TestCase):
             "forward_netbox.utilities.forward_api_impl._shared_read_cache",
             return_value=shared_cache,
         ):
-            first = client_one.get_org_nqe_head_commit_id()
-            second = client_two.commit_org_nqe_queries(
+            first = forward_api_impl.get_org_nqe_head_commit_id(
+                client_one,
+            )
+            second = forward_api_impl.commit_org_nqe_queries(
+                client_two,
                 query_paths=["netbox/forward_devices"],
                 message="Publish test queries",
             )
-            third = client_three.get_org_nqe_head_commit_id()
+            third = forward_api_impl.get_org_nqe_head_commit_id(
+                client_three,
+            )
 
         self.assertEqual(first, "commit-1")
         self.assertEqual(second, "commit-2")
@@ -1045,8 +1054,8 @@ class ForwardClientTest(TestCase):
             "forward_netbox.utilities.forward_api_impl._shared_read_cache",
             return_value=shared_cache,
         ):
-            rows = self.client._get_org_nqe_queries(
-                directory="/forward_netbox_validation"
+            rows = forward_api_impl._get_org_nqe_queries(
+                self.client, directory="/forward_netbox_validation"
             )
 
         self.assertEqual(rows[0]["queryId"], "Q_devices")
@@ -1080,17 +1089,19 @@ class ForwardClientTest(TestCase):
             "forward_netbox.utilities.forward_api_impl._shared_read_cache",
             return_value=shared_cache,
         ):
-            org_first = self.client._get_org_nqe_queries(
-                directory="/forward_netbox_validation"
+            org_first = forward_api_impl._get_org_nqe_queries(
+                self.client, directory="/forward_netbox_validation"
             )
-            org_second = self.client._get_org_nqe_queries(
-                directory="/forward_netbox_validation"
+            org_second = forward_api_impl._get_org_nqe_queries(
+                self.client, directory="/forward_netbox_validation"
             )
-            repo_first = self.client._get_nqe_repository_queries(
+            repo_first = forward_api_impl._get_nqe_repository_queries(
+                self.client,
                 repository="fwd",
                 directory="/netbox",
             )
-            repo_second = self.client._get_nqe_repository_queries(
+            repo_second = forward_api_impl._get_nqe_repository_queries(
+                self.client,
                 repository="fwd",
                 directory="/netbox",
             )
@@ -1117,11 +1128,13 @@ class ForwardClientTest(TestCase):
             "forward_netbox.utilities.forward_api_impl._shared_read_cache",
             return_value=shared_cache,
         ):
-            first = self.client.get_nqe_repository_query_index(
+            first = forward_api_impl.get_nqe_repository_query_index(
+                self.client,
                 repository="fwd",
                 directory="/netbox",
             )
-            second = self.client.get_nqe_repository_query_index(
+            second = forward_api_impl.get_nqe_repository_query_index(
+                self.client,
                 repository="fwd",
                 directory="/netbox",
             )
@@ -1153,7 +1166,8 @@ class ForwardClientTest(TestCase):
             ]
         )
 
-        rows = self.client._get_nqe_repository_queries(
+        rows = forward_api_impl._get_nqe_repository_queries(
+            self.client,
             repository="fwd",
             directory="/netbox",
         )
@@ -1185,7 +1199,8 @@ class ForwardClientTest(TestCase):
             ]
         )
 
-        rows = self.client._get_nqe_repository_queries(
+        rows = forward_api_impl._get_nqe_repository_queries(
+            self.client,
             repository="org",
             directory="/forward_netbox_validation",
         )
@@ -1211,7 +1226,7 @@ class ForwardClientTest(TestCase):
             return_value=[{"id": "commit-1", "path": "/netbox/forward_devices"}]
         )
 
-        rows = self.client.get_nqe_query_history("FQ/devices")
+        rows = forward_api_impl.get_nqe_query_history(self.client, "FQ/devices")
 
         self.assertEqual(rows[0]["id"], "commit-1")
         self.client._sdk_client.nqe.repo.history.assert_called_once_with("FQ/devices")
@@ -1226,8 +1241,8 @@ class ForwardClientTest(TestCase):
             "forward_netbox.utilities.forward_api_impl._shared_read_cache",
             return_value=shared_cache,
         ):
-            first = self.client.get_nqe_query_history("FQ/devices")
-            second = self.client.get_nqe_query_history("FQ/devices")
+            first = forward_api_impl.get_nqe_query_history(self.client, "FQ/devices")
+            second = forward_api_impl.get_nqe_query_history(self.client, "FQ/devices")
 
         self.assertEqual(first, second)
         self.assertEqual(first[0]["id"], "commit-1")
@@ -1241,10 +1256,18 @@ class ForwardClientTest(TestCase):
             "forward_netbox.utilities.forward_api_impl._shared_read_cache",
             return_value=shared_cache,
         ):
-            org_first = self.client._get_org_nqe_queries(directory="/empty")
-            org_second = self.client._get_org_nqe_queries(directory="/empty")
-            history_first = self.client.get_nqe_query_history("FQ/empty")
-            history_second = self.client.get_nqe_query_history("FQ/empty")
+            org_first = forward_api_impl._get_org_nqe_queries(
+                self.client, directory="/empty"
+            )
+            org_second = forward_api_impl._get_org_nqe_queries(
+                self.client, directory="/empty"
+            )
+            history_first = forward_api_impl.get_nqe_query_history(
+                self.client, "FQ/empty"
+            )
+            history_second = forward_api_impl.get_nqe_query_history(
+                self.client, "FQ/empty"
+            )
 
         self.assertEqual(org_first, org_second)
         self.assertEqual(history_first, history_second)
@@ -1265,7 +1288,8 @@ class ForwardClientTest(TestCase):
             ]
         )
 
-        query = self.client.get_committed_nqe_query(
+        query = forward_api_impl.get_committed_nqe_query(
+            self.client,
             repository="org",
             query_path="netbox/forward_devices",
             commit_id="commit-1",
@@ -1296,7 +1320,8 @@ class ForwardClientTest(TestCase):
             "forward_netbox.utilities.forward_api_impl._shared_read_cache",
             return_value=shared_cache,
         ):
-            query = self.client.get_committed_nqe_query(
+            query = forward_api_impl.get_committed_nqe_query(
+                self.client,
                 repository="fwd",
                 query_path="netbox/forward_devices",
                 commit_id="head",
@@ -1328,7 +1353,8 @@ class ForwardClientTest(TestCase):
             "forward_netbox.utilities.forward_api_impl._shared_read_cache",
             return_value=shared_cache,
         ):
-            query = self.client.get_committed_nqe_query(
+            query = forward_api_impl.get_committed_nqe_query(
+                self.client,
                 repository="fwd",
                 query_path="netbox/forward_devices",
                 commit_id="head",
@@ -1370,7 +1396,8 @@ class ForwardClientTest(TestCase):
             ]
         )
 
-        query = self.client.get_committed_nqe_query(
+        query = forward_api_impl.get_committed_nqe_query(
+            self.client,
             repository="org",
             query_path="netbox/forward_devices",
             commit_id="head",
@@ -1418,7 +1445,8 @@ class ForwardClientTest(TestCase):
             "forward_netbox.utilities.forward_api_impl._shared_read_cache",
             return_value=shared_cache,
         ):
-            query = self.client.get_committed_nqe_query(
+            query = forward_api_impl.get_committed_nqe_query(
+                self.client,
                 repository="org",
                 query_path="netbox/forward_devices",
                 commit_id="head",
@@ -1458,7 +1486,8 @@ class ForwardClientTest(TestCase):
             "forward_netbox.utilities.forward_api_impl._shared_read_cache",
             return_value=shared_cache,
         ):
-            query = self.client.get_committed_nqe_query(
+            query = forward_api_impl.get_committed_nqe_query(
+                self.client,
                 repository="org",
                 query_path="netbox/forward_devices",
                 commit_id="head",
@@ -1487,7 +1516,8 @@ class ForwardClientTest(TestCase):
             "forward_netbox.utilities.forward_api_impl._shared_read_cache",
             return_value=shared_cache,
         ):
-            resolved = self.client.resolve_nqe_query_reference(
+            resolved = forward_api_impl.resolve_nqe_query_reference(
+                self.client,
                 repository="org",
                 query_path="/netbox/forward_devices",
             )
@@ -1525,7 +1555,8 @@ class ForwardClientTest(TestCase):
             "forward_netbox.utilities.forward_api_impl._shared_read_cache",
             return_value=shared_cache,
         ):
-            resolved = self.client.resolve_nqe_query_reference(
+            resolved = forward_api_impl.resolve_nqe_query_reference(
+                self.client,
                 repository="org",
                 query_path="/netbox/forward_devices",
             )
@@ -1560,12 +1591,14 @@ class ForwardClientTest(TestCase):
             "forward_netbox.utilities.forward_api_impl._shared_read_cache",
             return_value=shared_cache,
         ):
-            first = self.client.get_committed_nqe_query(
+            first = forward_api_impl.get_committed_nqe_query(
+                self.client,
                 repository="org",
                 query_path="netbox/forward_devices",
                 commit_id="commit-1",
             )
-            second = self.client.get_committed_nqe_query(
+            second = forward_api_impl.get_committed_nqe_query(
+                self.client,
                 repository="org",
                 query_path="netbox/forward_devices",
                 commit_id="commit-1",
@@ -1605,11 +1638,13 @@ class ForwardClientTest(TestCase):
             "forward_netbox.utilities.forward_api_impl._shared_read_cache",
             return_value=shared_cache,
         ):
-            first = self.client.resolve_nqe_query_reference(
+            first = forward_api_impl.resolve_nqe_query_reference(
+                self.client,
                 repository="org",
                 query_path="/netbox/forward_devices",
             )
-            second = self.client.resolve_nqe_query_reference(
+            second = forward_api_impl.resolve_nqe_query_reference(
+                self.client,
                 repository="org",
                 query_path="/netbox/forward_devices",
             )
@@ -1625,7 +1660,8 @@ class ForwardClientTest(TestCase):
     def test_add_org_nqe_query_creates_user_workspace_change(self):
         self.client._sdk_client.nqe.repo.stage_add = Mock()
 
-        self.client.add_org_nqe_query(
+        forward_api_impl.add_org_nqe_query(
+            self.client,
             query_path="netbox/forward_devices",
             source_code="select {}",
         )
@@ -1641,7 +1677,11 @@ class ForwardClientTest(TestCase):
             )
         )
 
-        self.assertTrue(self.client.has_nqe_library_write_permission())
+        self.assertTrue(
+            forward_api_impl.has_nqe_library_write_permission(
+                self.client,
+            )
+        )
         self.client._sdk_client.user_accounts.get_current_user.assert_called_once_with()
 
     def test_nqe_library_write_permission_accepts_selected_network_operator(self):
@@ -1652,7 +1692,11 @@ class ForwardClientTest(TestCase):
             )
         )
 
-        self.assertTrue(self.client.has_nqe_library_write_permission())
+        self.assertTrue(
+            forward_api_impl.has_nqe_library_write_permission(
+                self.client,
+            )
+        )
 
     def test_nqe_library_write_permission_rejects_read_only_role(self):
         self.client.source.parameters["network_id"] = "network-1"
@@ -1662,12 +1706,17 @@ class ForwardClientTest(TestCase):
             )
         )
 
-        self.assertFalse(self.client.has_nqe_library_write_permission())
+        self.assertFalse(
+            forward_api_impl.has_nqe_library_write_permission(
+                self.client,
+            )
+        )
 
     def test_edit_org_nqe_query_uses_existing_query_basis(self):
         self.client._sdk_client.nqe.repo.stage_edit = Mock()
 
-        self.client.edit_org_nqe_query(
+        forward_api_impl.edit_org_nqe_query(
+            self.client,
             query_path="/netbox/forward_devices",
             source_code="select {}",
             query_id="OQ_devices",
@@ -1690,7 +1739,8 @@ class ForwardClientTest(TestCase):
             )
         )
 
-        commit_id = self.client.commit_org_nqe_queries(
+        commit_id = forward_api_impl.commit_org_nqe_queries(
+            self.client,
             query_paths=["netbox/forward_devices"],
             message="Publish test queries",
         )
@@ -1715,7 +1765,8 @@ class ForwardClientTest(TestCase):
             )
         )
 
-        commit_id = self.client.commit_org_nqe_queries(
+        commit_id = forward_api_impl.commit_org_nqe_queries(
+            self.client,
             query_paths=["/netbox/forward_devices", "/netbox/forward_interfaces"],
             message="Publish test queries",
         )
@@ -1737,7 +1788,8 @@ class ForwardClientTest(TestCase):
         )
         self.client._sdk_client.nqe.repo.head_commit_id = Mock(return_value="commit-1")
 
-        commit_id = self.client.commit_org_nqe_queries(
+        commit_id = forward_api_impl.commit_org_nqe_queries(
+            self.client,
             query_paths=["/netbox/forward_devices"],
             message="Publish test queries",
         )
@@ -1755,7 +1807,8 @@ class ForwardClientTest(TestCase):
         )
 
         with self.assertRaises(ForwardClientError) as ctx:
-            self.client.commit_org_nqe_queries(
+            forward_api_impl.commit_org_nqe_queries(
+                self.client,
                 query_paths=["/netbox/forward_devices"],
                 message="Publish test queries",
             )
@@ -1777,12 +1830,17 @@ class ForwardClientTest(TestCase):
             "forward_netbox.utilities.forward_api_impl._shared_read_cache",
             return_value=shared_cache,
         ):
-            first = self.client.get_org_nqe_head_commit_id()
-            self.client.commit_org_nqe_queries(
+            first = forward_api_impl.get_org_nqe_head_commit_id(
+                self.client,
+            )
+            forward_api_impl.commit_org_nqe_queries(
+                self.client,
                 query_paths=["netbox/forward_devices"],
                 message="Publish test queries",
             )
-            second = self.client.get_org_nqe_head_commit_id()
+            second = forward_api_impl.get_org_nqe_head_commit_id(
+                self.client,
+            )
 
         self.assertEqual(first, "commit-1")
         self.assertEqual(second, "commit-2")

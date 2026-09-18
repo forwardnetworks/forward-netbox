@@ -11,6 +11,9 @@ from rq.timeouts import JobTimeoutException
 from ..choices import FORWARD_OPTIONAL_MODELS
 from ..choices import FORWARD_SUPPORTED_MODELS
 from ..exceptions import ForwardQueryError
+from .forward_api import get_committed_nqe_query
+from .forward_api import get_nqe_query_history
+from .forward_api import get_nqe_repository_query_index
 from .model_contracts import architecture_default_coalesce_fields_for_model
 from .model_contracts import architecture_fetch_contract_for_model
 from .plugin_integrations.registry import OPTIONAL_PLUGIN_INTEGRATIONS
@@ -102,7 +105,8 @@ class QuerySpec:
             # Grafting a head commit onto an ID-only binding is also the shape
             # that executes a revision the operator never pinned.
             return self
-        resolved = client.get_committed_nqe_query(
+        resolved = get_committed_nqe_query(
+            client,
             repository=self.query_repository or "org",
             query_path=lookup_query_path,
             commit_id=self.commit_id or "head",
@@ -1369,7 +1373,7 @@ def _resolve_unpinned_builtin_full_revision(
         return spec
 
     try:
-        history = client.get_nqe_query_history(spec.run_query_id)
+        history = get_nqe_query_history(client, spec.run_query_id)
     except JobTimeoutException:
         raise
     except Exception:
@@ -1403,7 +1407,8 @@ def _resolve_unpinned_builtin_full_revision(
     expected_query_id = str(spec.run_query_id or "").strip()
     for commit_id, candidate_path in candidate_revisions:
         try:
-            query = client.get_committed_nqe_query(
+            query = get_committed_nqe_query(
+                client,
                 repository=repository,
                 query_path=candidate_path,
                 commit_id=commit_id,
@@ -1519,7 +1524,7 @@ def _hydrate_diff_contract_sources(spec: QuerySpec, client) -> QuerySpec:
             full_commit_id if hydrate_full else spec.diff_commit_id or ""
         )
         try:
-            history = client.get_nqe_query_history(spec.run_query_id)
+            history = get_nqe_query_history(client, spec.run_query_id)
         except JobTimeoutException:
             raise
         except Exception:
@@ -1548,7 +1553,8 @@ def _hydrate_diff_contract_sources(spec: QuerySpec, client) -> QuerySpec:
         )
 
         try:
-            full_query = client.get_committed_nqe_query(
+            full_query = get_committed_nqe_query(
+                client,
                 repository=repository,
                 query_path=query_path,
                 commit_id=spec.commit_id,
@@ -1580,7 +1586,8 @@ def _hydrate_diff_contract_sources(spec: QuerySpec, client) -> QuerySpec:
         return hydrated
 
     try:
-        diff_query = client.get_committed_nqe_query(
+        diff_query = get_committed_nqe_query(
+            client,
             repository=repository,
             query_path=query_path,
             commit_id=spec.diff_commit_id,
@@ -1629,7 +1636,8 @@ def resolve_query_specs_for_client(specs: list[QuerySpec], client) -> list[Query
         query_index = query_indexes.get(repository)
         if query_index is None:
             try:
-                query_index = client.get_nqe_repository_query_index(
+                query_index = get_nqe_repository_query_index(
+                    client,
                     repository=repository,
                     directory="/",
                 )
@@ -1681,7 +1689,8 @@ def resolve_query_specs_for_client(specs: list[QuerySpec], client) -> list[Query
             cache_key = (repository, spec.query_path, "head")
             resolved_meta = resolved_query_cache.get(cache_key)
             if resolved_meta is None:
-                resolved_query = client.get_committed_nqe_query(
+                resolved_query = get_committed_nqe_query(
+                    client,
                     repository=repository,
                     query_path=spec.query_path,
                     commit_id="head",
@@ -1716,7 +1725,8 @@ def resolve_query_specs_for_client(specs: list[QuerySpec], client) -> list[Query
         cache_key = (repository, spec.query_path, commit_id)
         resolved_meta = resolved_query_cache.get(cache_key)
         if resolved_meta is None:
-            resolved_query = client.get_committed_nqe_query(
+            resolved_query = get_committed_nqe_query(
+                client,
                 repository=repository,
                 query_path=spec.query_path,
                 commit_id=commit_id,
