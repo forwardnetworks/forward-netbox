@@ -1070,10 +1070,19 @@ class ForwardClient:
             self._record_read_cache_hit()
             return [dict(row) for row in cached_queries]
         self._record_read_cache_miss()
-        params = {"dir": directory}
-        response = self._request("GET", "/nqe/queries", params=params or None)
-        data = response.json() or []
-        rows = data if isinstance(data, list) else []
+        sdk_rows = self._call_sdk(self._sdk_client.nqe.queries, directory=directory)
+        # This listing carries no commit per query - only intent/path/queryId
+        # (`NqeQuery` has no `last_commit_id` field at all, matching the raw
+        # endpoint exactly) - `get_committed_nqe_query`'s fallback to the
+        # commits endpoint below depends on that being true.
+        rows = [
+            {
+                "queryId": str(item.query_id or ""),
+                "path": str(item.path or ""),
+                "intent": str(item.intent or ""),
+            }
+            for item in sdk_rows or []
+        ]
         self._org_nqe_queries_cache[directory] = list(rows)
         self._shared_read_cache_set(shared_cache_key, list(rows))
         return rows if isinstance(rows, list) else []
@@ -1109,15 +1118,22 @@ class ForwardClient:
             return [dict(row) for row in cached_queries]
         self._record_read_cache_miss()
 
-        response = self._request(
-            "GET",
-            f"/nqe/repos/{repository}/commits/head/queries",
+        sdk_rows = self._call_sdk(
+            self._sdk_client.nqe.repo.queries, repository=repository
         )
-        data = response.json() or {}
-        rows = data.get("queries") if isinstance(data, dict) else []
+        rows = [
+            {
+                "queryId": str(item.query_id or ""),
+                "path": str(item.path or ""),
+                "intent": str(item.intent or ""),
+                "repository": repository,
+                "lastCommitId": str(item.last_commit_id or ""),
+            }
+            for item in sdk_rows or []
+        ]
         normalized_rows = [
             normalized
-            for row in rows or []
+            for row in rows
             if _query_in_directory(row.get("path"), directory)
             if (normalized := _normalize_nqe_query_row(row, repository=repository))
         ]
@@ -1255,33 +1271,41 @@ class ForwardClient:
             self._record_read_cache_hit()
             return dict(cached_query)
         self._record_read_cache_miss()
-        response = self._request(
-            "GET",
-            f"/nqe/repos/{repository}/commits/{quote(commit_id, safe='')}/queries",
-            params={"path": query_path, "with": "sourceCode"},
+        # `NqeRepository.queries()` already collapses Forward's two response
+        # shapes here (a wrapped `{"queries": [...]}` listing at `head`, or a
+        # bare single object for a specific commit + path) into one uniform
+        # `list[RepositoryQuery]` - see `queries_from_payload` in the SDK's
+        # own `nqe/repository.py`, which is exactly the branching this method
+        # used to hand-roll.
+        sdk_queries = self._call_sdk(
+            self._sdk_client.nqe.repo.queries,
+            repository=repository,
+            commit_id=commit_id,
+            path=query_path,
+            with_source=True,
         )
-        data = response.json() or {}
-        if not isinstance(data, dict):
-            raise ForwardClientError(
-                f"Forward NQE repository lookup for `{query_path}` returned an invalid response."
-            )
-        if isinstance(data.get("queries"), list):
-            for query in data["queries"]:
-                if isinstance(query, dict) and query.get("path") == query_path:
-                    normalized = dict(query)
-                    normalized.setdefault("lastCommitId", "")
-                    self._committed_nqe_query_cache[cache_key] = dict(normalized)
-                    self._shared_read_cache_set(shared_cache_key, dict(normalized))
-                    return normalized
+        matched = next(
+            (item for item in sdk_queries or [] if item.path == query_path), None
+        )
+        if matched is None:
             raise ForwardClientError(
                 f"Forward NQE repository lookup did not include `{query_path}`."
             )
-        normalized = dict(data)
-        last_commit = normalized.get("lastCommit") or {}
-        normalized.setdefault(
-            "lastCommitId",
-            str(last_commit.get("id") or normalized.get("lastCommitId") or "").strip(),
+        # `RepositoryQuery` carries the commit under one of two names
+        # depending on what was asked for - a flat `last_commit_id` when
+        # listing at head, a nested `last_commit.id` for a specific commit -
+        # its own docstring warns that reading only one "loses the pin".
+        last_commit_id = matched.last_commit_id or (
+            matched.last_commit.id if matched.last_commit else None
         )
+        normalized = {
+            "queryId": str(matched.query_id or ""),
+            "path": str(matched.path or ""),
+            "intent": str(matched.intent or ""),
+            "repository": repository,
+            "lastCommitId": str(last_commit_id or ""),
+            "sourceCode": matched.source_code,
+        }
         self._committed_nqe_query_cache[cache_key] = dict(normalized)
         self._shared_read_cache_set(shared_cache_key, dict(normalized))
         return normalized

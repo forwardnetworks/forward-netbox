@@ -319,3 +319,38 @@ dependency declaration; the first with a behavioural one is the transport swap.
     requested path turned out to be an unchanged no-op.
   - `get_nqe_query_history` -> `client.nqe.repo.history(query_id)`, an exact
     shape match to what this method already returned.
+- **2026-09-17** -- Step 5d: the hardest conversion in the sequence -
+  `_get_org_nqe_queries`, `_get_nqe_repository_queries`,
+  `get_committed_nqe_query`'s commits-endpoint fallback - the exact
+  index-then-commits-endpoint policy this method exists to enforce
+  (documented in `test_head_commit_from_listing.py`'s own docstring: a
+  commit-less listing row returned directly once caused a customer's whole
+  sync to fetch nothing while reporting success) is preserved unchanged;
+  only what fetches each side changed.
+  - `_get_org_nqe_queries` -> `client.nqe.queries(directory=...)`
+    (`NqeService.queries`, backed by the SAME unpublished `getNqeQueries`
+    op as the plugin's own `/nqe/queries?dir=` call - confirmed by reading
+    `_ops/nqe.py`, not assumed). Its `NqeQuery` model has no commit field at
+    all, matching the real endpoint's limitation exactly - this is NOT
+    `NqeRepository.queries()` (a different SDK method, on `client.nqe.repo`,
+    backed by the commits-endpoint and carrying commit info), which would
+    have silently made the whole fallback below load-bearing-but-untested.
+  - `_get_nqe_repository_queries` (non-org) and `get_committed_nqe_query`'s
+    fallback both use `client.nqe.repo.queries(...)`, whose
+    `queries_from_payload` helper already collapses Forward's two response
+    shapes (a wrapped `{"queries": [...]}` listing, or a bare single object
+    for a specific path lookup) into one uniform list - exactly the
+    two-shape branching `get_committed_nqe_query` used to hand-roll.
+  - Real bug caught and fixed during conversion, before it shipped:
+    `RepositoryQuery` carries its commit under one of two field names
+    depending on what was asked for (`last_commit_id` when listing at head,
+    a nested `last_commit.id` for a specific commit - its own docstring
+    warns "reading only one of them loses the pin"). The commits-endpoint
+    fallback now checks both, exactly as the model's own docstring
+    prescribes; missing this would have silently reintroduced a narrower
+    version of the same commit-loss bug this whole method exists to guard
+    against.
+  - `get_committed_nqe_query`'s no-longer-needed guard ("response was not a
+    dict") is dropped rather than ported: the SDK's own pydantic validation
+    already rejects a malformed response with `ForwardResponseError`, which
+    `_call_sdk` translates like any other failure.

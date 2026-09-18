@@ -54,23 +54,21 @@ class HeadCommitResolutionTest(TestCase):
             "by_query_id": {str(row.get("queryId")): [dict(row)]},
         }
 
-    def _commits_response(self):
-        response = Mock()
-        response.json.return_value = {
-            "queries": [
-                {
-                    "path": PATH,
-                    "queryId": QUERY_ID,
-                    "lastCommitId": HEAD,
-                    "sourceCodeSha": "abc123",
-                }
-            ]
-        }
-        return response
+    def _committed_query(self):
+        return SimpleNamespace(
+            query_id=QUERY_ID,
+            path=PATH,
+            intent="",
+            last_commit_id=HEAD,
+            last_commit=None,
+            source_code=None,
+        )
 
     def test_commitless_listing_row_falls_through_and_resolves_head(self):
         # The customer case: the row exists but carries no commit.
-        self.client._request = Mock(return_value=self._commits_response())
+        self.client._sdk_client.nqe.repo.queries = Mock(
+            return_value=[self._committed_query()]
+        )
         resolved = self.client.get_committed_nqe_query(
             repository="org",
             query_path=PATH,
@@ -79,11 +77,11 @@ class HeadCommitResolutionTest(TestCase):
         )
         self.assertEqual(resolved.get("lastCommitId"), HEAD)
         self.assertEqual(resolved.get("queryId"), QUERY_ID)
-        self.client._request.assert_called_once()
+        self.client._sdk_client.nqe.repo.queries.assert_called_once()
 
     def test_a_listing_row_carrying_a_commit_needs_no_request(self):
         row = dict(LISTING_ROW, lastCommitId=HEAD)
-        self.client._request = Mock()
+        self.client._sdk_client.nqe.repo.queries = Mock()
         resolved = self.client.get_committed_nqe_query(
             repository="org",
             query_path=PATH,
@@ -91,26 +89,32 @@ class HeadCommitResolutionTest(TestCase):
             query_index=self._index(row),
         )
         self.assertEqual(resolved.get("lastCommitId"), HEAD)
-        self.client._request.assert_not_called()
+        self.client._sdk_client.nqe.repo.queries.assert_not_called()
 
     def test_the_fallthrough_requests_the_head_commit(self):
-        self.client._request = Mock(return_value=self._commits_response())
+        self.client._sdk_client.nqe.repo.queries = Mock(
+            return_value=[self._committed_query()]
+        )
         self.client.get_committed_nqe_query(
             repository="org",
             query_path=PATH,
             commit_id="head",
             query_index=self._index(LISTING_ROW),
         )
-        route = self.client._request.call_args[0][1]
-        self.assertIn("/nqe/repos/org/commits/head/queries", route)
+        self.client._sdk_client.nqe.repo.queries.assert_called_once_with(
+            repository="org", commit_id="head", path=PATH, with_source=True
+        )
 
     def test_an_explicitly_pinned_commit_is_still_honoured(self):
-        self.client._request = Mock(return_value=self._commits_response())
+        self.client._sdk_client.nqe.repo.queries = Mock(
+            return_value=[self._committed_query()]
+        )
         self.client.get_committed_nqe_query(
             repository="org",
             query_path=PATH,
             commit_id="pinned_commit",
             query_index=self._index(LISTING_ROW),
         )
-        route = self.client._request.call_args[0][1]
-        self.assertIn("/commits/pinned_commit/queries", route)
+        self.client._sdk_client.nqe.repo.queries.assert_called_once_with(
+            repository="org", commit_id="pinned_commit", path=PATH, with_source=True
+        )
