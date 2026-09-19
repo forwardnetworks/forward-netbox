@@ -472,6 +472,7 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         endpoint_scope=_endpoint_scope_settings(
             sync, include_tags, exclude_tags, include_match
         ),
+        include_tags=include_tags,
     )
     kinds, details = census if census is not None else (None, None)
     absence = _absence_summary(out_of_scope, kinds, details)
@@ -508,7 +509,7 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         else set()
     )
     owned_absent_pks = []
-    owned_endpoint_detail_by_id = {}
+    owned_detail_by_id = {}
     for device_id, name in Device.objects.filter(
         pk__in=list(unmanaged.get("owned_untagged_device_ids") or ())
     ).values_list("pk", "name"):
@@ -517,11 +518,13 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
             owned_absent_pks.append(device_id)
         detail = (details or {}).get(name)
         if detail:
-            owned_endpoint_detail_by_id[str(device_id)] = detail
+            owned_detail_by_id[str(device_id)] = detail
     unmanaged["owned_prune_candidates"] = len(owned_absent_pks)
-    # The endpoint-scope rule behind each uncovered endpoint device, by pk, so
-    # the device page can say which setting or tag would cover it again.
-    unmanaged["owned_endpoint_detail_by_id"] = owned_endpoint_detail_by_id
+    # The rule behind each uncovered device, by pk - the endpoint-scope rule
+    # for an endpoint device Forward still reports, the configuration fact for
+    # one it no longer does - so the device page can say what would cover it
+    # again.
+    unmanaged["owned_detail_by_id"] = owned_detail_by_id
     # Persisted (no leading underscore) so the device page can tell whether one
     # device is in the prune's target set without recomputing the census. Keys
     # only - names are customer data and do not belong in a job payload.
@@ -772,6 +775,73 @@ ENDPOINT_ABSENCE_DETAILS = {
 }
 
 
+# Why an `absent` device is still "in Forward" when the operator looks: the
+# snapshot has no device by this name, but Forward's CONFIGURATION still lists
+# it under one of the sync's include tags. The Device Tags page reads the
+# configuration, every NQE query reads the snapshot, and the difference is what
+# a customer reported as "the tags are in Forward but did not make it into
+# NetBox" - 321 devices at once. Each names the Forward-side fact that keeps the
+# device out of the snapshot. A device under none of these is simply absent:
+# not tagged in the configuration either, so it genuinely left.
+ABSENT_DETAILS = {
+    "absent_configured_disabled": (
+        "configured and tagged in Forward, but collection is disabled"
+    ),
+    "absent_configured_uncollected": (
+        "configured and tagged in Forward, but not in this snapshot"
+    ),
+    "absent_tag_only": (
+        "tagged in Forward's device tags, but not a configured device "
+        "(a vsys or vdom child, a controller-managed device, or a stale tag entry)"
+    ),
+}
+
+
+def _configured_absence_details(names, *, client, network_id, include_tags):
+    """``{name: detail}`` for each absent name Forward still lists under an
+    include tag - from the network configuration, which is what the operator
+    sees in Forward's UI. Advisory: a failure here (permissions, an older
+    Forward) leaves the census verdicts untouched and every name plainly
+    ``absent``, exactly as before this existed.
+    """
+    include_tags = [str(tag).strip() for tag in include_tags or () if str(tag).strip()]
+    if not names or not include_tags:
+        return {}
+    try:
+        names_by_tag = client.get_configured_device_tags(network_id)
+    except JobTimeoutException:
+        raise
+    except Exception:
+        return {}
+    if not isinstance(names_by_tag, dict):
+        return {}
+    configured_tagged = set()
+    for tag in include_tags:
+        members = names_by_tag.get(tag)
+        if isinstance(members, (set, frozenset, list, tuple)):
+            configured_tagged.update(str(name) for name in members)
+    tagged_absent = [name for name in names if name in configured_tagged]
+    if not tagged_absent:
+        return {}
+    try:
+        collect_by_name = client.get_classic_device_collection(network_id)
+    except JobTimeoutException:
+        raise
+    except Exception:
+        collect_by_name = {}
+    if not isinstance(collect_by_name, dict):
+        collect_by_name = {}
+    details = {}
+    for name in tagged_absent:
+        if name not in collect_by_name:
+            details[name] = "absent_tag_only"
+        elif collect_by_name[name] is False:
+            details[name] = "absent_configured_disabled"
+        else:
+            details[name] = "absent_configured_uncollected"
+    return details
+
+
 def _endpoint_scope_settings(sync, include_tags, exclude_tags, include_match):
     """The endpoint-scope rules, as the census needs them to explain a miss."""
     parameters = dict(getattr(sync.source, "parameters", {}) or {})
@@ -810,7 +880,15 @@ def _endpoint_absence_detail(row, scope):
     return "endpoint_in_scope"
 
 
-def _absence_census(names, *, client, network_id, snapshot_id, endpoint_scope=None):
+def _absence_census(
+    names,
+    *,
+    client,
+    network_id,
+    snapshot_id,
+    endpoint_scope=None,
+    include_tags=None,
+):
     """Classify each name: ``(kinds, details)``, or ``None`` if the census
     could not run so every caller renders "unavailable" rather than a zero.
 
@@ -820,7 +898,11 @@ def _absence_census(names, *, client, network_id, snapshot_id, endpoint_scope=No
     endpoint-scope rule that excludes them (see ``ENDPOINT_ABSENCE_DETAILS``),
     because "in Forward but untagged" is one badge covering a console server
     whose tags need adding to the include set and a generic SNMP endpoint that
-    is out by design.
+    is out by design. It refines ``absent`` the same way, with the Forward
+    configuration fact that keeps a still-tagged device out of the snapshot
+    (see ``ABSENT_DETAILS``) - two REST reads, only when absent names exist
+    and only advisory: the verdict stays ``absent`` and the prunes gate on it
+    exactly as before.
 
     One query per Forward table for however many names are asked about. Neither
     carries a tag predicate or a vendor guard, on purpose: the census must see
@@ -919,6 +1001,14 @@ def _absence_census(names, *, client, network_id, snapshot_id, endpoint_scope=No
             kinds[name] = "vendor_excluded"
         else:
             kinds[name] = "untagged"
+    details.update(
+        _configured_absence_details(
+            [name for name in names if kinds.get(name) == "absent"],
+            client=client,
+            network_id=network_id,
+            include_tags=include_tags,
+        )
+    )
     return kinds, details
 
 
@@ -930,9 +1020,27 @@ def _absence_kinds(names, *, client, network_id, snapshot_id, include_endpoints=
     return None if census is None else census[0]
 
 
+def _detail_breakdown(names, details, labels):
+    by_detail = {}
+    for name in names:
+        detail = (details or {}).get(name)
+        if detail:
+            by_detail.setdefault(detail, []).append(name)
+    return [
+        {
+            "reason": reason,
+            "label": labels.get(reason, reason),
+            "count": len(members),
+            "sample": members[:SAMPLE_LIMIT],
+        }
+        for reason, members in sorted(by_detail.items())
+    ]
+
+
 def _absence_summary(names, kinds, details=None):
     """The panel's three counts and samples for one absent set, plus the
-    endpoint breakdown of ``present_untagged`` (reason -> count and sample)."""
+    endpoint breakdown of ``present_untagged`` and the configuration breakdown
+    of ``absent_from_snapshot`` (reason -> count and sample)."""
     if not names:
         return {
             "available": True,
@@ -943,6 +1051,8 @@ def _absence_summary(names, kinds, details=None):
             "present_untagged_sample": [],
             "vendor_excluded_sample": [],
             "endpoint_detail": [],
+            "absent_detail": [],
+            "absent_still_tagged": 0,
         }
     if kinds is None:
         return {"available": False}
@@ -951,20 +1061,7 @@ def _absence_summary(names, kinds, details=None):
     vendor_excluded = sorted(
         name for name in names if kinds.get(name) == "vendor_excluded"
     )
-    by_detail = {}
-    for name in untagged:
-        detail = (details or {}).get(name)
-        if detail:
-            by_detail.setdefault(detail, []).append(name)
-    endpoint_detail = [
-        {
-            "reason": reason,
-            "label": ENDPOINT_ABSENCE_DETAILS.get(reason, reason),
-            "count": len(members),
-            "sample": members[:SAMPLE_LIMIT],
-        }
-        for reason, members in sorted(by_detail.items())
-    ]
+    absent_detail = _detail_breakdown(absent, details, ABSENT_DETAILS)
     return {
         "available": True,
         "absent_from_snapshot": len(absent),
@@ -973,7 +1070,13 @@ def _absence_summary(names, kinds, details=None):
         "absent_from_snapshot_sample": absent[:SAMPLE_LIMIT],
         "present_untagged_sample": untagged[:SAMPLE_LIMIT],
         "vendor_excluded_sample": vendor_excluded[:SAMPLE_LIMIT],
-        "endpoint_detail": endpoint_detail,
+        "endpoint_detail": _detail_breakdown(
+            untagged, details, ENDPOINT_ABSENCE_DETAILS
+        ),
+        "absent_detail": absent_detail,
+        # How many of the "gone from Forward" devices Forward's own UI still
+        # shows under an include tag - the number a customer will quote back.
+        "absent_still_tagged": sum(row["count"] for row in absent_detail),
     }
 
 

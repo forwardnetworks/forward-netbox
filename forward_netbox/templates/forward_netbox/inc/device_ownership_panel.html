@@ -125,6 +125,26 @@
         {% endblocktrans %}
       </p>
     {% endif %}
+    {% if ownership.prune.absent_detail %}
+      {# The snapshot has no such device, but Forward's configuration still  #}
+      {# lists it under an include tag - which is what the Forward UI shows, #}
+      {# and why an operator reads this as "tagged in Forward, not synced".  #}
+      <p class="text-muted small mb-0 mt-1">
+        {% blocktrans trimmed with reason=ownership.prune.absent_detail_label %}
+          Forward's device configuration still shows it: {{ reason }}. The
+          sync reads the snapshot, so a device the snapshot does not carry
+          cannot be tagged or updated in NetBox however it is tagged in
+          Forward.
+        {% endblocktrans %}
+        {% if ownership.prune.absent_detail == "absent_configured_disabled" %}
+          {% trans "Re-enable collection for the device in Forward to cover it again, or remove it here if the disable is permanent." %}
+        {% elif ownership.prune.absent_detail == "absent_configured_uncollected" %}
+          {% trans "Check the device's collection status in Forward; once a snapshot carries it again the sync covers it automatically." %}
+        {% elif ownership.prune.absent_detail == "absent_tag_only" %}
+          {% trans "The tag entry outlived the device: a vsys or vdom child the snapshot no longer models, or a device removed from collection without clearing its tags." %}
+        {% endif %}
+      </p>
+    {% endif %}
     {% if ownership.holders %}
       <p class="text-muted mb-0">
         {% blocktrans trimmed %}
