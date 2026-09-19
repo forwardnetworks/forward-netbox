@@ -13,6 +13,7 @@ from unittest.mock import patch
 from core.choices import JobStatusChoices
 from core.models import Job
 from django.contrib.contenttypes.models import ContentType
+from django.db import transaction
 from django.db.models.deletion import ProtectedError
 from django.test import TestCase
 from django.test import TransactionTestCase
@@ -445,6 +446,34 @@ class SyncDeleteScheduleCleanupTest(TestCase):
         self.assertTrue(ForwardSync.objects.filter(pk=sync.pk).exists())
         self.assertTrue(Job.objects.filter(pk=job.pk).exists())
 
+    def test_running_job_protects_sync_from_bulk_queryset_deletion(self):
+        # `ForwardSync.delete()` handles the single-instance path above.
+        # `QuerySet.delete()` never calls an instance's `delete()` method
+        # (only the Collector, which still dispatches `pre_delete`), so this
+        # pins the signal-only path stays protected on its own - the fix for
+        # the single-instance regression must not have been read as
+        # permission to drop the signal.
+        sync = _make_sync("sched-del-running-bulk")
+        job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=sync.pk,
+            name="validation",
+            status=JobStatusChoices.STATUS_RUNNING,
+            interval=1440,
+            started=datetime.now(tz=dt_timezone.utc),
+            job_id="123e4567-e89b-12d3-a456-426614174703",
+        )
+
+        # QuerySet.delete() wraps itself in `atomic(savepoint=False)`; any
+        # exception escaping it marks the connection dirty for the rest of
+        # this test's own transaction unless it has its own savepoint here.
+        with transaction.atomic():
+            with self.assertRaises(ProtectedError):
+                ForwardSync.objects.filter(pk=sync.pk).delete()
+
+        self.assertTrue(ForwardSync.objects.filter(pk=sync.pk).exists())
+        self.assertTrue(Job.objects.filter(pk=job.pk).exists())
+
     def test_running_ingestion_merge_job_protects_sync_from_deletion(self):
         sync = _make_sync("sched-del-merge-running")
         ingestion = ForwardIngestion.objects.create(sync=sync)
@@ -463,6 +492,35 @@ class SyncDeleteScheduleCleanupTest(TestCase):
             sync.delete()
 
         self.assertTrue(ForwardSync.objects.filter(pk=sync.pk).exists())
+        self.assertTrue(ForwardIngestion.objects.filter(pk=ingestion.pk).exists())
+        self.assertTrue(Job.objects.filter(pk=job.pk).exists())
+
+    def test_running_job_protects_ingestion_from_deletion_single_and_bulk(self):
+        # Mirrors the ForwardSync cases above for ForwardIngestion.delete()
+        # directly: NetBox 4.6.9's JobsMixin.delete() change (#22812) applies
+        # to ForwardIngestion too, since it is also a JobsMixin.
+        sync = _make_sync("sched-del-ingestion-running")
+        ingestion = ForwardIngestion.objects.create(sync=sync)
+        job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardIngestion),
+            object_id=ingestion.pk,
+            name="sync",
+            status=JobStatusChoices.STATUS_RUNNING,
+            started=datetime.now(tz=dt_timezone.utc),
+            job_id="123e4567-e89b-12d3-a456-426614174704",
+        )
+
+        with self.assertRaises(ProtectedError):
+            ingestion.delete()
+        self.assertTrue(ForwardIngestion.objects.filter(pk=ingestion.pk).exists())
+
+        # QuerySet.delete() wraps itself in `atomic(savepoint=False)`, so a
+        # ProtectedError raised inside it (unlike the instance path above,
+        # which takes its own savepoint in ForwardIngestion.delete()) would
+        # otherwise poison this test's own transaction.
+        with transaction.atomic():
+            with self.assertRaises(ProtectedError):
+                ForwardIngestion.objects.filter(pk=ingestion.pk).delete()
         self.assertTrue(ForwardIngestion.objects.filter(pk=ingestion.pk).exists())
         self.assertTrue(Job.objects.filter(pk=job.pk).exists())
 

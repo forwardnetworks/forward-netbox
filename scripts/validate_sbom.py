@@ -10,7 +10,7 @@ from pathlib import Path
 REQUIRED_COMPONENTS = {
     "forward-netbox": None,
     "httpx": "0.28.1",
-    "netbox": "4.6.8",
+    "netbox": "4.6.10",
     "netbox-cisco-aci": "0.4.0",
     "netbox-dlm": "0.10.0",
     "netbox-peering-manager": "0.3.0",
