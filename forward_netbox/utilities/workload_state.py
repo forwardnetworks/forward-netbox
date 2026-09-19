@@ -903,6 +903,13 @@ def _owned_device_rows(sync, coalesce_fields):
 # decides what is deleted.
 CATALOG_SWEEP_MODELS = frozenset({"netbox_dlm.softwareversion"})
 
+# The device ownership/quarantine sweep's own bespoke gate operates on
+# `dcim.device` alone. Named here (rather than left as a bare string at its
+# call site) so a cross-module invariant test can assert it, like
+# `CATALOG_SWEEP_MODELS`, is always a model the generic delete producers
+# refuse outright - see test_diff_removal_allowlist.py.
+DEVICE_OWNERSHIP_SWEEP_MODELS = frozenset({"dcim.device"})
+
 
 def _software_version_catalog_rows(sync):
     """Software versions this sync can attribute to itself, as catalogue rows.
