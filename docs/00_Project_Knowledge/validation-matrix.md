@@ -115,3 +115,18 @@ the tracked files; never derive the trust-anchor environment variable from the
 candidate baseline. Exact current hashes approve reviewed binary documentation
 assets. Historical binary exceptions require externally supplied
 commit/path/digest approval.
+
+## Known Linter False Positives
+
+`~/.claude/nqe-lsp/nqe-lsp-validate` lints `.nqe` sources but does not
+execute them, so it can both miss real bugs (see the "lint-clean, live-broken"
+class covered by `forward_netbox/tests/test_nqe_lint_blind_spots.py`) and flag
+correct queries as broken. Before "fixing" a query to silence a lint
+diagnostic, check whether it's already a known false positive:
+
+- **`forward_hsrp_groups.nqe`** (all 8 `foreach group in ...` sites): the
+  linter reports "Expected identifier after foreach", misparsing `group` as
+  reserved for a `group by`-like construct even when used as a plain
+  `foreach` loop variable. Live-confirmed correct against Forward (1892 real
+  HSRP/VRRP rows returned). Documented inline in the file itself; do not
+  rename the variable.
