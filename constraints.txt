@@ -10,7 +10,7 @@ forward-sdk==0.1.16
 httpx==0.28.1
 netbox-cisco-aci==0.4.0
 netbox-dlm==0.10.0
-netboxlabs-netbox-branching==1.2.0
+netboxlabs-netbox-branching==1.2.1
 netbox-peering-manager==0.3.1
 # netbox-routing is deliberately absent while it installs from upstream main:
 # its 4.7 support (0.4.4) is merged but not tagged, so no PyPI version can be
