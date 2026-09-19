@@ -96,16 +96,32 @@ def seed_builtin_nqe_maps(sender, **kwargs):
             query_map.save(update_fields=update_fields)
 
 
-@receiver(pre_delete, sender=ForwardSync)
-def cancel_enqueued_jobs_on_sync_delete(sender, instance, **kwargs):
+def protect_sync_from_deletion_while_jobs_active(instance):
     """Cancel queued work and reject deletion while a worker is running.
 
-    The JobsMixin GenericRelation cascade removes Job rows through the SQL
-    collector, which skips Job.delete()'s RQ-cancel override — a standing
-    schedule (2.5.6 JobRunner recurrence) would leave a live RQ scheduler
-    entry firing against a deleted sync forever. A running Job cannot be
-    cancelled safely: deleting it loses terminal diagnostics while its worker
-    continues, so the sync remains protected until that occurrence finishes.
+    Called from two places, for two different delete paths:
+
+    - the ``pre_delete`` signal below, which is what actually protects a
+      **bulk** ``ForwardSync.objects.filter(...).delete()`` - Django's
+      ``QuerySet.delete()`` never calls an instance's ``delete()`` method
+      (only the Collector, which still dispatches ``pre_delete``), so
+      ``ForwardSync.delete()`` below never runs for that path.
+    - ``ForwardSync.delete()``, for a single-instance ``sync.delete()``.
+      NetBox 4.6.9's #22812 fix made ``JobsMixin.delete()`` batch-delete the
+      instance's own ``jobs`` GenericRelation *before* calling
+      ``super().delete()`` - which is where ``pre_delete`` fires - so by the
+      time this signal used to run, the very Job rows it needs to inspect
+      were already gone and a running sync's job went unprotected. The
+      override runs this check first, before ``JobsMixin.delete()`` ever
+      touches the jobs.
+
+    Historically, the JobsMixin GenericRelation cascade removed Job rows
+    through the SQL collector, which skips Job.delete()'s RQ-cancel override
+    - a standing schedule (2.5.6 JobRunner recurrence) would leave a live RQ
+    scheduler entry firing against a deleted sync forever. A running Job
+    cannot be cancelled safely: deleting it loses terminal diagnostics while
+    its worker continues, so the sync remains protected until that
+    occurrence finishes.
     """
     acquire_job_schedule_transaction_lock()
     ingestion_rows = list(
@@ -143,8 +159,12 @@ def cancel_enqueued_jobs_on_sync_delete(sender, instance, **kwargs):
         job.delete()
 
 
-@receiver(pre_delete, sender=ForwardIngestion)
-def refuse_ingestion_delete_with_live_baseline(sender, instance, **kwargs):
+@receiver(pre_delete, sender=ForwardSync)
+def cancel_enqueued_jobs_on_sync_delete(sender, instance, **kwargs):
+    protect_sync_from_deletion_while_jobs_active(instance)
+
+
+def protect_ingestion_from_deletion_while_live_or_running(instance):
     """Keep the live contributor baseline, and any ingestion still running.
 
     Two guarantees that used to belong to the database, moved here when
@@ -154,11 +174,14 @@ def refuse_ingestion_delete_with_live_baseline(sender, instance, **kwargs):
     for `queryset.delete()` too, so no path loses a baseline the sync still
     depends on.
 
-    The running-job half closes the same hole `cancel_enqueued_jobs_on_sync_delete`
-    closes for a sync. `ForwardIngestion` carries `JobsMixin` as well, so its
-    `Job` rows cascade through the SQL collector and bypass `Job.delete()`'s
-    RQ-cancel override - deleting a mid-flight ingestion would drop the job row
-    while its worker kept running against it.
+    The running-job half closes the same hole
+    `protect_sync_from_deletion_while_jobs_active` closes for a sync, and for
+    the same reason needs two call sites: the `pre_delete` signal below (the
+    `queryset.delete()` / bulk path, where `JobsMixin.delete()` never runs)
+    and `ForwardIngestion.delete()` (the single-instance path, where NetBox
+    4.6.9's #22812 fix now empties `jobs` before `pre_delete` fires). Deleting
+    a mid-flight ingestion would drop the job row while its worker kept
+    running against it.
     """
     from .models import ForwardContributorBaseline
 
@@ -194,6 +217,11 @@ def refuse_ingestion_delete_with_live_baseline(sender, instance, **kwargs):
             "Cannot delete a Forward ingestion while one of its jobs is " "running.",
             running,
         )
+
+
+@receiver(pre_delete, sender=ForwardIngestion)
+def refuse_ingestion_delete_with_live_baseline(sender, instance, **kwargs):
+    protect_ingestion_from_deletion_while_live_or_running(instance)
 
 
 def acquire_job_schedule_transaction_lock():

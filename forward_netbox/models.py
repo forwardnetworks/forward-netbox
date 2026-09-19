@@ -517,9 +517,19 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
         return reverse("plugins:forward_netbox:forwardsync", args=[self.pk])
 
     def delete(self, *args, **kwargs):
+        # The running-job check must run before JobsMixin.delete() (next in
+        # MRO via super()), which NetBox 4.6.9 (#22812) made batch-delete
+        # this instance's own `jobs` GenericRelation before the cascade even
+        # starts - before `pre_delete` ever fires, so a running job would be
+        # gone by the time `cancel_enqueued_jobs_on_sync_delete` looked for
+        # it. This duplicates that signal's check for the single-instance
+        # delete path specifically; the signal still covers
+        # `queryset.delete()`, which never reaches this method at all.
+        from .signals import protect_sync_from_deletion_while_jobs_active
         from .utilities.ownership import release_sync_ownership
 
         with transaction.atomic():
+            protect_sync_from_deletion_while_jobs_active(self)
             release_sync_ownership(self)
             return super().delete(*args, **kwargs)
 
@@ -1044,6 +1054,20 @@ class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
             merge_attempt=merge_attempt,
             accept_reported_failures=accept_reported_failures,
         )
+
+    def delete(self, *args, **kwargs):
+        # See ForwardSync.delete() for why this duplicates the pre_delete
+        # signal's check: JobsMixin.delete() (NetBox 4.6.9, #22812) now
+        # empties `jobs` before the single-instance delete path's pre_delete
+        # ever fires. The queryset.delete() bulk path still goes through the
+        # signal only, since it never calls this method.
+        from .signals import protect_ingestion_from_deletion_while_live_or_running
+
+        with transaction.atomic():
+            protect_ingestion_from_deletion_while_live_or_running(self)
+            return super().delete(*args, **kwargs)
+
+    delete.alters_data = True
 
 
 class ForwardMergeAttempt(ForwardPluginModelDocsMixin, models.Model):
