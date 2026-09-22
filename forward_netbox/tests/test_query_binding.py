@@ -484,7 +484,12 @@ class NQEMapBindingTest(TestCase):
         self.assertEqual(drift["status"], "live_query_id_source_match")
         self.assertEqual(drift["severity"], "pass")
         self.assertEqual(drift["live_repository"], "org")
-        self.assertEqual(drift["live_query_path"], "/team/netbox/forward_devices")
+        # The path is reduced to its leaf plus a digest: an org repository
+        # path carries the customer's own folder names, and a report that
+        # leaves the deployment should not.
+        self.assertEqual(drift["live_query_path_leaf"], "forward_devices.nqe")
+        self.assertEqual(len(drift["live_query_path_sha256"]), 64)
+        self.assertNotIn("live_query_path", drift)
         client.get_committed_nqe_query.assert_called_once_with(
             repository="org",
             query_path="/team/netbox/forward_devices",

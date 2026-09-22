@@ -16,11 +16,13 @@ from ..models import ForwardSync
 from ..models import ForwardValidationRun
 from ..utilities.logging import SyncLogging
 from .api_usage import record_forward_api_usage
+from .diagnostics import assert_export_safe_diagnosis
 from .diagnostics import describe_failure
 from .diagnostics import exception_type
 from .diagnostics import safe_operation_failure
 from .diagnostics import structured_failure_diagnosis
 from .diagnostics import with_raise_site
+from .export_redaction import OPERATOR_DETAIL_KEY
 from .runtime_guidance import log_worker_timeout_guidance
 
 logger = logging.getLogger("forward_netbox.models")
@@ -115,6 +117,11 @@ def _record_forward_sync_failure(sync, job, executor, ingestion, exc):
     # existed only because RQ re-raises, which is luck rather than design.
     message = with_raise_site(message, diagnosis)
     sync.logger.log_failure(message, obj=ingestion)
+    operator_detail = getattr(exc, "operator_detail", None)
+    if isinstance(operator_detail, dict) and operator_detail:
+        # GUI-only tier; `export_safe_payload` drops it from every download.
+        diagnosis = {**diagnosis, OPERATOR_DETAIL_KEY: operator_detail}
+    assert_export_safe_diagnosis(diagnosis, where=" recording a sync failure")
     ForwardIngestionIssue.objects.create(
         ingestion=ingestion,
         phase=ForwardIngestionPhaseChoices.SYNC,

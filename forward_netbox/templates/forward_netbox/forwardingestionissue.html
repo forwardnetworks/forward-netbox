@@ -43,12 +43,12 @@
     <div class="card">
       <h5 class="card-header">{% trans "Diagnosis" %}</h5>
       <div class="card-body">
-        {% if object.raw_data %}
+        {% if object.exported_diagnosis %}
           <p class="text-muted small">
-            {% trans "Schema identifiers only. Key values are deliberately not recorded." %}
+            {% trans "Schema identifiers only. This is the half a support bundle carries." %}
           </p>
           <table class="table table-hover attr-table">
-            {% for key, value in object.raw_data.items %}
+            {% for key, value in object.exported_diagnosis.items %}
               <tr>
                 <th scope="row">{{ key }}</th>
                 <td><code>{{ value }}</code></td>
@@ -62,6 +62,24 @@
         {% endif %}
       </div>
     </div>
+    {% if object.operator_detail %}
+      <div class="card">
+        <h5 class="card-header">{% trans "Conflicting Values" %}</h5>
+        <div class="card-body">
+          <p class="text-muted small">
+            {% trans "Shown here only. These values are removed from every downloaded bundle and log export, so quote the primary key above rather than the name when sending a bundle on." %}
+          </p>
+          <table class="table table-hover attr-table">
+            {% for key, value in object.operator_detail.items %}
+              <tr>
+                <th scope="row">{{ key }}</th>
+                <td><code>{{ value }}</code></td>
+              </tr>
+            {% endfor %}
+          </table>
+        </div>
+      </div>
+    {% endif %}
     <div class="card">
       <h5 class="card-header">{% trans "Identity" %}</h5>
       <div class="card-body">

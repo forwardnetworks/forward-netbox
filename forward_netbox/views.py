@@ -83,6 +83,7 @@ from .utilities.diagnostics import safe_job_error_summary
 from .utilities.diagnostics import sanitize_job_diagnostics
 from .utilities.direct_changes import object_changes_for_ingestion
 from .utilities.execution_telemetry import build_plan_preview
+from .utilities.export_redaction import export_safe_payload
 from .utilities.health import _job_data_count_trend
 from .utilities.health import live_data_file_health_check
 from .utilities.health import live_source_health_check
@@ -359,13 +360,6 @@ def _ingestion_issue_bundle_payload(ingestion):
 # suffix rather than enumerated: the reconciliation report gains a sample or an
 # id list most releases, and an allowlist that has to be extended each time is
 # an allowlist that silently exports names the release after it is forgotten.
-_BUNDLE_DROP_KEY_SUFFIXES = (
-    "_sample",
-    "_detail",
-    "_names",
-    "_by_name",
-)
-_BUNDLE_COUNT_KEY_SUFFIXES = ("_device_ids", "_pks")
 
 
 def _bundle_safe_report(value):
@@ -380,23 +374,9 @@ def _bundle_safe_report(value):
     the quarantine state, the prune candidate count, the backfill reason
     breakdown - is counts and slugs and survives.
     """
-    if isinstance(value, dict):
-        cleaned = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                continue
-            if key.endswith(_BUNDLE_COUNT_KEY_SUFFIXES):
-                cleaned[f"{key}_count"] = (
-                    len(item) if isinstance(item, (list, tuple, set)) else None
-                )
-                continue
-            if key.endswith(_BUNDLE_DROP_KEY_SUFFIXES):
-                continue
-            cleaned[key] = _bundle_safe_report(item)
-        return cleaned
-    if isinstance(value, (list, tuple)):
-        return [_bundle_safe_report(item) for item in value]
-    return value
+    # One filter, not two: this used to carry its own copy of the suffix rules,
+    # and a second copy is a second thing to forget to update.
+    return export_safe_payload(value)
 
 
 def _scope_reconciliation_bundle_payload(sync):
@@ -643,6 +623,33 @@ def _stuck_verdict_bundle_payload(sync):
         return {"verdict": None, "classification_error": type(exc).__name__}
 
 
+def _live_query_drift_bundle_payload(sync):
+    """The stored live-drift result per map, and when it was taken.
+
+    Deliberately stored rather than fetched: the bundle makes no Forward calls.
+    An empty list means nobody has run the live check, which is itself worth
+    seeing rather than reading as "no drift".
+    """
+    rows = []
+    for query_map in sync.get_maps():
+        stored = query_map.last_live_drift or {}
+        if not stored:
+            continue
+        rows.append(
+            {
+                "map_id": query_map.pk,
+                "model": query_map.model_string,
+                "checked_at": (
+                    query_map.last_live_drift_at.isoformat()
+                    if query_map.last_live_drift_at
+                    else None
+                ),
+                **json_safe_value(stored),
+            }
+        )
+    return rows
+
+
 def _sync_support_bundle_payload(sync):
     from .utilities.ownership import (
         ownership_finalization_summary,
@@ -696,6 +703,12 @@ def _sync_support_bundle_payload(sync):
         },
         "query_drift_summary": health.get("query_drift_summary", {}),
         "query_drift_results": health.get("query_modes", {}).get("local_drift", []),
+        # The local drift above compares the bundled query to what NetBox
+        # stores. Only this says whether the query actually PUBLISHED in
+        # Forward still accepts the parameters this release sends - the
+        # difference between "a body changed" and "every execution will be
+        # refused". Stored by the live drift view; absent until it is run.
+        "live_query_drift": _live_query_drift_bundle_payload(sync),
         "upgrade_reconciliation": json_safe_value(
             compute_upgrade_reconciliation(include_samples=False)
         ),
@@ -782,6 +795,12 @@ def _sync_support_bundle_payload(sync):
 
 
 def _download_json_response(payload, filename):
+    # Every JSON diagnostic this plugin hands out leaves through here - the
+    # support bundle, the dependency preview, the log export, the health
+    # downloads - which is why the redaction sits at this line rather than at
+    # each caller. Two of those callers passed their payload through nothing at
+    # all before this, and a third built its own partial filter.
+    payload = export_safe_payload(payload)
     response = JsonResponse(payload, json_dumps_params={"indent": 2}, safe=True)
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
     return response
@@ -995,18 +1014,38 @@ def _dependency_dry_run_payload(sync, *, client=None):
     workloads = fetcher.fetch_workloads(
         context, include_diagnostics=True, capture_comparison_rows=True
     )
-    failed_models = [
-        result.model_string
-        for result in fetcher.model_results
-        if int(result.failure_count or 0) > 0
+    failures = [
+        result for result in fetcher.model_results if int(result.failure_count or 0) > 0
     ]
-    if failed_models:
+    if failures:
+        failed_models = [result.model_string for result in failures]
         sample = ", ".join(failed_models[:5])
         suffix = "" if len(failed_models) <= 5 else ", ..."
-        raise ForwardQueryError(
-            "Dependency preview query validation failed for "
-            f"{len(failed_models)} model(s): {sample}{suffix}."
+        # Carry WHY, not just which. `failure_exception` and `failure_reason`
+        # are already populated on every failed result, and are already
+        # value-free by construction - an exception class name and a slug from
+        # the diagnostics catalogue. Collecting only `model_string` here threw
+        # them away at the one point an operator reads, so a preview that died
+        # because a published query rejected its parameters said only that two
+        # models had "failed validation", and the reason had to be reproduced
+        # by hand against the live API.
+        reasons = sorted(
+            {
+                f"{result.failure_exception or 'error'}"
+                + (f": {result.failure_reason}" if result.failure_reason else "")
+                for result in failures
+            }
         )
+        error = ForwardQueryError(
+            "Dependency preview query validation failed for "
+            f"{len(failed_models)} model(s): {sample}{suffix}"
+            + (f" ({'; '.join(reasons[:3])})." if reasons else ".")
+        )
+        error.safe_diagnosis = {
+            "failed_models": failed_models[:20],
+            "failed_model_reasons": reasons[:20],
+        }
+        raise error
     plan = build_branch_plan(
         workloads,
         max_changes_per_staging_item=sync.get_max_changes_per_staging_item(),
@@ -2772,6 +2811,26 @@ class ForwardSyncHealthView(generic.ObjectView):
         return {"health": sync_health_summary(instance)}
 
 
+def _store_live_drift_results(results):
+    """Record each live drift result on its map, best effort.
+
+    A diagnostic that fails to save must not break the diagnostic the operator
+    actually asked for, so this never raises.
+    """
+    checked_at = timezone.now()
+    for result in results or []:
+        map_id = (result or {}).get("map_id")
+        if not map_id:
+            continue
+        try:
+            ForwardNQEMap.objects.filter(pk=map_id).update(
+                last_live_drift=json_safe_value(result),
+                last_live_drift_at=checked_at,
+            )
+        except Exception:  # noqa: BLE001 - storing is not the point of the view
+            continue
+
+
 @register_model_view(ForwardSync, "query_drift", path="query-drift")
 class ForwardSyncQueryDriftView(BaseObjectView):
     queryset = ForwardSync.objects.all()
@@ -2788,6 +2847,13 @@ class ForwardSyncQueryDriftView(BaseObjectView):
             for query_map in sync.get_maps()
             if sync.is_model_enabled(query_map.model_string)
         ]
+        results = live_query_binding_drifts(client=client, query_maps=maps)
+        # Persist it. This is the only place the PUBLISHED query is fetched,
+        # and the support bundle - which makes no API calls by design - has no
+        # other way to report that a map's published copy declares different
+        # parameters from the bundled one. Storing it here means the next
+        # bundle carries the answer without anyone having to run this first.
+        _store_live_drift_results(results)
         payload = {
             "exported_at": timezone.now().isoformat(),
             "sync": {
@@ -2796,7 +2862,7 @@ class ForwardSyncQueryDriftView(BaseObjectView):
                 "source": sync.source_id,
             },
             "query_drift_summary": health.get("query_drift_summary", {}),
-            "results": live_query_binding_drifts(client=client, query_maps=maps),
+            "results": results,
         }
         filename = f"forward-sync-{sync.pk}-live-query-drift.json"
         return _download_json_response(json_safe_value(payload), filename)

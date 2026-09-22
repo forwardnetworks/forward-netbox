@@ -1,3 +1,4 @@
+import hashlib
 import logging
 from dataclasses import dataclass
 
@@ -7,6 +8,7 @@ from rq.timeouts import JobTimeoutException
 
 from ..models import ForwardNQEMap
 from .plugin_integrations.registry import optional_integration_for_model
+from .query_execution_contract import declared_query_parameters
 from .query_registry import BUILTIN_SEEDED_QUERY_MAPS
 from .query_registry import get_query_specs
 from .query_registry import indexed_query_for_spec
@@ -439,6 +441,47 @@ def _live_drift_for_query_id(
     )
 
 
+def parameter_signature_drift(expected_filename: str, source_code: str) -> dict:
+    """Compare the PUBLISHED query's parameter list to the bundled one.
+
+    Source-text comparison already told us a published query differs from the
+    bundled one. It could not tell us the difference that actually breaks a
+    sync: the plugin derives the parameters it SENDS from the bundled file, and
+    sends them to whatever the map is bound to. When a release adds a parameter
+    and the published copy is not republished, Forward rejects every execution
+    with `Provided argument, 'x' is not a parameter to the given query` - an
+    HTTP 400 per model, on a deployment where nothing had changed but a
+    `pip install`.
+
+    That is exactly what happened: two queries went from one parameter to seven
+    and two models failed on every run until the org library was republished.
+    The drift check reported "source differs", which is true of any
+    republished-late query and reads as routine.
+
+    Both halves of this already existed - the signature parser, and the fetch
+    of the committed source - and had simply never been pointed at each other.
+    It costs no API call: the caller is holding both strings.
+    """
+    bundled = declared_query_parameters(
+        read_compiled_builtin_query_source(expected_filename)
+    )
+    published = declared_query_parameters(source_code)
+    if bundled is None or published is None:
+        return {}
+    bundled_names = [parameter.name for parameter in bundled]
+    published_names = [parameter.name for parameter in published]
+    missing = [name for name in bundled_names if name not in published_names]
+    unexpected = [name for name in published_names if name not in bundled_names]
+    return {
+        "declared_parameters_local": bundled_names,
+        "declared_parameters_live": published_names,
+        "parameter_signature_matches": not missing and not unexpected,
+        # The ones the sync will send that the published query will refuse.
+        "missing_parameters": missing,
+        "unexpected_parameters": unexpected,
+    }
+
+
 def _live_drift_result_from_committed_query(
     local_result: dict,
     *,
@@ -462,6 +505,8 @@ def _live_drift_result_from_committed_query(
             read_compiled_builtin_query_source(expected_filename)
         )
 
+    signature = parameter_signature_drift(expected_filename, source_code)
+
     mode = str(local_result.get("mode") or "")
     if mode == "query_path":
         status = "legacy_repository_path_binding"
@@ -469,6 +514,19 @@ def _live_drift_result_from_committed_query(
         message = (
             "The legacy repository path resolved successfully, but the map must "
             "be rebound to the returned query ID."
+        )
+    elif signature.get("parameter_signature_matches") is False:
+        # Ranked above `source_modified` deliberately. A differing body is
+        # usually benign drift; a differing PARAMETER LIST is a guaranteed
+        # HTTP 400 on the next sync, and the two must not read alike.
+        status = "live_query_id_parameter_mismatch"
+        severity = "danger"
+        missing = ", ".join(signature.get("missing_parameters") or ())
+        message = (
+            "The published Forward query declares different parameters from "
+            "the bundled query this release sends. Every execution will be "
+            "rejected until it is republished"
+            + (f" (not declared there: {missing})." if missing else ".")
         )
     elif source_matches is True:
         status = "live_query_id_source_match"
@@ -494,11 +552,18 @@ def _live_drift_result_from_committed_query(
         "live_status": status,
         "live_message": message,
         "live_repository": repository,
-        "live_query_path": query_path,
+        # Reduced for the same reason as the local path above: an org
+        # repository path carries the customer's own folder names, and the
+        # leaf plus a digest correlates two reports just as well.
+        "live_query_path_leaf": query_filename_from_path(query_path),
+        "live_query_path_sha256": (
+            hashlib.sha256(query_path.encode("utf-8")).hexdigest() if query_path else ""
+        ),
         "live_query_id": query_id,
         "live_commit_id": commit_id,
         "requested_commit_id": requested_commit_id or "",
         "source_matches_bundled": source_matches,
+        **signature,
         "current_filename": query_filename,
         "remediation": local_result.get("remediation", ""),
     }
@@ -552,7 +617,22 @@ def _query_drift_result(
         "expected_filename": expected_filename,
         "current_filename": current_filename,
         "query_repository": query_map.query_repository or "",
-        "query_path": query_map.query_path or "",
+        # The identifiers, not booleans saying they exist. This had it exactly
+        # backwards: it exported the PATH verbatim - which embeds an
+        # organisation's own folder names - while reducing the query and
+        # commit ids to `true`/`false`. The ids are opaque Forward handles that
+        # disclose nothing, and naming the query that failed is the entire
+        # point of the report. So the ids go out and the path is reduced to its
+        # leaf plus a digest, which is enough to correlate two reports without
+        # carrying the folder names.
+        "query_path_leaf": query_filename_from_path(query_map.query_path or ""),
+        "query_path_sha256": (
+            hashlib.sha256((query_map.query_path or "").encode("utf-8")).hexdigest()
+            if query_map.query_path
+            else ""
+        ),
+        "query_id": query_map.query_id or "",
+        "commit_id": query_map.commit_id or "",
         "has_query_id": bool(query_map.query_id),
         "has_commit_id": bool(query_map.commit_id),
         "commit_binding": commit_binding["status"],
