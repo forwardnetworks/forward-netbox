@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.9.8
+
+Release candidate; Fix: a sync failed with an IntegrityError on dcim_device_unique_name_site when a device's name in Forward differed from NetBox's only in letter case - devices are now matched the way NetBox identifies them, case-insensitively, and take Forward's spelling. Feature: a bulk constraint failure names the conflicting NetBox row; the live query-drift check flags a published query whose parameter list no longer matches this release; the dependency preview says why a model failed. Fix: support bundles and log exports no longer carry operator values such as include-tag names. Migration 0057. Org-backed deployments upgrading from 2.9.6 or earlier: run Publish Bundled Queries, since 2.9.7 changed the parameters of the interface and IPv4 address queries.
+
 ## v2.9.7
 
 Fix: a per-model progress bar that ran backwards, SNMP endpoints reading manufacturer Unknown, and a blocking failure that did not say why; SNMP endpoints also get interfaces and IP addresses now. Fix: an uncovered device's page and the scope panel say when Forward's own configuration still lists it under an include tag - disabled, not yet collected, or a stale tag entry - instead of just "gone from Forward". Fix: a NetBox 4.6.9 change that silently disabled this plugin's protection against deleting a sync or ingestion while one of its jobs is running. Fix: the pre-push hook branch-corruption bug, root-caused to an ambient GIT_DIR leaking into a test fixture. Fix: a drift-report delete could go through unconsolidated when a model's maps disagreed on sync mode. Test: every builtin .nqe file is now guarded against the lint-clean/runtime-broken bug class, and every workload_state sweep model is pinned to also be refused by the generic delete producers. Compatibility: tested and validated on NetBox 4.6.10. No migration; upgrade and re-run the sync.
