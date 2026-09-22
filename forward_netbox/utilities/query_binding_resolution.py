@@ -462,9 +462,9 @@ def parameter_signature_drift(expected_filename: str, source_code: str) -> dict:
     of the committed source - and had simply never been pointed at each other.
     It costs no API call: the caller is holding both strings.
     """
-    bundled = declared_query_parameters(read_compiled_builtin_query_source(
-        expected_filename
-    ))
+    bundled = declared_query_parameters(
+        read_compiled_builtin_query_source(expected_filename)
+    )
     published = declared_query_parameters(source_code)
     if bundled is None or published is None:
         return {}
@@ -557,9 +557,7 @@ def _live_drift_result_from_committed_query(
         # leaf plus a digest correlates two reports just as well.
         "live_query_path_leaf": query_filename_from_path(query_path),
         "live_query_path_sha256": (
-            hashlib.sha256(query_path.encode("utf-8")).hexdigest()
-            if query_path
-            else ""
+            hashlib.sha256(query_path.encode("utf-8")).hexdigest() if query_path else ""
         ),
         "live_query_id": query_id,
         "live_commit_id": commit_id,

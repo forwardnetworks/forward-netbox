@@ -9,6 +9,7 @@ These tests pin the two shapes that actually occur - a new row colliding with
 one already in NetBox, and two rows in one batch sharing a key - plus the
 transaction assumption the whole thing rests on.
 """
+
 from dcim.models import Device
 from dcim.models import DeviceRole
 from dcim.models import DeviceType

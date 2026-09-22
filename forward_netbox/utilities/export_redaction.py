@@ -19,6 +19,7 @@ value-free tokens into `raw_data`, with `OPERATOR_DETAIL_KEY` as the single
 named exception). This module is the net under that: it runs on every export
 path, so a value that reaches a payload some other way still does not leave.
 """
+
 from __future__ import annotations
 
 # The one key allowed to carry values. It is written for the GUI, and dropped

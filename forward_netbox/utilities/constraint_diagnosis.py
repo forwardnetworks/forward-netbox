@@ -23,12 +23,12 @@ issue writers already consume:
 * `exc.operator_detail` carries the values, for the GUI only - dropped from
   every download by `export_redaction.export_safe_payload`.
 """
+
 from __future__ import annotations
 
 from collections import Counter
 
 from django.db.models import Q
-
 from rq.timeouts import JobTimeoutException
 
 # One SELECT per this many candidate keys. Large enough that a normal batch is
@@ -222,7 +222,9 @@ def _annotate(exc, model, *, create_objects, update_objects, using, limit):
                 pk = row[0]
                 # A row this write itself created is not a prior conflict.
                 if pk in {
-                    getattr(obj, "pk", None) for obj in objects if getattr(obj, "pk", None)
+                    getattr(obj, "pk", None)
+                    for obj in objects
+                    if getattr(obj, "pk", None)
                 }:
                     continue
                 conflicting_pks.append(pk)

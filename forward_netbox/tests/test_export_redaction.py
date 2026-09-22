@@ -7,6 +7,7 @@ so it carries primary keys, constraint names, counts and shapes.
 These tests pin the boundary at both ends: the single key that may carry values
 is dropped on the way out, and there is exactly one way out to drop it at.
 """
+
 import json
 import pathlib
 import zipfile

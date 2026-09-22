@@ -11,6 +11,7 @@ The drift check of the day compared source TEXT and reported "source differs" -
 true of any query republished late, and indistinguishable from routine. These
 tests pin the distinction that matters.
 """
+
 from django.test import SimpleTestCase
 
 from forward_netbox.utilities.query_binding_resolution import (
@@ -52,7 +53,9 @@ class ParameterSignatureDriftTest(SimpleTestCase):
         drift = self._drift(BUNDLED_SEVEN_PARAMETERS, PUBLISHED_ONE_PARAMETER)
 
         self.assertFalse(drift["parameter_signature_matches"])
-        self.assertEqual(drift["declared_parameters_live"], ["forward_netbox_shard_keys"])
+        self.assertEqual(
+            drift["declared_parameters_live"], ["forward_netbox_shard_keys"]
+        )
         self.assertEqual(len(drift["declared_parameters_local"]), 7)
         # Named individually, because these are the arguments Forward will
         # refuse by name on the next sync.

@@ -4,6 +4,7 @@ from typing import Any
 from netbox_branching.contextvars import active_branch
 from netbox_branching.models import ChangeDiff
 from rq.timeouts import JobTimeoutException
+
 from .constraint_diagnosis import annotate_integrity_error
 
 # Fields the bulk engines must set on CREATE but preserve on UPDATE, matching the
