@@ -2166,7 +2166,19 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]], *, preview=False):
     from .sync_device import apply_dcim_device
     from .sync_device import record_device_identity_candidate
 
-    update_field_names = ["site", "role", "device_type", "platform", "serial", "status"]
+    # `name` is written too. An exact-name match never changes it, so this was
+    # never needed - until a case-only match: without it the device is matched,
+    # its new spelling set in memory, and silently not saved, leaving a drift
+    # that reappears on every run.
+    update_field_names = [
+        "name",
+        "site",
+        "role",
+        "device_type",
+        "platform",
+        "serial",
+        "status",
+    ]
 
     def _delegate(row):
         try:
@@ -2270,11 +2282,24 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]], *, preview=False):
             if device_type.model:
                 dt_by_model[(manufacturer_key, device_type.model)] = device_type
 
-    existing_by_name = defaultdict(list)
+    # Indexed by LOWERCASED name, because that is how NetBox decides two
+    # devices are the same one: `dcim_device_unique_name_site` is
+    # `UniqueConstraint(Lower("name"), "site")`. This used to fetch and match
+    # by exact name, so a device Forward reports as `CORE-SW-01` against a
+    # stored `core-sw-01` in the same site was classified as NEW - and the
+    # database then refused the whole `bulk_create` on that constraint, taking
+    # the sync down with it. A hostname whose case changed on the device was
+    # enough. One query per chunk, as before; the exact match is still
+    # preferred below, so nothing that matched before matches differently.
+    from django.db.models.functions import Lower
+
+    existing_by_folded_name = defaultdict(list)
     existing_device_names = {r["name"] for r in rows if r.get("name")}
-    for batch in _chunks(list(existing_device_names)):
-        for device in Device.objects.filter(name__in=batch):
-            existing_by_name[device.name].append(device)
+    for batch in _chunks(sorted({name.lower() for name in existing_device_names})):
+        for device in Device.objects.annotate(_forward_lname=Lower("name")).filter(
+            _forward_lname__in=batch
+        ):
+            existing_by_folded_name[device.name.lower()].append(device)
 
     create_objects = {}
     update_objects = {}
@@ -2348,11 +2373,19 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]], *, preview=False):
         if row.get("serial") not in (None, ""):
             defaults["serial"] = row["serial"]
         try:
-            matching = [
+            same_site = [
                 device
-                for device in existing_by_name.get(row["name"], [])
+                for device in existing_by_folded_name.get(row["name"].lower(), [])
                 if device.site_id == site.pk
             ]
+            # Exact name first, so an estate holding both `core-sw-01` and
+            # `CORE-SW-01` in one site (possible when their tenants differ)
+            # resolves exactly as it always did. Only when nothing matches
+            # exactly does a case-only difference count as the same device -
+            # which the update below then renames to Forward's spelling.
+            matching = [
+                device for device in same_site if device.name == row["name"]
+            ] or same_site
             if len(matching) > 1:
                 raise ForwardSearchError(
                     f"Multiple NetBox devices named `{row['name']}` exist in "
