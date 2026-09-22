@@ -145,3 +145,30 @@ class WriteTimeInvariantTest(SimpleTestCase):
         assert_export_safe_diagnosis(
             {"unrecognized_validation_rules": ["on device is already taken"]}
         )
+
+
+class IssueTierPropertiesTest(SimpleTestCase):
+    """The issue page shows both halves; a bundle gets one of them."""
+
+    def _issue(self):
+        from forward_netbox.models import ForwardIngestionIssue
+
+        return ForwardIngestionIssue(
+            raw_data={
+                "constraint_name": "dcim_device_unique_name_site",
+                "conflicting_pks": [12345],
+                OPERATOR_DETAIL_KEY: {"conflicting_rows": [{"name": "core-sw-01"}]},
+            }
+        )
+
+    def test_exported_diagnosis_excludes_the_operator_tier(self):
+        exported = self._issue().exported_diagnosis
+
+        self.assertEqual(exported["constraint_name"], "dcim_device_unique_name_site")
+        self.assertNotIn(OPERATOR_DETAIL_KEY, exported)
+        self.assertNotIn("core-sw-01", json.dumps(exported))
+
+    def test_operator_detail_is_reachable_for_the_page(self):
+        detail = self._issue().operator_detail
+
+        self.assertEqual(detail["conflicting_rows"][0]["name"], "core-sw-01")

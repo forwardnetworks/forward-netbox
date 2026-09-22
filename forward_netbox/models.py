@@ -1372,6 +1372,30 @@ class ForwardIngestionIssue(ForwardPluginModelDocsMixin, models.Model):
             "plugins:forward_netbox:forwardingestionissue", kwargs={"pk": self.pk}
         )
 
+    @property
+    def exported_diagnosis(self):
+        """The half of `raw_data` a support bundle carries."""
+        from .utilities.export_redaction import OPERATOR_DETAIL_KEY
+
+        return {
+            key: value
+            for key, value in (self.raw_data or {}).items()
+            if key != OPERATOR_DETAIL_KEY
+        }
+
+    @property
+    def operator_detail(self):
+        """The half that stays here.
+
+        Values behind the failure - the name that collided, the address that
+        would not parse. An operator troubleshooting their own estate should
+        not have to guess them, and a file we are sent should not carry them,
+        so they live under one key that every export path drops.
+        """
+        from .utilities.export_redaction import OPERATOR_DETAIL_KEY
+
+        return (self.raw_data or {}).get(OPERATOR_DETAIL_KEY) or {}
+
 
 class ForwardManagedDeviceTag(ForwardPluginModelDocsMixin, models.Model):
     """Declares a NetBox tag whose assignments are materialized from claims."""
