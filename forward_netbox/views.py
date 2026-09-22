@@ -623,6 +623,33 @@ def _stuck_verdict_bundle_payload(sync):
         return {"verdict": None, "classification_error": type(exc).__name__}
 
 
+def _live_query_drift_bundle_payload(sync):
+    """The stored live-drift result per map, and when it was taken.
+
+    Deliberately stored rather than fetched: the bundle makes no Forward calls.
+    An empty list means nobody has run the live check, which is itself worth
+    seeing rather than reading as "no drift".
+    """
+    rows = []
+    for query_map in sync.get_maps():
+        stored = query_map.last_live_drift or {}
+        if not stored:
+            continue
+        rows.append(
+            {
+                "map_id": query_map.pk,
+                "model": query_map.model_string,
+                "checked_at": (
+                    query_map.last_live_drift_at.isoformat()
+                    if query_map.last_live_drift_at
+                    else None
+                ),
+                **json_safe_value(stored),
+            }
+        )
+    return rows
+
+
 def _sync_support_bundle_payload(sync):
     from .utilities.ownership import (
         ownership_finalization_summary,
@@ -676,6 +703,12 @@ def _sync_support_bundle_payload(sync):
         },
         "query_drift_summary": health.get("query_drift_summary", {}),
         "query_drift_results": health.get("query_modes", {}).get("local_drift", []),
+        # The local drift above compares the bundled query to what NetBox
+        # stores. Only this says whether the query actually PUBLISHED in
+        # Forward still accepts the parameters this release sends - the
+        # difference between "a body changed" and "every execution will be
+        # refused". Stored by the live drift view; absent until it is run.
+        "live_query_drift": _live_query_drift_bundle_payload(sync),
         "upgrade_reconciliation": json_safe_value(
             compute_upgrade_reconciliation(include_samples=False)
         ),
@@ -2758,6 +2791,26 @@ class ForwardSyncHealthView(generic.ObjectView):
         return {"health": sync_health_summary(instance)}
 
 
+def _store_live_drift_results(results):
+    """Record each live drift result on its map, best effort.
+
+    A diagnostic that fails to save must not break the diagnostic the operator
+    actually asked for, so this never raises.
+    """
+    checked_at = timezone.now()
+    for result in results or []:
+        map_id = (result or {}).get("map_id")
+        if not map_id:
+            continue
+        try:
+            ForwardNQEMap.objects.filter(pk=map_id).update(
+                last_live_drift=json_safe_value(result),
+                last_live_drift_at=checked_at,
+            )
+        except Exception:  # noqa: BLE001 - storing is not the point of the view
+            continue
+
+
 @register_model_view(ForwardSync, "query_drift", path="query-drift")
 class ForwardSyncQueryDriftView(BaseObjectView):
     queryset = ForwardSync.objects.all()
@@ -2774,6 +2827,13 @@ class ForwardSyncQueryDriftView(BaseObjectView):
             for query_map in sync.get_maps()
             if sync.is_model_enabled(query_map.model_string)
         ]
+        results = live_query_binding_drifts(client=client, query_maps=maps)
+        # Persist it. This is the only place the PUBLISHED query is fetched,
+        # and the support bundle - which makes no API calls by design - has no
+        # other way to report that a map's published copy declares different
+        # parameters from the bundled one. Storing it here means the next
+        # bundle carries the answer without anyone having to run this first.
+        _store_live_drift_results(results)
         payload = {
             "exported_at": timezone.now().isoformat(),
             "sync": {
@@ -2782,7 +2842,7 @@ class ForwardSyncQueryDriftView(BaseObjectView):
                 "source": sync.source_id,
             },
             "query_drift_summary": health.get("query_drift_summary", {}),
-            "results": live_query_binding_drifts(client=client, query_maps=maps),
+            "results": results,
         }
         filename = f"forward-sync-{sync.pk}-live-query-drift.json"
         return _download_json_response(json_safe_value(payload), filename)

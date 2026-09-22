@@ -426,6 +426,13 @@ class ForwardNQEMap(ForwardPluginModelDocsMixin, ChangeLoggedModel):
     weight = models.PositiveIntegerField(default=100)
     enabled = models.BooleanField(default=True)
     built_in = models.BooleanField(default=False, editable=False)
+    # The last live comparison against what is actually published in Forward.
+    # Stored because the support bundle is built from state and makes no API
+    # calls - and because the one fact worth having here, that a published
+    # query declares different parameters from the bundled one, is only
+    # knowable by fetching it.
+    last_live_drift = models.JSONField(blank=True, default=dict)
+    last_live_drift_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         ordering = ("weight", "pk")
