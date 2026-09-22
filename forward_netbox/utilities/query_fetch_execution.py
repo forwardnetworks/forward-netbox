@@ -3645,4 +3645,14 @@ def plan_item_model_result(
         "apply_engine": item.apply_engine,
         "apply_engine_reason": item.apply_engine_reason,
         "apply_engine_decision": item.apply_engine_decision,
+        # How this model was fetched, which the plan dropped. Without it a
+        # model that failed because of HOW it was bound looked identical to
+        # one that failed on its rows.
+        "fetch_mode": item.fetch_mode,
+        "fetch_key_family": item.fetch_key_family,
+        # NAMES, not values. Which parameters were sent is the diagnostic fact
+        # - it is what a published query with a stale signature rejects - while
+        # the values are customer data: `device_tag_include_tags` holds the
+        # operator's own tag names.
+        "query_parameter_names": sorted(item.query_parameters or {}),
     }

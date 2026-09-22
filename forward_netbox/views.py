@@ -1014,18 +1014,38 @@ def _dependency_dry_run_payload(sync, *, client=None):
     workloads = fetcher.fetch_workloads(
         context, include_diagnostics=True, capture_comparison_rows=True
     )
-    failed_models = [
-        result.model_string
-        for result in fetcher.model_results
-        if int(result.failure_count or 0) > 0
+    failures = [
+        result for result in fetcher.model_results if int(result.failure_count or 0) > 0
     ]
-    if failed_models:
+    if failures:
+        failed_models = [result.model_string for result in failures]
         sample = ", ".join(failed_models[:5])
         suffix = "" if len(failed_models) <= 5 else ", ..."
-        raise ForwardQueryError(
-            "Dependency preview query validation failed for "
-            f"{len(failed_models)} model(s): {sample}{suffix}."
+        # Carry WHY, not just which. `failure_exception` and `failure_reason`
+        # are already populated on every failed result, and are already
+        # value-free by construction - an exception class name and a slug from
+        # the diagnostics catalogue. Collecting only `model_string` here threw
+        # them away at the one point an operator reads, so a preview that died
+        # because a published query rejected its parameters said only that two
+        # models had "failed validation", and the reason had to be reproduced
+        # by hand against the live API.
+        reasons = sorted(
+            {
+                f"{result.failure_exception or 'error'}"
+                + (f": {result.failure_reason}" if result.failure_reason else "")
+                for result in failures
+            }
         )
+        error = ForwardQueryError(
+            "Dependency preview query validation failed for "
+            f"{len(failed_models)} model(s): {sample}{suffix}"
+            + (f" ({'; '.join(reasons[:3])})." if reasons else ".")
+        )
+        error.safe_diagnosis = {
+            "failed_models": failed_models[:20],
+            "failed_model_reasons": reasons[:20],
+        }
+        raise error
     plan = build_branch_plan(
         workloads,
         max_changes_per_staging_item=sync.get_max_changes_per_staging_item(),

@@ -172,3 +172,36 @@ class IssueTierPropertiesTest(SimpleTestCase):
         detail = self._issue().operator_detail
 
         self.assertEqual(detail["conflicting_rows"][0]["name"], "core-sw-01")
+
+
+class ParameterValuesAreNamesOnlyTest(SimpleTestCase):
+    """Which parameters were sent is diagnostic; their values are the estate.
+
+    The dependency preview persists `model_results`, and the bundle carried
+    them raw - so `device_tag_include_tags` shipped the operator's own tag
+    names in every export. Which parameters a query was sent is what a stale
+    published signature rejects, so that is what survives.
+    """
+
+    def test_parameter_values_become_names(self):
+        cleaned = export_safe_payload(
+            {
+                "model_results": [
+                    {
+                        "model": "dcim.interface",
+                        "query_parameters": {
+                            "device_tag_include_tags": ["Some.Person"],
+                            "sync_endpoints": True,
+                        },
+                    }
+                ]
+            }
+        )
+
+        result = cleaned["model_results"][0]
+        self.assertEqual(
+            result["query_parameters_names"],
+            ["device_tag_include_tags", "sync_endpoints"],
+        )
+        self.assertNotIn("query_parameters", result)
+        self.assertNotIn("Some.Person", json.dumps(cleaned))

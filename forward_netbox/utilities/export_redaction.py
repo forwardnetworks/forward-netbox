@@ -38,6 +38,13 @@ DROP_KEY_SUFFIXES = (
 # Keys whose values are bulk id lists: useful as a magnitude, noise as a list.
 COUNT_KEY_SUFFIXES = ("_device_ids", "_pks")
 
+# Keys whose VALUES are operator-supplied but whose KEYS are the diagnostic.
+# A query's parameters are the example: which parameters were sent is what a
+# published query with a stale signature rejects, and it is the fact worth
+# having - while the values are the operator's own tag names, which had been
+# reaching bundles verbatim through the dependency preview's `model_results`.
+NAME_KEY_SUFFIXES = ("_parameters",)
+
 
 def export_safe_payload(value):
     """Drop operator-only detail and name-bearing keys from an export payload.
@@ -52,6 +59,13 @@ def export_safe_payload(value):
             if not isinstance(key, str):
                 continue
             if key == OPERATOR_DETAIL_KEY:
+                continue
+            if key.endswith(NAME_KEY_SUFFIXES):
+                cleaned[f"{key}_names"] = (
+                    sorted(str(name) for name in item)
+                    if isinstance(item, dict)
+                    else None
+                )
                 continue
             if key.endswith(COUNT_KEY_SUFFIXES):
                 cleaned[f"{key}_count"] = (
