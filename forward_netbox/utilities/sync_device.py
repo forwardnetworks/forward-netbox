@@ -233,6 +233,27 @@ def _ensure_scope_tag(runner, name):
     return tag
 
 
+def _case_variant_device(runner, name, site):
+    """The device in `site` whose name differs from `name` only by case.
+
+    NetBox treats `CORE-SW-01` and `core-sw-01` in one site as the same device
+    (`dcim_device_unique_name_site` is `Lower("name"), "site"`), but the
+    coalesce lookup matches names exactly - so a hostname whose case changed
+    was looked up, missed, and created again, which the constraint refuses.
+
+    Exact first, always: a device that matches exactly is left to the normal
+    path, and two case variants in one site raise rather than guess. Reads
+    only, through the runner, so the dependency preview stays read-only.
+    """
+    from dcim.models import Device
+
+    if not name or site is None or getattr(site, "pk", None) is None:
+        return None
+    if runner._get_unique_or_raise(Device, {"name": name, "site": site}) is not None:
+        return None
+    return runner._get_unique_or_raise(Device, {"name__iexact": name, "site": site})
+
+
 def apply_dcim_device(runner, row):
     from dcim.models import Device
 
@@ -289,14 +310,20 @@ def apply_dcim_device(runner, row):
             ),
         )
 
+    coalesce_sets = runner._coalesce_sets_for("dcim.device", [("name", "site")])
+    case_variant = _case_variant_device(runner, row["name"], site)
+    if case_variant is not None:
+        # Same device by NetBox's own rule, spelled differently: match it by
+        # primary key so the upsert updates it - renaming it to Forward's
+        # spelling - instead of creating a second one that the case-insensitive
+        # `dcim_device_unique_name_site` constraint refuses.
+        defaults = {**defaults, "id": case_variant.pk}
+        coalesce_sets = [["id"], *coalesce_sets]
     device, created = runner._upsert_values_from_defaults(
         "dcim.device",
         Device,
         values=defaults,
-        coalesce_sets=runner._coalesce_sets_for(
-            "dcim.device",
-            [("name", "site")],
-        ),
+        coalesce_sets=coalesce_sets,
     )
     record_device_identity_candidate(runner, device)
     if not created and getattr(device, "pk", None) is not None:
