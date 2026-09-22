@@ -4,6 +4,7 @@ from typing import Any
 from netbox_branching.contextvars import active_branch
 from netbox_branching.models import ChangeDiff
 from rq.timeouts import JobTimeoutException
+from .constraint_diagnosis import annotate_integrity_error
 
 # Fields the bulk engines must set on CREATE but preserve on UPDATE, matching the
 # adapter's intent. Platform-map manufacturer values are authoritative in this
@@ -987,6 +988,16 @@ def bulk_orm_apply_simple_models(
                         batch_size=1000,
                     )
         except IntegrityError as exc:
+            # Name the row before re-raising. Inside a branch this is the only
+            # account the operator ever gets, because the isolate path below
+            # cannot run and the rebuilt failure line drops the DETAIL.
+            annotate_integrity_error(
+                exc,
+                model,
+                create_objects=create_objects,
+                update_objects=update_objects,
+                using=using,
+            )
             if branch_active:
                 # Branch rows, ObjectChanges, and ChangeDiffs are one transaction.
                 # Do not partially isolate through signal-driven writes on a
@@ -1447,6 +1458,16 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]], *, preview=Fal
                         batch_size=1000,
                     )
         except IntegrityError as exc:
+            # Name the row before re-raising. Inside a branch this is all the
+            # operator ever gets: the isolate path below cannot run, and the
+            # rebuilt failure line drops the database's own DETAIL.
+            annotate_integrity_error(
+                exc,
+                MACAddress,
+                create_objects=list(create_objects.values()),
+                update_objects=list(update_objects.values()),
+                using=using,
+            )
             if branch_active:
                 raise
             runner.logger.log_warning(
@@ -2030,6 +2051,16 @@ def bulk_orm_apply_interface(
                         batch_size=1000,
                     )
         except IntegrityError as exc:
+            # Name the row before re-raising. Inside a branch this is all the
+            # operator ever gets: the isolate path below cannot run, and the
+            # rebuilt failure line drops the database's own DETAIL.
+            annotate_integrity_error(
+                exc,
+                Interface,
+                create_objects=list(create_objects.values()),
+                update_objects=list(update_objects.values()),
+                using=using,
+            )
             if branch_active:
                 raise
             runner.logger.log_warning(
@@ -2544,6 +2575,16 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]], *, preview=False):
                             batch_size=1000,
                         )
         except IntegrityError as exc:
+            # Name the row before re-raising. Inside a branch this is all the
+            # operator ever gets: the isolate path below cannot run, and the
+            # rebuilt failure line drops the database's own DETAIL.
+            annotate_integrity_error(
+                exc,
+                Device,
+                create_objects=list(create_objects.values()),
+                update_objects=list(update_objects.values()),
+                using=using,
+            )
             if branch_active:
                 raise
             runner.logger.log_warning(
@@ -2888,6 +2929,16 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]], *, preview=Fals
                         batch_size=1000,
                     )
         except IntegrityError as exc:
+            # Name the row before re-raising. Inside a branch this is all the
+            # operator ever gets: the isolate path below cannot run, and the
+            # rebuilt failure line drops the database's own DETAIL.
+            annotate_integrity_error(
+                exc,
+                IPAddress,
+                create_objects=list(create_objects.values()),
+                update_objects=list(update_objects.values()),
+                using=using,
+            )
             if branch_active:
                 raise
             runner.logger.log_warning(
