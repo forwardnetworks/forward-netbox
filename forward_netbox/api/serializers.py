@@ -378,6 +378,13 @@ class ForwardIngestionIssueSerializer(OrganizationalModelSerializer):
     ingestion = ForwardIngestionSerializer(nested=True)
 
     def to_representation(self, instance):
+        # Tier 1, deliberately: this is an authenticated in-deployment read,
+        # the same trust level as the GUI, so `raw_data` keeps its
+        # `operator_detail` values here. The redaction applies to FILES - a
+        # support bundle is exported to be sent to us, and
+        # `export_redaction.export_safe_payload` drops that key on every
+        # download path. Do not "fix" this by filtering here; the operator
+        # troubleshooting their own estate is the reason the values exist.
         data = super().to_representation(instance)
         data["coalesce_fields"] = json_safe_value(data.get("coalesce_fields"))
         data["defaults"] = json_safe_value(data.get("defaults"))

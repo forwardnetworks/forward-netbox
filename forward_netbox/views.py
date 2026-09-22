@@ -83,6 +83,7 @@ from .utilities.diagnostics import safe_job_error_summary
 from .utilities.diagnostics import sanitize_job_diagnostics
 from .utilities.direct_changes import object_changes_for_ingestion
 from .utilities.execution_telemetry import build_plan_preview
+from .utilities.export_redaction import export_safe_payload
 from .utilities.health import _job_data_count_trend
 from .utilities.health import live_data_file_health_check
 from .utilities.health import live_source_health_check
@@ -359,13 +360,6 @@ def _ingestion_issue_bundle_payload(ingestion):
 # suffix rather than enumerated: the reconciliation report gains a sample or an
 # id list most releases, and an allowlist that has to be extended each time is
 # an allowlist that silently exports names the release after it is forgotten.
-_BUNDLE_DROP_KEY_SUFFIXES = (
-    "_sample",
-    "_detail",
-    "_names",
-    "_by_name",
-)
-_BUNDLE_COUNT_KEY_SUFFIXES = ("_device_ids", "_pks")
 
 
 def _bundle_safe_report(value):
@@ -380,23 +374,9 @@ def _bundle_safe_report(value):
     the quarantine state, the prune candidate count, the backfill reason
     breakdown - is counts and slugs and survives.
     """
-    if isinstance(value, dict):
-        cleaned = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                continue
-            if key.endswith(_BUNDLE_COUNT_KEY_SUFFIXES):
-                cleaned[f"{key}_count"] = (
-                    len(item) if isinstance(item, (list, tuple, set)) else None
-                )
-                continue
-            if key.endswith(_BUNDLE_DROP_KEY_SUFFIXES):
-                continue
-            cleaned[key] = _bundle_safe_report(item)
-        return cleaned
-    if isinstance(value, (list, tuple)):
-        return [_bundle_safe_report(item) for item in value]
-    return value
+    # One filter, not two: this used to carry its own copy of the suffix rules,
+    # and a second copy is a second thing to forget to update.
+    return export_safe_payload(value)
 
 
 def _scope_reconciliation_bundle_payload(sync):
@@ -782,6 +762,12 @@ def _sync_support_bundle_payload(sync):
 
 
 def _download_json_response(payload, filename):
+    # Every JSON diagnostic this plugin hands out leaves through here - the
+    # support bundle, the dependency preview, the log export, the health
+    # downloads - which is why the redaction sits at this line rather than at
+    # each caller. Two of those callers passed their payload through nothing at
+    # all before this, and a third built its own partial filter.
+    payload = export_safe_payload(payload)
     response = JsonResponse(payload, json_dumps_params={"indent": 2}, safe=True)
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
     return response

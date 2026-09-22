@@ -1056,10 +1056,18 @@ def structured_failure_diagnosis(exc) -> dict:
             if not _SAFE_DIAGNOSTIC_TOKEN.fullmatch(safe_key) or safe_key in diagnosis:
                 continue
             if isinstance(value, (list, tuple)):
+                # Integers stay integers. A list of primary keys is the most
+                # useful value-free identifier there is, and stringifying it
+                # made every consumer parse it back.
                 kept = [
-                    str(item)
+                    (
+                        item
+                        if isinstance(item, int) and not isinstance(item, bool)
+                        else str(item)
+                    )
                     for item in value
-                    if _SAFE_DIAGNOSTIC_TOKEN.fullmatch(str(item))
+                    if isinstance(item, int)
+                    or _SAFE_DIAGNOSTIC_TOKEN.fullmatch(str(item))
                 ]
                 if kept:
                     diagnosis[safe_key] = kept
@@ -1069,3 +1077,65 @@ def structured_failure_diagnosis(exc) -> dict:
                 diagnosis[safe_key] = str(value)
 
     return diagnosis
+
+
+# Tokens, plus the `module.py:line:function` shape `plugin_raise_site` emits.
+# Both are allowlists of characters that exclude whitespace and quotes, which
+# is what separates an identifier from a sentence.
+_SAFE_DIAGNOSTIC_VALUE = re.compile(r"^[A-Za-z0-9_.:/-]{1,192}$")
+
+# Keys whose values are multi-word English by design, because a STRICTER
+# redactor already produced them. `redacted_message_shape` keeps a token only
+# if it is purely alphabetic, so a device name, address or interface - all of
+# which carry a digit, dot, hyphen or slash - is already masked. It is tighter
+# than the identifier check below, which would accept `core-sw-01` verbatim;
+# re-checking its output here would reject safe wording and teach nobody
+# anything.
+_PREREDACTED_DIAGNOSTIC_KEYS = frozenset({"unrecognized_validation_rules"})
+
+
+def assert_export_safe_diagnosis(raw_data, *, where=""):
+    """Raise unless every top-level `raw_data` value has an identifier shape.
+
+    What this DOES catch: prose, quoted values, anything with whitespace, and
+    nested mappings - the shapes that carry a sentence or a payload rather than
+    a schema identifier. That is the accident this prevents: somebody records
+    `f"device {name} already exists"` into a field a support bundle exports.
+
+    What it does NOT catch, and nobody should believe it does: a bare hostname.
+    `core-sw-01` is character-for-character an identifier, so no pattern can
+    tell it from a slug. The disclosure boundary is not this function - it is
+    `OPERATOR_DETAIL_KEY`, the single key that carries values, which the GUI
+    renders and `export_redaction.export_safe_payload` drops on the way out.
+    This check keeps the other keys honest; the boundary keeps the bundle safe.
+    """
+    from .export_redaction import OPERATOR_DETAIL_KEY
+
+    if not isinstance(raw_data, dict):
+        return
+
+    def _check(key, value):
+        if value is None or isinstance(value, (bool, int, float)):
+            return
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                _check(key, item)
+            return
+        if isinstance(value, dict):
+            raise ValueError(
+                f"Unsafe diagnostic value for {key!r}{where}: a nested mapping "
+                "cannot be checked. Flatten it, or record it under "
+                f"{OPERATOR_DETAIL_KEY!r}."
+            )
+        if not _SAFE_DIAGNOSTIC_VALUE.fullmatch(str(value)):
+            raise ValueError(
+                f"Unsafe diagnostic value for {key!r}{where}: "
+                f"{str(value)[:40]!r} is not an identifier. Values belong "
+                f"under {OPERATOR_DETAIL_KEY!r}, which never leaves the "
+                "deployment."
+            )
+
+    for key, value in raw_data.items():
+        if key == OPERATOR_DETAIL_KEY or key in _PREREDACTED_DIAGNOSTIC_KEYS:
+            continue
+        _check(key, value)

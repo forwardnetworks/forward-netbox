@@ -5,12 +5,16 @@ import zipfile
 import pyzipper
 from django.http import HttpResponse
 
+from .export_redaction import export_safe_payload
 from .json_safe import json_safe_value
 
 
 def support_bundle_zip_response(payload, *, filename, json_filename, password=""):
+    # This path builds its own bytes rather than going through
+    # `_download_json_response`, so it needs the export filter applied here
+    # too - the zip is the form of the bundle most likely to be mailed on.
     bundle_bytes = json.dumps(
-        json_safe_value(payload),
+        json_safe_value(export_safe_payload(payload)),
         indent=2,
         ensure_ascii=False,
     ).encode("utf-8")
