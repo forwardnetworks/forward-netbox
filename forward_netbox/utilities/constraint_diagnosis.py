@@ -79,6 +79,8 @@ def _spec_from_expression(model, expression):
         return None
     try:
         field = model._meta.get_field(name)
+    except JobTimeoutException:
+        raise
     except Exception:  # noqa: BLE001 - an expression over something else
         return None
     return (field.name, field.attname, case_insensitive)
@@ -105,6 +107,8 @@ def _constraint_specs(model, constraint_name, *, using):
             for name in fields:
                 try:
                     field = model._meta.get_field(name)
+                except JobTimeoutException:
+                    raise
                 except Exception:  # noqa: BLE001
                     return (), None
                 specs.append((field.name, field.attname, False))
@@ -141,6 +145,8 @@ def _constraint_specs(model, constraint_name, *, using):
                     ),
                     None,
                 )
+    except JobTimeoutException:
+        raise
     except Exception:  # noqa: BLE001 - introspection is best effort
         return (), None
 
