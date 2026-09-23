@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v2.9.8
 
-Release candidate; Fix: a sync failed with an IntegrityError on dcim_device_unique_name_site when a device's name in Forward differed from NetBox's only in letter case - devices are now matched the way NetBox identifies them, case-insensitively, and take Forward's spelling. Feature: a bulk constraint failure names the conflicting NetBox row; the live query-drift check flags a published query whose parameter list no longer matches this release; the dependency preview says why a model failed. Fix: support bundles and log exports no longer carry operator values such as include-tag names. Migration 0057. Org-backed deployments upgrading from 2.9.6 or earlier: run Publish Bundled Queries, since 2.9.7 changed the parameters of the interface and IPv4 address queries.
+Fix: a sync failed with an IntegrityError on dcim_device_unique_name_site when a device's name in Forward differed from NetBox's only in letter case - devices are now matched the way NetBox identifies them, case-insensitively, and take Forward's spelling. Feature: a bulk constraint failure names the conflicting NetBox row; the live query-drift check flags a published query whose parameter list no longer matches this release; the dependency preview says why a model failed. Fix: support bundles and log exports no longer carry operator values such as include-tag names. Migration 0057. Org-backed deployments upgrading from 2.9.6 or earlier: run Publish Bundled Queries, since 2.9.7 changed the parameters of the interface and IPv4 address queries.
 
 ## v2.9.7
 
