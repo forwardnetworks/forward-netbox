@@ -75,6 +75,7 @@ from .tables import ForwardSourceTable
 from .tables import ForwardSyncTable
 from .tables import ForwardValidationRunTable
 from .utilities.bulk_merge import describe_protecting_references
+from .utilities.bundle_diagnostics import bundle_diagnostics
 from .utilities.change_explainability import change_explainability_summary
 from .utilities.config_backup import config_backup_data_source
 from .utilities.diagnostics import diff_fallback_summary
@@ -734,6 +735,11 @@ def _sync_support_bundle_payload(sync):
         # nothing.
         "interface_untagged_vlans": json_safe_value(interface_untagged_vlan_keys()),
         "scope_reconciliation": _scope_reconciliation_bundle_payload(sync),
+        # What the uncovered devices are, when they became uncovered, which query
+        # each map really runs, and the rows behind each ingestion issue - the
+        # questions an investigation otherwise answers with a shell script on
+        # the customer's NetBox. Counts, pks and catalog names only.
+        "diagnostics": bundle_diagnostics(sync),
         "operator_action_jobs": _operator_action_jobs_bundle_payload(sync),
         "ownership_records": _ownership_records_bundle_payload(sync),
         # Why the cleanup targets cannot be deleted - the question a screenshot
