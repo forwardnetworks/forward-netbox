@@ -3650,9 +3650,10 @@ def plan_item_model_result(
         # one that failed on its rows.
         "fetch_mode": item.fetch_mode,
         "fetch_key_family": item.fetch_key_family,
-        # NAMES, not values. Which parameters were sent is the diagnostic fact
+        # KEYS, not values. Which parameters were sent is the diagnostic fact
         # - it is what a published query with a stale signature rejects - while
         # the values are customer data: `device_tag_include_tags` holds the
-        # operator's own tag names.
-        "query_parameter_names": sorted(item.query_parameters or {}),
+        # operator's own tag names. Named `_keys` on purpose: the export filter
+        # drops any key ending `_names`, and did drop this one until renamed.
+        "query_parameter_keys": sorted(item.query_parameters or {}),
     }

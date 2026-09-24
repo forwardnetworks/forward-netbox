@@ -31,10 +31,21 @@ OPERATOR_DETAIL_KEY = "operator_detail"
 # or classify them.
 DROP_KEY_SUFFIXES = (
     "_sample",
-    "_detail",
     "_names",
     "_by_name",
 )
+
+# The literal key `_detail_breakdown` writers use for the sampled members of a
+# reason bucket - `{"reason": ..., "label": ..., "count": ..., "sample": [...]}`.
+# An earlier version of this filter dropped `_detail` as a suffix, which also
+# dropped `absent_detail`/`endpoint_detail` WHOLESALE: the reason, label and
+# count are schema-level aggregates with nothing to redact, and were the
+# specific fact a live investigation needed - "how many of these are untagged
+# endpoints" - that a bundle could not answer. Two plain-int fields
+# (`with_controller_detail`, `update_changes_with_field_detail`) were also
+# being silently dropped by the same overbroad suffix, unrelated to safety at
+# all. Only the bare key below actually names anything.
+EXACT_DROP_KEYS = ("sample",)
 
 # Keys whose values are bulk id lists: useful as a magnitude, noise as a list.
 COUNT_KEY_SUFFIXES = ("_device_ids", "_pks")
@@ -60,6 +71,8 @@ def export_safe_payload(value):
             if not isinstance(key, str):
                 continue
             if key == OPERATOR_DETAIL_KEY:
+                continue
+            if key in EXACT_DROP_KEYS:
                 continue
             if key.endswith(NAME_KEY_SUFFIXES):
                 cleaned[f"{key}_names"] = (

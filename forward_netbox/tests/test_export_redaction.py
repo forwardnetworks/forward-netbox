@@ -66,6 +66,58 @@ class ExportSafePayloadTest(SimpleTestCase):
 
         self.assertEqual(export_safe_payload(payload), payload)
 
+    def test_a_reason_breakdown_survives_with_only_its_sample_dropped(self):
+        # `_detail_breakdown` (scope_reconciliation.py) produces exactly this
+        # shape: reason/label/count are schema-level aggregates, `sample` is
+        # the one field that names devices. A live investigation into why an
+        # uncovered count grew needed "how many are endpoint_untagged", and an
+        # earlier version of this filter dropped the whole `absent_detail`
+        # array because its key ended in `_detail` - discarding the answer
+        # along with the names it was right to remove.
+        cleaned = export_safe_payload(
+            {
+                "absent_detail": [
+                    {
+                        "reason": "endpoint_untagged",
+                        "label": "its endpoint tags match none of the include tags",
+                        "count": 41,
+                        "sample": ["avocent-console-01"],
+                    }
+                ],
+                "endpoint_detail": [],
+            }
+        )
+
+        row = cleaned["absent_detail"][0]
+        self.assertEqual(row["reason"], "endpoint_untagged")
+        self.assertEqual(row["count"], 41)
+        self.assertNotIn("sample", row)
+        self.assertNotIn("avocent-console-01", json.dumps(cleaned))
+        self.assertEqual(cleaned["endpoint_detail"], [])
+
+    def test_a_plain_int_detail_field_is_not_dropped(self):
+        # `with_controller_detail` and the `update_changes_*_field_detail`
+        # pair are counts, not device data; the old suffix rule dropped them
+        # for the same reason it dropped `absent_detail` - the key ended in
+        # `_detail`, and nothing looked past that.
+        cleaned = export_safe_payload(
+            {"with_controller_detail": 3, "apic_detail": "CISCO_APIC_SWITCH"}
+        )
+
+        self.assertEqual(
+            cleaned, {"with_controller_detail": 3, "apic_detail": "CISCO_APIC_SWITCH"}
+        )
+
+    def test_a_bare_sample_key_is_dropped_wherever_it_appears(self):
+        # `sample` was never actually matched by `_sample` (a suffix pattern
+        # requires a preceding underscore-joined prefix) - it only stayed
+        # hidden because the `_detail` rule dropped its whole parent. Pinned
+        # directly so a future edit to that parent's key name cannot
+        # reopen this.
+        cleaned = export_safe_payload({"sample": ["core-sw-01"], "count": 1})
+
+        self.assertEqual(cleaned, {"count": 1})
+
 
 class ExportPathsAreNarrowTest(SimpleTestCase):
     """One way out, so there is one place to redact.
