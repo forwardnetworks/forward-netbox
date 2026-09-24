@@ -59,6 +59,19 @@ class BundleDiagnosticsParityTest(TestCase):
                 "tags": ["Forward Uncovered"],
             },
         )
+        # The site-relabeling duplicate pattern: same name, two sites, one
+        # copy still carrying a tag the other lost.
+        other_site = Site.objects.create(
+            name="Renamed Secret Site", slug="renamed-site"
+        )
+        self.duplicate = Device.objects.create(
+            name="Customer-Console-01",
+            site=other_site,
+            device_type=dt,
+            role=role,
+            status="active",
+        )
+
         self.vrf = VRF.objects.create(name="customer-vrf")
         source = ForwardSource.objects.create(
             name="src", url="https://fwd.example.invalid"
@@ -99,10 +112,26 @@ class BundleDiagnosticsParityTest(TestCase):
             sum(n for _, n in out["uncovered_tag_timeline"]["gained_by_hour"]), 1
         )
         self.assertEqual(out["device_renames"]["case_only"], 1)
-        self.assertEqual(out["console_servers"]["count"], 1)
+        self.assertEqual(out["console_servers"]["count"], 2)
         self.assertEqual(out["issue_references"]["devices"][0]["pk"], self.device.pk)
         self.assertEqual(out["issue_references"]["vrfs"][0]["pk"], self.vrf.pk)
         self.assertGreater(len(out["nqe_map_bindings"]), 0)
+
+    def test_duplicate_device_names_finds_the_site_relabel_pattern(self):
+        out = bundle_diagnostics(self.sync)
+
+        dupes = out["duplicate_device_names"]
+        self.assertEqual(dupes["distinct_duplicated_names"], 1)
+        group = dupes["groups"][0]
+        self.assertEqual(group["count"], 2)
+        self.assertEqual(group["distinct_sites"], 2)
+        self.assertEqual(group["same_site_repeats"], {})
+        # One copy is tagged forward-uncovered, the other is not.
+        self.assertTrue(group["tag_sets_differ"])
+        self.assertEqual(
+            sorted(d["pk"] for d in group["devices"]),
+            sorted([self.device.pk, self.duplicate.pk]),
+        )
 
     def test_exported_diagnostics_carry_no_names(self):
         text = json.dumps(
@@ -112,5 +141,6 @@ class BundleDiagnosticsParityTest(TestCase):
 
         self.assertNotIn("customer-console-01", text)
         self.assertNotIn("Secret Street Site", text)
+        self.assertNotIn("Renamed Secret Site", text)
         self.assertNotIn("customer-vrf", text)
         self.assertIn("Avocent", text)

@@ -48,6 +48,7 @@ SECTIONS = (
     "nqe_map_bindings",
     "issue_references",
     "inventory_items",
+    "duplicate_device_names",
 )
 
 
@@ -389,6 +390,82 @@ def _inventory_items(sync):
     }
 
 
+def _duplicate_device_names(sync):
+    """Devices sharing a name (case-insensitive), redacted.
+
+    A device whose site label changes between syncs can be looked up under
+    its OLD site, miss, and get created again under the new one instead of
+    updated - the stale copy then drifts out of tag scope and becomes
+    uncovered. This is the mechanism the count, alone, cannot show: two rows
+    with the same name is the signature, whichever site relabeling produced
+    it. Names and tag values are never exported; site is a pk, and whether
+    the group's tag SETS differ (not what they are) is what confirms one
+    copy fell out of scope while the other did not.
+    """
+    from collections import defaultdict
+
+    from dcim.models import Device
+
+    groups = defaultdict(list)
+    qs = (
+        Device.objects.all()
+        .select_related("site", "role", "platform", "device_type__manufacturer")
+        .prefetch_related("tags")
+    )
+    for device in qs:
+        groups[(device.name or "").strip().casefold()].append(device)
+
+    out = []
+    for key, devices in groups.items():
+        if len(devices) < 2:
+            continue
+        rows = []
+        tag_sets = []
+        for device in devices:
+            tags = frozenset(tag.slug for tag in device.tags.all())
+            tag_sets.append(tags)
+            rows.append(
+                {
+                    "pk": device.pk,
+                    "site_pk": device.site_id,
+                    "role": getattr(device.role, "name", None),
+                    "platform": getattr(device.platform, "name", None),
+                    "manufacturer": getattr(
+                        getattr(device.device_type, "manufacturer", None), "name", None
+                    ),
+                    "device_type": getattr(device.device_type, "model", None),
+                    "status": device.status,
+                    "created": device.created.isoformat() if device.created else None,
+                    "tag_count": len(tags),
+                    "uncovered": UNCOVERED_TAG in tags,
+                }
+            )
+        by_site = defaultdict(int)
+        for row in rows:
+            by_site[row["site_pk"]] += 1
+        out.append(
+            {
+                "count": len(rows),
+                "distinct_sites": len(by_site),
+                "same_site_repeats": {
+                    str(site_pk): n for site_pk, n in by_site.items() if n > 1
+                },
+                # True when the copies do NOT all carry the same tags - the
+                # shape of "one is in scope, the other fell out of it".
+                "tag_sets_differ": len(set(tag_sets)) > 1,
+                "devices": rows,
+            }
+        )
+    out.sort(key=lambda group: -group["count"])
+    return {
+        "distinct_duplicated_names": len(out),
+        "total_duplicate_rows": sum(group["count"] for group in out),
+        "multi_site_groups": sum(1 for group in out if group["distinct_sites"] > 1),
+        "tag_mismatch_groups": sum(1 for group in out if group["tag_sets_differ"]),
+        "groups": out,
+    }
+
+
 _BUILDERS = {
     "uncovered": _uncovered,
     "uncovered_tag_timeline": _uncovered_tag_timeline,
@@ -399,6 +476,7 @@ _BUILDERS = {
     "nqe_map_bindings": _nqe_map_bindings,
     "issue_references": _issue_references,
     "inventory_items": _inventory_items,
+    "duplicate_device_names": _duplicate_device_names,
 }
 
 

@@ -89,3 +89,13 @@ Single change set; revert restores the previous bundle. No migration.
   (PyPI SHA-256 digests for the 2.5.0 wheel and sdist).
   `scripts/build_reproducible_distribution.py` builds twice and compares
   digests; it passes on 2.5.0.
+- **`duplicate_device_names` added.** A customer's follow-up: the same
+  endpoint name appears twice, once per site, one copy still carrying an
+  include tag the other lost. The mechanism is a device lookup keyed on name
+  alone - when an endpoint's site label changes between syncs, the lookup
+  misses under the new site and creates a second device instead of updating
+  the first, and the stale copy drifts out of tag scope. Groups every device
+  by casefolded name, reporting count, distinct site count, same-site repeat
+  count, and whether the group's tag SETS differ (not what they are) - the
+  shape that confirms one copy fell out of scope while the other did not.
+  Device and site names are never exported; site ships as a pk.
