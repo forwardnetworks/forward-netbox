@@ -2301,6 +2301,88 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]], *, preview=False):
         ):
             existing_by_folded_name[device.name.lower()].append(device)
 
+    # A device whose site was relabeled in Forward reports under the SAME name
+    # at a DIFFERENT site than the one already stored. Matched on (name, site)
+    # alone, that miss used to create a second device rather than move the
+    # existing one - stranding the old copy (still holding its primary IP,
+    # any manual cables/journal) with no Forward-side match ever again.
+    #
+    # `ForwardDeviceIdentity` is this sync's own record of which NetBox
+    # device it means by a given name; identity is finalized in main, so
+    # read it there the same way `sync_ipam._release_plan` does. A device
+    # this sync has never bound to any name is "unbound" - eligible to move
+    # only when it is the SINGLE other-site device sharing the row's name, so
+    # a coincidental same-name device elsewhere is never guessed at.
+    from ..models import ForwardDeviceIdentity
+
+    # `runner.sync` is `_NullSync()` (drift_comparison.py) for the dependency
+    # preview's structural "every model, no raising" check, or an unset
+    # `Mock()` attribute in tests exercising an unrelated path - neither is a
+    # real `ForwardSync` row, and a `Mock`'s auto-generated `.pk` is a Mock,
+    # not None, so `is not None` alone is not enough. Real apply calls always
+    # carry a saved sync with an integer pk; skip these two queries entirely
+    # (there is nothing to look a relabel candidate up against anyway) rather
+    # than let the ORM try to coerce a non-integer into an `id` value.
+    sync_pk = getattr(runner.sync, "pk", None)
+    if existing_device_names and isinstance(sync_pk, int):
+        identity_device_by_name = dict(
+            ForwardDeviceIdentity.objects.using("default")
+            .filter(sync_id=sync_pk, source_device_key__in=existing_device_names)
+            .values_list("source_device_key", "device_id")
+        )
+    else:
+        identity_device_by_name = {}
+    candidate_device_ids = [
+        device.pk for devices in existing_by_folded_name.values() for device in devices
+    ]
+    if candidate_device_ids:
+        bound_device_ids_any_sync = set(
+            ForwardDeviceIdentity.objects.using("default")
+            .filter(device_id__in=candidate_device_ids)
+            .values_list("device_id", flat=True)
+        )
+    else:
+        bound_device_ids_any_sync = set()
+
+    def _relabel_move_candidate(name, site_pk):
+        """(device_to_move, hold_reason) for a row with no same-site match.
+
+        Exactly one of the two is set. `device_to_move` is None with no
+        `hold_reason` when there is simply no other-site device sharing the
+        name - the normal "this is a new device" case, unchanged. A
+        `hold_reason` means a same-name device exists elsewhere but this sync
+        will not guess which device the row means; the row is recorded as an
+        issue and skipped rather than risking a second create.
+        """
+        candidates = [
+            device
+            for device in existing_by_folded_name.get(name.lower(), [])
+            if device.site_id != site_pk
+        ]
+        if not candidates:
+            return None, None
+        bound_pk = identity_device_by_name.get(name)
+        if bound_pk is not None:
+            for device in candidates:
+                if device.pk == bound_pk:
+                    return device, None
+            return None, (
+                f"this sync's device identity for `{name}` (pk {bound_pk}) is "
+                f"not among the same-named devices found at other sites"
+            )
+        if len(candidates) > 1:
+            return None, (
+                f"`{name}` exists at {len(candidates)} other sites with no "
+                f"identity binding to disambiguate"
+            )
+        candidate = candidates[0]
+        if candidate.pk in bound_device_ids_any_sync:
+            return None, (
+                f"the only same-named device at another site (pk {candidate.pk}) "
+                f"is bound to a different sync"
+            )
+        return candidate, None
+
     create_objects = {}
     update_objects = {}
     identity_devices = {}
@@ -2396,16 +2478,45 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]], *, preview=False):
                 )
             existing = matching[0] if matching else None
             if existing is None:
-                create_key = (row["name"], site.pk)
-                device = create_objects.get(create_key)
-                if device is None:
-                    device = Device(**defaults)
-                    device.full_clean(validate_unique=False, validate_constraints=False)
-                    create_objects[create_key] = device
-                outcome = ["applied"]
-                row_outcomes.append(outcome)
-                row_devices.append((row, device, outcome))
-                continue
+                relabel_candidate, relabel_hold_reason = _relabel_move_candidate(
+                    row["name"], site.pk
+                )
+                if relabel_hold_reason is not None:
+                    runner._mark_dependency_failed("dcim.device", row)
+                    runner.logger.increment_statistics("dcim.device", outcome="failed")
+                    runner._record_issue(
+                        "dcim.device",
+                        f"Holding device `{row['name']}` at site `{site.name}`; "
+                        f"{relabel_hold_reason}. Not creating a duplicate.",
+                        row,
+                    )
+                    continue
+                if relabel_candidate is not None:
+                    # Move rather than create: this row's device is the same
+                    # device Forward now reports under a different site.
+                    # `existing_by_folded_name` is keyed by folded name across
+                    # ALL sites, so the update path below (which already moves
+                    # `site` and calls `clear_cross_site_untagged_vlans`) is
+                    # reused unchanged from here.
+                    existing_by_folded_name[row["name"].lower()] = [
+                        d
+                        for d in existing_by_folded_name[row["name"].lower()]
+                        if d.pk != relabel_candidate.pk
+                    ] + [relabel_candidate]
+                    existing = relabel_candidate
+                else:
+                    create_key = (row["name"], site.pk)
+                    device = create_objects.get(create_key)
+                    if device is None:
+                        device = Device(**defaults)
+                        device.full_clean(
+                            validate_unique=False, validate_constraints=False
+                        )
+                        create_objects[create_key] = device
+                    outcome = ["applied"]
+                    row_outcomes.append(outcome)
+                    row_devices.append((row, device, outcome))
+                    continue
             identity_devices[existing.pk] = existing
             changed_values = []
             for field, value in defaults.items():
