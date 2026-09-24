@@ -82,3 +82,10 @@ Single change set; revert restores the previous bundle. No migration.
 - **Raw query text ships as a digest and length.** A customized query can embed
   customer names in literals; its digest still answers "is this the stock
   query".
+- **Build backend pinned to poetry-core 2.5.0.** The host's system package
+  moved to 2.5.0 on 2026-09-23 and the reproducible-build gate, which checks
+  the pin against the host interpreter, refused every push. Bumped in
+  `pyproject.toml`, `requirements-release.in` and `requirements-release.txt`
+  (PyPI SHA-256 digests for the 2.5.0 wheel and sdist).
+  `scripts/build_reproducible_distribution.py` builds twice and compares
+  digests; it passes on 2.5.0.
