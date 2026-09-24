@@ -498,9 +498,7 @@ def config_backup_delivery_bundle_payload(sync):
         ),
         "validity_installed": state["validity_installed"],
         "device_config_path_set": state["device_config_path_set"],
-        "device_config_path_matches_prefix": state[
-            "device_config_path_matches_prefix"
-        ],
+        "device_config_path_matches_prefix": state["device_config_path_matches_prefix"],
         "bound_via_tenant_or_default": state["bound_via_tenant_or_default"],
         "tenant_binding_check_errored": state["tenant_binding_check_errored"],
     }

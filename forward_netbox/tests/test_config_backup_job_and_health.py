@@ -194,9 +194,7 @@ class ConfigBackupJobWorkTest(_Fixture):
 
         with patch.object(
             ForwardSync, "resolve_snapshot_id", return_value="snap-1"
-        ), patch.object(
-            ForwardSource, "get_client", return_value=object()
-        ), patch(
+        ), patch.object(ForwardSource, "get_client", return_value=object()), patch(
             "forward_netbox.utilities.config_backup.run_config_backup",
             side_effect=ConfigBackupError(message),
         ):
