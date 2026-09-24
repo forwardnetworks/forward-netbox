@@ -86,6 +86,7 @@ from .utilities.direct_changes import object_changes_for_ingestion
 from .utilities.execution_telemetry import build_plan_preview
 from .utilities.export_redaction import export_safe_payload
 from .utilities.health import _job_data_count_trend
+from .utilities.health import config_backup_delivery_bundle_payload
 from .utilities.health import live_data_file_health_check
 from .utilities.health import live_source_health_check
 from .utilities.health import sync_health_summary
@@ -740,6 +741,13 @@ def _sync_support_bundle_payload(sync):
         # questions an investigation otherwise answers with a shell script on
         # the customer's NetBox. Counts, pks and catalog names only.
         "diagnostics": bundle_diagnostics(sync),
+        # The chain from our commit to Validity's compliance run: whether the
+        # data source's `branch` parameter is set, whether it has ever
+        # synced, and whether Validity is actually bound to it. Answers
+        # exactly what blocked delivery without a diagnostic script - see
+        # `operator_action_jobs.config_backup` below for the last run's own
+        # push/fetch outcome.
+        "config_backup_delivery": config_backup_delivery_bundle_payload(sync),
         "operator_action_jobs": _operator_action_jobs_bundle_payload(sync),
         "ownership_records": _ownership_records_bundle_payload(sync),
         # Why the cleanup targets cannot be deleted - the question a screenshot

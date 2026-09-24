@@ -1206,6 +1206,7 @@ def _run_forward_config_backup_work(job, *args, **kwargs):
     The result carries counts and durations only; configuration text never
     reaches job data, logs, or bundles.
     """
+    from .utilities.config_backup import ConfigBackupError
     from .utilities.config_backup import run_config_backup
     from .utilities.post_sync import current_post_sync_snapshot
 
@@ -1234,6 +1235,19 @@ def _run_forward_config_backup_work(job, *args, **kwargs):
         job.save(update_fields=["data"])
     except StalePostSyncSnapshotError:
         _complete_stale_post_sync_overlay(job, sync, **kwargs)
+    except ConfigBackupError as exc:
+        # This subclass's own message is already operator-safe - see its
+        # docstring. Preserved verbatim rather than collapsed through
+        # `safe_operation_failure`, which is why an unset `branch` parameter
+        # or an unreachable remote used to show only "ForwardSyncError" with
+        # no way to tell the two apart without a diagnostic script.
+        job.data = _overlay_job_data(
+            {"error": str(exc), "error_type": exception_type(exc)},
+            kwargs,
+        )
+        job.save(update_fields=["data"])
+        logger.error("Forward config backup failed (%s).", str(exc))
+        raise
     except Exception as exc:
         job.data = _overlay_job_data(
             {

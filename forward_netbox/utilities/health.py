@@ -315,23 +315,14 @@ def _fast_path_runtime_check():
     )
 
 
-def _config_backup_delivery_check(sync):
-    """Is the chain from our commit to Validity's compliance run joined up?
+def config_backup_delivery_state(sync):
+    """The value-free facts behind config-backup delivery, or None when off.
 
-    Three separate things must agree for a backed-up configuration to reach
-    Validity, and every one of them succeeds independently while delivering
-    nothing if another is wrong:
-
-      1. the data source carries a `device_config_path` custom field, and it
-         renders to the paths this plugin writes;
-      2. some tenant's `data_source` custom field - or a data source marked
-         `default` - binds devices to that data source;
-      3. the data source has actually synced since the last push.
-
-    Get any of them wrong and the backup job reports success, the repository
-    holds the configurations, and Validity shows nothing. That is precisely
-    the failure this check exists to name, because nothing else in either
-    product will. Returns None when config backup is not enabled.
+    Single source of truth for two tiers: `_config_backup_delivery_check`
+    turns this into an operator-facing (value-carrying) message for the GUI,
+    and `config_backup_delivery_bundle_payload` exports it as-is - booleans,
+    pks and a timestamp, never a data source name or a custom-field value -
+    so the export tier never needs to re-derive or separately redact this.
     """
     from .config_backup import CONFIG_BACKUP_PARAMETER_NAME
     from .config_backup import CONFIG_BACKUP_REPO_PREFIX
@@ -345,39 +336,38 @@ def _config_backup_delivery_check(sync):
 
     from core.models import DataSource
 
+    state = {
+        "data_source_pk": data_source_pk,
+        "data_source_exists": False,
+        "data_source_name": None,
+        "branch_parameter_set": None,
+        "last_synced": None,
+        "validity_installed": django_apps.is_installed("validity"),
+        "device_config_path_set": None,
+        "device_config_path_matches_prefix": None,
+        "bound_via_tenant_or_default": None,
+        "tenant_binding_check_errored": False,
+    }
+
     data_source = DataSource.objects.filter(pk=data_source_pk).first()
     if data_source is None:
-        return _check(
-            name="Config backup delivery",
-            status="warn",
-            message=(
-                "Config backup names a data source that no longer exists; "
-                "no configuration is being written."
-            ),
-        )
+        return state
 
-    problems = []
-    if data_source.last_synced is None:
-        problems.append(
-            f"data source “{data_source.name}” has never synced, so its files "
-            "are not visible to anything reading it"
-        )
+    state["data_source_exists"] = True
+    # Not exported: the delivery bundle payload keeps this key off its export
+    # (see `config_backup_delivery_bundle_payload`). Kept here because the GUI
+    # check message names the data source.
+    state["data_source_name"] = data_source.name
+    state["branch_parameter_set"] = bool((data_source.parameters or {}).get("branch"))
+    state["last_synced"] = data_source.last_synced
 
-    if django_apps.is_installed("validity"):
+    if state["validity_installed"]:
         expected_prefix = f"{CONFIG_BACKUP_REPO_PREFIX}/"
         template = (data_source.custom_field_data or {}).get("device_config_path") or ""
-        if not template:
-            problems.append(
-                "Validity is installed but the data source has no "
-                "`device_config_path`, so Validity cannot locate any device's "
-                f"configuration (this plugin writes `{expected_prefix}"
-                "<device-name>.cfg`)"
-            )
-        elif expected_prefix not in template:
-            problems.append(
-                f"the data source's `device_config_path` (“{template}”) does "
-                f"not point at `{expected_prefix}`, where this plugin writes"
-            )
+        state["device_config_path_set"] = bool(template)
+        state["device_config_path_matches_prefix"] = expected_prefix in template
+        state["_expected_prefix"] = expected_prefix  # GUI message only
+        state["_device_config_path"] = template  # GUI message only
         try:
             from tenancy.models import Tenant
 
@@ -396,16 +386,78 @@ def _config_backup_delivery_check(sync):
             default = DataSource.objects.filter(
                 custom_field_data__default=True
             ).exists()
-            if not bound and not default:
-                problems.append(
-                    "no tenant binds devices to this data source and no data "
-                    "source is marked `default`, so Validity will not read it "
-                    "for any device"
-                )
+            state["bound_via_tenant_or_default"] = bound or default
         except JobTimeoutException:
             raise
         except Exception:  # noqa: BLE001 - a health check must never fail a page
-            pass
+            state["tenant_binding_check_errored"] = True
+
+    return state
+
+
+def _config_backup_delivery_check(sync):
+    """Is the chain from our commit to Validity's compliance run joined up?
+
+    Three separate things must agree for a backed-up configuration to reach
+    Validity, and every one of them succeeds independently while delivering
+    nothing if another is wrong:
+
+      1. the data source carries a `device_config_path` custom field, and it
+         renders to the paths this plugin writes;
+      2. some tenant's `data_source` custom field - or a data source marked
+         `default` - binds devices to that data source;
+      3. the data source has actually synced since the last push.
+
+    Get any of them wrong and the backup job reports success, the repository
+    holds the configurations, and Validity shows nothing. That is precisely
+    the failure this check exists to name, because nothing else in either
+    product will. Returns None when config backup is not enabled.
+    """
+    state = config_backup_delivery_state(sync)
+    if state is None:
+        return None
+
+    if not state["data_source_exists"]:
+        return _check(
+            name="Config backup delivery",
+            status="warn",
+            message=(
+                "Config backup names a data source that no longer exists; "
+                "no configuration is being written."
+            ),
+        )
+
+    problems = []
+    if state["last_synced"] is None:
+        problems.append(
+            f"data source “{state['data_source_name']}” has never synced, so "
+            "its files are not visible to anything reading it"
+        )
+
+    if state["validity_installed"]:
+        expected_prefix = state["_expected_prefix"]
+        if not state["device_config_path_set"]:
+            problems.append(
+                "Validity is installed but the data source has no "
+                "`device_config_path`, so Validity cannot locate any device's "
+                f"configuration (this plugin writes `{expected_prefix}"
+                "<device-name>.cfg`)"
+            )
+        elif not state["device_config_path_matches_prefix"]:
+            problems.append(
+                "the data source's `device_config_path` "
+                f"(“{state['_device_config_path']}”) does not point at "
+                f"`{expected_prefix}`, where this plugin writes"
+            )
+        if (
+            not state["tenant_binding_check_errored"]
+            and state["bound_via_tenant_or_default"] is False
+        ):
+            problems.append(
+                "no tenant binds devices to this data source and no data "
+                "source is marked `default`, so Validity will not read it "
+                "for any device"
+            )
 
     if problems:
         return _check(
@@ -417,12 +469,41 @@ def _config_backup_delivery_check(sync):
         name="Config backup delivery",
         status="pass",
         message=(
-            f"Config backup writes to “{data_source.name}”, which has synced "
-            "at least once and is reachable by its consumers. Whether that "
-            "sync is newer than the most recent backup commit is not checked "
-            "here."
+            f"Config backup writes to “{state['data_source_name']}”, which "
+            "has synced at least once and is reachable by its consumers. "
+            "Whether that sync is newer than the most recent backup commit "
+            "is not checked here."
         ),
     )
+
+
+def config_backup_delivery_bundle_payload(sync):
+    """Value-free export of `config_backup_delivery_state`.
+
+    No data source name, no `device_config_path` text - pks, booleans and a
+    timestamp only. Answers exactly what blocked a customer's own delivery
+    chain (an unset `branch` parameter, a data source that never synced, a
+    missing Validity binding) without a diagnostic script.
+    """
+    state = config_backup_delivery_state(sync)
+    if state is None:
+        return {"enabled": False}
+    return {
+        "enabled": True,
+        "data_source_pk": state["data_source_pk"],
+        "data_source_exists": state["data_source_exists"],
+        "branch_parameter_set": state["branch_parameter_set"],
+        "last_synced": (
+            state["last_synced"].isoformat() if state["last_synced"] else None
+        ),
+        "validity_installed": state["validity_installed"],
+        "device_config_path_set": state["device_config_path_set"],
+        "device_config_path_matches_prefix": state[
+            "device_config_path_matches_prefix"
+        ],
+        "bound_via_tenant_or_default": state["bound_via_tenant_or_default"],
+        "tenant_binding_check_errored": state["tenant_binding_check_errored"],
+    }
 
 
 def _base_variant_conflict_check(sync):
