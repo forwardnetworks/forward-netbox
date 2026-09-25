@@ -520,3 +520,164 @@ class DependabotAlertsTest(unittest.TestCase):
             with self.assertRaises(preflight.PreflightError) as caught:
                 preflight.check_dependabot_alerts()
         self.assertIn("boom", str(caught.exception))
+
+
+class BundledQuerySignaturesTest(unittest.TestCase):
+    """The gate that would have caught v2.9.7's outage before it shipped.
+
+    Two bundled queries went from one `@query` parameter to seven; the
+    published org copy was never rewritten by `pip install -U`, and every
+    execution against it 400'd until the customer manually republished. A
+    changed signature must force the changelog to say so.
+    """
+
+    def _tree(self, directory, *, nqe_files, readme_rows):
+        root = Path(directory)
+        queries = root / "forward_netbox" / "utilities"
+        queries.mkdir(parents=True)
+        # The real, unmodified parser module - loaded from THIS checkout's
+        # forward_netbox package, not the temp tree, so the file just needs
+        # to exist somewhere findable relative to the real REPO_ROOT.
+        import shutil
+
+        shutil.copy(
+            preflight.REPO_ROOT
+            / "forward_netbox"
+            / "utilities"
+            / "query_execution_contract.py",
+            queries / "query_execution_contract.py",
+        )
+        query_dir = root / "forward_netbox" / "queries"
+        query_dir.mkdir(parents=True)
+        for name, source in nqe_files.items():
+            (query_dir / name).write_text(source, encoding="utf-8")
+        (root / "README.md").write_text("\n".join(readme_rows) + "\n", encoding="utf-8")
+        return root
+
+    def _git(self, prior_sources, *, tag_exists=True):
+        def fake(*arguments):
+            if arguments[:2] == ("tag", "--list"):
+                return "v2.9.8" if tag_exists else ""
+            if arguments[0] == "show":
+                path = arguments[1].split(":", 1)[1]
+                return prior_sources.get(Path(path).name, "")
+            return ""
+
+        return fake
+
+    def _run(self, directory, *, prior_sources, tag_exists=True):
+        with (
+            mock.patch.object(preflight, "REPO_ROOT", directory),
+            mock.patch.object(preflight.provenance, "PRIOR_RELEASE_TAG", "v2.9.8"),
+            mock.patch.object(
+                preflight, "_git", self._git(prior_sources, tag_exists=tag_exists)
+            ),
+        ):
+            return preflight.check_bundled_query_signatures("2.9.9")
+
+    def test_no_files_is_skipped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "forward_netbox" / "queries").mkdir(parents=True)
+            (root / "forward_netbox" / "utilities").mkdir(parents=True)
+            with mock.patch.object(preflight, "REPO_ROOT", root):
+                result = preflight.check_bundled_query_signatures("2.9.9")
+        self.assertIn("skipped", result)
+
+    def test_an_unchanged_signature_passes(self):
+        source = "@query\nf(a: String) =\nforeach x in network.devices select x\n"
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._tree(
+                directory,
+                nqe_files={"forward_devices.nqe": source},
+                readme_rows=["| `v2.9.9` | 4.6.x | Current release; nothing here |"],
+            )
+            result = self._run(root, prior_sources={"forward_devices.nqe": source})
+        self.assertIn("no @query signature changed", result)
+
+    def test_a_new_parameter_with_no_changelog_mention_is_refused(self):
+        prior = "@query\nf(a: String) =\nforeach x in network.devices select x\n"
+        current = (
+            "@query\nf(a: String, b: Integer) =\nforeach x in network.devices "
+            "select x\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._tree(
+                directory,
+                nqe_files={"forward_devices.nqe": current},
+                readme_rows=["| `v2.9.9` | 4.6.x | Current release; a fix |"],
+            )
+            with self.assertRaisesRegex(
+                preflight.PreflightError, "Publish Bundled Queries"
+            ):
+                self._run(root, prior_sources={"forward_devices.nqe": prior})
+
+    def test_a_new_parameter_with_the_changelog_mention_passes(self):
+        prior = "@query\nf(a: String) =\nforeach x in network.devices select x\n"
+        current = (
+            "@query\nf(a: String, b: Integer) =\nforeach x in network.devices "
+            "select x\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._tree(
+                directory,
+                nqe_files={"forward_devices.nqe": current},
+                readme_rows=[
+                    "| `v2.9.9` | 4.6.x | Current release; run Publish Bundled "
+                    "Queries |"
+                ],
+            )
+            result = self._run(root, prior_sources={"forward_devices.nqe": prior})
+        self.assertIn("1 signature change", result)
+
+    def test_a_file_new_since_the_prior_release_is_not_flagged(self):
+        current = "@query\nf(a: String) =\nforeach x in network.devices select x\n"
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._tree(
+                directory,
+                nqe_files={"forward_new_thing.nqe": current},
+                readme_rows=["| `v2.9.9` | 4.6.x | Current release; a fix |"],
+            )
+            # No prior source at all - `_git show` returns empty, as it does
+            # for a path that did not exist at the prior tag.
+            result = self._run(root, prior_sources={})
+        self.assertIn("no @query signature changed", result)
+
+    def test_no_changelog_row_yet_is_skipped_not_refused(self):
+        prior = "@query\nf(a: String) =\nforeach x in network.devices select x\n"
+        current = (
+            "@query\nf(a: String, b: Integer) =\nforeach x in network.devices "
+            "select x\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._tree(
+                directory,
+                nqe_files={"forward_devices.nqe": current},
+                readme_rows=["| `v2.9.8` | 4.6.x | Superseded by `v2.9.9`; old |"],
+            )
+            result = self._run(root, prior_sources={"forward_devices.nqe": prior})
+        self.assertIn("skipped", result)
+
+    def test_the_prior_tag_unavailable_is_skipped(self):
+        source = "@query\nf(a: String) =\nforeach x in network.devices select x\n"
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._tree(
+                directory,
+                nqe_files={"forward_devices.nqe": source},
+                readme_rows=["| `v2.9.9` | 4.6.x | Current release |"],
+            )
+            result = self._run(
+                root, prior_sources={"forward_devices.nqe": source}, tag_exists=False
+            )
+        self.assertIn("skipped", result)
+
+    def test_passes_on_the_real_tree(self):
+        # No mocking: the actual shipped queries, compared against the real
+        # prior release tag, in the real checkout - the parity guarantee
+        # that this check reads what a release actually ships.
+        result = preflight.check_bundled_query_signatures(preflight.declared_version())
+        self.assertTrue(
+            "no @query signature changed" in result
+            or "signature change" in result
+            or "skipped" in result
+        )
