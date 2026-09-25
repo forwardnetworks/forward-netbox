@@ -361,6 +361,16 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
     device_tagged_names = set()
     device_completed_names = set()
     forward_site_slugs = set()
+    # A device's OWN current site, per name - the site-relabel fix
+    # (`apply_engine_bulk.py`'s `_relabel_move_candidate`) taught the apply
+    # path to move a device when Forward relabels its site rather than
+    # create a duplicate, but scope membership here still tested bare name
+    # equality, which cannot tell a device at Forward's current site from
+    # one stranded at a stale one: both carry the same name, so both read as
+    # "in scope". Absent for endpoint-derived names (no site in that NQE
+    # row) and when Forward reports no location - those keep the name-only
+    # test unchanged, which is the endpoint fallback the fix still needs.
+    row_site_slug_by_name = {}
     for row in rows:
         name = str(row.get("name") or "").strip()
         if not name:
@@ -381,16 +391,25 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
             sl = _slugify(loc)
             if sl:
                 forward_site_slugs.add(sl)
+                row_site_slug_by_name[name] = sl
     backfilled_names = device_tagged_names - device_completed_names
     tagged_names = device_tagged_names | endpoint_names
     completed_names = device_completed_names | endpoint_names
     matched_include_tags_by_name.update(endpoint_matched_tags)
 
-    netbox_names = {
-        name
-        for name in Device.objects.values_list("name", flat=True)
-        if (name or "").strip()
-    }
+    netbox_names = set()
+    # pk -> (name, site slug) for every NetBox device, read once and reused
+    # below for the site-aware scope test. `site__slug` is already the same
+    # slug form `forward_site_slugs`/`row_site_slug_by_name` store.
+    netbox_device_site_slug_by_pk = {}
+    for device_id, name, site_slug in Device.objects.select_related("site").values_list(
+        "pk", "name", "site__slug"
+    ):
+        name = (name or "").strip()
+        if not name:
+            continue
+        netbox_names.add(name)
+        netbox_device_site_slug_by_pk[device_id] = (name, site_slug)
 
     from ..models import ForwardDeviceAbsence
     from ..models import ForwardDeviceTagClaim
@@ -422,10 +441,6 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         managed_by_id.setdefault(device_id, name)
     previously_managed = sorted(managed_by_id.items())
     previously_managed_names = {name for _, name in previously_managed}
-    # A sync may classify only devices it previously claimed. Treating every
-    # NetBox device absent from this sync as out of scope creates contradictory
-    # negative claims in multi-source deployments.
-    out_of_scope = (previously_managed_names & netbox_names) - tagged_names
     present_backfilled = netbox_names & backfilled_names
     missing_in_netbox = completed_names - netbox_names
     missing_scope_tag_targets = set(matched_include_tags_by_name) - netbox_names
@@ -435,9 +450,32 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         if name in netbox_names
     }
 
-    out_of_scope_pks = [
-        device_id for device_id, name in previously_managed if name in out_of_scope
-    ]
+    # A sync may classify only devices it previously claimed. Treating every
+    # NetBox device absent from this sync as out of scope creates contradictory
+    # negative claims in multi-source deployments.
+    #
+    # Site-aware, keyed by the pk `previously_managed` already carries: bare
+    # name equality cannot tell a device at Forward's current site apart from
+    # one stranded at a stale one after a site relabel - both carry the same
+    # name, so both used to read as "in scope". A managed device is still in
+    # scope only when Forward tags its name AND (Forward gave no site for
+    # that name at all - the endpoint-derived fallback - OR the device's OWN
+    # current site matches the site Forward reports for that name now).
+    out_of_scope_pks = []
+    out_of_scope = set()
+    for device_id, claimed_name in previously_managed:
+        current = netbox_device_site_slug_by_pk.get(device_id)
+        if current is None:
+            # No longer a NetBox device at all; nothing here to reconcile.
+            continue
+        name, site_slug = current
+        forward_site_slug = row_site_slug_by_name.get(name)
+        in_scope = name in tagged_names and (
+            forward_site_slug is None or forward_site_slug == site_slug
+        )
+        if not in_scope:
+            out_of_scope_pks.append(device_id)
+            out_of_scope.add(name)
     # Primary keys, never names: the panel's red Prune-orphans button deletes
     # this exact set and the page could only ever show 25 of it, so the full
     # list needs a route, and a route needs the ids in the PERSISTED payload
@@ -449,7 +487,12 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         )
     )
 
-    unmanaged, owned_untagged_names = _unmanaged_device_summary(sync, tagged_names)
+    unmanaged, owned_untagged_names = _unmanaged_device_summary(
+        sync,
+        tagged_names,
+        netbox_device_site_slug_by_pk=netbox_device_site_slug_by_pk,
+        row_site_slug_by_name=row_site_slug_by_name,
+    )
 
     # One census query classifies BOTH absent sets. The orphans have carried
     # this split since 2.7.x; the owned-uncovered devices never had it, and
@@ -490,10 +533,15 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         if kinds is not None
         else set()
     )
+    # Tested against `out_of_scope_pks`, the pks already proven out of
+    # scope - not re-derived from `previously_managed` by name alone, which
+    # would also catch the LIVE device of a site-relabel pair sharing that
+    # name (it is in `previously_managed` too, just not in `out_of_scope`).
+    out_of_scope_pk_set = set(out_of_scope_pks)
     out_of_scope_absent_pks = [
         device_id
         for device_id, name in previously_managed
-        if name in out_of_scope_absent_names
+        if device_id in out_of_scope_pk_set and name in out_of_scope_absent_names
     ]
     # The other reason an orphan is never deletable: still in Forward,
     # under different tags or as a custom-command source. The card names
@@ -642,7 +690,9 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
     }
 
 
-def _unmanaged_device_summary(sync, tagged_names):
+def _unmanaged_device_summary(
+    sync, tagged_names, *, netbox_device_site_slug_by_pk, row_site_slug_by_name
+):
     """Split NetBox devices the current result does not cover by ownership.
 
     "This device carries neither include tag" is one observation covering two
@@ -671,10 +721,21 @@ def _unmanaged_device_summary(sync, tagged_names):
     """
     from ..models import ForwardDeviceIdentity
 
+    # Site-aware for the same reason `compute_scope_reconciliation`'s
+    # `out_of_scope` is: bare name equality cannot tell a device at
+    # Forward's current site apart from one stranded at a stale one after a
+    # site relabel. Reuses the pk->(name, site) map the caller already built
+    # rather than a second `Device.objects` query.
     untagged = [
         (device_id, name)
-        for device_id, name in Device.objects.values_list("pk", "name")
-        if (name or "").strip() and name not in tagged_names
+        for device_id, (name, site_slug) in netbox_device_site_slug_by_pk.items()
+        if not (
+            name in tagged_names
+            and (
+                row_site_slug_by_name.get(name) is None
+                or row_site_slug_by_name.get(name) == site_slug
+            )
+        )
     ]
     if not untagged:
         return {
@@ -1183,7 +1244,11 @@ SCOPE_SHRINK_REFUSAL_FLOOR = SAMPLE_LIMIT
 
 def _require_survivable_scope_shrink(report, *, allow_scope_shrink):
     previously_managed = int(report.get("forward_previously_managed") or 0)
-    orphan_count = len(report.get("_out_of_scope") or ())
+    # Devices, not distinct names: two out-of-scope devices can share a name
+    # (a site-relabel pair not yet merged is exactly that shape), and
+    # `_out_of_scope` is a name-set - counting it undercounts the real
+    # shrink by however many such collisions exist.
+    orphan_count = len(report.get("_out_of_scope_pks") or ())
     if allow_scope_shrink or not previously_managed or not orphan_count:
         return
     if orphan_count <= SCOPE_SHRINK_REFUSAL_FLOOR:
@@ -1209,6 +1274,26 @@ def _require_nonempty_forward_scope(report, *, operation):
             f"to {operation} because every NetBox device would be treated as "
             "out of scope."
         )
+
+
+def _exclude_site_relabel_pending_pks(sync, device_pks):
+    """Drop any pk still part of an unmerged site-relabel pair.
+
+    The site-aware scope fix makes an unmerged pair's older device correctly
+    out of scope / absent - the exact shape both prunes act on - before the
+    operator has necessarily run `merge_site_relabel_duplicates`. That is
+    their choice to make (which device to keep), not this prune's; excluded
+    here rather than deleted out from under them. `site_relabel_pairs` is
+    itself DB-local and cheap (no live Forward call), so this costs one
+    extra query, not a repeat of the report's own Forward fetch.
+    """
+    if not device_pks:
+        return list(device_pks)
+    pending = site_relabel_pairs(sync)["pairs"]
+    if not pending:
+        return list(device_pks)
+    excluded = {pk for pair in pending for pk in (pair["older_pk"], pair["newer_pk"])}
+    return [pk for pk in device_pks if pk not in excluded]
 
 
 def _prunable_device_order(device_ids):
@@ -1421,6 +1506,11 @@ def prune_orphan_devices(
         )
         if (name or "").strip() in absent_names
     ]
+    # An unmerged site-relabel pair's older device is now correctly out of
+    # scope (Forward no longer reports that name at its stale site) - which
+    # is exactly the shape this prune deletes. Excluded here so the operator
+    # chooses via the merge action, not a prune that runs before they get to.
+    orphan_pks = _exclude_site_relabel_pending_pks(sync, orphan_pks)
     if not orphan_pks:
         required_runs, required_hours = absence_quarantine_thresholds(sync)
         return _prune_result(
@@ -1464,7 +1554,7 @@ def prune_orphan_devices(
     return result
 
 
-def _require_survivable_uncovered_shrink(sync, absent_names, *, allow_scope_shrink):
+def _require_survivable_uncovered_shrink(sync, absent_pks, *, allow_scope_shrink):
     """Refuse an uncovered cleanup that is too large to be ordinary attrition.
 
     The orphan guard cannot stand in for this one. It measures orphans against
@@ -1479,10 +1569,10 @@ def _require_survivable_uncovered_shrink(sync, absent_names, *, allow_scope_shri
     """
     from ..models import ForwardDeviceIdentity
 
-    if allow_scope_shrink or not absent_names:
+    if allow_scope_shrink or not absent_pks:
         return
     owned_total = ForwardDeviceIdentity.objects.filter(sync=sync).count()
-    absent_count = len(absent_names)
+    absent_count = len(absent_pks)
     if not owned_total or absent_count <= SCOPE_SHRINK_REFUSAL_FLOOR:
         return
     ratio = absent_count / owned_total
@@ -1565,10 +1655,6 @@ def prune_uncovered_devices(
         )
 
     absent_names = {name for name in owned_names if kinds.get(name) == "absent"}
-    _require_survivable_uncovered_shrink(
-        sync, absent_names, allow_scope_shrink=allow_scope_shrink
-    )
-
     # Resolve to the pks the report already established, then keep only those
     # whose name is absent. Matching on the name at delete time would re-resolve
     # a value NetBox does not hold unique.
@@ -1580,6 +1666,15 @@ def prune_uncovered_devices(
         )
         if (name or "").strip() in absent_names
     ]
+    # Devices, not distinct names: `absent_names` can undercount when two
+    # owned-untagged devices share a name (an unmerged site-relabel pair).
+    _require_survivable_uncovered_shrink(
+        sync, absent_pks, allow_scope_shrink=allow_scope_shrink
+    )
+    # Same reasoning as the orphan prune: an unmerged pair's older device is
+    # now correctly absent, and the operator should choose via the merge
+    # action, not have this prune act on it first.
+    absent_pks = _exclude_site_relabel_pending_pks(sync, absent_pks)
     # A caller may narrow this to named devices - the device page acts on one.
     # It can only ever INTERSECT what the whole-set prune would already delete:
     # every gate above has run over the full picture first, and a pk the
