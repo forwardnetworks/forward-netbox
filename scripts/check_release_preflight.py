@@ -448,6 +448,103 @@ def check_release_plan_evidence_base(version: str) -> str:
     return f"{recorded[:12]} matches {reference}"
 
 
+def _declared_query_parameters_module():
+    """Load `query_execution_contract` without importing the plugin package.
+
+    `forward_netbox/__init__.py` imports `netbox.plugins` at module level, so
+    a normal `import forward_netbox...` fails in this Django-free script
+    environment. The module this needs has no relative imports of its own
+    (stdlib only), so loading the file directly - bypassing the package
+    `__init__.py` entirely - is safe and avoids maintaining a second copy of
+    the `@query` signature parser.
+    """
+    import importlib.util
+
+    path = REPO_ROOT / "forward_netbox" / "utilities" / "query_execution_contract.py"
+    spec = importlib.util.spec_from_file_location(
+        "forward_netbox_query_execution_contract", path
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def check_bundled_query_signatures(version: str) -> str:
+    """A bundled `.nqe` file's `@query` parameter list must not change silently.
+
+    `pip install -U` never rewrites a query already published into a
+    customer's Forward org. A release that adds or renames a parameter then
+    breaks every execution against the stale published copy with an HTTP 400
+    (v2.9.7's outage: two queries went from one parameter to seven, and two
+    models failed on every sync until the org library was manually
+    republished). The fix is operational, not code - republish - but nothing
+    forced the changelog to say so, and an operator upgrading blind had no
+    way to know a republish was even needed.
+
+    Refuses when a signature changed since the prior release tag and the
+    README's `v{version}` row does not mention publishing the bundled
+    queries. Skipped (not failed) when the version's row does not exist yet
+    (still being drafted) or the prior release tag is unavailable (a shallow
+    or offline checkout) - a preflight check must never invent a false
+    positive from missing context.
+    """
+    queries_dir = REPO_ROOT / "forward_netbox" / "queries"
+    query_files = sorted(queries_dir.glob("*.nqe"))
+    if not query_files:
+        return "skipped (no .nqe files found)"
+    prior_tag = provenance.PRIOR_RELEASE_TAG
+    if not _git("tag", "--list", prior_tag):
+        return f"skipped ({prior_tag} is unavailable in this checkout)"
+    contract = _declared_query_parameters_module()
+
+    def _names(source: str) -> set[str] | None:
+        declared = contract.declared_query_parameters(source)
+        if declared is None:
+            return None
+        return {parameter.name for parameter in declared}
+
+    changed = []
+    for path in query_files:
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        prior_source = _git("show", f"{prior_tag}:{rel}")
+        if not prior_source:
+            # New since the prior release - nothing to have drifted from.
+            continue
+        current_names = _names(_read(path))
+        prior_names = _names(prior_source)
+        if current_names is None or prior_names is None:
+            # Unparseable (no `@query`, or more than one) either side -
+            # not this check's question to answer; the drift/binding checks
+            # elsewhere already cover a query's own well-formedness.
+            continue
+        if current_names != prior_names:
+            changed.append(path.name)
+    if not changed:
+        return f"no @query signature changed since {prior_tag}"
+
+    readme = REPO_ROOT / "README.md"
+    row_match = re.search(
+        rf"^\| `v{re.escape(version)}` \| [^|]* \| (.+?) \|\s*$",
+        _read(readme),
+        flags=re.MULTILINE,
+    )
+    if row_match is None:
+        return (
+            f"skipped ({len(changed)} signature(s) changed, but v{version} has "
+            "no README row yet)"
+        )
+    if "Publish Bundled Queries" not in row_match.group(1):
+        raise PreflightError(
+            f"{', '.join(changed)} changed their `@query` parameter list "
+            f"since {prior_tag}, but the v{version} README row does not "
+            "mention Publish Bundled Queries. A customer's org-published "
+            "copy is never rewritten by pip install; every execution "
+            "against it will 400 until they republish. Add the instruction "
+            "to the changelog row."
+        )
+    return f"{len(changed)} signature change(s) since {prior_tag}, changelog updated"
+
+
 def check_sensitive_pattern_parity(environment: dict[str, str] | None = None) -> str:
     """Run the RELEASE-TIME sensitive scan before the tag exists.
 
@@ -542,6 +639,7 @@ def _report_lines(
     evidence_base,
     pattern_parity,
     lockfile="",
+    query_signatures="",
 ):
     checks = (
         (f"version {version} consistent across surfaces", "passed"),
@@ -551,6 +649,7 @@ def _report_lines(
         (lockfile, _outcome(lockfile)),
         (f"evidence base commit {evidence_base}", _outcome(evidence_base)),
         (f"sensitive pattern parity {pattern_parity}", _outcome(pattern_parity)),
+        (f"bundled query signatures: {query_signatures}", _outcome(query_signatures)),
     )
     lines = []
     for detail, outcome in checks:
@@ -575,6 +674,7 @@ def main() -> int:
         lockfile = check_lockfile_consistency()
         evidence_base = check_release_plan_evidence_base(version)
         pattern_parity = check_sensitive_pattern_parity()
+        query_signatures = check_bundled_query_signatures(version)
     except PreflightError as exc:
         print(f"release preflight failed: {exc}", file=sys.stderr)
         return 1
@@ -587,6 +687,7 @@ def main() -> int:
         "lockfile": lockfile,
         "evidence_base_commit": evidence_base,
         "sensitive_pattern_parity": pattern_parity,
+        "bundled_query_signatures": query_signatures,
     }
     if arguments.json:
         print(json.dumps(result, sort_keys=True))
@@ -599,6 +700,7 @@ def main() -> int:
             evidence_base,
             pattern_parity,
             lockfile,
+            query_signatures,
         ):
             print(line)
     return 0

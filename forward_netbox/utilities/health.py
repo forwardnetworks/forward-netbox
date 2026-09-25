@@ -504,6 +504,59 @@ def config_backup_delivery_bundle_payload(sync):
     }
 
 
+def _query_signature_drift_check(sync):
+    """Warn when a map's PUBLISHED query no longer accepts what we send.
+
+    `pip install -U` never rewrites a query already published into a
+    customer's Forward org - so a release that changes a bundled query's
+    `@query` parameter list breaks every execution against the stale
+    published copy with an HTTP 400
+    (`Provided argument, 'x' is not a parameter to the given query`), and
+    the operator sees only "dependency preview query validation failed for
+    N model(s)", never why. `parameter_signature_drift` (used by the
+    on-demand "Export Live Query Drift Check") already computes this; this
+    surfaces its last STORED result (`ForwardNQEMap.last_live_drift`, no
+    live Forward call here) as a standing Health warning so an operator
+    finds out before their next sync fails, not after.
+
+    Returns None when no map has ever been checked, or every checked map's
+    signature still matches.
+    """
+    mismatched = []
+    checked_count = 0
+    for query_map in sync.get_maps():
+        stored = query_map.last_live_drift or {}
+        if not stored:
+            continue
+        checked_count += 1
+        if stored.get("status") == "live_query_id_parameter_mismatch":
+            mismatched.append(query_map)
+    if not checked_count:
+        return None
+    if not mismatched:
+        return _check(
+            name="Published query signatures",
+            status="pass",
+            message=(
+                f"{checked_count} checked map(s) still accept the "
+                "parameters this release sends."
+            ),
+        )
+    names = ", ".join(sorted(m.model_string for m in mismatched)[:5])
+    if len(mismatched) > 5:
+        names += ", …"
+    return _check(
+        name="Published query signatures",
+        status="danger",
+        message=(
+            f"{len(mismatched)} map(s) ({names}) are bound to a published "
+            "query whose parameters no longer match what this release "
+            "sends - every execution against it will fail with HTTP 400. "
+            "Run Publish Bundled Queries to republish the current version."
+        ),
+    )
+
+
 def _base_variant_conflict_check(sync):
     """Warn when a base query and its opt-in variant are both enabled.
 
@@ -645,6 +698,9 @@ def sync_health_summary(sync):
     config_backup_check = _config_backup_delivery_check(sync)
     if config_backup_check is not None:
         checks.append(config_backup_check)
+    query_signature_drift_check = _query_signature_drift_check(sync)
+    if query_signature_drift_check is not None:
+        checks.append(query_signature_drift_check)
     variant_conflict_check = _base_variant_conflict_check(sync)
     if variant_conflict_check is not None:
         checks.append(variant_conflict_check)
