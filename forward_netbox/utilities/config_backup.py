@@ -45,6 +45,17 @@ from rq.timeouts import JobTimeoutException
 from ..exceptions import ForwardSyncError
 
 
+CONFIG_BACKUP_STAGES = (
+    "resolve",
+    "fetch_remote",
+    "branch",
+    "nqe_fetch",
+    "build",
+    "push",
+    "datasource_sync",
+)
+
+
 class ConfigBackupError(ForwardSyncError):
     """A config-backup failure whose OWN message is already operator-safe.
 
@@ -58,7 +69,19 @@ class ConfigBackupError(ForwardSyncError):
     an already-safe, already-actionable message down to "ForwardSyncError"
     was itself the reason a customer's config-backup failure needed a
     diagnostic script to explain at all.
+
+    `stage` names WHERE in the pipeline this failed - one of
+    `CONFIG_BACKUP_STAGES` - and is prepended to the message as `[stage]`.
+    Every real job failure this module has produced so far completed in
+    under a second, which only rules out the stages that read from Forward
+    (`nqe_fetch` can legitimately take minutes on a large fleet); the
+    message alone could not say which of the fast ones it was without a
+    diagnostic script reproducing each step by hand.
     """
+
+    def __init__(self, message, *, stage=None):
+        self.stage = stage
+        super().__init__(f"[{stage}] {message}" if stage else message)
 
 
 CONFIG_BACKUP_PARAMETER_NAME = "config_backup_data_source"
@@ -131,11 +154,13 @@ def config_backup_data_source(sync):
         data_source = DataSource.objects.get(pk=int(raw))
     except (TypeError, ValueError, DataSource.DoesNotExist) as exc:
         raise ConfigBackupError(
-            "config_backup_data_source does not name an existing data source."
+            "config_backup_data_source does not name an existing data source.",
+            stage="resolve",
         ) from exc
     if data_source.type != "git":
         raise ConfigBackupError(
-            "config_backup_data_source must reference a git data source."
+            "config_backup_data_source must reference a git data source.",
+            stage="resolve",
         )
     return data_source
 
@@ -265,7 +290,8 @@ def _fetch_remote(repo, url):
     except Exception as exc:
         raise ConfigBackupError(
             "config backup could not fetch the data source repository "
-            f"({_remote_failure_reason(exc)})."
+            f"({_remote_failure_reason(exc)}).",
+            stage="fetch_remote",
         ) from exc
 
 
@@ -322,7 +348,8 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
                     "config backup cannot choose a branch: the data source "
                     "repository is empty and advertises no default branch. Set "
                     "the data source's `branch` parameter, or make an initial "
-                    "commit on the branch NetBox should read."
+                    "commit on the branch NetBox should read.",
+                    stage="branch",
                 )
             head = _remote_head(remote_refs, branch_ref)
 
@@ -445,7 +472,8 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
                 # proves nothing either. Refuse loudly.
                 raise ConfigBackupError(
                     "config backup fetched no configurations; refusing to "
-                    "commit an empty snapshot."
+                    "commit an empty snapshot.",
+                    stage="nqe_fetch",
                 )
             if result.written == 0 and result.unmanaged_written == 0:
                 result.skipped_reason = "no configuration changed"
@@ -489,7 +517,8 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
             except Exception as exc:
                 raise ConfigBackupError(
                     "config backup could not push to the data source "
-                    f"repository ({_remote_failure_reason(exc)})."
+                    f"repository ({_remote_failure_reason(exc)}).",
+                    stage="push",
                 ) from exc
             result.pushed = True
         finally:
