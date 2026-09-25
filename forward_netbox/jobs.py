@@ -1005,6 +1005,46 @@ def _prune_uncovered_devices_work(
         raise
 
 
+def _merge_site_relabel_duplicates_work(job):
+    """Repair existing site-relabel duplicate device pairs for this sync.
+
+    Same discipline as the prunes above: the pair list is recomputed inside
+    the job (`merge_site_relabel_duplicates` never trusts a caller-supplied
+    set as final), a fraction-guard failure is reported by name rather than
+    a bare class, and everything recorded is pks and counts - never a device
+    or site name.
+    """
+    from .utilities.scope_reconciliation import merge_site_relabel_duplicates
+    from .utilities.scope_reconciliation import SiteRelabelPairFractionGuardError
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    try:
+        result = merge_site_relabel_duplicates(sync)
+        job.data = {
+            "merged_count": result["merged_count"],
+            "merged_pairs": result["merged_pairs"],
+            "failed_count": result["failed_count"],
+            "failed_pairs": result["failed_pairs"],
+            "held_count": result["held_count"],
+        }
+        job.save(update_fields=["data"])
+    except SiteRelabelPairFractionGuardError as exc:
+        job.data = {"error": str(exc), "error_type": exception_type(exc)}
+        job.save(update_fields=["data"])
+        logger.error(
+            "Site-relabel duplicate merge refused a large candidate set (%s).",
+            exception_type(exc),
+        )
+        raise
+    except Exception as exc:
+        job.data = {
+            "error": safe_operation_failure("Site-relabel duplicate merge", exc),
+            "error_type": exception_type(exc),
+        }
+        job.save(update_fields=["data"])
+        raise
+
+
 def _release_foreign_delete_blockers_work(
     job, *, device_pk=None, expected_blockers=None
 ):
@@ -2252,6 +2292,17 @@ class PruneUncoveredDevicesJob(ForwardJobRunner):
                 int(pk) for pk in kwargs["restrict_to_device_pks"]
             ]
         _prune_uncovered_devices_work(self.job, **extra)
+
+
+class MergeSiteRelabelDuplicatesJob(ForwardJobRunner):
+    """One-time repair for site-relabel duplicate pairs, used by the HTML action."""
+
+    class Meta:
+        # Byte-identical to BUTTON_JOB_SPECS["merge_site_relabel_duplicates"][1].
+        name = "merge site-relabel duplicates"
+
+    def run(self, *args, **kwargs):
+        _merge_site_relabel_duplicates_work(self.job)
 
 
 class ReleaseForeignDeleteBlockersJob(ForwardJobRunner):

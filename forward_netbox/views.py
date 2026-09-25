@@ -1840,6 +1840,30 @@ def _latest_scope_reconciliation_job(sync):
     return latest_scope_report_job(sync)
 
 
+def _site_relabel_pairs_payload(sync):
+    """Counts only, for the scope-reconciliation page's merge card.
+
+    Computed inline (unlike the report above): a relabel pair needs no live
+    Forward query to prove, so it costs one duplicate-name scan and two batch
+    queries - cheap even on a real fleet.
+    """
+    from rq.timeouts import JobTimeoutException
+
+    from .utilities.scope_reconciliation import site_relabel_pairs
+
+    try:
+        report = site_relabel_pairs(sync)
+    except JobTimeoutException:
+        raise
+    except Exception:  # noqa: BLE001 - a page render must never 500 on this
+        return {"pair_count": 0, "held_count": 0, "available": False}
+    return {
+        "pair_count": len(report["pairs"]),
+        "held_count": len(report["held"]),
+        "available": True,
+    }
+
+
 def _scope_reconciliation_payload(job):
     """See `scope_reconciliation.stored_scope_report`."""
     from .utilities.scope_reconciliation import stored_scope_report
@@ -2078,6 +2102,11 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
                 # running on a page render, so the button is offered whenever
                 # the plugin is installed and the job reports what it found.
                 "dlm_available": apps.is_installed("netbox_dlm"),
+                # Unlike the report above, this needs no live Forward query -
+                # a relabel pair is provable from stored state alone (the
+                # newer device's own site IS Forward's current answer) - so
+                # it is safe to compute on every page render.
+                "site_relabel_pairs": _site_relabel_pairs_payload(sync),
             },
         )
 
@@ -2322,6 +2351,58 @@ class ForwardSyncPruneUncoveredView(BaseObjectView):
                 "Queued job #%(pk)d to prune uncovered devices. Only devices "
                 "Forward no longer reports are eligible; watch the Jobs tab for "
                 "the result."
+            )
+            % {"pk": job.pk},
+        )
+        return redirect(sync.get_absolute_url())
+
+
+@register_model_view(
+    ForwardSync, "merge_site_relabel_duplicates", path="merge-site-relabel-duplicates"
+)
+class ForwardSyncMergeSiteRelabelDuplicatesView(BaseObjectView):
+    """One-time repair for device pairs a site relabel duplicated.
+
+    Deletes the newer (sync-created) copy of each qualifying pair and moves
+    the older one to the newer copy's site - see
+    `scope_reconciliation.site_relabel_pairs` for exactly what qualifies.
+    """
+
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "dcim.delete_device"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return redirect(
+            reverse(
+                "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                kwargs={"pk": sync.pk},
+            )
+        )
+
+    def post(self, request, pk):
+        from .utilities.sync_facade import JobAlreadyActive, enqueue_button_job
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        try:
+            job = enqueue_button_job(
+                sync,
+                "merge_site_relabel_duplicates",
+                request.user,
+            )
+        except JobAlreadyActive:
+            messages.warning(
+                request,
+                _("An equivalent site-relabel merge job is already running."),
+            )
+            return redirect(sync.get_absolute_url())
+        messages.success(
+            request,
+            _(
+                "Queued job #%(pk)d to merge site-relabel duplicates. Watch "
+                "the Jobs tab for the result."
             )
             % {"pk": job.pk},
         )

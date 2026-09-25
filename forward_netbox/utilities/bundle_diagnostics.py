@@ -49,6 +49,7 @@ SECTIONS = (
     "issue_references",
     "inventory_items",
     "duplicate_device_names",
+    "site_relabel_pairs",
 )
 
 
@@ -466,6 +467,24 @@ def _duplicate_device_names(sync):
     }
 
 
+def _site_relabel_pairs(sync):
+    """Existing site-relabel duplicate pairs, ready to merge or held.
+
+    See `scope_reconciliation.site_relabel_pairs` for exactly what
+    qualifies. Every entry it returns is already pks and a reason token, so
+    it is exported unchanged.
+    """
+    from .scope_reconciliation import site_relabel_pairs
+
+    report = site_relabel_pairs(sync)
+    return {
+        "pair_count": len(report["pairs"]),
+        "held_count": len(report["held"]),
+        "pairs": report["pairs"],
+        "held": report["held"],
+    }
+
+
 _BUILDERS = {
     "uncovered": _uncovered,
     "uncovered_tag_timeline": _uncovered_tag_timeline,
@@ -477,6 +496,7 @@ _BUILDERS = {
     "issue_references": _issue_references,
     "inventory_items": _inventory_items,
     "duplicate_device_names": _duplicate_device_names,
+    "site_relabel_pairs": _site_relabel_pairs,
 }
 
 
