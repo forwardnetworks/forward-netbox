@@ -1141,24 +1141,38 @@ class ForwardQueryFetcher:
         if not summaries:
             return
         by_model = {summary["model"]: summary for summary in summaries}
+        # The delta is genuinely model-wide (consolidated across every
+        # full-mode workload for that model, before this loop ever runs) -
+        # attaching the identical dict to every map sharing the model reads
+        # as though each one carries its own state. Attributed to the
+        # FIRST map for the model only; siblings get a marker naming which
+        # map carries the real numbers, not a second copy of them.
+        attributed_models = set()
         updated_results = []
         for result in self.model_results:
             summary = by_model.get(result.model_string)
             if summary is None:
                 updated_results.append(result)
                 continue
-            diagnostic = {
-                "type": "durable_workload_state",
-                "mode": summary["mode"],
-                "target_row_count": summary["target_rows"],
-                "staged_upsert_count": summary["upsert_rows"],
-                "staged_delete_count": summary["delete_rows"],
-                "bootstrap_delete_count": summary["bootstrap_delete_rows"],
-                "protected_delete_count": summary["protected_delete_rows"],
-                "tombstone_count": summary["tombstone_rows"],
-                "unrepresented_peer": summary["unrepresented_peer"],
-                "compressed_bytes": summary["compressed_bytes"],
-            }
+            if result.model_string in attributed_models:
+                diagnostic = {
+                    "type": "durable_workload_state",
+                    "shared_with_sibling_map": True,
+                }
+            else:
+                attributed_models.add(result.model_string)
+                diagnostic = {
+                    "type": "durable_workload_state",
+                    "mode": summary["mode"],
+                    "target_row_count": summary["target_rows"],
+                    "staged_upsert_count": summary["upsert_rows"],
+                    "staged_delete_count": summary["delete_rows"],
+                    "bootstrap_delete_count": summary["bootstrap_delete_rows"],
+                    "protected_delete_count": summary["protected_delete_rows"],
+                    "tombstone_count": summary["tombstone_rows"],
+                    "unrepresented_peer": summary["unrepresented_peer"],
+                    "compressed_bytes": summary["compressed_bytes"],
+                }
             updated_results.append(
                 replace(result, diagnostics=[*result.diagnostics, diagnostic])
             )
