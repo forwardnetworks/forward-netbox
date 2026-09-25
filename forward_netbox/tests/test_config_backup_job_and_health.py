@@ -19,7 +19,9 @@ from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.config_backup import ConfigBackupResult
+from forward_netbox.utilities.export_redaction import export_safe_payload
 from forward_netbox.utilities.health import _config_backup_delivery_check
+from forward_netbox.utilities.health import config_backup_delivery_bundle_payload
 
 SECRET_CONFIG = "enable secret 9 $9$abcdefghijklmnop\n"
 
@@ -174,6 +176,35 @@ class ConfigBackupJobWorkTest(_Fixture):
 
         self.assertEqual(run.call_args.kwargs["snapshot_id"], "snap-1")
 
+    def test_a_config_backup_error_keeps_its_own_operator_safe_message(self):
+        # This is the customer-hit case: an empty repo with no `branch`
+        # parameter. Before this fix, the job's `error` field read only
+        # "Forward config backup failed (ForwardSyncError)." - the actionable
+        # sentence `run_config_backup` actually raised never reached the job,
+        # the GUI or the support bundle, and diagnosing it needed a script.
+        from forward_netbox.utilities.config_backup import ConfigBackupError
+
+        job = self._job()
+        message = (
+            "config backup cannot choose a branch: the data source "
+            "repository is empty and advertises no default branch. Set "
+            "the data source's `branch` parameter, or make an initial "
+            "commit on the branch NetBox should read."
+        )
+
+        with patch.object(
+            ForwardSync, "resolve_snapshot_id", return_value="snap-1"
+        ), patch.object(ForwardSource, "get_client", return_value=object()), patch(
+            "forward_netbox.utilities.config_backup.run_config_backup",
+            side_effect=ConfigBackupError(message),
+        ):
+            with self.assertRaises(ConfigBackupError):
+                _run_forward_config_backup_work(job)
+
+        job.refresh_from_db()
+        self.assertEqual(job.data["error_type"], "ConfigBackupError")
+        self.assertEqual(job.data["error"], message)
+
 
 class ConfigBackupDeliveryCheckTest(_Fixture):
     def test_disabled_backup_yields_no_check(self):
@@ -259,3 +290,67 @@ class ConfigBackupDeliveryCheckTest(_Fixture):
             template="configs/{{device.name}}.cfg", default=True
         )
         self.assertEqual(check["status"], "pass")
+
+
+class ConfigBackupDeliveryBundlePayloadTest(_Fixture):
+    """The support bundle answers this without a diagnostic script.
+
+    A customer's config-backup job kept failing on an unset `branch`
+    parameter, and every attempt to diagnose it needed a hand-written script
+    run on their NetBox because the bundle carried nothing about the
+    delivery chain at all.
+    """
+
+    def test_disabled_backup_reads_as_off(self):
+        self.source.parameters = {"network_id": "net-1"}
+        self.source.save()
+        self.sync.refresh_from_db()
+        self.assertEqual(
+            config_backup_delivery_bundle_payload(self.sync), {"enabled": False}
+        )
+
+    def test_a_missing_data_source_is_named_only_by_pk(self):
+        self.source.parameters["config_backup_data_source"] = 999999
+        self.source.save()
+        self.sync.refresh_from_db()
+        payload = config_backup_delivery_bundle_payload(self.sync)
+        self.assertEqual(payload["enabled"], True)
+        self.assertEqual(payload["data_source_pk"], 999999)
+        self.assertEqual(payload["data_source_exists"], False)
+
+    def test_an_unset_branch_parameter_is_reported(self):
+        payload = config_backup_delivery_bundle_payload(self.sync)
+        self.assertEqual(payload["data_source_exists"], True)
+        self.assertEqual(payload["branch_parameter_set"], False)
+        self.assertIsNone(payload["last_synced"])
+
+    def test_a_set_branch_parameter_and_sync_time_are_reported(self):
+        now = timezone.now()
+        DataSource.objects.filter(pk=self.data_source.pk).update(
+            parameters={"branch": "main"}, last_synced=now
+        )
+        payload = config_backup_delivery_bundle_payload(self.sync)
+        self.assertEqual(payload["branch_parameter_set"], True)
+        self.assertEqual(payload["last_synced"], now.isoformat())
+
+    def test_the_data_source_name_never_reaches_the_payload_or_survives_export(self):
+        payload = config_backup_delivery_bundle_payload(self.sync)
+        self.assertNotIn("data_source_name", payload)
+        self.assertNotIn(self.data_source.name, str(export_safe_payload(payload)))
+
+    def test_validity_binding_fields_pass_through_value_free(self):
+        DataSource.objects.filter(pk=self.data_source.pk).update(
+            last_synced=timezone.now(),
+            custom_field_data={"device_config_path": "configs/{{device.name}}.cfg"},
+        )
+        with patch(
+            "django.apps.apps.is_installed", side_effect=lambda app: app == "validity"
+        ):
+            payload = config_backup_delivery_bundle_payload(self.sync)
+        self.assertEqual(payload["validity_installed"], True)
+        self.assertEqual(payload["device_config_path_set"], True)
+        self.assertEqual(payload["device_config_path_matches_prefix"], True)
+        self.assertEqual(payload["bound_via_tenant_or_default"], False)
+        # The key names (`device_config_path_set`, `_matches_prefix`) are
+        # fine - it is the TEMPLATE TEXT that must never appear.
+        self.assertNotIn("{{device.name}}", str(payload))

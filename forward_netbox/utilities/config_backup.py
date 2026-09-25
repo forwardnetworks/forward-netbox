@@ -44,6 +44,23 @@ from rq.timeouts import JobTimeoutException
 
 from ..exceptions import ForwardSyncError
 
+
+class ConfigBackupError(ForwardSyncError):
+    """A config-backup failure whose OWN message is already operator-safe.
+
+    Every raise site in this module hand-writes a static, actionable
+    sentence, or interpolates only `_remote_failure_reason(exc)` - which is
+    built specifically to be safe (never a URL, never credentials). The job
+    wrapper (`_run_forward_config_backup_work`) recognizes this subclass and
+    preserves `str(exc)` verbatim instead of collapsing it to a bare
+    exception-name classifier via `safe_operation_failure` - the classifier
+    exists for exceptions whose text is NOT known to be safe, and collapsing
+    an already-safe, already-actionable message down to "ForwardSyncError"
+    was itself the reason a customer's config-backup failure needed a
+    diagnostic script to explain at all.
+    """
+
+
 CONFIG_BACKUP_PARAMETER_NAME = "config_backup_data_source"
 CONFIG_BACKUP_QUERY_FILENAME = "forward_config_backup.nqe"
 # ~100 rows at the measured average of ~560 KB keeps a page around 55 MB. The
@@ -113,11 +130,11 @@ def config_backup_data_source(sync):
     try:
         data_source = DataSource.objects.get(pk=int(raw))
     except (TypeError, ValueError, DataSource.DoesNotExist) as exc:
-        raise ForwardSyncError(
+        raise ConfigBackupError(
             "config_backup_data_source does not name an existing data source."
         ) from exc
     if data_source.type != "git":
-        raise ForwardSyncError(
+        raise ConfigBackupError(
             "config_backup_data_source must reference a git data source."
         )
     return data_source
@@ -246,7 +263,7 @@ def _fetch_remote(repo, url):
     except JobTimeoutException:
         raise
     except Exception as exc:
-        raise ForwardSyncError(
+        raise ConfigBackupError(
             "config backup could not fetch the data source repository "
             f"({_remote_failure_reason(exc)})."
         ) from exc
@@ -301,7 +318,7 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
             remote_refs = _fetch_remote(repo, url)
             branch_ref = _branch_ref(data_source, remote_refs)
             if branch_ref is None:
-                raise ForwardSyncError(
+                raise ConfigBackupError(
                     "config backup cannot choose a branch: the data source "
                     "repository is empty and advertises no default branch. Set "
                     "the data source's `branch` parameter, or make an initial "
@@ -426,7 +443,7 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
                 # An empty result cannot be told from a failed fetch, and a
                 # backup that commits emptiness on a fault destroys nothing but
                 # proves nothing either. Refuse loudly.
-                raise ForwardSyncError(
+                raise ConfigBackupError(
                     "config backup fetched no configurations; refusing to "
                     "commit an empty snapshot."
                 )
@@ -470,7 +487,7 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
             except JobTimeoutException:
                 raise
             except Exception as exc:
-                raise ForwardSyncError(
+                raise ConfigBackupError(
                     "config backup could not push to the data source "
                     f"repository ({_remote_failure_reason(exc)})."
                 ) from exc
