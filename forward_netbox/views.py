@@ -847,6 +847,8 @@ def _dependency_model_result_summary(
     comparison_queries=None,
     comparison_sql_ms=None,
     comparison_error="",
+    attribute_model_comparison=True,
+    comparison_shared_with_sibling_maps=0,
 ):
     # ``fetcher.model_results`` are ForwardModelResult dataclasses, not dicts —
     # calling result.get(...) on them raised AttributeError and errored the whole
@@ -857,13 +859,25 @@ def _dependency_model_result_summary(
         raise TypeError("Dependency preview results must be ForwardModelResult values.")
     data = result.as_dict()
     row_count = int(data.get("row_count") or 0)
+    # `comparison` is computed ONCE PER MODEL (`_compare_rows_by_model` pools
+    # every map's rows first), but several maps commonly share a model - all
+    # three `dcim.inventoryitem` maps, for one. Attributing the same
+    # model-wide deletes/creates/updates to every one of those maps counted
+    # the same removals once per map instead of once: a customer's
+    # dependency preview showed 1,394 pending inventory-item removals on a
+    # map that had fetched zero rows, because that map shared its model with
+    # two others. Attributed to exactly one map per model
+    # (`attribute_model_comparison`, set by the caller for the first map it
+    # sees for a given model) - every other map still shows its OWN
+    # Forward-declared numbers, just not a second copy of the shared ones.
+    attribute_comparison = comparison is not None and attribute_model_comparison
     # Forward's own declared deletes, plus any the comparison itself found -
     # `dcim.inventoryitem`'s module-native rows arrive as upsert rows and are
     # deleted by the apply rather than Forward's `delete_rows`, so they are
     # not in `data["delete_count"]` at all until the comparison classifies
     # them.
-    delete_count = int(data.get("delete_count") or 0) + int(
-        (comparison or {}).get("deletes") or 0
+    delete_count = int(data.get("delete_count") or 0) + (
+        int(comparison.get("deletes") or 0) if attribute_comparison else 0
     )
     durable_state = next(
         (
@@ -883,19 +897,32 @@ def _dependency_model_result_summary(
         "failure_count": int(data.get("failure_count") or 0),
         "failure_exception": str(data.get("failure_exception") or ""),
         "failure_reason": str(data.get("failure_reason") or ""),
-        # Per-model change estimate. With a comparison this is how many objects
-        # actually differ - creates plus updates, deletes counted separately by
-        # the drift report - so the figure means what the page has always said
-        # it meant. Without one it stays the upper bound: every fetched row,
-        # because nothing compared them.
+        # Per-model change estimate. With a comparison ATTRIBUTED TO THIS MAP
+        # this is how many objects actually differ - creates plus updates,
+        # deletes counted separately by the drift report - so the figure
+        # means what the page has always said it meant. Without one (no
+        # comparison at all, or one shared with a sibling map that already
+        # carries it) it stays the upper bound: this map's own fetched rows,
+        # because nothing was attributed here.
         "estimated_changes": (
             comparison["creates"] + comparison["updates"]
-            if comparison
+            if attribute_comparison
             else row_count + delete_count
         ),
         "change_estimate_kind": (
-            "exact_comparison" if comparison else "workload_upper_bound"
+            "exact_comparison"
+            if attribute_comparison
+            else (
+                "shared_with_sibling_maps"
+                if comparison is not None
+                else "workload_upper_bound"
+            )
         ),
+        # How many OTHER maps target this same model - the comparison is
+        # model-wide either way, so an operator reading one map's numbers
+        # knows there are others to check, whether this is the map carrying
+        # them or not.
+        "comparison_shared_with_sibling_maps": comparison_shared_with_sibling_maps,
         # WHY this model is not measured, when a comparison exists for it and
         # raised. Empty for a model with no comparison, and for one that was
         # measured. An exception name, never a message: messages carry values.
@@ -903,8 +930,13 @@ def _dependency_model_result_summary(
         # Rows the comparison could not classify because they carry no usable
         # identity. Reported rather than folded into drift, which would read as
         # a difference between the two systems when it is a defect in the row.
-        "comparison_rejected_rows": (comparison or {}).get("rejected", 0),
-        "unchanged_rows": (comparison or {}).get("unchanged", 0),
+        # Attributed with the rest of the comparison - never duplicated per map.
+        "comparison_rejected_rows": (
+            comparison.get("rejected", 0) if attribute_comparison else 0
+        ),
+        "unchanged_rows": (
+            comparison.get("unchanged", 0) if attribute_comparison else 0
+        ),
         # How long this model's comparison took. Recorded for every model that
         # was compared, so a slow one can be named rather than inferred from a
         # total. `None` where there was no comparison to time.
@@ -1018,6 +1050,8 @@ class _QueryMeter:
 
 
 def _dependency_dry_run_payload(sync, *, client=None):
+    from collections import Counter
+
     from .utilities.api_usage import record_forward_api_usage
     from .utilities.branch_budget import build_branch_plan
     from .utilities.query_fetch import ForwardQueryFetcher
@@ -1159,6 +1193,34 @@ def _dependency_dry_run_payload(sync, *, client=None):
         ),
         1,
     )
+    # Several maps commonly target one model (every built-in `dcim.inventoryitem`
+    # map, for one); `comparison_by_model` is computed once per model, not once
+    # per map. Attributed to the first map seen for each model, in fetch order -
+    # every other map still reports its own Forward-declared numbers, never a
+    # second copy of the shared comparison. See `_dependency_model_result_summary`.
+    model_strings = [
+        result.as_dict().get("model") or "" for result in fetcher.model_results
+    ]
+    sibling_map_counts = Counter(model_strings)
+    attributed_models = set()
+    model_results = []
+    for result, model_string in zip(fetcher.model_results, model_strings):
+        attribute_here = model_string not in attributed_models
+        attributed_models.add(model_string)
+        model_results.append(
+            _dependency_model_result_summary(
+                result,
+                comparison=comparison_by_model.get(model_string),
+                comparison_runtime_ms=comparison_runtime_ms_by_model.get(model_string),
+                comparison_queries=comparison_queries_by_model.get(model_string),
+                comparison_sql_ms=comparison_sql_ms_by_model.get(model_string),
+                comparison_error=comparison_error_by_model.get(model_string, ""),
+                attribute_model_comparison=attribute_here,
+                comparison_shared_with_sibling_maps=sibling_map_counts[model_string]
+                - 1,
+            )
+        )
+
     return {
         "generated_at": timezone.now().isoformat(),
         "sync": {
@@ -1198,27 +1260,7 @@ def _dependency_dry_run_payload(sync, *, client=None):
             "sql_ms": comparison_sql_ms,
             "rows_compared": compared_rows,
         },
-        "model_results": [
-            _dependency_model_result_summary(
-                result,
-                comparison=comparison_by_model.get(
-                    (result.as_dict().get("model") or "")
-                ),
-                comparison_runtime_ms=comparison_runtime_ms_by_model.get(
-                    (result.as_dict().get("model") or "")
-                ),
-                comparison_queries=comparison_queries_by_model.get(
-                    (result.as_dict().get("model") or "")
-                ),
-                comparison_sql_ms=comparison_sql_ms_by_model.get(
-                    (result.as_dict().get("model") or "")
-                ),
-                comparison_error=comparison_error_by_model.get(
-                    (result.as_dict().get("model") or ""), ""
-                ),
-            )
-            for result in fetcher.model_results
-        ],
+        "model_results": model_results,
         "forward_api_usage": record_forward_api_usage(sync, client),
     }
 
