@@ -236,8 +236,10 @@ class ConfigBackupTest(TestCase):
         self.assertEqual(client.calls, [])
 
     def test_an_empty_fetch_refuses_rather_than_committing_emptiness(self):
-        with self.assertRaises(ForwardSyncError):
+        with self.assertRaises(ForwardSyncError) as caught:
             self._run([])
+        self.assertEqual(caught.exception.stage, "nqe_fetch")
+        self.assertIn("[nqe_fetch]", str(caught.exception))
 
     def test_a_device_name_never_becomes_repository_structure(self):
         from dcim.models import Site as _Site
@@ -412,8 +414,46 @@ class ConfigBackupTest(TestCase):
         self.sync.source.parameters["config_backup_data_source"] = local.pk
         self.sync.source.save()
 
-        with self.assertRaises(ForwardSyncError):
+        with self.assertRaises(ForwardSyncError) as caught:
             self._run([{"name": "fwd-router-1", "config": "x\n"}])
+        self.assertEqual(caught.exception.stage, "resolve")
+
+    def test_an_unreachable_remote_names_the_fetch_remote_stage(self):
+        import dulwich.porcelain
+        from unittest.mock import patch
+
+        with patch.object(
+            dulwich.porcelain, "fetch", side_effect=RuntimeError("no route to host")
+        ):
+            with self.assertRaises(ForwardSyncError) as caught:
+                self._run([{"name": "fwd-router-1", "config": "x\n"}])
+        self.assertEqual(caught.exception.stage, "fetch_remote")
+
+    def test_an_unresolvable_branch_names_the_branch_stage(self):
+        from unittest.mock import patch
+
+        with patch(
+            "forward_netbox.utilities.config_backup._branch_ref",
+            return_value=None,
+        ):
+            with self.assertRaises(ForwardSyncError) as caught:
+                self._run([{"name": "fwd-router-1", "config": "x\n"}])
+        self.assertEqual(caught.exception.stage, "branch")
+
+    def test_a_failed_push_names_the_push_stage(self):
+        import dulwich.porcelain
+        from unittest.mock import patch
+
+        with patch.object(
+            dulwich.porcelain,
+            "push",
+            side_effect=RuntimeError("push to https://x@git.example.com failed"),
+        ):
+            with self.assertRaises(ForwardSyncError) as caught:
+                self._run([{"name": "fwd-router-1", "config": "x\n"}])
+        self.assertEqual(caught.exception.stage, "push")
+        # `_remote_failure_reason` redaction is unaffected by adding a stage.
+        self.assertNotIn("git.example.com", str(caught.exception))
 
     def test_changed_blobs_are_written_as_produced_not_accumulated(self):
         """Peak memory on a large fleet depends on this, not on page size.
@@ -609,6 +649,40 @@ class ValidityReadsWhatWeWriteTest(TestCase):
             f"available: {sorted(vds.datafiles.values_list('path', flat=True))}",
         )
         self.assertEqual(data_file.data_as_string, config)
+
+
+class ConfigBackupErrorStageTest(SimpleTestCase):
+    """The `stage` prefix, in isolation from any of the raise sites."""
+
+    def test_a_stage_is_prepended_to_the_message(self):
+        from forward_netbox.utilities.config_backup import ConfigBackupError
+
+        exc = ConfigBackupError("could not fetch", stage="fetch_remote")
+        self.assertEqual(exc.stage, "fetch_remote")
+        self.assertEqual(str(exc), "[fetch_remote] could not fetch")
+
+    def test_no_stage_leaves_the_message_unprefixed(self):
+        from forward_netbox.utilities.config_backup import ConfigBackupError
+
+        exc = ConfigBackupError("could not fetch")
+        self.assertIsNone(exc.stage)
+        self.assertEqual(str(exc), "could not fetch")
+
+    def test_every_raise_site_declares_a_recognized_stage(self):
+        import inspect
+
+        from forward_netbox.utilities import config_backup
+        from forward_netbox.utilities.config_backup import CONFIG_BACKUP_STAGES
+
+        source = inspect.getsource(config_backup)
+        # Every `stage="..."` literal used at a raise site must be one of
+        # the six pipeline stages - a typo here would silently produce an
+        # unrecognized stage name forever, on whichever raise it landed on.
+        import re
+
+        used_stages = set(re.findall(r'stage="([a-z_]+)"', source))
+        self.assertTrue(used_stages, "the source scan found no stage= usage at all")
+        self.assertTrue(used_stages.issubset(set(CONFIG_BACKUP_STAGES)))
 
 
 class AuthenticatedUrlTest(SimpleTestCase):
