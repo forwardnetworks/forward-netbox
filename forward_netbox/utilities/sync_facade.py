@@ -555,6 +555,16 @@ BUTTON_JOB_SPECS = {
         "prune uncovered devices",
         "dcim.delete_device",
     ),
+    # A one-time repair for the duplicate device pairs a site-relabel left
+    # behind before the apply-path fix that stopped creating them. Deletes
+    # the newer (sync-created) copy and moves the older one to its site, so
+    # it takes the same permission as a prune even though it also updates a
+    # device.
+    "merge_site_relabel_duplicates": (
+        "forward_netbox.jobs.MergeSiteRelabelDuplicatesJob",
+        "merge site-relabel duplicates",
+        "dcim.delete_device",
+    ),
     # Deletes only the specific netbox_routing (or other allowlisted-app) rows
     # named on the device ownership panel as refusing a delete - never the
     # device itself. Same permission as the prunes: it is preparing a device

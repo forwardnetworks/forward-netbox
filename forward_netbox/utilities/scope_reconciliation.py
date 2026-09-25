@@ -2086,3 +2086,274 @@ def tag_backfilled_devices(
         "absence_streaks_advanced": absence_streak["advanced"],
         "absence_streaks_cleared": absence_streak["cleared"],
     }
+
+
+# A pair only qualifies when it can be PROVEN which device Forward's current
+# state means, not guessed at.
+SITE_RELABEL_HOLD_NO_IDENTITY = "no_identity_binding"
+SITE_RELABEL_HOLD_IDENTITY_OLDER = "identity_binds_the_older_device"
+SITE_RELABEL_HOLD_IDENTITY_OTHER = "identity_binds_neither_device"
+SITE_RELABEL_HOLD_MANUAL_OBJECTS = "newer_device_has_protecting_references"
+
+# A sanity backstop, not a real limit: the customer's whole estate hit ~250
+# pairs out of several thousand devices. Anything approaching every duplicated
+# name being "safe to merge" is more likely a detection bug than a real
+# estate, so this refuses rather than acting on a majority of devices sharing
+# a name. The floor keeps this from firing on a small estate (or a fixture)
+# where a handful of pairs is legitimately most of the devices that exist -
+# same reasoning as `SCOPE_SHRINK_REFUSAL_FLOOR`.
+SITE_RELABEL_MAX_PAIR_FRACTION = 0.5
+SITE_RELABEL_PAIR_FRACTION_FLOOR = SAMPLE_LIMIT
+
+
+class SiteRelabelPairFractionGuardError(RuntimeError):
+    """Raised when the merge candidate set covers too much of the estate.
+
+    Mirrors `ScopeShrinkGuardError`'s reasoning for the same reason: a
+    detection bug that resolves every duplicated name as "safe" looks
+    identical, from the counts alone, to a genuinely large one-time backlog -
+    until it deletes half the fleet.
+    """
+
+
+def site_relabel_pairs(sync):
+    """Existing duplicate device pairs left by the (now-fixed) site-relabel bug.
+
+    Before this sync's apply logic learned to move a device whose site Forward
+    relabeled (`apply_engine_bulk.py`'s `_relabel_move_candidate` and
+    `sync_device.py`'s `_relabel_move_device`), a relabel created a second
+    device instead of moving the first - stranding the original at its stale
+    site, still holding its primary IP, with no Forward-side match ever again.
+
+    Detected without any live Forward call: the newer device in a pair IS
+    Forward's current answer for that name, because a real ingestion created
+    it there. A pair only qualifies when it can be PROVEN - the newer device
+    is bound to this sync's `ForwardDeviceIdentity` for that name, the older
+    one is not, and the newer device carries no reference a delete would
+    otherwise lose (a journal entry, a cable, anything else PROTECT/RESTRICT
+    holds a device with). Anything else is held, with a reason, and never
+    guessed at - matching the same rule the apply-side fix itself follows.
+
+    Returns ``{"pairs": [...], "held": [...]}``. Every entry carries pks only,
+    never a device or site name, so the result is safe to export as-is.
+    """
+    from collections import defaultdict
+
+    from django.db.models import Count
+    from django.db.models.functions import Lower
+
+    from ..models import ForwardDeviceIdentity
+    from .bulk_merge import describe_protecting_references
+
+    duplicated_lnames = list(
+        Device.objects.annotate(_lname=Lower("name"))
+        .values("_lname")
+        .annotate(_n=Count("id"))
+        .filter(_n__gte=2)
+        .values_list("_lname", flat=True)
+    )
+    if not duplicated_lnames:
+        return {"pairs": [], "held": []}
+
+    devices_by_lname = defaultdict(list)
+    for device in (
+        Device.objects.annotate(_lname=Lower("name"))
+        .filter(_lname__in=duplicated_lnames)
+        .order_by("created", "pk")
+    ):
+        devices_by_lname[device._lname].append(device)
+
+    names_by_lname = {
+        lname: devices[0].name for lname, devices in devices_by_lname.items() if devices
+    }
+    identity_device_by_name = dict(
+        ForwardDeviceIdentity.objects.filter(
+            sync=sync, source_device_key__in=names_by_lname.values()
+        ).values_list("source_device_key", "device_id")
+    )
+
+    pairs = []
+    held = []
+    for lname, devices in devices_by_lname.items():
+        if len(devices) != 2:
+            # Three or more devices sharing a name is a different, more
+            # ambiguous situation than this bug produces; hold rather than
+            # guess which two (if any) are the relabel pair.
+            held.append(
+                {
+                    "device_pks": sorted(d.pk for d in devices),
+                    "reason": "more_than_two_devices_share_this_name",
+                }
+            )
+            continue
+        # `order_by("created", "pk")` already put these oldest-first.
+        older, newer = devices
+        if older.site_id == newer.site_id:
+            continue
+        bound_pk = identity_device_by_name.get(names_by_lname[lname])
+        if bound_pk is None:
+            held.append(
+                {
+                    "device_pks": [older.pk, newer.pk],
+                    "reason": SITE_RELABEL_HOLD_NO_IDENTITY,
+                }
+            )
+            continue
+        if bound_pk != newer.pk:
+            reason = (
+                SITE_RELABEL_HOLD_IDENTITY_OLDER
+                if bound_pk == older.pk
+                else SITE_RELABEL_HOLD_IDENTITY_OTHER
+            )
+            held.append({"device_pks": [older.pk, newer.pk], "reason": reason})
+            continue
+        # These three carry Forward's own provenance, not an operator's - and
+        # are exactly what proves this pair safe in the first place. Their
+        # `on_delete` still reports as protecting (it is, for a PLAIN
+        # delete), but `_delete_prunable_devices` releases them explicitly
+        # before deleting, the same way every other prune in this module
+        # does, so they are not a reason to hold here.
+        blocking = [
+            (label, count)
+            for label, count in describe_protecting_references(Device, newer.pk)
+            if label
+            not in (
+                "forward_netbox.ForwardDeviceIdentity",
+                "forward_netbox.ForwardDeviceTagClaim",
+                "forward_netbox.ForwardVirtualParentClaim",
+            )
+        ]
+        if blocking:
+            held.append(
+                {
+                    "device_pks": [older.pk, newer.pk],
+                    "reason": SITE_RELABEL_HOLD_MANUAL_OBJECTS,
+                    "blocking_models": [label for label, _count in blocking],
+                }
+            )
+            continue
+        pairs.append(
+            {
+                "older_pk": older.pk,
+                "newer_pk": newer.pk,
+                "older_site_id": older.site_id,
+                "newer_site_id": newer.site_id,
+            }
+        )
+    return {"pairs": pairs, "held": held}
+
+
+def merge_site_relabel_duplicates(sync, *, pairs=None):
+    """Repair existing site-relabel duplicate pairs: keep the older device.
+
+    For each pair: delete the newer device (its cascade takes the interfaces
+    and IPs the sync attached to it), move the older device to the newer
+    device's site, and bind this sync's `ForwardDeviceIdentity` for that name
+    to the older device's pk - so the next sync recognizes it immediately
+    instead of re-detecting a relabel.
+
+    The pair list is recomputed here rather than trusted from the caller
+    (`pairs=None`), the same discipline every other prune action in this
+    module follows: what gets deleted is exactly what the code just proved
+    safe, not what a button click was told a moment earlier. ``pairs`` exists
+    only for callers (tests, `restrict_to_device_pks`-style narrowing) that
+    have already computed - and want to re-verify against - a specific set.
+
+    Each pair runs in its own transaction; one pair's failure does not stop
+    the rest. Returns counts and, for any pair that failed, its pks and the
+    reason - never a device or site name.
+    """
+    from django.db import transaction
+    from types import SimpleNamespace
+
+    from ..models import ForwardDeviceIdentity
+    from .interface_vlan_audit import clear_cross_site_untagged_vlans
+
+    report = site_relabel_pairs(sync)
+    computed_pairs = {(p["older_pk"], p["newer_pk"]): p for p in report["pairs"]}
+    if pairs is None:
+        candidate_pairs = list(computed_pairs.values())
+    else:
+        candidate_pairs = [
+            computed_pairs[(p["older_pk"], p["newer_pk"])]
+            for p in pairs
+            if (p["older_pk"], p["newer_pk"]) in computed_pairs
+        ]
+
+    if candidate_pairs:
+        touched = len(candidate_pairs) * 2
+        if touched > SITE_RELABEL_PAIR_FRACTION_FLOOR:
+            total_devices = Device.objects.count()
+            if (
+                total_devices
+                and touched > total_devices * SITE_RELABEL_MAX_PAIR_FRACTION
+            ):
+                raise SiteRelabelPairFractionGuardError(
+                    f"{len(candidate_pairs)} candidate pairs would touch "
+                    f"{touched} of {total_devices} devices - refusing "
+                    "rather than acting on more than half the estate at "
+                    "once."
+                )
+
+    merged = []
+    failed = []
+    runner_shim = SimpleNamespace(sync=sync, logger=None)
+    for pair in candidate_pairs:
+        try:
+            with transaction.atomic():
+                older = Device.objects.select_for_update().get(pk=pair["older_pk"])
+                newer = Device.objects.select_for_update().get(pk=pair["newer_pk"])
+                if older.site_id == newer.site_id:
+                    # Already converged (a previous partial run, or a
+                    # concurrent sync already moved it) - nothing to do.
+                    continue
+                new_site_id = newer.site_id
+                deleted_ids, _total, protected_tally, blocked_ids = (
+                    _delete_prunable_devices(sync, [newer.pk])
+                )
+                if newer.pk not in deleted_ids:
+                    failed.append(
+                        {
+                            "older_pk": older.pk,
+                            "newer_pk": newer.pk,
+                            "reason": "newer_device_delete_refused",
+                            "blocking_models": sorted(protected_tally) or None,
+                        }
+                    )
+                    transaction.set_rollback(True)
+                    continue
+                older.site_id = new_site_id
+                older.full_clean()
+                older.save()
+                # `(sync, device)` is unique; the older device is not expected
+                # to already carry one (its identity was exactly the missing
+                # proof this pair was held on), but clear defensively rather
+                # than let a stale row from an unrelated prior name collide
+                # with the row below.
+                ForwardDeviceIdentity.objects.filter(sync=sync, device=older).exclude(
+                    source_device_key=older.name
+                ).delete()
+                ForwardDeviceIdentity.objects.update_or_create(
+                    sync=sync,
+                    source_device_key=older.name,
+                    defaults={"device": older},
+                )
+                clear_cross_site_untagged_vlans(runner_shim, [older.pk])
+                merged.append({"older_pk": older.pk, "newer_pk": newer.pk})
+        except JobTimeoutException:
+            raise
+        except Exception as exc:  # noqa: BLE001 - one pair's failure isolates
+            failed.append(
+                {
+                    "older_pk": pair["older_pk"],
+                    "newer_pk": pair["newer_pk"],
+                    "reason": type(exc).__name__,
+                }
+            )
+    return {
+        "merged_count": len(merged),
+        "merged_pairs": merged,
+        "failed_count": len(failed),
+        "failed_pairs": failed,
+        "held_count": len(report["held"]),
+    }

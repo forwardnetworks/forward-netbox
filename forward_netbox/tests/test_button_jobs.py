@@ -317,6 +317,7 @@ class ButtonJobRunnerParityTest(TestCase):
         "prune_orphans": "_prune_forward_orphans_work",
         "prune_stale_hardware_notices": "_prune_stale_hardware_notices_work",
         "prune_uncovered": "_prune_uncovered_devices_work",
+        "merge_site_relabel_duplicates": "_merge_site_relabel_duplicates_work",
         "config_backup": "_run_forward_config_backup_work",
         "recover_stuck_sync": "_recover_stuck_sync_work",
         "tag_delete_eligible_ipam": "_tag_delete_eligible_ipam_work",

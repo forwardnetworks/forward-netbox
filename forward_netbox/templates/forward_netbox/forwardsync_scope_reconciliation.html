@@ -412,6 +412,36 @@
     </div>
   </div>
 </div>
+{% if site_relabel_pairs.available and site_relabel_pairs.pair_count %}
+<div class="row mt-3">
+  <div class="col col-md-12">
+    <div class="card" id="site-relabel-duplicates">
+      <h5 class="card-header">{% trans "Site-Relabel Duplicates" %}</h5>
+      <div class="card-body">
+        <p class="text-muted mt-0">
+          {% trans "When Forward relabels a device's site, older versions of this plugin created a second device instead of moving the first. The older copy is stranded at its stale site, still holding the device's primary IP; the newer copy is the one Forward currently reports. This repairs existing pairs only - a current sync no longer creates them." %}
+        </p>
+        {% if perms.dcim.delete_device %}
+          <form method="post" class="mt-2"
+                action="{% url 'plugins:forward_netbox:forwardsync_merge_site_relabel_duplicates' pk=object.pk %}"
+                title="{% trans 'Deletes the newer device of each pair and moves the older one to its site, only when the newer device is provably this sync creation and carries nothing else that would block a delete.' %}"
+                onsubmit="return confirm('{% blocktrans with count=site_relabel_pairs.pair_count %}Merge {{ count }} site-relabel duplicate pair(s)? Each pair deletes the newer device and moves the older one to its site.{% endblocktrans %}');">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-sm btn-danger">
+              <i class="mdi mdi-call-merge" aria-hidden="true"></i>&nbsp;{% blocktrans with count=site_relabel_pairs.pair_count %}Merge {{ count }} pair(s){% endblocktrans %}
+            </button>
+          </form>
+        {% endif %}
+        {% if site_relabel_pairs.held_count %}
+          <p class="text-muted small mt-2 mb-0">
+            {% blocktrans count counter=site_relabel_pairs.held_count %}{{ counter }} more duplicated name is held - it cannot be proven safe to merge automatically.{% plural %}{{ counter }} more duplicated names are held - they cannot be proven safe to merge automatically.{% endblocktrans %}
+          </p>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
 {% if payload.unmanaged.untagged_total %}
 <div class="row mt-3">
   <div class="col col-md-6">
