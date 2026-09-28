@@ -1281,8 +1281,16 @@ def _run_forward_config_backup_work(job, *args, **kwargs):
         # `safe_operation_failure`, which is why an unset `branch` parameter
         # or an unreachable remote used to show only "ForwardSyncError" with
         # no way to tell the two apart without a diagnostic script.
+        # `stage` and `failure_category` are closed, value-free tokens: the
+        # support bundle redacts `error` by key, so without them an exported
+        # failure said nothing at all.
         job.data = _overlay_job_data(
-            {"error": str(exc), "error_type": exception_type(exc)},
+            {
+                "error": str(exc),
+                "error_type": exception_type(exc),
+                "stage": getattr(exc, "stage", None),
+                "failure_category": getattr(exc, "category", None),
+            },
             kwargs,
         )
         job.save(update_fields=["data"])
