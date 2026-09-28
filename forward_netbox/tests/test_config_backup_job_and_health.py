@@ -205,6 +205,27 @@ class ConfigBackupJobWorkTest(_Fixture):
         self.assertEqual(job.data["error_type"], "ConfigBackupError")
         self.assertEqual(job.data["error"], message)
 
+    def test_the_stage_and_category_are_recorded_value_free(self):
+        # The bundle redacts `error` by key; these two closed tokens are what
+        # survive it.
+        from forward_netbox.utilities.config_backup import ConfigBackupError
+
+        job = self._job()
+        with patch.object(
+            ForwardSync, "resolve_snapshot_id", return_value="snap-1"
+        ), patch.object(ForwardSource, "get_client", return_value=object()), patch(
+            "forward_netbox.utilities.config_backup.run_config_backup",
+            side_effect=ConfigBackupError(
+                "could not fetch", stage="fetch_remote", category="http_403"
+            ),
+        ):
+            with self.assertRaises(ConfigBackupError):
+                _run_forward_config_backup_work(job)
+
+        job.refresh_from_db()
+        self.assertEqual(job.data["stage"], "fetch_remote")
+        self.assertEqual(job.data["failure_category"], "http_403")
+
 
 class ConfigBackupDeliveryCheckTest(_Fixture):
     def test_disabled_backup_yields_no_check(self):
@@ -261,11 +282,19 @@ class ConfigBackupDeliveryCheckTest(_Fixture):
         check = self._with_validity(template=None)
         self.assertEqual(check["status"], "warn")
         self.assertIn("no `device_config_path`", check["message"])
+        self.assertIn("set it to `configs/{{device.name}}.cfg`", check["message"])
 
     def test_a_config_path_outside_our_prefix_warns(self):
         check = self._with_validity(template="backups/{{device.name}}.cfg")
         self.assertEqual(check["status"], "warn")
-        self.assertIn("does not point at `configs/`", check["message"])
+        self.assertIn("does not match where this plugin writes", check["message"])
+        self.assertIn("set it to `configs/{{device.name}}.cfg`", check["message"])
+
+    def test_a_config_path_under_our_prefix_with_another_extension_warns(self):
+        # A plain substring test passed this, and Validity found nothing.
+        check = self._with_validity(template="configs/{{device.name}}.txt")
+        self.assertEqual(check["status"], "warn")
+        self.assertIn("set it to `configs/{{device.name}}.cfg`", check["message"])
 
     def test_no_tenant_binding_and_no_default_warns(self):
         check = self._with_validity(template="configs/{{device.name}}.cfg")

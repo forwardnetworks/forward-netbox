@@ -347,11 +347,19 @@ def config_backup_delivery_state(sync):
         "device_config_path_matches_prefix": None,
         "bound_via_tenant_or_default": None,
         "tenant_binding_check_errored": False,
+        "url_scheme": None,
+        "credentials_set": None,
+        "proxy_applies": None,
+        "proxy_kind": None,
+        "proxy_config_errored": False,
+        "env_proxy_set": _env_proxy_set(),
+        **_last_config_backup_run(sync),
     }
 
     data_source = DataSource.objects.filter(pk=data_source_pk).first()
     if data_source is None:
         return state
+    state.update(_config_backup_transport_facts(data_source))
 
     state["data_source_exists"] = True
     # Not exported: the delivery bundle payload keeps this key off its export
@@ -365,7 +373,11 @@ def config_backup_delivery_state(sync):
         expected_prefix = f"{CONFIG_BACKUP_REPO_PREFIX}/"
         template = (data_source.custom_field_data or {}).get("device_config_path") or ""
         state["device_config_path_set"] = bool(template)
-        state["device_config_path_matches_prefix"] = expected_prefix in template
+        # The layout this plugin writes is `configs/<netbox name>.cfg`; a
+        # template can reach it through filters, but it cannot without both.
+        state["device_config_path_matches_prefix"] = (
+            expected_prefix in template and ".cfg" in template
+        )
         state["_expected_prefix"] = expected_prefix  # GUI message only
         state["_device_config_path"] = template  # GUI message only
         try:
@@ -393,6 +405,149 @@ def config_backup_delivery_state(sync):
             state["tenant_binding_check_errored"] = True
 
     return state
+
+
+CONFIG_BACKUP_DEVICE_CONFIG_PATH = "configs/{{device.name}}.cfg"
+_URL_SCHEMES = {"http", "https", "ssh", "git", "file"}
+_ENV_PROXY_NAMES = (
+    "https_proxy",
+    "HTTPS_PROXY",
+    "http_proxy",
+    "HTTP_PROXY",
+    "all_proxy",
+    "ALL_PROXY",
+)
+
+
+def _env_proxy_set():
+    """dulwich honours these ahead of NetBox's configured proxy."""
+    import os
+
+    return any(os.environ.get(name) for name in _ENV_PROXY_NAMES)
+
+
+def _config_backup_transport_facts(data_source):
+    """Value-free facts about how config backup reaches the repository."""
+    from .config_backup import _remote_connection
+    from .config_backup import _url_scheme
+    from .config_backup import ConfigBackupError
+
+    scheme = _url_scheme(data_source.source_url)
+    facts = {
+        "url_scheme": (
+            scheme if scheme in _URL_SCHEMES else ("path" if not scheme else "other")
+        ),
+        "credentials_set": bool((data_source.parameters or {}).get("username")),
+        "proxy_applies": False,
+        "proxy_kind": None,
+        "proxy_config_errored": False,
+    }
+    try:
+        connection = _remote_connection(data_source)
+    except JobTimeoutException:
+        raise
+    except ConfigBackupError:
+        facts["proxy_config_errored"] = True
+        return facts
+    except Exception:  # noqa: BLE001 - a health check must never fail a page
+        facts["proxy_applies"] = None
+        return facts
+    if connection.socks_proxy:
+        facts.update(proxy_applies=True, proxy_kind="socks")
+    elif connection.proxy:
+        facts.update(proxy_applies=True, proxy_kind="http")
+    return facts
+
+
+def _last_config_backup_run(sync):
+    """The latest config-backup job's status and, if it failed, where and why.
+
+    Only closed tokens leave here: the stage must be a declared stage and the
+    category a declared category (or `http_NNN` / `other:<ExceptionType>`),
+    so a value that is not one of them is reported as `other` rather than
+    carried through.
+    """
+    import re
+
+    from core.models import Job
+    from django.contrib.contenttypes.models import ContentType
+
+    from ..models import ForwardSync
+    from .config_backup import CONFIG_BACKUP_FAILURE_CATEGORIES
+    from .config_backup import CONFIG_BACKUP_STAGES
+
+    empty = {
+        "last_run_status": None,
+        "last_run_at": None,
+        "last_failure_stage": None,
+        "last_failure_category": None,
+    }
+    try:
+        job = (
+            Job.objects.filter(
+                object_type=ContentType.objects.get_for_model(ForwardSync),
+                object_id=sync.pk,
+                name__icontains="config backup",
+            )
+            .order_by("-created", "-pk")
+            .first()
+        )
+    except JobTimeoutException:
+        raise
+    except Exception:  # noqa: BLE001 - a health check must never fail a page
+        return empty
+    if job is None:
+        return empty
+    data = job.data if isinstance(job.data, dict) else {}
+    stage = data.get("stage")
+    category = data.get("failure_category")
+    if category is not None and not (
+        category in CONFIG_BACKUP_FAILURE_CATEGORIES
+        or re.fullmatch(r"http_\d{3}", str(category))
+        or re.fullmatch(r"other:[A-Za-z_][A-Za-z0-9_]*", str(category))
+    ):
+        category = "other"
+    return {
+        "last_run_status": str(job.status or "") or None,
+        "last_run_at": job.completed or job.created,
+        "last_failure_stage": stage if stage in CONFIG_BACKUP_STAGES else None,
+        "last_failure_category": category,
+    }
+
+
+def _config_backup_failure_sentence(state):
+    from .config_backup import CONFIG_BACKUP_FAILURE_CATEGORIES
+
+    category = state.get("last_failure_category")
+    if not category:
+        return None
+    if category.startswith("http_"):
+        reason = f"the remote answered HTTP {category[5:]}"
+    elif category.startswith("other:"):
+        reason = f"an unexpected {category[6:]}"
+    else:
+        reason = CONFIG_BACKUP_FAILURE_CATEGORIES.get(category, category)
+    stage = state.get("last_failure_stage") or "an unknown stage"
+    sentence = f"the last backup failed at {stage}: {reason}"
+    if state.get("proxy_applies") and category in (
+        "non_git_response",
+        "redirect",
+        "proxy_connect",
+        "http_403",
+    ):
+        sentence += (
+            " - NetBox applies a proxy to this url; check it allows the repository"
+        )
+    elif not state.get("proxy_applies") and category in (
+        "connection_refused",
+        "timeout",
+        "dns",
+    ):
+        sentence += (
+            " - no NetBox proxy applies to this url; if NetBox reaches the "
+            "repository through a proxy, set HTTP_PROXIES"
+        )
+    return sentence
 
 
 def _config_backup_delivery_check(sync):
@@ -440,14 +595,15 @@ def _config_backup_delivery_check(sync):
             problems.append(
                 "Validity is installed but the data source has no "
                 "`device_config_path`, so Validity cannot locate any device's "
-                f"configuration (this plugin writes `{expected_prefix}"
-                "<device-name>.cfg`)"
+                "configuration - set it to "
+                f"`{CONFIG_BACKUP_DEVICE_CONFIG_PATH}`"
             )
         elif not state["device_config_path_matches_prefix"]:
             problems.append(
                 "the data source's `device_config_path` "
-                f"(“{state['_device_config_path']}”) does not point at "
-                f"`{expected_prefix}`, where this plugin writes"
+                f"(“{state['_device_config_path']}”) does not match where this "
+                f"plugin writes (`{expected_prefix}<device name>.cfg`) - set it "
+                f"to `{CONFIG_BACKUP_DEVICE_CONFIG_PATH}`"
             )
         if (
             not state["tenant_binding_check_errored"]
@@ -458,6 +614,14 @@ def _config_backup_delivery_check(sync):
                 "source is marked `default`, so Validity will not read it "
                 "for any device"
             )
+
+    failure = (
+        _config_backup_failure_sentence(state)
+        if state.get("last_run_status") in ("errored", "failed")
+        else None
+    )
+    if failure:
+        problems.insert(0, failure)
 
     if problems:
         return _check(
@@ -501,6 +665,20 @@ def config_backup_delivery_bundle_payload(sync):
         "device_config_path_matches_prefix": state["device_config_path_matches_prefix"],
         "bound_via_tenant_or_default": state["bound_via_tenant_or_default"],
         "tenant_binding_check_errored": state["tenant_binding_check_errored"],
+        # How config backup reaches the repository - never the url or proxy.
+        "url_scheme": state["url_scheme"],
+        "credentials_set": state["credentials_set"],
+        "proxy_applies": state["proxy_applies"],
+        "proxy_kind": state["proxy_kind"],
+        "proxy_config_errored": state["proxy_config_errored"],
+        "env_proxy_set": state["env_proxy_set"],
+        # The latest run, as closed tokens.
+        "last_run_status": state["last_run_status"],
+        "last_run_at": (
+            state["last_run_at"].isoformat() if state["last_run_at"] else None
+        ),
+        "last_failure_stage": state["last_failure_stage"],
+        "last_failure_category": state["last_failure_category"],
     }
 
 
