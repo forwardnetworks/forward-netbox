@@ -2371,7 +2371,7 @@ class SiteRelabelPairFractionGuardError(RuntimeError):
     """
 
 
-def site_relabel_pairs(sync):
+def site_relabel_pairs(sync, *, check_protecting=True):
     """Duplicate device pairs left by the (now-fixed) site-relabel bug.
 
     Before the apply learned to move a device whose site Forward relabeled,
@@ -2393,6 +2393,11 @@ def site_relabel_pairs(sync):
 
     Returns ``{"pairs": [...], "held": [...], "report_generated_at": ...}``
     with primary keys only, never a device or site name.
+
+    ``check_protecting=False`` skips the per-pair protecting-reference scan -
+    one query per model per pair - for a caller that only needs the count on
+    every page load. Such pairs are "ready for review", not "safe to delete":
+    the merge always recomputes with the scan on.
     """
     from collections import defaultdict
 
@@ -2498,7 +2503,11 @@ def site_relabel_pairs(sync):
         # does, so they are not a reason to hold here.
         blocking = [
             (label, count)
-            for label, count in describe_protecting_references(Device, newer.pk)
+            for label, count in (
+                describe_protecting_references(Device, newer.pk)
+                if check_protecting
+                else ()
+            )
             if label
             not in (
                 "forward_netbox.ForwardDeviceIdentity",

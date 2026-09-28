@@ -1305,6 +1305,36 @@ def _run_forward_config_backup_work(job, *args, **kwargs):
         raise
 
 
+def _log_site_relabel_backlog(job, sync):
+    """One job-log warning after each sync while site-relabel duplicates exist.
+
+    The report this job just stored is what proves which copy is current, so
+    this is the moment the repair's count is freshest. Advisory: a failure to
+    count never fails the tag pass.
+    """
+    from .utilities.scope_reconciliation import site_relabel_pairs
+
+    try:
+        report = site_relabel_pairs(sync, check_protecting=False)
+    except JobTimeoutException:
+        raise
+    except Exception:  # noqa: BLE001 - advisory only
+        return
+    ready, held = len(report["pairs"]), len(report["held"])
+    if not ready and not held:
+        return
+    message = (
+        f"{ready} site-relabel duplicate device pair(s) are ready to merge and "
+        f"{held} are held. Open Scope Reconciliation -> Merge site-relabel "
+        "duplicates; the Health tab lists why each held pair is held."
+    )
+    job.log(
+        logging.makeLogRecord(
+            {"levelno": logging.WARNING, "levelname": "WARNING", "msg": message}
+        )
+    )
+
+
 def _reconcile_forward_device_scope_tags_work(job, *args, **kwargs):
     """Background sync of the maintained device status tags for a sync.
 
@@ -1327,6 +1357,7 @@ def _reconcile_forward_device_scope_tags_work(job, *args, **kwargs):
             kwargs,
         )
         job.save(update_fields=["data"])
+        _log_site_relabel_backlog(job, sync)
         _reconcile_completed_ingestion_catchup(
             sync,
             kwargs.get("ingestion_id"),
