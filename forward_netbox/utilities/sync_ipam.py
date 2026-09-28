@@ -1,6 +1,7 @@
 from ipaddress import ip_interface
 
 from django.core.exceptions import ObjectDoesNotExist
+from rq.timeouts import JobTimeoutException
 
 from ..exceptions import ForwardDependencySkipError
 from ..exceptions import ForwardSearchError
@@ -716,6 +717,36 @@ def apply_ipam_ipaddress(runner, row):
     )
 
 
+def _site_relabel_partners(runner):
+    """``{device pk: [other pks sharing its name]}`` for known relabel duplicates.
+
+    Computed at most once per run and cached on the runner: the lookup reads
+    every duplicated device name, which is fine once and wasteful per address.
+    A runner without a real sync (a dependency preview's `_NullSync`, a test
+    `Mock`) gets no hints rather than a query against a fake primary key.
+    """
+    cached = getattr(runner, "_site_relabel_partners_cache", None)
+    if isinstance(cached, dict):
+        return cached
+    partners = {}
+    sync = getattr(runner, "sync", None)
+    if isinstance(getattr(sync, "pk", None), int):
+        try:
+            from .scope_reconciliation import site_relabel_pairs
+
+            report = site_relabel_pairs(sync, check_protecting=False)
+            for entry in [*report["pairs"], *report["held"]]:
+                members = entry.get("members") or [entry["older_pk"], entry["newer_pk"]]
+                for pk in members:
+                    partners[pk] = [other for other in members if other != pk]
+        except JobTimeoutException:
+            raise
+        except Exception:  # noqa: BLE001 - a hint must never fail the apply
+            partners = {}
+    runner._site_relabel_partners_cache = partners
+    return partners
+
+
 def record_unowned_primary_ip_holder_skip(
     runner, *, ip_pk, holder_pks, destination_device_pk
 ):
@@ -738,6 +769,16 @@ def record_unowned_primary_ip_holder_skip(
         "IP on those devices, or let this sync adopt them, to let the address "
         "move."
     )
+    partners = _site_relabel_partners(runner)
+    for holder_pk in holder_pks:
+        others = partners.get(holder_pk)
+        if others:
+            message += (
+                f" Device #{holder_pk} is a site-relabel duplicate of "
+                + ", ".join(f"#{pk}" for pk in others)
+                + ": Scope Reconciliation -> Merge site-relabel duplicates "
+                "keeps the older device and releases this address."
+            )
     runner._record_aggregated_skip_warning(
         model_string="ipam.ipaddress",
         reason=UNOWNED_PRIMARY_IP_HOLDER_REASON,

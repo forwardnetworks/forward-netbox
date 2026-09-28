@@ -1534,6 +1534,14 @@ class ForwardSyncView(generic.ObjectView):
             stuck_verdict = None
         data = {
             "stuck_verdict": stuck_verdict,
+            # Health checks an operator should act on, with the page that acts
+            # on them - surfaced here because the Health tab is one click away
+            # and a backlog nobody opens is a silent one.
+            "health_attention": [
+                check
+                for check in health.get("checks") or ()
+                if check.get("url") and check.get("status") in ("warn", "fail")
+            ],
             "last_ingestion": instance.last_ingestion,
             "latest_validation_run": instance.latest_validation_run,
             "enabled_models": instance.enabled_models(),
@@ -1891,6 +1899,7 @@ def _site_relabel_pairs_payload(sync):
     """
     from rq.timeouts import JobTimeoutException
 
+    from .utilities.scope_reconciliation import site_relabel_held_by_reason
     from .utilities.scope_reconciliation import site_relabel_pairs
 
     try:
@@ -1902,6 +1911,7 @@ def _site_relabel_pairs_payload(sync):
     return {
         "pair_count": len(report["pairs"]),
         "held_count": len(report["held"]),
+        "held_by_reason": site_relabel_held_by_reason(report),
         "available": True,
     }
 
@@ -3820,6 +3830,19 @@ class ForwardIngestionIssueView(generic.ObjectView):
 
     queryset = ForwardIngestionIssue.objects.all()
     template_name = "forward_netbox/forwardingestionissue.html"
+
+    def get_extra_context(self, request, instance):
+        # The message names the repair in words; the page makes it one click.
+        sync_id = getattr(getattr(instance, "ingestion", None), "sync_id", None)
+        if sync_id and "site-relabel duplicate" in (instance.message or ""):
+            return {
+                "repair_url": reverse(
+                    "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                    kwargs={"pk": sync_id},
+                ),
+                "repair_label": _("Open Scope Reconciliation to merge"),
+            }
+        return {}
 
 
 @register_model_view(ForwardDeviceAnalysis, "list", path="", detail=False)

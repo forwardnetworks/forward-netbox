@@ -504,6 +504,51 @@ def config_backup_delivery_bundle_payload(sync):
     }
 
 
+def _site_relabel_duplicates_check(sync):
+    """A standing prompt when duplicate devices left by a site relabel exist.
+
+    The repair is an operator action on Scope Reconciliation; without this the
+    only sign of a backlog was a card on that page, and a card that rendered
+    only when something was mergeable - so an estate whose every pair was held
+    showed nothing anywhere. Local reads only; the per-pair protecting scan is
+    skipped here and done by the merge itself.
+    """
+    from django.urls import reverse
+
+    from .scope_reconciliation import site_relabel_held_by_reason
+    from .scope_reconciliation import site_relabel_pairs
+
+    try:
+        report = site_relabel_pairs(sync, check_protecting=False)
+    except JobTimeoutException:
+        raise
+    except Exception:  # noqa: BLE001 - a health page must render regardless
+        return None
+    pair_count = len(report["pairs"])
+    held = site_relabel_held_by_reason(report)
+    if not pair_count and not held:
+        return None
+    parts = []
+    if pair_count:
+        parts.append(
+            f"{pair_count} duplicate device pair(s) left by a Forward site "
+            "relabel are ready to merge: Scope Reconciliation -> Merge "
+            "site-relabel duplicates keeps the older device (its primary IP "
+            "and history) at the site Forward reports, and deletes the copy."
+        )
+    for entry in held:
+        parts.append(f"{entry['count']} held because {entry['remedy']}.")
+    check = _check(
+        name="Site-relabel duplicates", status="warn", message=" ".join(parts)
+    )
+    check["url"] = reverse(
+        "plugins:forward_netbox:forwardsync_scope_reconciliation",
+        kwargs={"pk": sync.pk},
+    )
+    check["url_label"] = "Open Scope Reconciliation"
+    return check
+
+
 def _query_signature_drift_check(sync):
     """Warn when a map's PUBLISHED query no longer accepts what we send.
 
@@ -698,6 +743,9 @@ def sync_health_summary(sync):
     config_backup_check = _config_backup_delivery_check(sync)
     if config_backup_check is not None:
         checks.append(config_backup_check)
+    site_relabel_check = _site_relabel_duplicates_check(sync)
+    if site_relabel_check is not None:
+        checks.append(site_relabel_check)
     query_signature_drift_check = _query_signature_drift_check(sync)
     if query_signature_drift_check is not None:
         checks.append(query_signature_drift_check)

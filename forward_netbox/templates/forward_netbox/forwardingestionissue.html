@@ -36,6 +36,11 @@
       <h5 class="card-header">{% trans "Message" %}</h5>
       <div class="card-body">
         <pre class="mb-0">{{ object.message }}</pre>
+        {% if repair_url %}
+          <a href="{{ repair_url }}" class="btn btn-sm btn-warning mt-2">
+            <i class="mdi mdi-call-merge" aria-hidden="true"></i>&nbsp;{{ repair_label }}
+          </a>
+        {% endif %}
       </div>
     </div>
   </div>
