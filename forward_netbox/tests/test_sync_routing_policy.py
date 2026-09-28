@@ -330,6 +330,36 @@ class RoutingPolicyAdapterTest(TestCase):
         )
         self.assertEqual(_routing("PrefixList").objects.count(), 0)
 
+    def test_a_delete_finds_a_parent_stored_under_another_spelling(self):
+        # The write path matches parents case-insensitively; the delete path
+        # was exact-only, so an entry under a parent stored as "pl-out" was
+        # never deleted for a row naming "PL-OUT" - silently, every run.
+        runner = self._runner()
+        apply_netbox_routing_prefixlistentry(runner, self._pl_row())
+        _routing("PrefixList").objects.update(name="pl-out")
+
+        self.assertTrue(delete_netbox_routing_prefixlistentry(runner, self._pl_row()))
+        self.assertEqual(_routing("PrefixListEntry").objects.count(), 0)
+
+    def test_outside_scope_entries_are_matched_by_parent_name_in_any_case(self):
+        from forward_netbox.utilities.routing_catalogue_cleanup import (
+            outside_scope_entry_queryset,
+        )
+
+        runner = self._runner()
+        apply_netbox_routing_prefixlistentry(runner, self._pl_row())
+        apply_netbox_routing_prefixlistentry(runner, self._pl_row(sequence=20))
+        apply_netbox_routing_prefixlistentry(
+            runner, self._pl_row(name="PL-KEEP", list_name="PL-KEEP")
+        )
+
+        self.assertEqual(
+            outside_scope_entry_queryset(PREFIX_LIST_MODEL, {"pl-out"}).count(), 2
+        )
+        self.assertEqual(
+            outside_scope_entry_queryset(PREFIX_LIST_MODEL, set()).count(), 0
+        )
+
     def test_deleting_an_unknown_entry_is_a_no_op(self):
         self.assertFalse(
             delete_netbox_routing_prefixlistentry(self._runner(), self._pl_row())

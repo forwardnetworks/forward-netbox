@@ -582,11 +582,22 @@ def _delete_parent_if_empty(runner, parent, related_name):
 
 
 def _resolve_policy_parent(runner, model, row, policy_name):
+    """The parent a delete acts on, found the way the write path finds it.
+
+    The write path retries a miss case-insensitively (`_policy_parent_coalesce`)
+    because the catalogue's chosen spelling can change between runs; this
+    lookup was exact-only, so a parent stored under the older spelling was
+    never found and its entries' deletes silently did nothing, every run.
+    """
     # `_get_unique_or_raise` raises only on ambiguity; a miss is None.
     name = policy_object_name(row)
     if not name:
         return None
-    return runner._get_unique_or_raise(model, {"name": name})
+    parent = runner._get_unique_or_raise(model, {"name": name})
+    if parent is not None:
+        return parent
+    candidates = list(model.objects.filter(name__iexact=name)[:2])
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def delete_netbox_routing_prefixlistentry(runner, row):
