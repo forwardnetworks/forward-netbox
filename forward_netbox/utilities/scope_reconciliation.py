@@ -303,6 +303,118 @@ def _quarantine_summary(sync, out_of_scope_pks) -> dict:
     }
 
 
+def _forward_device_sites(sync, *, snapshot_id=None):
+    """``({casefolded name: {site pk}}, source)`` from the sync's device map.
+
+    The site a device belongs at is whatever the sync's own `dcim.device` map
+    says - its `site`/`site_slug` columns, from whichever variant and pinned
+    query the sync runs - resolved to a NetBox site exactly as the apply
+    resolves one (slug first, then name). Re-deriving a slug from Forward's
+    `locationName` is not that answer: it matched none of a real estate's
+    sites. Read-only; a failure yields no sites, and a caller then knows
+    nothing about sites rather than something wrong.
+    """
+    from dcim.models import Site
+
+    from .logging import SyncLogging
+    from .query_fetch import ForwardQueryFetcher
+
+    try:
+        client = sync.source.get_client()
+        fetcher = ForwardQueryFetcher(sync, client, SyncLogging())
+        context = _resolve_context_on_snapshot(fetcher, sync, snapshot_id)
+        workloads = fetcher.fetch_workloads(
+            context,
+            model_strings=["dcim.device"],
+            validate_rows=False,
+            include_diagnostics=False,
+        )
+        rows = [
+            row
+            for workload in workloads or ()
+            for row in (getattr(workload, "upsert_rows", None) or ())
+            if isinstance(row, dict)
+        ]
+        slugs = {str(row["site_slug"]) for row in rows if row.get("site_slug")}
+        names = {str(row["site"]) for row in rows if row.get("site")}
+        by_slug = dict(Site.objects.filter(slug__in=slugs).values_list("slug", "pk"))
+        by_name = dict(Site.objects.filter(name__in=names).values_list("name", "pk"))
+        sites = {}
+        for row in rows:
+            name = str(row.get("name") or "").strip()
+            if not name:
+                continue
+            site_pk = by_slug.get(str(row.get("site_slug") or "")) or by_name.get(
+                str(row.get("site") or "")
+            )
+            entry = sites.setdefault(name.casefold(), set())
+            if site_pk is not None:
+                entry.add(site_pk)
+    except JobTimeoutException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - absence of an answer, reported
+        return {}, {"available": False, "error": type(exc).__name__, "rows": 0}
+    if not rows:
+        return {}, {"available": False, "error": "no_device_map_rows", "rows": 0}
+    return sites, {"available": True, "error": "", "rows": len(rows)}
+
+
+def _resolve_context_on_snapshot(fetcher, sync, snapshot_id):
+    """The fetcher's context, on the snapshot this reconciliation already chose.
+
+    `resolve_context` resolves the sync's snapshot selector itself; a caller
+    that already holds the snapshot (a pinned one, or the one the scope query
+    just ran on) must not resolve it again - it costs an API call and could
+    land on a newer snapshot than the scope rows it is compared with.
+    """
+    if not snapshot_id:
+        return fetcher.resolve_context()
+    pinned = str(snapshot_id)
+    sync.resolve_snapshot_id = lambda *_args, **_kwargs: pinned
+    try:
+        return fetcher.resolve_context()
+    finally:
+        del sync.resolve_snapshot_id
+
+
+def _has_duplicated_device_names(netbox_device_name_by_pk) -> bool:
+    seen = set()
+    for name in netbox_device_name_by_pk.values():
+        lname = name.casefold()
+        if lname in seen:
+            return True
+        seen.add(lname)
+    return False
+
+
+def _duplicated_device_forward_sites(netbox_device_name_by_pk, forward_sites):
+    """Forward's site for each device whose casefolded name is duplicated.
+
+    ``({str(device pk): site pk}, [device pk, ...])``: the resolved site per
+    device, and the devices whose name the device map places at more than one
+    site (never guessed between). A name the map does not place anywhere is
+    simply absent from both.
+    """
+    from collections import defaultdict
+
+    pks_by_lname = defaultdict(list)
+    for device_pk, name in netbox_device_name_by_pk.items():
+        pks_by_lname[name.casefold()].append(device_pk)
+    resolved = {}
+    ambiguous = []
+    for lname, device_pks in pks_by_lname.items():
+        if len(device_pks) < 2:
+            continue
+        site_pks = forward_sites.get(lname) or set()
+        if len(site_pks) == 1:
+            (site_pk,) = site_pks
+            for device_pk in device_pks:
+                resolved[str(device_pk)] = site_pk
+        elif len(site_pks) > 1:
+            ambiguous.extend(device_pks)
+    return resolved, sorted(ambiguous)
+
+
 def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
     """Compare NetBox devices against the sync's Forward device tag scope.
 
@@ -361,16 +473,6 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
     device_tagged_names = set()
     device_completed_names = set()
     forward_site_slugs = set()
-    # A device's OWN current site, per name - the site-relabel fix
-    # (`apply_engine_bulk.py`'s `_relabel_move_candidate`) taught the apply
-    # path to move a device when Forward relabels its site rather than
-    # create a duplicate, but scope membership here still tested bare name
-    # equality, which cannot tell a device at Forward's current site from
-    # one stranded at a stale one: both carry the same name, so both read as
-    # "in scope". Absent for endpoint-derived names (no site in that NQE
-    # row) and when Forward reports no location - those keep the name-only
-    # test unchanged, which is the endpoint fallback the fix still needs.
-    row_site_slug_by_name = {}
     for row in rows:
         name = str(row.get("name") or "").strip()
         if not name:
@@ -391,25 +493,19 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
             sl = _slugify(loc)
             if sl:
                 forward_site_slugs.add(sl)
-                row_site_slug_by_name[name] = sl
     backfilled_names = device_tagged_names - device_completed_names
     tagged_names = device_tagged_names | endpoint_names
     completed_names = device_completed_names | endpoint_names
     matched_include_tags_by_name.update(endpoint_matched_tags)
 
     netbox_names = set()
-    # pk -> (name, site slug) for every NetBox device, read once and reused
-    # below for the site-aware scope test. `site__slug` is already the same
-    # slug form `forward_site_slugs`/`row_site_slug_by_name` store.
-    netbox_device_site_slug_by_pk = {}
-    for device_id, name, site_slug in Device.objects.select_related("site").values_list(
-        "pk", "name", "site__slug"
-    ):
+    netbox_device_name_by_pk = {}
+    for device_id, name in Device.objects.values_list("pk", "name"):
         name = (name or "").strip()
         if not name:
             continue
         netbox_names.add(name)
-        netbox_device_site_slug_by_pk[device_id] = (name, site_slug)
+        netbox_device_name_by_pk[device_id] = name
 
     from ..models import ForwardDeviceAbsence
     from ..models import ForwardDeviceTagClaim
@@ -454,26 +550,23 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
     # NetBox device absent from this sync as out of scope creates contradictory
     # negative claims in multi-source deployments.
     #
-    # Site-aware, keyed by the pk `previously_managed` already carries: bare
-    # name equality cannot tell a device at Forward's current site apart from
-    # one stranded at a stale one after a site relabel - both carry the same
-    # name, so both used to read as "in scope". A managed device is still in
-    # scope only when Forward tags its name AND (Forward gave no site for
-    # that name at all - the endpoint-derived fallback - OR the device's OWN
-    # current site matches the site Forward reports for that name now).
+    # Scope is a question of NAME: is this device in Forward's tag-scope
+    # result? 2.9.9 also required the device's site to match a slug derived
+    # from Forward's `locationName`, but sites are created from the sync's
+    # own device map (its site/site_slug columns, pinned or alias variants
+    # included), so that derived slug is not the site the sync would put the
+    # device at - on a real estate it matched none of them, and every live
+    # device read as out of scope. Which copy of a duplicated name is the
+    # stale one is answered separately, from the device map itself, and fed
+    # to the site-relabel repair rather than to the tags and prunes.
     out_of_scope_pks = []
     out_of_scope = set()
     for device_id, claimed_name in previously_managed:
-        current = netbox_device_site_slug_by_pk.get(device_id)
-        if current is None:
+        name = netbox_device_name_by_pk.get(device_id)
+        if name is None:
             # No longer a NetBox device at all; nothing here to reconcile.
             continue
-        name, site_slug = current
-        forward_site_slug = row_site_slug_by_name.get(name)
-        in_scope = name in tagged_names and (
-            forward_site_slug is None or forward_site_slug == site_slug
-        )
-        if not in_scope:
+        if name not in tagged_names:
             out_of_scope_pks.append(device_id)
             out_of_scope.add(name)
     # Primary keys, never names: the panel's red Prune-orphans button deletes
@@ -490,8 +583,7 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
     unmanaged, owned_untagged_names = _unmanaged_device_summary(
         sync,
         tagged_names,
-        netbox_device_site_slug_by_pk=netbox_device_site_slug_by_pk,
-        row_site_slug_by_name=row_site_slug_by_name,
+        netbox_device_name_by_pk=netbox_device_name_by_pk,
     )
 
     # One census query classifies BOTH absent sets. The orphans have carried
@@ -608,15 +700,41 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
             }
         )
 
+    # Last Forward call of the run, deliberately: which NetBox site each
+    # duplicated device name belongs at, from the sync's own device map. Only
+    # needed to tell the copies of a duplicated name apart, so an estate
+    # without any pays nothing for it.
+    if _has_duplicated_device_names(netbox_device_name_by_pk):
+        forward_sites, forward_site_source = _forward_device_sites(
+            sync, snapshot_id=snapshot_id
+        )
+    else:
+        forward_sites = {}
+        forward_site_source = {
+            "available": False,
+            "error": "no_duplicated_device_names",
+            "rows": 0,
+        }
+    forward_site_id_by_device_pk, forward_site_ambiguous_ids = (
+        _duplicated_device_forward_sites(netbox_device_name_by_pk, forward_sites)
+    )
+
     # Compute empty orphan sites for the preview (current DB state; prune re-queries
     # after device deletion so sites that become empty then are also removed).
     from dcim.models import Site
 
-    if forward_site_slugs:
+    forward_site_pks = {pk for pks in forward_sites.values() for pk in pks}
+    if forward_site_pks or forward_site_slugs:
         occupied_site_ids = _occupied_site_ids()
+        # The device map's own site answer when it is available; the
+        # location-derived slugs only when it is not.
+        candidates = (
+            Site.objects.exclude(pk__in=forward_site_pks)
+            if forward_site_pks
+            else Site.objects.exclude(slug__in=forward_site_slugs)
+        )
         empty_orphan_sites = list(
-            Site.objects.exclude(slug__in=forward_site_slugs)
-            .exclude(pk__in=occupied_site_ids)
+            candidates.exclude(pk__in=occupied_site_ids)
             .values_list("name", flat=True)
             .order_by("name")
         )
@@ -655,6 +773,13 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
             else {"available": False}
         ),
         "out_of_scope_not_prunable": out_of_scope_not_prunable,
+        # For every NetBox device sharing its (casefolded) name with another:
+        # the NetBox site the sync's device map puts that name at now. Keys
+        # and values are primary keys only. This is what proves which copy of
+        # a site-relabel duplicate is the stale one.
+        "forward_site_id_by_device_pk": forward_site_id_by_device_pk,
+        "forward_site_ambiguous_device_ids": forward_site_ambiguous_ids,
+        "forward_site_source": forward_site_source,
         # "Carries neither include tag" covers two opposite situations. Orphans
         # can read zero while hundreds of devices are untagged, because a device
         # this sync never claimed is not an orphan of it.
@@ -671,6 +796,7 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         "_tagged_names": tagged_names,
         "_device_tagged_names": device_tagged_names,
         "_forward_site_slugs": forward_site_slugs,
+        "_forward_site_pks": forward_site_pks,
         "_out_of_scope": out_of_scope,
         "_owned_untagged": owned_untagged_names,
         "_missing_in_netbox": missing_in_netbox,
@@ -690,9 +816,7 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
     }
 
 
-def _unmanaged_device_summary(
-    sync, tagged_names, *, netbox_device_site_slug_by_pk, row_site_slug_by_name
-):
+def _unmanaged_device_summary(sync, tagged_names, *, netbox_device_name_by_pk):
     """Split NetBox devices the current result does not cover by ownership.
 
     "This device carries neither include tag" is one observation covering two
@@ -721,21 +845,10 @@ def _unmanaged_device_summary(
     """
     from ..models import ForwardDeviceIdentity
 
-    # Site-aware for the same reason `compute_scope_reconciliation`'s
-    # `out_of_scope` is: bare name equality cannot tell a device at
-    # Forward's current site apart from one stranded at a stale one after a
-    # site relabel. Reuses the pk->(name, site) map the caller already built
-    # rather than a second `Device.objects` query.
     untagged = [
         (device_id, name)
-        for device_id, (name, site_slug) in netbox_device_site_slug_by_pk.items()
-        if not (
-            name in tagged_names
-            and (
-                row_site_slug_by_name.get(name) is None
-                or row_site_slug_by_name.get(name) == site_slug
-            )
-        )
+        for device_id, name in netbox_device_name_by_pk.items()
+        if name not in tagged_names
     ]
     if not untagged:
         return {
@@ -1279,20 +1392,24 @@ def _require_nonempty_forward_scope(report, *, operation):
 def _exclude_site_relabel_pending_pks(sync, device_pks):
     """Drop any pk still part of an unmerged site-relabel pair.
 
-    The site-aware scope fix makes an unmerged pair's older device correctly
-    out of scope / absent - the exact shape both prunes act on - before the
-    operator has necessarily run `merge_site_relabel_duplicates`. That is
-    their choice to make (which device to keep), not this prune's; excluded
-    here rather than deleted out from under them. `site_relabel_pairs` is
-    itself DB-local and cheap (no live Forward call), so this costs one
-    extra query, not a repeat of the report's own Forward fetch.
+    Held pairs too, not only mergeable ones: a duplicated name whose copies
+    the repair could not tell apart is exactly the case where deleting either
+    copy is a guess. Which device to keep is the operator's call, made through
+    `merge_site_relabel_duplicates`, not this prune's. `site_relabel_pairs` is
+    DB-local (no live Forward call), so this costs a few queries, not a repeat
+    of the report's own Forward fetch.
     """
     if not device_pks:
         return list(device_pks)
-    pending = site_relabel_pairs(sync)["pairs"]
+    report = site_relabel_pairs(sync)
+    pending = [*report["pairs"], *report["held"]]
     if not pending:
         return list(device_pks)
-    excluded = {pk for pair in pending for pk in (pair["older_pk"], pair["newer_pk"])}
+    excluded = {
+        pk
+        for pair in pending
+        for pk in (pair.get("members") or (pair["older_pk"], pair["newer_pk"]))
+    }
     return [pk for pk in device_pks if pk not in excluded]
 
 
@@ -1818,14 +1935,18 @@ def prune_orphan_sites(sync, *, report=None) -> dict:
         raise EmptyForwardScopeError(
             "Forward scope returned 0 devices; refusing site prune."
         )
+    forward_site_pks = report.get("_forward_site_pks") or set()
     forward_site_slugs = report.get("_forward_site_slugs") or set()
-    if not forward_site_slugs:
+    if not forward_site_pks and not forward_site_slugs:
         return {"pruned_site_count": 0, "pruned_site_object_count": 0, "skipped": 0}
     occupied_site_ids = _occupied_site_ids()
+    candidates = (
+        Site.objects.exclude(pk__in=forward_site_pks)
+        if forward_site_pks
+        else Site.objects.exclude(slug__in=forward_site_slugs)
+    )
     prunable_pks = list(
-        Site.objects.exclude(slug__in=forward_site_slugs)
-        .exclude(pk__in=occupied_site_ids)
-        .values_list("pk", flat=True)
+        candidates.exclude(pk__in=occupied_site_ids).values_list("pk", flat=True)
     )
     if not prunable_pks:
         return {"pruned_site_count": 0, "pruned_site_object_count": 0, "skipped": 0}
@@ -2183,12 +2304,51 @@ def tag_backfilled_devices(
     }
 
 
-# A pair only qualifies when it can be PROVEN which device Forward's current
-# state means, not guessed at.
-SITE_RELABEL_HOLD_NO_IDENTITY = "no_identity_binding"
-SITE_RELABEL_HOLD_IDENTITY_OLDER = "identity_binds_the_older_device"
-SITE_RELABEL_HOLD_IDENTITY_OTHER = "identity_binds_neither_device"
+# A pair only qualifies when it can be PROVEN which copy is the one Forward's
+# device map places at its current site - never guessed at.
+SITE_RELABEL_HOLD_NO_REPORT = "forward_site_unknown_no_scope_report"
+SITE_RELABEL_HOLD_REPORT_STALE = "forward_site_unknown_report_predates_pair"
+SITE_RELABEL_HOLD_SITE_UNKNOWN = "forward_site_unknown"
+SITE_RELABEL_HOLD_SITE_AMBIGUOUS = "forward_places_this_name_at_several_sites"
+SITE_RELABEL_HOLD_SITE_NEITHER = "forward_site_matches_neither_device"
+SITE_RELABEL_HOLD_IDENTITY_OTHER = "identity_binds_another_device"
 SITE_RELABEL_HOLD_MANUAL_OBJECTS = "newer_device_has_protecting_references"
+SITE_RELABEL_HOLD_MORE_THAN_TWO = "more_than_two_devices_share_this_name"
+
+# What each hold means to an operator, and the one thing to do about it.
+SITE_RELABEL_HOLD_REMEDIES = {
+    SITE_RELABEL_HOLD_NO_REPORT: (
+        "no scope reconciliation has run yet - refresh Scope Reconciliation"
+    ),
+    SITE_RELABEL_HOLD_REPORT_STALE: (
+        "the latest scope reconciliation is older than one of the two devices "
+        "- refresh Scope Reconciliation"
+    ),
+    SITE_RELABEL_HOLD_SITE_UNKNOWN: (
+        "the sync's device map gave no NetBox site for this name - refresh "
+        "Scope Reconciliation after the next sync; if it persists, check the "
+        "device map is enabled and its site exists in NetBox"
+    ),
+    SITE_RELABEL_HOLD_SITE_AMBIGUOUS: (
+        "Forward's device map places this name at more than one site - "
+        "resolve the duplicate in Forward"
+    ),
+    SITE_RELABEL_HOLD_SITE_NEITHER: (
+        "Forward places this name at a third site - neither copy is current; "
+        "sync, then refresh Scope Reconciliation"
+    ),
+    SITE_RELABEL_HOLD_IDENTITY_OTHER: (
+        "this sync's identity for the name points at a different device - "
+        "review that device before merging by hand"
+    ),
+    SITE_RELABEL_HOLD_MANUAL_OBJECTS: (
+        "the copy that would be deleted carries objects another plugin or an "
+        "operator added - move or delete them first"
+    ),
+    SITE_RELABEL_HOLD_MORE_THAN_TWO: (
+        "three or more devices share this name - resolve by hand"
+    ),
+}
 
 # A sanity backstop, not a real limit: the customer's whole estate hit ~250
 # pairs out of several thousand devices. Anything approaching every duplicated
@@ -2212,25 +2372,27 @@ class SiteRelabelPairFractionGuardError(RuntimeError):
 
 
 def site_relabel_pairs(sync):
-    """Existing duplicate device pairs left by the (now-fixed) site-relabel bug.
+    """Duplicate device pairs left by the (now-fixed) site-relabel bug.
 
-    Before this sync's apply logic learned to move a device whose site Forward
-    relabeled (`apply_engine_bulk.py`'s `_relabel_move_candidate` and
-    `sync_device.py`'s `_relabel_move_device`), a relabel created a second
-    device instead of moving the first - stranding the original at its stale
-    site, still holding its primary IP, with no Forward-side match ever again.
+    Before the apply learned to move a device whose site Forward relabeled,
+    a relabel created a second device at the new site instead of moving the
+    first, stranding the original at its stale site - usually still holding
+    its primary IP and this sync's device identity.
 
-    Detected without any live Forward call: the newer device in a pair IS
-    Forward's current answer for that name, because a real ingestion created
-    it there. A pair only qualifies when it can be PROVEN - the newer device
-    is bound to this sync's `ForwardDeviceIdentity` for that name, the older
-    one is not, and the newer device carries no reference a delete would
-    otherwise lose (a journal entry, a cable, anything else PROTECT/RESTRICT
-    holds a device with). Anything else is held, with a reason, and never
-    guessed at - matching the same rule the apply-side fix itself follows.
+    Which copy is current is proven by the sync's own device map, as stored
+    by the latest scope reconciliation (`forward_site_id_by_device_pk`): the
+    NetBox site the map resolves that name to now. Identity is not the proof
+    - on a real estate it bound the STALE copy in 218 of 221 pairs, because
+    the original device was the one the sync created. A pair qualifies when:
+    exactly two devices share the casefolded name at different sites; the
+    device map puts the name at exactly one of those two sites, in a report
+    newer than both devices; this sync's identity for the name binds one of
+    the two or neither (never a third device); and the newer copy - always
+    the one deleted, the older is always kept - carries nothing an operator
+    or another plugin added. Everything else is held with a reason.
 
-    Returns ``{"pairs": [...], "held": [...]}``. Every entry carries pks only,
-    never a device or site name, so the result is safe to export as-is.
+    Returns ``{"pairs": [...], "held": [...], "report_generated_at": ...}``
+    with primary keys only, never a device or site name.
     """
     from collections import defaultdict
 
@@ -2248,7 +2410,20 @@ def site_relabel_pairs(sync):
         .values_list("_lname", flat=True)
     )
     if not duplicated_lnames:
-        return {"pairs": [], "held": []}
+        return {"pairs": [], "held": [], "report_generated_at": None}
+
+    _job, report, generated_at, _error = latest_scope_report(sync)
+    forward_site_by_pk = {}
+    ambiguous_pks = set()
+    if isinstance(report, dict):
+        forward_site_by_pk = {
+            str(key): value
+            for key, value in (report.get("forward_site_id_by_device_pk") or {}).items()
+        }
+        ambiguous_pks = set(report.get("forward_site_ambiguous_device_ids") or ())
+    has_site_report = isinstance(report, dict) and (
+        "forward_site_id_by_device_pk" in report
+    )
 
     devices_by_lname = defaultdict(list)
     for device in (
@@ -2258,53 +2433,66 @@ def site_relabel_pairs(sync):
     ):
         devices_by_lname[device._lname].append(device)
 
-    names_by_lname = {
-        lname: devices[0].name for lname, devices in devices_by_lname.items() if devices
-    }
-    identity_device_by_name = dict(
-        ForwardDeviceIdentity.objects.filter(
-            sync=sync, source_device_key__in=names_by_lname.values()
-        ).values_list("source_device_key", "device_id")
+    identity_device_by_lname = dict(
+        ForwardDeviceIdentity.objects.filter(sync=sync)
+        .annotate(_lkey=Lower("source_device_key"))
+        .filter(_lkey__in=list(devices_by_lname))
+        .values_list("_lkey", "device_id")
     )
 
     pairs = []
     held = []
+
+    def hold(reason, devices, **extra):
+        # `members` (not a `_pks` suffix, which the export turns into a count):
+        # every device in the group, so the prunes can leave all of them alone.
+        entry = {
+            "reason": reason,
+            "older_pk": devices[0].pk,
+            "newer_pk": devices[-1].pk,
+            "members": [device.pk for device in devices],
+        }
+        entry.update(extra)
+        held.append(entry)
+
     for lname, devices in devices_by_lname.items():
         if len(devices) != 2:
-            # Three or more devices sharing a name is a different, more
-            # ambiguous situation than this bug produces; hold rather than
-            # guess which two (if any) are the relabel pair.
-            held.append(
-                {
-                    "device_pks": sorted(d.pk for d in devices),
-                    "reason": "more_than_two_devices_share_this_name",
-                }
-            )
+            hold(SITE_RELABEL_HOLD_MORE_THAN_TWO, devices)
             continue
         # `order_by("created", "pk")` already put these oldest-first.
         older, newer = devices
         if older.site_id == newer.site_id:
             continue
-        bound_pk = identity_device_by_name.get(names_by_lname[lname])
-        if bound_pk is None:
-            held.append(
-                {
-                    "device_pks": [older.pk, newer.pk],
-                    "reason": SITE_RELABEL_HOLD_NO_IDENTITY,
-                }
+        if not has_site_report:
+            hold(SITE_RELABEL_HOLD_NO_REPORT, devices)
+            continue
+        if generated_at is None or any(
+            device.created and device.created > generated_at for device in devices
+        ):
+            hold(SITE_RELABEL_HOLD_REPORT_STALE, devices)
+            continue
+        if older.pk in ambiguous_pks or newer.pk in ambiguous_pks:
+            hold(SITE_RELABEL_HOLD_SITE_AMBIGUOUS, devices)
+            continue
+        forward_site_id = forward_site_by_pk.get(str(older.pk))
+        if forward_site_id is None:
+            hold(SITE_RELABEL_HOLD_SITE_UNKNOWN, devices)
+            continue
+        if forward_site_id not in (older.site_id, newer.site_id):
+            hold(
+                SITE_RELABEL_HOLD_SITE_NEITHER, devices, forward_site_id=forward_site_id
             )
             continue
-        if bound_pk != newer.pk:
-            reason = (
-                SITE_RELABEL_HOLD_IDENTITY_OLDER
-                if bound_pk == older.pk
-                else SITE_RELABEL_HOLD_IDENTITY_OTHER
+        bound_pk = identity_device_by_lname.get(lname)
+        if bound_pk is not None and bound_pk not in (older.pk, newer.pk):
+            hold(
+                SITE_RELABEL_HOLD_IDENTITY_OTHER,
+                devices,
+                forward_site_id=forward_site_id,
             )
-            held.append({"device_pks": [older.pk, newer.pk], "reason": reason})
             continue
-        # These three carry Forward's own provenance, not an operator's - and
-        # are exactly what proves this pair safe in the first place. Their
-        # `on_delete` still reports as protecting (it is, for a PLAIN
+        # These three carry Forward's own provenance, not an operator's.
+        # Their `on_delete` still reports as protecting (it is, for a PLAIN
         # delete), but `_delete_prunable_devices` releases them explicitly
         # before deleting, the same way every other prune in this module
         # does, so they are not a reason to hold here.
@@ -2319,12 +2507,11 @@ def site_relabel_pairs(sync):
             )
         ]
         if blocking:
-            held.append(
-                {
-                    "device_pks": [older.pk, newer.pk],
-                    "reason": SITE_RELABEL_HOLD_MANUAL_OBJECTS,
-                    "blocking_models": [label for label, _count in blocking],
-                }
+            hold(
+                SITE_RELABEL_HOLD_MANUAL_OBJECTS,
+                devices,
+                forward_site_id=forward_site_id,
+                blocking_models=[label for label, _count in blocking],
             )
             continue
         pairs.append(
@@ -2333,19 +2520,47 @@ def site_relabel_pairs(sync):
                 "newer_pk": newer.pk,
                 "older_site_id": older.site_id,
                 "newer_site_id": newer.site_id,
+                "forward_site_id": forward_site_id,
+                # The older device is always the one kept. It moves only when
+                # it is the stale copy; when it is already at Forward's site
+                # the newer copy is simply the duplicate.
+                "action": (
+                    "delete_newer" if forward_site_id == older.site_id else "move_older"
+                ),
+                "identity_bound": (
+                    "older"
+                    if bound_pk == older.pk
+                    else "newer" if bound_pk == newer.pk else "none"
+                ),
             }
         )
-    return {"pairs": pairs, "held": held}
+    return {"pairs": pairs, "held": held, "report_generated_at": generated_at}
+
+
+def site_relabel_held_by_reason(report) -> list:
+    """``[{reason, count, remedy}]`` for a `site_relabel_pairs` result."""
+    from collections import Counter
+
+    counts = Counter(entry["reason"] for entry in report.get("held") or ())
+    return [
+        {
+            "reason": reason,
+            "count": count,
+            "remedy": SITE_RELABEL_HOLD_REMEDIES.get(reason, ""),
+        }
+        for reason, count in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    ]
 
 
 def merge_site_relabel_duplicates(sync, *, pairs=None):
     """Repair existing site-relabel duplicate pairs: keep the older device.
 
     For each pair: delete the newer device (its cascade takes the interfaces
-    and IPs the sync attached to it), move the older device to the newer
-    device's site, and bind this sync's `ForwardDeviceIdentity` for that name
-    to the older device's pk - so the next sync recognizes it immediately
-    instead of re-detecting a relabel.
+    and IPs the sync attached to it), move the older device to the site
+    Forward's device map places the name at when it is not already there,
+    and bind this sync's `ForwardDeviceIdentity` for that name to the older
+    device's pk - so the next sync recognizes it immediately instead of
+    re-detecting a relabel.
 
     The pair list is recomputed here rather than trusted from the caller
     (`pairs=None`), the same discipline every other prune action in this
@@ -2359,6 +2574,7 @@ def merge_site_relabel_duplicates(sync, *, pairs=None):
     reason - never a device or site name.
     """
     from django.db import transaction
+    from django.db.models.functions import Lower
     from types import SimpleNamespace
 
     from ..models import ForwardDeviceIdentity
@@ -2402,7 +2618,27 @@ def merge_site_relabel_duplicates(sync, *, pairs=None):
                     # Already converged (a previous partial run, or a
                     # concurrent sync already moved it) - nothing to do.
                     continue
-                new_site_id = newer.site_id
+                target_site_id = pair["forward_site_id"]
+                if target_site_id not in (older.site_id, newer.site_id):
+                    # Something moved one of them since the pairs were
+                    # computed; the proof no longer holds.
+                    failed.append(
+                        {
+                            "older_pk": older.pk,
+                            "newer_pk": newer.pk,
+                            "reason": "devices_moved_since_detection",
+                        }
+                    )
+                    continue
+                # The identity key is Forward's spelling of the name, which can
+                # differ from either device's in case; keep it.
+                identity_key = (
+                    ForwardDeviceIdentity.objects.filter(sync=sync)
+                    .annotate(_lkey=Lower("source_device_key"))
+                    .filter(_lkey=older.name.lower())
+                    .values_list("source_device_key", flat=True)
+                    .first()
+                ) or older.name
                 deleted_ids, _total, protected_tally, blocked_ids = (
                     _delete_prunable_devices(sync, [newer.pk])
                 )
@@ -2417,24 +2653,28 @@ def merge_site_relabel_duplicates(sync, *, pairs=None):
                     )
                     transaction.set_rollback(True)
                     continue
-                older.site_id = new_site_id
-                older.full_clean()
-                older.save()
-                # `(sync, device)` is unique; the older device is not expected
-                # to already carry one (its identity was exactly the missing
-                # proof this pair was held on), but clear defensively rather
-                # than let a stale row from an unrelated prior name collide
-                # with the row below.
+                if older.site_id != target_site_id:
+                    older.site_id = target_site_id
+                    older.full_clean()
+                    older.save()
+                # `(sync, device)` is unique: clear any identity the older
+                # device holds under a different key before binding this one.
                 ForwardDeviceIdentity.objects.filter(sync=sync, device=older).exclude(
-                    source_device_key=older.name
+                    source_device_key=identity_key
                 ).delete()
                 ForwardDeviceIdentity.objects.update_or_create(
                     sync=sync,
-                    source_device_key=older.name,
+                    source_device_key=identity_key,
                     defaults={"device": older},
                 )
                 clear_cross_site_untagged_vlans(runner_shim, [older.pk])
-                merged.append({"older_pk": older.pk, "newer_pk": newer.pk})
+                merged.append(
+                    {
+                        "older_pk": older.pk,
+                        "newer_pk": newer.pk,
+                        "action": pair["action"],
+                    }
+                )
         except JobTimeoutException:
             raise
         except Exception as exc:  # noqa: BLE001 - one pair's failure isolates

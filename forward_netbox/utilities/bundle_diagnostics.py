@@ -474,12 +474,18 @@ def _site_relabel_pairs(sync):
     qualifies. Every entry it returns is already pks and a reason token, so
     it is exported unchanged.
     """
+    from .scope_reconciliation import site_relabel_held_by_reason
     from .scope_reconciliation import site_relabel_pairs
 
     report = site_relabel_pairs(sync)
+    generated_at = report.get("report_generated_at")
     return {
         "pair_count": len(report["pairs"]),
         "held_count": len(report["held"]),
+        "held_by_reason": site_relabel_held_by_reason(report),
+        "scope_report_generated_at": (
+            generated_at.isoformat() if generated_at else None
+        ),
         "pairs": report["pairs"],
         "held": report["held"],
     }
