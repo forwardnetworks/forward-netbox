@@ -8,6 +8,7 @@ from netbox_branching.contextvars import active_branch
 
 from ..choices import FORWARD_SUPPORTED_MODELS
 from ..choices import ForwardApplyEngineChoices
+from .validated_runtime import plugin_runtime_mismatch
 from .validated_runtime import VALIDATED_OPTIONAL_DISTRIBUTIONS
 from .validated_runtime import VALIDATED_PLUGIN_APPS
 from .version_series import series_matches
@@ -429,30 +430,11 @@ def _copy_sql_runtime_supported():
                 "actual": branching_version,
             },
         )
-    for distribution, actual in optional_versions:
-        expected = COPY_SQL_SUPPORTED_OPTIONAL_DISTRIBUTIONS[distribution]
-        # Absence is also a different runtime tuple. Each entry lists every
-        # version validated against this engine; anything else fails closed.
-        if actual not in expected:
-            return (
-                False,
-                "unsupported_optional_plugin_version",
-                {
-                    "distribution": distribution,
-                    "expected": expected,
-                    "actual": actual,
-                },
-            )
-    actual_plugin_apps = frozenset(getattr(settings, "PLUGINS", ()) or ())
-    if actual_plugin_apps != COPY_SQL_SUPPORTED_PLUGIN_APPS:
-        return (
-            False,
-            "unsupported_plugin_app_tuple",
-            {
-                "expected": sorted(COPY_SQL_SUPPORTED_PLUGIN_APPS),
-                "actual": sorted(actual_plugin_apps),
-            },
-        )
+    mismatch = plugin_runtime_mismatch(
+        getattr(settings, "PLUGINS", ()) or (), optional_versions
+    )
+    if mismatch is not None:
+        return (False, *mismatch)
     return (
         True,
         "supported_exact_runtime_tuple",
