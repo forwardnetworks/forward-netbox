@@ -969,6 +969,12 @@ class SupportBundleTroubleshootingDepthTest(TestCase):
             "netbox_routing",
             environment["optional_plugin_versions_validated_against"],
         )
+        # Read from settings.PLUGINS, as the fast-path gates read it: not every
+        # Django app and AppConfig path in INSTALLED_APPS.
+        self.assertIn("forward_netbox", environment["plugin_apps"])
+        self.assertNotIn("dcim", environment["plugin_apps"])
+        self.assertEqual(environment["unexpected_plugin_apps"], [])
+        self.assertEqual(environment["missing_required_plugin_apps"], [])
 
     def test_the_delete_blocker_survey_splits_ours_from_other_plugins(self):
         # THE question behind "the uncovered count is not going down": whether

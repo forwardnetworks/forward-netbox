@@ -746,18 +746,28 @@ def _adapter_workload_contract(rows_by_model):
             return False, {"model": model_string, "reason": "invalid_routing_identity"}
 
     af_rows = rows_by_model.get("netbox_routing.bgpaddressfamily", [])
-    from netbox_routing.models import BGPAddressFamily
-
-    allowed_address_families = {
-        str(choice[0])
-        for choice in BGPAddressFamily._meta.get_field("address_family").choices
-    }
+    peer_af_rows = rows_by_model.get("netbox_routing.bgppeeraddressfamily", [])
+    # Unconditional before: a runtime without netbox-routing crashed the whole
+    # fast baseline with ModuleNotFoundError in a contract function instead of
+    # declining. No routing rows means nothing to validate; rows for a model
+    # whose plugin is absent fails closed.
+    if af_rows or peer_af_rows:
+        try:
+            from netbox_routing.models import BGPAddressFamily
+        except ImportError:
+            return False, {
+                "model": "netbox_routing.bgpaddressfamily",
+                "reason": "routing_plugin_not_installed",
+            }
+        allowed_address_families = {
+            str(choice[0])
+            for choice in BGPAddressFamily._meta.get_field("address_family").choices
+        }
+    else:
+        allowed_address_families = set()
     if allowed_address_families and any(
         _routing_af(row.get("afi_safi")) not in allowed_address_families
-        for row in [
-            *af_rows,
-            *rows_by_model.get("netbox_routing.bgppeeraddressfamily", []),
-        ]
+        for row in [*af_rows, *peer_af_rows]
     ):
         return False, {
             "model": "netbox_routing.bgpaddressfamily",

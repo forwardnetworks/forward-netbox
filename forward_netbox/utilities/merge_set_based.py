@@ -21,6 +21,7 @@ from rq.timeouts import JobTimeoutException
 
 from .bulk_delete import lock_related_writes_for_delete
 from .version_series import series_matches
+from .validated_runtime import plugin_runtime_mismatch
 from .validated_runtime import VALIDATED_OPTIONAL_DISTRIBUTIONS
 from .validated_runtime import VALIDATED_PLUGIN_APPS
 
@@ -179,28 +180,11 @@ def _runtime_tuple_decision():
                 "actual": branching_version,
             },
         )
-    for distribution, actual in optional_versions:
-        expected = SET_BASED_MERGE_SUPPORTED_OPTIONAL_DISTRIBUTIONS[distribution]
-        if actual not in expected:
-            return SetBasedMergeDecision(
-                False,
-                "unsupported_optional_plugin_version",
-                {
-                    "distribution": distribution,
-                    "expected": expected,
-                    "actual": actual,
-                },
-            )
-    actual_apps = frozenset(getattr(settings, "PLUGINS", ()) or ())
-    if actual_apps != SET_BASED_MERGE_SUPPORTED_PLUGIN_APPS:
-        return SetBasedMergeDecision(
-            False,
-            "unsupported_plugin_app_tuple",
-            {
-                "expected": sorted(SET_BASED_MERGE_SUPPORTED_PLUGIN_APPS),
-                "actual": sorted(actual_apps),
-            },
-        )
+    mismatch = plugin_runtime_mismatch(
+        getattr(settings, "PLUGINS", ()) or (), optional_versions
+    )
+    if mismatch is not None:
+        return SetBasedMergeDecision(False, *mismatch)
     return SetBasedMergeDecision(
         True,
         "supported_exact_runtime_tuple",

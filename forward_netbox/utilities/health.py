@@ -230,74 +230,103 @@ _BASE_VARIANT_QUERY_PAIRS = (
 def _fast_path_runtime_check():
     """Say when the fast paths are switched off, and by what.
 
-    Three subsystems refuse to run unless the installed plugin set exactly
-    matches a validated tuple: the COPY/SQL apply engine, the set-based merge,
-    and the fast baseline. Failing closed is right - their SQL is generated
-    against a known schema - but the consequence is invisible. Installing any
-    NetBox plugin this release has not validated silently costs a deployment
-    all three, and for the fast baseline that is a first sync taking hours
-    instead of minutes, with no error raised anywhere and nothing in the UI
-    that mentions it.
+    Three subsystems refuse to run outside a validated runtime: the COPY/SQL
+    apply engine, the set-based merge, and the fast baseline. Failing closed
+    is right - their SQL is generated against a known schema - but the
+    consequence is invisible: for the fast baseline, a first sync taking hours
+    instead of minutes, with no error anywhere.
 
-    The decision objects already carry the reason. Nothing surfaced it, so the
-    only way to discover it was to notice a sync being slow and go reading
-    engine internals. This check names the unexpected plugins - the actionable
-    part - rather than dumping both tuples.
+    Reads each subsystem's own decision rather than re-deriving it, so this
+    row cannot disagree with what the engines will actually do. A validated
+    optional plugin that is not installed does not disable anything (it adds
+    no tables, receivers or triggers); an installed plugin nobody validated,
+    or an installed optional plugin at an unvalidated version, does.
 
-    Returns None when every fast path is available, which is the ordinary case
-    and needs no row on the page.
+    Returns None when every fast path is available.
     """
     from django.conf import settings
 
-    from .apply_engine_decision import COPY_SQL_SUPPORTED_PLUGIN_APPS
+    from .apply_engine_decision import _copy_sql_runtime_supported
     from .fast_baseline import _runtime_decision as _fast_baseline_runtime_decision
-    from .merge_set_based import SET_BASED_MERGE_SUPPORTED_PLUGIN_APPS
-    from .validated_runtime import missing_plugin_apps
-    from .validated_runtime import unexpected_plugin_apps
+    from .fast_baseline import fast_baseline_runtime_tuple
+    from .merge_set_based import _runtime_tuple_decision
+    from .validated_runtime import plugin_runtime_mismatch
 
-    actual_apps = frozenset(getattr(settings, "PLUGINS", ()) or ())
     disabled = []
+    reasons = []
 
-    try:
-        baseline = _fast_baseline_runtime_decision()
-        if not baseline.enabled and baseline.reason_code == "unsupported_runtime_tuple":
-            disabled.append("the fast baseline (first sync takes hours, not minutes)")
-    except JobTimeoutException:
-        raise
-    except Exception:  # noqa: BLE001 - a health check must not break the page
-        pass
+    def consider(label, enabled, reason):
+        if not enabled:
+            disabled.append(label)
+            reasons.append(reason)
 
-    if actual_apps != COPY_SQL_SUPPORTED_PLUGIN_APPS:
-        disabled.append("the COPY/SQL apply engine")
-    if actual_apps != SET_BASED_MERGE_SUPPORTED_PLUGIN_APPS:
-        disabled.append("the set-based merge")
+    def fast_baseline():
+        decision = _fast_baseline_runtime_decision()
+        return (
+            decision.enabled or decision.reason_code != "unsupported_runtime_tuple",
+            decision.reason_code,
+        )
+
+    def copy_sql():
+        ok, reason, _detail = _copy_sql_runtime_supported()
+        return ok, reason
+
+    def set_based_merge():
+        decision = _runtime_tuple_decision()
+        return decision.enabled, decision.reason_code
+
+    # Each engine on its own: one broken probe must not hide the others.
+    for label, decide in (
+        ("the fast baseline (first sync takes hours, not minutes)", fast_baseline),
+        ("the COPY/SQL apply engine", copy_sql),
+        ("the set-based merge", set_based_merge),
+    ):
+        try:
+            enabled, reason = decide()
+        except JobTimeoutException:
+            raise
+        except Exception:  # noqa: BLE001 - a health check must not break the page
+            continue
+        consider(label, enabled, reason)
 
     if not disabled:
         return None
 
-    # The declaration's own helpers, rather than re-deriving the comparison
-    # here: this check exists because the validated set used to be spelled out
-    # in several places, and adding another spelling would be the same mistake.
-    unexpected = unexpected_plugin_apps(actual_apps)
-    missing = missing_plugin_apps(actual_apps)
     causes = []
-    if unexpected:
-        causes.append(
-            "installed plugins this release has not validated: "
-            + ", ".join(f"`{name}`" for name in unexpected)
+    mismatch = None
+    try:
+        probe = fast_baseline_runtime_tuple()
+        mismatch = plugin_runtime_mismatch(
+            getattr(settings, "PLUGINS", ()) or (), probe["optional_plugins"]
         )
-    if missing:
-        causes.append(
-            "validated plugins that are not installed: "
-            + ", ".join(f"`{name}`" for name in missing)
-        )
+    except JobTimeoutException:
+        raise
+    except Exception:  # noqa: BLE001
+        mismatch = None
+    if mismatch is not None:
+        reason, detail = mismatch
+        if detail.get("unexpected"):
+            causes.append(
+                "installed plugins this release has not validated: "
+                + ", ".join(f"`{name}`" for name in detail["unexpected"])
+            )
+        if detail.get("missing_required"):
+            causes.append(
+                "required plugins that are not installed: "
+                + ", ".join(f"`{name}`" for name in detail["missing_required"])
+            )
+        if reason == "unsupported_optional_plugin_version":
+            causes.append(
+                f"`{detail['distribution']}` {detail['actual'] or 'unknown'} is "
+                "not a validated version ("
+                + ", ".join(sorted(detail["expected"]))
+                + ")"
+            )
     if not causes:
-        # The app set matches but a VERSION does not, which the subsystems
-        # report separately; say so rather than implying the plugin list is
-        # wrong.
         causes.append(
-            "an optional plugin version outside the validated set (the plugin "
-            "list itself matches)"
+            "the runtime is outside the validated NetBox / Branching series ("
+            + ", ".join(sorted(set(reasons)))
+            + ")"
         )
 
     return _check(
@@ -308,9 +337,8 @@ def _fast_path_runtime_check():
             + "; ".join(disabled)
             + ". Cause: "
             + "; ".join(causes)
-            + ". These subsystems require an exact runtime match and fail "
-            "closed, so syncs still succeed - only more slowly, and with no "
-            "other warning."
+            + ". These subsystems fail closed outside a validated runtime, so "
+            "syncs still succeed - only more slowly, and with no other warning."
         ),
     )
 

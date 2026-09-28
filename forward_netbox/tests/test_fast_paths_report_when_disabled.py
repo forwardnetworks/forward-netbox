@@ -64,13 +64,25 @@ class AnUnvalidatedPluginIsNamedTest(SimpleTestCase):
         # And the reassurance that matters: this is slow, not broken.
         self.assertIn("still succeed", message)
 
-    def test_a_missing_validated_plugin_is_also_named(self):
-        reduced = sorted(COPY_SQL_SUPPORTED_PLUGIN_APPS - {"netbox_dlm"})
+    def test_a_missing_optional_plugin_disables_nothing(self):
+        # 2.9.9 warned here and turned every fast path off: a deployment
+        # without ACI or Peering Manager ran every first sync on the slow path.
+        reduced = sorted(
+            COPY_SQL_SUPPORTED_PLUGIN_APPS
+            - {"netbox_dlm", "netbox_cisco_aci", "netbox_peering_manager"}
+        )
+        with patch("django.conf.settings.PLUGINS", reduced):
+            check = _fast_path_runtime_check()
+
+        self.assertIsNone(check)
+
+    def test_a_missing_required_plugin_is_named(self):
+        reduced = sorted(COPY_SQL_SUPPORTED_PLUGIN_APPS - {"netbox_branching"})
         with patch("django.conf.settings.PLUGINS", reduced):
             check = _fast_path_runtime_check()
 
         self.assertIsNotNone(check)
-        self.assertIn("netbox_dlm", check["message"])
+        self.assertIn("netbox_branching", check["message"])
         self.assertIn("not installed", check["message"])
 
     def test_the_check_survives_a_broken_fast_baseline_probe(self):

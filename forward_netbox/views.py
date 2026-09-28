@@ -571,8 +571,11 @@ def _environment_bundle_payload():
     from . import _resolved_branching_version
     from . import NetboxForwardConfig
     from .utilities.plugin_integrations.registry import OPTIONAL_PLUGIN_INTEGRATIONS
-    from .utilities.validated_runtime import missing_plugin_apps
+    from .utilities.validated_runtime import OPTIONAL_PLUGIN_APP_DISTRIBUTIONS
+    from .utilities.validated_runtime import REQUIRED_PLUGIN_APPS
     from .utilities.validated_runtime import unexpected_plugin_apps
+    from .utilities.validated_runtime import VALIDATED_OPTIONAL_DISTRIBUTIONS
+    from .utilities.validated_runtime import VALIDATED_PLUGIN_APPS
 
     def _installed_version(package_name, app_label):
         from importlib.metadata import PackageNotFoundError
@@ -587,7 +590,11 @@ def _environment_bundle_payload():
         except Exception:  # noqa: BLE001 - a bundle must not fail on metadata
             return "installed (version unreadable)"
 
-    installed_apps = list(getattr(settings, "INSTALLED_APPS", ()) or ())
+    # `settings.PLUGINS`, as the fast-path gates read it. `INSTALLED_APPS`
+    # holds every Django app and each plugin's AppConfig path
+    # (`forward_netbox.NetboxForwardConfig`), which made every core app read
+    # as "unexpected" and every installed plugin as "missing".
+    plugin_apps = frozenset(getattr(settings, "PLUGINS", ()) or ())
     return {
         "plugin_version": NetboxForwardConfig.version,
         "netbox_version": str(getattr(settings, "VERSION", "") or ""),
@@ -600,14 +607,21 @@ def _environment_bundle_payload():
             )
             for integration in OPTIONAL_PLUGIN_INTEGRATIONS
         },
+        # Every version the fast paths were validated with, per app - the
+        # set their gates actually check, not the integration's single pin.
         "optional_plugin_versions_validated_against": {
-            integration.app_label: integration.required_package_version
-            for integration in OPTIONAL_PLUGIN_INTEGRATIONS
+            app: sorted(VALIDATED_OPTIONAL_DISTRIBUTIONS[distribution])
+            for app, distribution in sorted(OPTIONAL_PLUGIN_APP_DISTRIBUTIONS.items())
         },
-        # The exact app set matters: an unlisted plugin disables COPY/SQL,
-        # set-based merge and the fast baseline with no error at all.
-        "unexpected_plugin_apps": list(unexpected_plugin_apps(installed_apps)),
-        "missing_plugin_apps": list(missing_plugin_apps(installed_apps)),
+        "plugin_apps": sorted(plugin_apps),
+        # An unlisted plugin disables COPY/SQL, set-based merge and the fast
+        # baseline; a missing REQUIRED one does too. A validated optional
+        # plugin that is simply not installed does not.
+        "unexpected_plugin_apps": list(unexpected_plugin_apps(plugin_apps)),
+        "missing_required_plugin_apps": sorted(REQUIRED_PLUGIN_APPS - plugin_apps),
+        "validated_optional_plugins_not_installed": sorted(
+            VALIDATED_PLUGIN_APPS - REQUIRED_PLUGIN_APPS - plugin_apps
+        ),
     }
 
 
