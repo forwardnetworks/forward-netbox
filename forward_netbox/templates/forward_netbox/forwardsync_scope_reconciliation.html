@@ -412,6 +412,36 @@
     </div>
   </div>
 </div>
+{% if catalogue_cleanup.entry_count %}
+<div class="row mt-3">
+  <div class="col col-md-12">
+    <div class="card" id="routing-policy-outside-scope">
+      <h5 class="card-header">{% trans "Routing Policy Outside Scope" %}</h5>
+      <div class="card-body">
+        <p class="text-muted mt-0">
+          {% blocktrans with count=catalogue_cleanup.entry_count %}{{ count }} prefix-list, community-list or route-map entries in NetBox belong to definitions that no device inside this sync's scope holds, as of the latest dependency preview. The sync never removes them on its own.{% endblocktrans %}
+        </p>
+        <ul class="small mb-2">
+          {% for model, count in catalogue_cleanup.by_model %}{% if count %}<li><code>{{ model }}</code>: {{ count }}</li>{% endif %}{% endfor %}
+        </ul>
+        <p class="small mb-2">
+          {% trans "Removing them re-reads Forward first, and deletes only entries this sync created, that no sync still asserts, and that no route map outside the cleanup still matches on. Anything else is held and counted in the job result." %}
+        </p>
+        {% if perms.netbox_routing.delete_prefixlist %}
+          <form method="post"
+                action="{% url 'plugins:forward_netbox:forwardsync_prune_out_of_scope_catalogue' pk=object.pk %}"
+                onsubmit="return confirm('{% blocktrans with count=catalogue_cleanup.entry_count %}Remove up to {{ count }} routing policy entries no in-scope device holds? Held entries are kept.{% endblocktrans %}');">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-sm btn-danger">
+              <i class="mdi mdi-delete-sweep-outline" aria-hidden="true"></i>&nbsp;{% trans "Remove out-of-scope routing policy" %}
+            </button>
+          </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
 {% if site_relabel_pairs.available and site_relabel_pairs.pair_count or site_relabel_pairs.available and site_relabel_pairs.held_count %}
 <div class="row mt-3">
   <div class="col col-md-12">

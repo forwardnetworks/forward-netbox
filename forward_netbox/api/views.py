@@ -972,6 +972,25 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
             ),
         },
     )
+    @action(detail=True, methods=["post"], url_path="prune-out-of-scope-catalogue")
+    def prune_out_of_scope_catalogue(self, request, pk):
+        return self._enqueue_button_job_response(
+            request, "prune_out_of_scope_catalogue"
+        )
+
+    @extend_schema(
+        methods=["post"],
+        request=EmptySerializer(),
+        responses={
+            201: JobSerializer(),
+            202: OpenApiResponse(
+                description=(
+                    '{"status": "already_running"|"blocked_by_sync_run", '
+                    '"job_id": N}'
+                )
+            ),
+        },
+    )
     @action(detail=True, methods=["post"], url_path="merge-site-relabel-duplicates")
     def merge_site_relabel_duplicates(self, request, pk):
         return self._enqueue_button_job_response(

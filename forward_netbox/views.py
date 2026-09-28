@@ -1978,6 +1978,41 @@ def _site_relabel_pairs_payload(sync):
     }
 
 
+def _catalogue_cleanup_payload(sync):
+    """Routing policy entries no in-scope device holds, from the latest preview.
+
+    A local read of the stored preview: the count is what the preview found,
+    and the cleanup job recomputes its own set from a fresh Forward read.
+    """
+    from core.choices import JobStatusChoices
+    from core.models import Job
+    from django.contrib.contenttypes.models import ContentType
+
+    job = (
+        Job.objects.filter(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=sync.pk,
+            name__icontains="dependency preview",
+            status=JobStatusChoices.STATUS_COMPLETED,
+        )
+        .order_by("-created")
+        .first()
+    )
+    payload = job.data if job is not None and isinstance(job.data, dict) else {}
+    counts = {
+        result.get("model"): result.get("outside_scope_in_netbox_count")
+        for result in payload.get("model_results") or ()
+        if isinstance(result, dict)
+        and isinstance(result.get("outside_scope_in_netbox_count"), int)
+    }
+    return {
+        "available": bool(counts),
+        "entry_count": sum(counts.values()),
+        "by_model": sorted(counts.items()),
+        "generated_at": payload.get("generated_at"),
+    }
+
+
 def _scope_reconciliation_payload(job):
     """See `scope_reconciliation.stored_scope_report`."""
     from .utilities.scope_reconciliation import stored_scope_report
@@ -2221,6 +2256,7 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
                 # newer device's own site IS Forward's current answer) - so
                 # it is safe to compute on every page render.
                 "site_relabel_pairs": _site_relabel_pairs_payload(sync),
+                "catalogue_cleanup": _catalogue_cleanup_payload(sync),
             },
         )
 
@@ -2465,6 +2501,56 @@ class ForwardSyncPruneUncoveredView(BaseObjectView):
                 "Queued job #%(pk)d to prune uncovered devices. Only devices "
                 "Forward no longer reports are eligible; watch the Jobs tab for "
                 "the result."
+            )
+            % {"pk": job.pk},
+        )
+        return redirect(sync.get_absolute_url())
+
+
+@register_model_view(
+    ForwardSync, "prune_out_of_scope_catalogue", path="prune-out-of-scope-catalogue"
+)
+class ForwardSyncPruneOutOfScopeCatalogueView(BaseObjectView):
+    """Delete routing policy entries no in-scope device holds.
+
+    See `routing_catalogue_cleanup.prune_out_of_scope_catalogue` for exactly
+    what is deleted and what is held.
+    """
+
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "netbox_routing.delete_prefixlist"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return redirect(
+            reverse(
+                "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                kwargs={"pk": sync.pk},
+            )
+        )
+
+    def post(self, request, pk):
+        from .utilities.sync_facade import JobAlreadyActive, enqueue_button_job
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        try:
+            job = enqueue_button_job(sync, "prune_out_of_scope_catalogue", request.user)
+        except JobAlreadyActive:
+            messages.warning(
+                request,
+                _(
+                    "A routing policy cleanup is already queued, or a sync is "
+                    "running; try again when it finishes."
+                ),
+            )
+            return redirect(sync.get_absolute_url())
+        messages.success(
+            request,
+            _(
+                "Queued job #%(pk)d to remove routing policy no in-scope device "
+                "holds. Watch the Jobs tab for the result."
             )
             % {"pk": job.pk},
         )
