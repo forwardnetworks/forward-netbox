@@ -2,29 +2,36 @@
 
 The apply-path fix (`apply_engine_bulk.py`'s `_relabel_move_candidate`) stops
 a sync from creating a second device on a site relabel going forward, but the
-customer's ~248 pairs already exist. This is the one-time repair: for each
-pair proven safe, delete the newer (sync-created) device and move the older
-one to its site, so it takes over Forward's identity for that name.
+duplicates it created before already exist. This is the one-time repair: for
+each pair it can prove, keep the older device at the site Forward's device map
+places the name at, and delete the newer copy.
 
-Every test here pins the negative space as hard as the happy path - a pair
-this cannot prove safe must be left completely alone, never guessed at.
+The proof is the sync's own device map, as stored by the latest scope
+reconciliation - not the device identity, which on a real estate bound the
+stale copy in 218 of 221 pairs. Every test pins the negative space as hard as
+the happy path: a pair this cannot prove is left completely alone.
 """
 
+import uuid
+from datetime import timedelta
+from unittest.mock import patch
+
+from core.choices import JobStatusChoices
+from core.models import Job
 from dcim.models import Device
 from dcim.models import DeviceRole
 from dcim.models import DeviceType
 from dcim.models import Interface
 from dcim.models import Manufacturer
 from dcim.models import Site
+from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
-from unittest.mock import patch
+from django.utils import timezone
 
 from forward_netbox.models import ForwardDeviceIdentity
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
-from forward_netbox.utilities.scope_reconciliation import (
-    SITE_RELABEL_HOLD_IDENTITY_OLDER,
-)
+from forward_netbox.utilities.scope_reconciliation import merge_site_relabel_duplicates
 from forward_netbox.utilities.scope_reconciliation import (
     SITE_RELABEL_HOLD_IDENTITY_OTHER,
 )
@@ -32,9 +39,16 @@ from forward_netbox.utilities.scope_reconciliation import (
     SITE_RELABEL_HOLD_MANUAL_OBJECTS,
 )
 from forward_netbox.utilities.scope_reconciliation import (
-    SITE_RELABEL_HOLD_NO_IDENTITY,
+    SITE_RELABEL_HOLD_MORE_THAN_TWO,
 )
-from forward_netbox.utilities.scope_reconciliation import merge_site_relabel_duplicates
+from forward_netbox.utilities.scope_reconciliation import SITE_RELABEL_HOLD_NO_REPORT
+from forward_netbox.utilities.scope_reconciliation import SITE_RELABEL_HOLD_REPORT_STALE
+from forward_netbox.utilities.scope_reconciliation import (
+    SITE_RELABEL_HOLD_SITE_AMBIGUOUS,
+)
+from forward_netbox.utilities.scope_reconciliation import SITE_RELABEL_HOLD_SITE_NEITHER
+from forward_netbox.utilities.scope_reconciliation import SITE_RELABEL_HOLD_SITE_UNKNOWN
+from forward_netbox.utilities.scope_reconciliation import site_relabel_held_by_reason
 from forward_netbox.utilities.scope_reconciliation import site_relabel_pairs
 
 
@@ -61,7 +75,7 @@ class SiteRelabelPairsTest(TestCase):
             source=source,
             parameters={"snapshot_id": "latestProcessed"},
         )
-        self.other_source = ForwardSource.objects.create(
+        other_source = ForwardSource.objects.create(
             name="relabel-repair-other-src",
             type="saas",
             url="https://fwd.app",
@@ -70,7 +84,7 @@ class SiteRelabelPairsTest(TestCase):
         )
         self.other_sync = ForwardSync.objects.create(
             name="relabel-repair-other-sync",
-            source=self.other_source,
+            source=other_source,
             parameters={"snapshot_id": "latestProcessed"},
         )
 
@@ -83,36 +97,104 @@ class SiteRelabelPairsTest(TestCase):
             status="active",
         )
 
-    def _bound_pair(self, name="core-sw-01"):
+    def _report(self, forward_sites=None, *, ambiguous=(), completed=None):
+        """Store a scope report as the latest reconciliation would."""
+        return Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name=f"{self.sync.name} - scope reconciliation",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            completed=completed or timezone.now(),
+            job_id=uuid.uuid4(),
+            data={
+                "forward_site_id_by_device_pk": {
+                    str(pk): site_pk for pk, site_pk in (forward_sites or {}).items()
+                },
+                "forward_site_ambiguous_device_ids": list(ambiguous),
+                "forward_site_source": {"available": True, "error": "", "rows": 1},
+            },
+        )
+
+    def _pair(self, name="core-sw-01", *, forward_site=None, identity=None):
+        """A relabel pair: the older copy at the old site, the newer at the new.
+
+        ``forward_site`` defaults to the new site, which is the relabel shape.
+        ``identity`` is "older", "newer" or None.
+        """
         older = self._device(name, self.old_site)
         newer = self._device(name, self.new_site)
-        ForwardDeviceIdentity.objects.create(
-            sync=self.sync, source_device_key=name, device=newer
-        )
-        return older, newer
+        if identity is not None:
+            ForwardDeviceIdentity.objects.create(
+                sync=self.sync,
+                source_device_key=name,
+                device=older if identity == "older" else newer,
+            )
+        site = forward_site or self.new_site
+        return older, newer, {older.pk: site.pk, newer.pk: site.pk}
 
-    # -- detection: the happy path -----------------------------------
+    # -- detection: the shapes a real estate has ------------------------
 
-    def test_a_bound_newer_device_forms_a_mergeable_pair(self):
-        older, newer = self._bound_pair()
+    def test_identity_bound_to_the_older_copy_is_mergeable(self):
+        # 218 of the customer's 221 pairs: the original device kept this
+        # sync's identity; the relabel created an unbound copy at the new site.
+        older, newer, sites = self._pair(identity="older")
+        self._report(sites)
 
         report = site_relabel_pairs(self.sync)
 
-        self.assertEqual(len(report["pairs"]), 1)
-        self.assertEqual(report["pairs"][0]["older_pk"], older.pk)
-        self.assertEqual(report["pairs"][0]["newer_pk"], newer.pk)
         self.assertEqual(report["held"], [])
+        self.assertEqual(len(report["pairs"]), 1)
+        pair = report["pairs"][0]
+        self.assertEqual((pair["older_pk"], pair["newer_pk"]), (older.pk, newer.pk))
+        self.assertEqual(pair["forward_site_id"], self.new_site.pk)
+        self.assertEqual(pair["action"], "move_older")
+        self.assertEqual(pair["identity_bound"], "older")
+
+    def test_no_identity_at_all_is_mergeable_when_the_device_map_proves_it(self):
+        # The other 3: neither copy carries an identity from this sync.
+        self._pair(identity=None)
+        report = site_relabel_pairs(self.sync)
+        self.assertEqual(report["pairs"], [])  # no report yet
+
+        older, newer, sites = self._pair(name="edge-01", identity=None)
+        self._report(
+            {
+                **{pk: self.new_site.pk for pk in sites},
+                **{
+                    d.pk: self.new_site.pk
+                    for d in Device.objects.filter(name="core-sw-01")
+                },
+            }
+        )
+
+        report = site_relabel_pairs(self.sync)
+
+        self.assertEqual(len(report["pairs"]), 2)
+        self.assertTrue(all(p["identity_bound"] == "none" for p in report["pairs"]))
+
+    def test_identity_bound_to_the_newer_copy_is_mergeable(self):
+        _older, _newer, sites = self._pair(identity="newer")
+        self._report(sites)
+
+        report = site_relabel_pairs(self.sync)
+
+        self.assertEqual(report["pairs"][0]["identity_bound"], "newer")
+
+    def test_the_older_copy_already_at_forwards_site_only_deletes_the_newer(self):
+        older, newer, sites = self._pair(forward_site=self.old_site, identity="older")
+        self._report(sites)
+
+        report = site_relabel_pairs(self.sync)
+
+        self.assertEqual(report["pairs"][0]["action"], "delete_newer")
 
     def test_a_same_site_duplicate_is_not_a_pair_at_all(self):
-        # `dcim_device_unique_name_site` only allows two devices to share a
-        # (name, site) when their tenants differ - the actual constraint this
-        # whole fix exists because of. Not a relabel: nothing about it
-        # changed sites, so it must not surface as a pair or a hold either.
+        # Allowed only with different tenants; nothing changed sites.
         from tenancy.models import Tenant
 
         tenant = Tenant.objects.create(name="t", slug="t")
-        self._device("core-sw-01", self.old_site)
-        Device.objects.create(
+        first = self._device("core-sw-01", self.old_site)
+        second = Device.objects.create(
             name="core-sw-01",
             site=self.old_site,
             role=self.role,
@@ -120,86 +202,99 @@ class SiteRelabelPairsTest(TestCase):
             status="active",
             tenant=tenant,
         )
+        self._report({first.pk: self.old_site.pk, second.pk: self.old_site.pk})
 
         report = site_relabel_pairs(self.sync)
 
         self.assertEqual(report["pairs"], [])
         self.assertEqual(report["held"], [])
 
-    # -- detection: negative space, never guess ------------------------
+    # -- detection: negative space, never guess --------------------------
 
-    def test_no_identity_binding_is_held(self):
-        older = self._device("core-sw-01", self.old_site)
-        newer = self._device("core-sw-01", self.new_site)
-
-        report = site_relabel_pairs(self.sync)
-
-        self.assertEqual(report["pairs"], [])
-        self.assertEqual(len(report["held"]), 1)
-        self.assertEqual(report["held"][0]["reason"], SITE_RELABEL_HOLD_NO_IDENTITY)
-        self.assertEqual(
-            sorted(report["held"][0]["device_pks"]), sorted([older.pk, newer.pk])
-        )
-
-    def test_identity_bound_to_the_older_device_is_held(self):
-        older = self._device("core-sw-01", self.old_site)
-        self._device("core-sw-01", self.new_site)
-        ForwardDeviceIdentity.objects.create(
-            sync=self.sync, source_device_key="core-sw-01", device=older
-        )
+    def test_without_any_scope_report_every_pair_is_held(self):
+        older, newer, _sites = self._pair(identity="older")
 
         report = site_relabel_pairs(self.sync)
 
         self.assertEqual(report["pairs"], [])
-        self.assertEqual(report["held"][0]["reason"], SITE_RELABEL_HOLD_IDENTITY_OLDER)
+        held = report["held"][0]
+        self.assertEqual(held["reason"], SITE_RELABEL_HOLD_NO_REPORT)
+        self.assertEqual(held["members"], [older.pk, newer.pk])
 
-    def test_identity_bound_to_a_third_device_entirely_is_held(self):
-        older, newer = self._bound_pair()
+    def test_a_report_older_than_a_device_is_stale(self):
+        _older, _newer, sites = self._pair(identity="older")
+        self._report(sites, completed=timezone.now() - timedelta(days=1))
+
+        report = site_relabel_pairs(self.sync)
+
+        self.assertEqual(report["held"][0]["reason"], SITE_RELABEL_HOLD_REPORT_STALE)
+
+    def test_a_name_the_device_map_did_not_place_is_held(self):
+        self._pair(identity="older")
+        self._report({})
+
+        report = site_relabel_pairs(self.sync)
+
+        self.assertEqual(report["held"][0]["reason"], SITE_RELABEL_HOLD_SITE_UNKNOWN)
+
+    def test_a_name_placed_at_two_sites_is_held(self):
+        older, newer, _sites = self._pair(identity="older")
+        self._report({}, ambiguous=[older.pk, newer.pk])
+
+        report = site_relabel_pairs(self.sync)
+
+        self.assertEqual(report["held"][0]["reason"], SITE_RELABEL_HOLD_SITE_AMBIGUOUS)
+
+    def test_forward_at_a_third_site_is_held(self):
+        third = Site.objects.create(name="s3", slug="s3")
+        _older, _newer, sites = self._pair(forward_site=third, identity="older")
+        self._report(sites)
+
+        report = site_relabel_pairs(self.sync)
+
+        self.assertEqual(report["held"][0]["reason"], SITE_RELABEL_HOLD_SITE_NEITHER)
+
+    def test_identity_bound_to_a_third_device_is_held(self):
         third_site = Site.objects.create(name="s3", slug="s3")
         orphan = self._device("some-other-device", third_site)
-        ForwardDeviceIdentity.objects.filter(
-            sync=self.sync, source_device_key="core-sw-01"
-        ).update(device=orphan)
+        _older, _newer, sites = self._pair()
+        ForwardDeviceIdentity.objects.create(
+            sync=self.sync, source_device_key="core-sw-01", device=orphan
+        )
+        self._report(sites)
 
         report = site_relabel_pairs(self.sync)
 
-        self.assertEqual(report["pairs"], [])
         self.assertEqual(report["held"][0]["reason"], SITE_RELABEL_HOLD_IDENTITY_OTHER)
 
-    def test_identity_bound_to_a_different_sync_reads_as_no_binding_here(self):
-        older, newer = self._bound_pair()
-        # Rebind to the OTHER sync - this sync has no opinion on this name.
-        ForwardDeviceIdentity.objects.filter(sync=self.sync).update(
-            sync=self.other_sync
+    def test_identity_from_a_different_sync_is_ignored(self):
+        older, _newer, sites = self._pair()
+        ForwardDeviceIdentity.objects.create(
+            sync=self.other_sync, source_device_key="core-sw-01", device=older
         )
+        self._report(sites)
 
         report = site_relabel_pairs(self.sync)
 
-        self.assertEqual(report["pairs"], [])
-        self.assertEqual(report["held"][0]["reason"], SITE_RELABEL_HOLD_NO_IDENTITY)
+        self.assertEqual(report["pairs"][0]["identity_bound"], "none")
 
-    def test_three_devices_sharing_a_name_are_held_not_guessed(self):
+    def test_three_devices_sharing_a_name_are_held_with_every_member(self):
         third_site = Site.objects.create(name="s3", slug="s3")
         a = self._device("core-sw-01", self.old_site)
         b = self._device("core-sw-01", self.new_site)
         c = self._device("core-sw-01", third_site)
+        self._report({a.pk: self.new_site.pk, b.pk: self.new_site.pk})
 
         report = site_relabel_pairs(self.sync)
 
         self.assertEqual(report["pairs"], [])
-        self.assertEqual(len(report["held"]), 1)
-        self.assertEqual(
-            sorted(report["held"][0]["device_pks"]), sorted([a.pk, b.pk, c.pk])
-        )
+        held = report["held"][0]
+        self.assertEqual(held["reason"], SITE_RELABEL_HOLD_MORE_THAN_TWO)
+        self.assertEqual(held["members"], [a.pk, b.pk, c.pk])
 
     def test_a_real_protecting_reference_on_the_newer_device_holds_the_pair(self):
-        # `describe_protecting_references` is the real, schema-driven check;
-        # this pins that its result actually gates the pair, without needing
-        # a specific PROTECT-backed model wired into the test fixtures. The
-        # exclusion of Forward's own provenance FKs (which also report as
-        # protecting, for a plain delete) is covered separately by the
-        # happy-path test actually forming a pair.
-        older, newer = self._bound_pair()
+        _older, _newer, sites = self._pair(identity="older")
+        self._report(sites)
 
         with patch(
             "forward_netbox.utilities.bulk_merge.describe_protecting_references",
@@ -211,12 +306,21 @@ class SiteRelabelPairsTest(TestCase):
         self.assertEqual(report["held"][0]["reason"], SITE_RELABEL_HOLD_MANUAL_OBJECTS)
         self.assertEqual(report["held"][0]["blocking_models"], ["ipam.Service"])
 
-    # -- the merge action itself ----------------------------------------
+    def test_held_reasons_come_with_a_remedy(self):
+        self._pair(identity="older")
 
-    def test_the_older_device_survives_at_the_new_site_with_its_primary_ip(self):
+        by_reason = site_relabel_held_by_reason(site_relabel_pairs(self.sync))
+
+        self.assertEqual(by_reason[0]["reason"], SITE_RELABEL_HOLD_NO_REPORT)
+        self.assertEqual(by_reason[0]["count"], 1)
+        self.assertIn("refresh Scope Reconciliation", by_reason[0]["remedy"])
+
+    # -- the merge action itself -----------------------------------------
+
+    def test_the_older_device_survives_at_forwards_site_with_its_primary_ip(self):
         from ipam.models import IPAddress
 
-        older, newer = self._bound_pair()
+        older, newer, sites = self._pair(identity="older")
         interface = Interface.objects.create(
             device=older, name="mgmt0", type="1000base-t"
         )
@@ -225,6 +329,7 @@ class SiteRelabelPairsTest(TestCase):
         addr.save()
         older.primary_ip4 = addr
         older.save()
+        self._report(sites)
 
         result = merge_site_relabel_duplicates(self.sync)
 
@@ -240,9 +345,53 @@ class SiteRelabelPairsTest(TestCase):
             ).exists()
         )
 
-    def test_a_held_pair_is_untouched_by_the_merge(self):
-        older = self._device("core-sw-01", self.old_site)
+    def test_an_identity_on_the_newer_copy_moves_to_the_older_one(self):
+        older, newer, sites = self._pair(identity="newer")
+        self._report(sites)
+
+        merge_site_relabel_duplicates(self.sync)
+
+        self.assertEqual(
+            list(
+                ForwardDeviceIdentity.objects.filter(sync=self.sync).values_list(
+                    "source_device_key", "device_id"
+                )
+            ),
+            [("core-sw-01", older.pk)],
+        )
+
+    def test_forwards_spelling_of_the_identity_key_is_kept(self):
+        older = self._device("CORE-SW-01", self.old_site)
         newer = self._device("core-sw-01", self.new_site)
+        ForwardDeviceIdentity.objects.create(
+            sync=self.sync, source_device_key="Core-Sw-01", device=older
+        )
+        self._report({older.pk: self.new_site.pk, newer.pk: self.new_site.pk})
+
+        merge_site_relabel_duplicates(self.sync)
+
+        self.assertEqual(
+            list(
+                ForwardDeviceIdentity.objects.filter(sync=self.sync).values_list(
+                    "source_device_key", "device_id"
+                )
+            ),
+            [("Core-Sw-01", older.pk)],
+        )
+
+    def test_when_the_older_copy_is_current_the_merge_only_deletes(self):
+        older, newer, sites = self._pair(forward_site=self.old_site, identity="older")
+        self._report(sites)
+
+        result = merge_site_relabel_duplicates(self.sync)
+
+        self.assertEqual(result["merged_pairs"][0]["action"], "delete_newer")
+        self.assertFalse(Device.objects.filter(pk=newer.pk).exists())
+        older.refresh_from_db()
+        self.assertEqual(older.site_id, self.old_site.pk)
+
+    def test_a_held_pair_is_untouched_by_the_merge(self):
+        older, newer, _sites = self._pair(identity="older")
 
         result = merge_site_relabel_duplicates(self.sync)
 
@@ -251,10 +400,10 @@ class SiteRelabelPairsTest(TestCase):
         self.assertTrue(Device.objects.filter(pk=older.pk, site=self.old_site).exists())
         self.assertTrue(Device.objects.filter(pk=newer.pk, site=self.new_site).exists())
 
-    def test_an_out_of_list_pk_is_never_touched(self):
-        # A pair for a totally unrelated name, never passed to the merge.
-        self._bound_pair(name="core-sw-01")
+    def test_an_unrelated_device_is_never_touched(self):
+        _older, _newer, sites = self._pair(identity="older")
         untouched = self._device("untouched-01", self.old_site)
+        self._report(sites)
 
         merge_site_relabel_duplicates(self.sync)
 
@@ -262,8 +411,9 @@ class SiteRelabelPairsTest(TestCase):
         self.assertEqual(untouched.site_id, self.old_site.pk)
 
     def test_two_independent_pairs_both_merge(self):
-        older_a, newer_a = self._bound_pair(name="core-sw-01")
-        older_b, newer_b = self._bound_pair(name="core-sw-02")
+        older_a, newer_a, sites_a = self._pair(name="core-sw-01", identity="older")
+        older_b, newer_b, sites_b = self._pair(name="core-sw-02", identity=None)
+        self._report({**sites_a, **sites_b})
 
         result = merge_site_relabel_duplicates(self.sync)
 
