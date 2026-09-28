@@ -890,9 +890,6 @@ def _dependency_model_result_summary(
     # deleted by the apply rather than Forward's `delete_rows`, so they are
     # not in `data["delete_count"]` at all until the comparison classifies
     # them.
-    delete_count = int(data.get("delete_count") or 0) + (
-        int(comparison.get("deletes") or 0) if attribute_comparison else 0
-    )
     durable_state = next(
         (
             diagnostic
@@ -901,6 +898,24 @@ def _dependency_model_result_summary(
         ),
         None,
     )
+    # Forward's declared removals, as the fetch produced them. For a model on
+    # durable workload state that is NOT what the next sync removes: rows the
+    # state has already tombstoned - removed on an earlier run, or never
+    # imported - are declared again on every run and staged never. Counting
+    # them as pending made a customer's routing policy read ~6,300 pending
+    # removals on every preview, forever, with nothing left to remove. The
+    # state's own staged count is the honest number; the rest is reported
+    # separately as already removed.
+    forward_removal_count = int(data.get("delete_count") or 0)
+    staged = (durable_state or {}).get("staged_delete_count")
+    pending_forward_removals = (
+        staged
+        if isinstance(staged, int) and staged <= forward_removal_count
+        else forward_removal_count
+    )
+    delete_count = pending_forward_removals + (
+        int(comparison.get("deletes") or 0) if attribute_comparison else 0
+    )
     return {
         "model": data.get("model") or "",
         "query_name": data.get("query_name") or "",
@@ -908,6 +923,8 @@ def _dependency_model_result_summary(
         "fetch_mode": data.get("fetch_mode") or "unknown",
         "row_count": row_count,
         "delete_count": delete_count,
+        "forward_removal_count": forward_removal_count,
+        "already_removed_count": forward_removal_count - pending_forward_removals,
         "failure_count": int(data.get("failure_count") or 0),
         "failure_exception": str(data.get("failure_exception") or ""),
         "failure_reason": str(data.get("failure_reason") or ""),
@@ -971,6 +988,33 @@ def _dependency_model_result_summary(
         # source identifiers into the preview job payload.
         "durable_workload_state": durable_state,
     }
+
+
+def _catalogue_outside_scope_in_netbox(fetcher, model_string):
+    """NetBox entries of routing policy no in-scope device holds, or None.
+
+    The catalogue maps are global policy: a definition only devices outside
+    the sync's tags hold is dropped by the scope, never staged, and - when the
+    source does not prune out-of-scope rows, or the rows predate the durable
+    state - left in NetBox indefinitely. This counts them, by the definition's
+    stored name, so the drift report can say how many there are and the
+    Scope Reconciliation cleanup can act on exactly that set. Local only.
+    """
+    from rq.timeouts import JobTimeoutException
+
+    from .utilities.routing_catalogue_cleanup import outside_scope_entry_queryset
+
+    names = (getattr(fetcher, "catalogue_scope_names", None) or {}).get(model_string)
+    if not names:
+        return None
+    try:
+        return outside_scope_entry_queryset(
+            model_string, names["out_of_scope"] - names["in_scope"]
+        ).count()
+    except JobTimeoutException:
+        raise
+    except Exception:  # noqa: BLE001 - an advisory count must not fail the preview
+        return None
 
 
 def _compare_rows_by_model(sync, rows_by_model):
@@ -1234,6 +1278,10 @@ def _dependency_dry_run_payload(sync, *, client=None):
                 - 1,
             )
         )
+        if attribute_here:
+            outside = _catalogue_outside_scope_in_netbox(fetcher, model_string)
+            if outside is not None:
+                model_results[-1]["outside_scope_in_netbox_count"] = outside
 
     return {
         "generated_at": timezone.now().isoformat(),

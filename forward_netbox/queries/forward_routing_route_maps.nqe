@@ -37,12 +37,12 @@ entries =
 defs =
   foreach e in entries
   group e as es by { device: e.device, key: toLowerCase(e.name) } as k
-  select { device: k.device, key: k.key, name: min(foreach x in es select x.name), sig: (foreach x in es select x.sigtext) };
+  select { device: k.device, key: k.key, name: min(foreach x in es select x.name), sig: (foreach x in es select x.sigtext), first_seq: min(foreach x in es select x.seq) };
 
 variants =
   foreach d in defs
   group d as ds by { key: d.key, sig: d.sig } as k
-  select { key: k.key, name: min(foreach x in ds select x.name), count: length(ds), rep: min(foreach x in ds select x.device) };
+  select { key: k.key, name: min(foreach x in ds select x.name), count: length(ds), rep: min(foreach x in ds select x.device), holders: (foreach x in ds select x.device), first_seq: min(foreach x in ds select x.first_seq) };
 
 ranked =
   foreach v in variants
@@ -51,7 +51,9 @@ ranked =
   let bestCount = max(foreach x in vs select x.count)
   let bestRep = min(foreach x in vs where x.count == bestCount select x.rep)
   foreach v2 in vs
-  select { key: key, name: name, rep: v2.rep, count: v2.count, object_name: (if v2.rep == bestRep then name else name + "@" + v2.rep) };
+  // See the prefix-list map: every holder, on the lowest-sequence row only,
+  // so the device-tag scope can keep a map any in-scope device uses.
+  select { key: key, name: name, rep: v2.rep, count: v2.count, object_name: (if v2.rep == bestRep then name else name + "@" + v2.rep), all_holders: v2.holders, first_seq: v2.first_seq };
 
 @query
 f(forward_netbox_shard_keys: List<String>) =
@@ -64,6 +66,7 @@ select {
   map_name: r.name,
   device: r.rep,
   device_count: r.count,
+  scope_holders: (foreach h in r.all_holders where e.seq == r.first_seq select h),
   sequence: e.seq,
   action: e.action,
   clauses: e.clauses
