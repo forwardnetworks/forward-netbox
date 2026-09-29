@@ -1045,6 +1045,34 @@ def _merge_site_relabel_duplicates_work(job):
         raise
 
 
+def _prune_out_of_scope_catalogue_work(job):
+    """Delete routing policy entries no in-scope device holds, for this sync.
+
+    Operator-initiated only. The candidate set is recomputed from a fresh
+    Forward read inside the job, and only entries this sync provably created
+    are ever deleted - see `routing_catalogue_cleanup`. Records counts per
+    model and hold reasons, never a list name.
+    """
+    from .utilities.routing_catalogue_cleanup import CatalogueCleanupRefused
+    from .utilities.routing_catalogue_cleanup import prune_out_of_scope_catalogue
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    try:
+        job.data = {"models": prune_out_of_scope_catalogue(sync)}
+        job.save(update_fields=["data"])
+    except CatalogueCleanupRefused as exc:
+        job.data = {"refused": str(exc), "error_type": exception_type(exc)}
+        job.save(update_fields=["data"])
+        raise
+    except Exception as exc:
+        job.data = {
+            "error": safe_operation_failure("Routing policy cleanup", exc),
+            "error_type": exception_type(exc),
+        }
+        job.save(update_fields=["data"])
+        raise
+
+
 def _release_foreign_delete_blockers_work(
     job, *, device_pk=None, expected_blockers=None
 ):
@@ -2342,6 +2370,17 @@ class MergeSiteRelabelDuplicatesJob(ForwardJobRunner):
 
     def run(self, *args, **kwargs):
         _merge_site_relabel_duplicates_work(self.job)
+
+
+class PruneOutOfScopeCatalogueJob(ForwardJobRunner):
+    """Operator cleanup of routing policy no in-scope device holds."""
+
+    class Meta:
+        # Byte-identical to BUTTON_JOB_SPECS["prune_out_of_scope_catalogue"][1].
+        name = "prune out-of-scope routing policy"
+
+    def run(self, *args, **kwargs):
+        _prune_out_of_scope_catalogue_work(self.job)
 
 
 class ReleaseForeignDeleteBlockersJob(ForwardJobRunner):

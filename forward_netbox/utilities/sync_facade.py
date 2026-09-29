@@ -565,6 +565,14 @@ BUTTON_JOB_SPECS = {
         "merge site-relabel duplicates",
         "dcim.delete_device",
     ),
+    # Deletes routing policy catalogue entries (prefix, community and route
+    # map lists) that no device inside the sync's scope holds and that this
+    # sync provably created. Allowlisted to those six netbox_routing models.
+    "prune_out_of_scope_catalogue": (
+        "forward_netbox.jobs.PruneOutOfScopeCatalogueJob",
+        "prune out-of-scope routing policy",
+        "netbox_routing.delete_prefixlist",
+    ),
     # Deletes only the specific netbox_routing (or other allowlisted-app) rows
     # named on the device ownership panel as refusing a delete - never the
     # device itself. Same permission as the prunes: it is preparing a device
@@ -680,6 +688,7 @@ def enqueue_button_job(
             "prune_orphans",
             "prune_uncovered",
             "release_foreign_delete_blockers",
+            "prune_out_of_scope_catalogue",
         ):
             running_sync = (
                 sync.jobs.filter(

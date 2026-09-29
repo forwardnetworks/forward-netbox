@@ -192,7 +192,7 @@
                   <div>{% blocktrans with count=report.total_already_removed %}{{ count }} Forward-declared removals already applied on an earlier sync (counted here before 2.9.10).{% endblocktrans %}</div>
                 {% endif %}
                 {% if report.total_outside_scope_in_netbox %}
-                  <div>{% blocktrans with count=report.total_outside_scope_in_netbox %}{{ count }} routing policy entries in NetBox that no device inside this sync's scope holds. The sync never removes them on its own.{% endblocktrans %}</div>
+                  <div>{% blocktrans with count=report.total_outside_scope_in_netbox %}{{ count }} routing policy entries in NetBox that no device inside this sync's scope holds. The sync never removes them on its own.{% endblocktrans %} <a href="{% url 'plugins:forward_netbox:forwardsync_scope_reconciliation' pk=object.pk %}#routing-policy-outside-scope">{% trans "Review and remove on Scope Reconciliation" %}</a></div>
                 {% endif %}
               </td>
             </tr>
