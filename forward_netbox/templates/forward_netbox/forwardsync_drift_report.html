@@ -184,6 +184,19 @@
             <th scope="row">{% trans "Estimated apply work" %}</th>
             <td>{{ report.total_apply_work }}</td>
           </tr>
+          {% if report.total_already_removed or report.total_outside_scope_in_netbox %}
+            <tr>
+              <th scope="row">{% trans "Not drift" %}</th>
+              <td>
+                {% if report.total_already_removed %}
+                  <div>{% blocktrans with count=report.total_already_removed %}{{ count }} Forward-declared removals already applied on an earlier sync (counted here before 2.9.10).{% endblocktrans %}</div>
+                {% endif %}
+                {% if report.total_outside_scope_in_netbox %}
+                  <div>{% blocktrans with count=report.total_outside_scope_in_netbox %}{{ count }} routing policy entries in NetBox that no device inside this sync's scope holds. The sync never removes them on its own.{% endblocktrans %} <a href="{% url 'plugins:forward_netbox:forwardsync_scope_reconciliation' pk=object.pk %}#routing-policy-outside-scope">{% trans "Review and remove on Scope Reconciliation" %}</a></div>
+                {% endif %}
+              </td>
+            </tr>
+          {% endif %}
           <tr>
             <th scope="row">{% trans "From preview" %}</th>
             <td>{{ report.generated_at|placeholder }}</td>
@@ -270,7 +283,11 @@
             <td><code>{{ row.label|default:row.model }}</code></td>
             <td>{{ row.forward_rows|placeholder }}</td>
             <td>{{ row.pending_changes }}</td>
-            <td>{{ row.pending_removes }}</td>
+            <td>
+              {{ row.pending_removes }}
+              {% if row.already_removed %}<div class="small text-muted" title="{% trans 'Forward declared these as removals, but the durable workload state already applied them on an earlier sync; nothing is left to remove.' %}">{% blocktrans with count=row.already_removed %}+{{ count }} already removed{% endblocktrans %}</div>{% endif %}
+              {% if row.outside_scope_in_netbox %}<div class="small text-muted" title="{% trans 'Routing policy entries no in-scope device holds. Outside the sync scope: never removed automatically.' %}">{% blocktrans with count=row.outside_scope_in_netbox %}{{ count }} outside scope{% endblocktrans %}</div>{% endif %}
+            </td>
             <td>{{ row.estimated_apply_work }}</td>
             <td>{% if row.comparison_available %}{% if row.drift %}<strong class="text-warning">{{ row.drift }}</strong>{% else %}0{% endif %}{% else %}{% trans "Not measured" %}{% endif %}</td>
             <td>{% if not row.comparison_available %}{% if row.comparison_unavailable_reason == "full_only_by_design" %}<span class="badge text-bg-secondary" title="{% trans 'This map has no diff path: it is compared in full on every sync by design, so there is no per-row comparison to measure. Not a fault.' %}">{% trans "By design" %}</span>{% else %}<span class="badge text-bg-secondary"{% if row.comparison_error %} title="{% blocktrans with error=row.comparison_error %}The comparison for this model raised {{ error }}; the other models were still measured.{% endblocktrans %}"{% endif %}>{% trans "Not measured" %}{% if row.comparison_error %} ({{ row.comparison_error }}){% endif %}</span>{% endif %}{% elif row.in_sync %}<span class="badge text-bg-success">{% trans "Yes" %}</span>{% else %}<span class="badge text-bg-warning">{% trans "No" %}</span>{% endif %}</td>

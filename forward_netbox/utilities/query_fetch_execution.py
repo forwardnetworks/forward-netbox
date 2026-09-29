@@ -307,6 +307,43 @@ _PRIMARY_SCOPE_DEVICE_FIELD_BY_MODEL = {
 }
 
 
+# Routing policy catalogues: one definition (a prefix list, community list or
+# route map, by its stored `name`) is shared by every device configured with
+# it, and each row names only a representative - the lowest holder across the
+# whole network. Scoping those rows by that one device dropped every shared
+# definition whose lowest holder happened to be outside the sync's tags, and
+# the dropped rows then read as "pending removal" on every drift report,
+# forever, because the sync never deletes rows it never staged.
+ROUTING_CATALOGUE_MODELS = frozenset(
+    {
+        "netbox_routing.prefixlistentry",
+        "netbox_routing.communitylistentry",
+        "netbox_routing.routemapentry",
+    }
+)
+
+
+def _catalogue_definitions_in_scope(rows, scoped_devices):
+    """The catalogue definition names any in-scope device holds.
+
+    Every holder a row carries counts - the representative `device`, the
+    variant's `holder_devices`, and `scope_holders`, the full holder list the
+    query attaches to each definition's lowest-sequence row. A published copy
+    of the query that predates `scope_holders` still works; it simply knows
+    only the representative and variant holders, as before.
+    """
+    holders_by_name: dict[str, set[str]] = {}
+    for row in rows:
+        name = str(row.get("name") or "")
+        holders = holders_by_name.setdefault(name, set())
+        holders.update(_extract_device_names(row.get("device")))
+        holders.update(_extract_device_names(row.get("holder_devices")))
+        holders.update(_extract_device_names(row.get("scope_holders")))
+    return {
+        name for name, holders in holders_by_name.items() if holders & scoped_devices
+    }
+
+
 def _row_device_names(model_string: str, row: dict[str, Any]) -> set[str]:
     names: set[str] = set()
     if model_string == "dcim.device":
@@ -422,6 +459,12 @@ class ForwardQueryFetcher:
         # is built from the narrowed workloads.
         self.comparison_rows_by_model: dict[str, list[dict]] = {}
         self._contributor_lock = Lock()
+        # Routing policy catalogue definitions (by stored name) the device-tag
+        # scope kept and dropped, per model. What the drift report needs to
+        # tell "no in-scope device holds this list" apart from "pending
+        # removal", and what the catalogue cleanup acts on.
+        self._catalogue_scope_lock = Lock()
+        self.catalogue_scope_names: dict[str, dict[str, set[str]]] = {}
         self._pending_contributor_seeds: dict[str, ContributorRelationSeed] = {}
         self._pending_contributor_work_relations: list[ContributorWorkRelation] = []
         self._expected_contributor_contracts: dict[str, ContributorRelationContract] = (
@@ -1150,24 +1193,38 @@ class ForwardQueryFetcher:
         if not summaries:
             return
         by_model = {summary["model"]: summary for summary in summaries}
+        # The delta is genuinely model-wide (consolidated across every
+        # full-mode workload for that model, before this loop ever runs) -
+        # attaching the identical dict to every map sharing the model reads
+        # as though each one carries its own state. Attributed to the
+        # FIRST map for the model only; siblings get a marker naming which
+        # map carries the real numbers, not a second copy of them.
+        attributed_models = set()
         updated_results = []
         for result in self.model_results:
             summary = by_model.get(result.model_string)
             if summary is None:
                 updated_results.append(result)
                 continue
-            diagnostic = {
-                "type": "durable_workload_state",
-                "mode": summary["mode"],
-                "target_row_count": summary["target_rows"],
-                "staged_upsert_count": summary["upsert_rows"],
-                "staged_delete_count": summary["delete_rows"],
-                "bootstrap_delete_count": summary["bootstrap_delete_rows"],
-                "protected_delete_count": summary["protected_delete_rows"],
-                "tombstone_count": summary["tombstone_rows"],
-                "unrepresented_peer": summary["unrepresented_peer"],
-                "compressed_bytes": summary["compressed_bytes"],
-            }
+            if result.model_string in attributed_models:
+                diagnostic = {
+                    "type": "durable_workload_state",
+                    "shared_with_sibling_map": True,
+                }
+            else:
+                attributed_models.add(result.model_string)
+                diagnostic = {
+                    "type": "durable_workload_state",
+                    "mode": summary["mode"],
+                    "target_row_count": summary["target_rows"],
+                    "staged_upsert_count": summary["upsert_rows"],
+                    "staged_delete_count": summary["delete_rows"],
+                    "bootstrap_delete_count": summary["bootstrap_delete_rows"],
+                    "protected_delete_count": summary["protected_delete_rows"],
+                    "tombstone_count": summary["tombstone_rows"],
+                    "unrepresented_peer": summary["unrepresented_peer"],
+                    "compressed_bytes": summary["compressed_bytes"],
+                }
             updated_results.append(
                 replace(result, diagnostics=[*result.diagnostics, diagnostic])
             )
@@ -3359,6 +3416,28 @@ class ForwardQueryFetcher:
             return rows, []
         filtered = []
         removed = []
+        if model_string in ROUTING_CATALOGUE_MODELS:
+            in_scope = _catalogue_definitions_in_scope(rows, scoped_devices)
+            for row in rows:
+                if str(row.get("name") or "") in in_scope:
+                    filtered.append(row)
+                else:
+                    removed.append(row)
+            with self._catalogue_scope_lock:
+                names = self.catalogue_scope_names.setdefault(
+                    model_string, {"in_scope": set(), "out_of_scope": set()}
+                )
+                names["in_scope"].update(in_scope)
+                names["out_of_scope"].update(
+                    str(row.get("name") or "") for row in removed
+                )
+            if removed:
+                self.logger.log_info(
+                    f"Applied device-tag scope to {model_string}: kept "
+                    f"{len(filtered)}/{len(rows)} rows (by definition holders).",
+                    obj=self.sync,
+                )
+            return filtered, removed
         for row in rows:
             row_devices = _row_device_names(model_string, row)
             if not row_devices:
@@ -3658,4 +3737,15 @@ def plan_item_model_result(
         "apply_engine": item.apply_engine,
         "apply_engine_reason": item.apply_engine_reason,
         "apply_engine_decision": item.apply_engine_decision,
+        # How this model was fetched, which the plan dropped. Without it a
+        # model that failed because of HOW it was bound looked identical to
+        # one that failed on its rows.
+        "fetch_mode": item.fetch_mode,
+        "fetch_key_family": item.fetch_key_family,
+        # KEYS, not values. Which parameters were sent is the diagnostic fact
+        # - it is what a published query with a stale signature rejects - while
+        # the values are customer data: `device_tag_include_tags` holds the
+        # operator's own tag names. Named `_keys` on purpose: the export filter
+        # drops any key ending `_names`, and did drop this one until renamed.
+        "query_parameter_keys": sorted(item.query_parameters or {}),
     }

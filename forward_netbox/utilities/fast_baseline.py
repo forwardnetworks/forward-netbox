@@ -21,6 +21,7 @@ from django.utils import timezone
 from .. import config as forward_config
 from ..choices import ForwardSyncStatusChoices
 from .version_series import series_matches
+from .validated_runtime import plugin_runtime_mismatch
 from .validated_runtime import VALIDATED_BRANCHING_SERIES
 from .validated_runtime import VALIDATED_NETBOX_SERIES
 from .validated_runtime import VALIDATED_OPTIONAL_DISTRIBUTION_NAMES
@@ -264,11 +265,8 @@ def _runtime_decision():
         not series_matches(actual["netbox"], expected["netbox_series"])
         or not series_matches(actual["branching"], expected["branching_series"])
         or actual["forward_netbox"] != expected["forward_netbox"]
-        or actual["plugin_apps"] != expected["plugin_apps"]
-        or any(
-            actual["optional_plugins"].get(name) not in versions
-            for name, versions in expected["optional_plugins"].items()
-        )
+        or plugin_runtime_mismatch(actual["plugin_apps"], actual["optional_plugins"])
+        is not None
     )
     if mismatched:
         return FastBaselineDecision(
@@ -415,11 +413,24 @@ def fast_baseline_static_decision(*, sync, workloads, model_results=None):
     )
 
 
+def _installed_model(app_label, model_name):
+    """The model, or None when its app is not installed.
+
+    `apps.get_model` never returns None - it raises `LookupError` - so every
+    `if model is None` guard below it was dead code, and a runtime without an
+    optional plugin raised inside the locked load instead of declining.
+    """
+    try:
+        return apps.get_model(app_label, model_name)
+    except LookupError:
+        return None
+
+
 def _target_models(model_strings):
     resolved = []
     for model_string in sorted(model_strings):
         app_label, model_name = model_string.split(".", 1)
-        model = apps.get_model(app_label, model_name)
+        model = _installed_model(app_label, model_name)
         if model is None:
             return None, model_string
         resolved.append(model)
@@ -441,7 +452,7 @@ def _lock_target_tables(models, side_models=()):
         ("netbox_dlm", "SoftwareVersion"),
         ("netbox_dlm", "CVE"),
     ):
-        model = apps.get_model(app_label, model_name)
+        model = _installed_model(app_label, model_name)
         if model is not None:
             table_names.add(model._meta.db_table)
             for field in model._meta.local_many_to_many:
@@ -547,7 +558,7 @@ def _side_models(model_strings):
     models = []
     seen = set()
     for app_label, model_name in specs:
-        model = apps.get_model(app_label, model_name)
+        model = _installed_model(app_label, model_name)
         if model is not None and model not in seen:
             seen.add(model)
             models.append(model)

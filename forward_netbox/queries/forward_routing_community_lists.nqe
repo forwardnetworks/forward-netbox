@@ -41,12 +41,12 @@ entries =
 defs =
   foreach e in entries
   group e as es by { device: e.device, key: toLowerCase(e.name) } as k
-  select { device: k.device, key: k.key, name: min(foreach x in es select x.name), sig: (foreach x in es select x.sigtext) };
+  select { device: k.device, key: k.key, name: min(foreach x in es select x.name), sig: (foreach x in es select x.sigtext), first_seq: min(foreach x in es select x.seq) };
 
 variants =
   foreach d in defs
   group d as ds by { key: d.key, sig: d.sig } as k
-  select { key: k.key, name: min(foreach x in ds select x.name), count: length(ds), rep: min(foreach x in ds select x.device), holders: (foreach x in ds select x.device) };
+  select { key: k.key, name: min(foreach x in ds select x.name), count: length(ds), rep: min(foreach x in ds select x.device), holders: (foreach x in ds select x.device), first_seq: min(foreach x in ds select x.first_seq) };
 
 ranked =
   foreach v in variants
@@ -60,7 +60,11 @@ ranked =
   // map on one of them can link to the definition that device actually has;
   // the owner definition is what any other device resolves to, so its
   // holders are not repeated on every row.
-  select { key: key, name: name, rep: v2.rep, count: v2.count, object_name: (if v2.rep == bestRep then name else name + "@" + v2.rep), has_variants: hasVariants, holders: (foreach h in v2.holders where v2.rep != bestRep select h) };
+  // `scope_holders` is every device holding this definition, so the sync's
+  // device-tag scope can keep a definition any in-scope device uses. It
+  // travels on the definition's lowest-sequence row only: `rep` is the lowest
+  // holder across the whole network and may itself be out of scope.
+  select { key: key, name: name, rep: v2.rep, count: v2.count, object_name: (if v2.rep == bestRep then name else name + "@" + v2.rep), has_variants: hasVariants, holders: (foreach h in v2.holders where v2.rep != bestRep select h), all_holders: v2.holders, first_seq: v2.first_seq };
 
 @query
 f(forward_netbox_shard_keys: List<String>) =
@@ -75,6 +79,7 @@ select {
   device_count: r.count,
   has_variants: r.has_variants,
   holder_devices: r.holders,
+  scope_holders: (foreach h in r.all_holders where e.seq == r.first_seq select h),
   form: e.form,
   sequence: e.seq,
   action: e.action,

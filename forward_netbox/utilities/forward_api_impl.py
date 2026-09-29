@@ -558,6 +558,66 @@ def get_device_mgmt_tags(
     return device_tags
 
 
+def get_configured_device_tags(client, network_id):
+    """``{tag_name: {device_name, ...}}`` from Forward's device configuration.
+
+    Forward's Device Tags page reads the network CONFIGURATION, not the
+    snapshot, so it keeps listing a device under its tags long after
+    collection stopped returning it - disabled, decommissioned, or a vsys
+    child the current snapshot no longer models. Every NQE query reads the
+    snapshot. A customer comparing the two sees "tagged in Forward, not in
+    NetBox" and files it as a sync bug; this is what lets the census say
+    which of those the device actually is.
+    """
+    network_id = str(network_id or "").strip()
+    if not network_id:
+        raise ForwardClientError("get_configured_device_tags requires a network_id.")
+    client._record_api_usage("configured_device_tag_calls")
+    entries = client._call_sdk(
+        client._sdk_client.device_tags.list, network_id, with_devices=True
+    )
+    device_names_by_tag: dict[str, set[str]] = {}
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        tag = str(entry.get("name") or "").strip()
+        if not tag:
+            continue
+        names = set()
+        for device in entry.get("devices") or []:
+            name = device.get("name") if isinstance(device, dict) else device
+            name = str(name or "").strip()
+            if name:
+                names.add(name)
+        device_names_by_tag[tag] = names
+    return device_names_by_tag
+
+
+def get_classic_device_collection(client, network_id):
+    """``{device_name: collect}`` for Forward's classic (per-device) config.
+
+    ``collect`` is ``False`` for a device an operator disabled in Forward.
+    The configuration keeps the device, its tags and its credentials; only
+    the snapshot stops carrying it, and from the snapshot alone disabled is
+    indistinguishable from deleted.
+    """
+    network_id = str(network_id or "").strip()
+    if not network_id:
+        raise ForwardClientError("get_classic_device_collection requires a network_id.")
+    client._record_api_usage("classic_device_config_calls")
+    payload = client._call_sdk(
+        client._sdk_client.classic_devices.get_classic_devices,
+        network_id=network_id,
+    )
+    collect_by_name: dict[str, bool] = {}
+    for device in getattr(payload, "devices", None) or []:
+        name = str(getattr(device, "name", None) or "").strip()
+        if not name:
+            continue
+        collect_by_name[name] = getattr(device, "collect", True) is not False
+    return collect_by_name
+
+
 def get_snapshot_metrics(client, snapshot_id):
     snapshot_id = str(snapshot_id or "").strip()
     shared_cache_key = client._shared_read_cache_key("snapshot-metrics", snapshot_id)

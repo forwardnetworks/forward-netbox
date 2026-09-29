@@ -59,6 +59,8 @@ def _uncovered_prune_offer(device, identities, foreign_blockers):
         "required_hours": None,
         "endpoint_detail": "",
         "endpoint_detail_label": "",
+        "absent_detail": "",
+        "absent_detail_label": "",
     }
     sync_ids = {row.sync_id for row in identities}
     if len(sync_ids) != 1:
@@ -89,10 +91,20 @@ def _uncovered_prune_offer(device, identities, foreign_blockers):
             ),
         }
     )
+    detail = (unmanaged.get("owned_detail_by_id") or {}).get(str(device.pk), "")
     if device.pk in absent_ids:
+        from .utilities.scope_reconciliation import ABSENT_DETAILS
+
         partition = partition_quarantined_orphans(sync, [device.pk])
         offer["held"] = device.pk not in set(partition["eligible_pks"])
         offer["offered"] = not foreign_blockers
+        # Gone from the snapshot, but Forward's configuration may still list
+        # it under an include tag - which is what the operator sees in Forward's
+        # UI, and why "still tagged in Forward" reads as a sync bug. Name the
+        # configuration fact next to the button, so enabling collection is as
+        # visible a remedy as deleting.
+        offer["absent_detail"] = detail
+        offer["absent_detail_label"] = ABSENT_DETAILS.get(detail, "")
     elif device.pk in uncovered_ids:
         # Uncovered, but Forward still reports it: a scoping decision, and the
         # prune will never touch it. Say that instead of offering a button -
@@ -100,11 +112,57 @@ def _uncovered_prune_offer(device, identities, foreign_blockers):
         from .utilities.scope_reconciliation import ENDPOINT_ABSENCE_DETAILS
 
         offer["still_reported"] = True
-        detail = (unmanaged.get("owned_endpoint_detail_by_id") or {}).get(
-            str(device.pk), ""
-        )
         offer["endpoint_detail"] = detail
         offer["endpoint_detail_label"] = ENDPOINT_ABSENCE_DETAILS.get(detail, "")
+    return offer
+
+
+def _release_foreign_blockers_offer(foreign_blockers, primary_sync_pk):
+    """Whether the release action can clear every foreign blocker at once.
+
+    Offered only when EVERY foreign blocker belongs to an allowlisted app
+    (`RELEASABLE_FOREIGN_APP_LABELS`) - a button that would just fail on the
+    first non-allowlisted row is worse than no button, since it invites a
+    confirm click that does nothing. A mix names both: what the button would
+    release, and what still needs a manual delete elsewhere regardless.
+    """
+    import json
+
+    from django.urls import reverse
+
+    from .utilities.workload_state import RELEASABLE_FOREIGN_APP_LABELS
+
+    offer = {
+        "offered": False,
+        "url": "",
+        "releasable": [],
+        "expected_blockers_json": "{}",
+        "unreleasable": list(foreign_blockers),
+    }
+    if not foreign_blockers or primary_sync_pk is None:
+        return offer
+    releasable = [
+        (label, count)
+        for label, count in foreign_blockers
+        if label.split(".", 1)[0] in RELEASABLE_FOREIGN_APP_LABELS
+    ]
+    if len(releasable) != len(foreign_blockers):
+        # Partial coverage refuses the whole action rather than releasing
+        # some rows and leaving the operator to discover the rest still
+        # blocks the delete - see the panel's "unreleasable" list instead.
+        return offer
+    offer.update(
+        {
+            "offered": True,
+            "url": reverse(
+                "plugins:forward_netbox:forwardsync_release_foreign_delete_blockers",
+                kwargs={"pk": primary_sync_pk},
+            ),
+            "releasable": releasable,
+            "expected_blockers_json": json.dumps(dict(releasable)),
+            "unreleasable": [],
+        }
+    )
     return offer
 
 
@@ -177,6 +235,7 @@ class ForwardDeviceOwnershipPanel(PluginTemplateExtension):
             seen.add(row.sync_id)
             syncs.append(
                 {
+                    "sync_id": row.sync_id,
                     "name": row.sync.name,
                     "url": reverse(
                         "plugins:forward_netbox:forwardsync",
@@ -197,6 +256,9 @@ class ForwardDeviceOwnershipPanel(PluginTemplateExtension):
         ]
         claim_slugs = {claim.tag.slug for claim in claims}
         prune = _uncovered_prune_offer(device, identities, foreign_blockers)
+        release_blockers = _release_foreign_blockers_offer(
+            foreign_blockers, syncs[0]["sync_id"] if syncs else None
+        )
         holders = []
         if identities:
             holders.append(("Device identity", len(identities)))
@@ -235,6 +297,10 @@ class ForwardDeviceOwnershipPanel(PluginTemplateExtension):
                         for label, count in blockers
                         if not label.startswith("forward_netbox.")
                     ],
+                    # Whether that foreign list can be cleared with one
+                    # confirm, and the form fields the button needs.
+                    "release_blockers": release_blockers,
+                    "device_pk": device.pk,
                 }
             },
         )

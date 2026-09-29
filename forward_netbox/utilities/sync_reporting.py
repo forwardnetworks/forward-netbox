@@ -13,11 +13,13 @@ from ..exceptions import ForwardDependencySkipError
 from ..exceptions import ForwardQueryError
 from ..exceptions import ForwardSearchError
 from ..exceptions import ForwardSyncDataError
+from .diagnostics import assert_export_safe_diagnosis
 from .diagnostics import diagnostic_shape
 from .diagnostics import exception_type
 from .diagnostics import failure_classifier
 from .diagnostics import is_preexisting_rule_rejection
 from .diagnostics import structured_failure_diagnosis
+from .export_redaction import OPERATOR_DETAIL_KEY
 from .json_safe import json_safe_value
 from .sync_primitives import dependency_parent_coverage_summary
 from .sync_primitives import prime_dependency_lookup_caches
@@ -717,6 +719,11 @@ def record_issue(
         # it, so anything reading issues programmatically does not have to
         # parse English out of `message`.
         raw_data["netbox_pk"] = netbox_pk
+    operator_detail = getattr(exception, "operator_detail", None)
+    if isinstance(operator_detail, dict) and operator_detail:
+        # The GUI-only tier. Rendered on the issue page, dropped by
+        # `export_safe_payload` on every download.
+        raw_data[OPERATOR_DETAIL_KEY] = operator_detail
     if disposition in ("skipped", "failed"):
         # Only when the caller actually classified the row. A sync-phase
         # recorder that does not know whether a retry could help must leave the
@@ -748,6 +755,7 @@ def record_issue(
                 exception.issue_id = existing.pk
             return existing
         return None
+    assert_export_safe_diagnosis(raw_data, where=f" recording {model_string}")
     issue = ForwardIngestionIssue.objects.create(
         ingestion=runner.ingestion,
         phase=ForwardIngestionPhaseChoices.SYNC,
