@@ -896,12 +896,15 @@ def _check_release_anchor_tracks_current_release(failures: list[str]) -> None:
 #            `dcim.0241_nullify_empty_cable_end`, and
 #            `UPGRADE_FROM_NETBOX_OVERRIDES`, which records that 2.8.0 could not
 #            install on 4.6.5
+#   4.7.0  - `UPGRADE_FROM_NETBOX_OVERRIDES`, which records that 3.0.0, the
+#            first 4.7 release, declares `min_version = "4.7.0"` and cannot
+#            load on the default from side
 TESTED_RUNTIME_PIN_FILES = {
     "development/docker-compose.yml": frozenset(),
     "scripts/validate_installed_artifact.py": frozenset(),
     "scripts/validate_sbom.py": frozenset(),
     "scripts/check_release_authorization.py": frozenset(),
-    "tasks.py": frozenset({"4.6.5", "4.6.6"}),
+    "tasks.py": frozenset({"4.6.5", "4.6.6", "4.7.0"}),
 }
 
 

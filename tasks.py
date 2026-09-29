@@ -45,6 +45,10 @@ UPGRADE_FROM_NETBOX_OVERRIDES = {
     # restores 4.6.5; the published 2.8.0 wheel cannot be changed, so the from
     # side seeds where that release actually runs.
     "2.8.0": "v4.6.6",
+    # 3.0.0 is the first release on the NetBox 4.7 line: it declares
+    # `min_version = "4.7.0"` and refuses to load on the 4.6.5 default, so the
+    # from side seeds on the runtime it was tested on.
+    "3.0.0": "v4.7.0",
 }
 UPGRADE_FROM_CONSTRAINTS = "/source/development/constraints-upgrade-from.txt"
 ISOLATED_REDIS_DATABASE = 14

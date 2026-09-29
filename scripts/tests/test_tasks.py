@@ -1438,7 +1438,15 @@ class UpgradeFromConstraintsTests(unittest.TestCase):
     def test_only_releases_that_need_an_override_carry_one(self):
         # Each entry costs the 4.6.5 seeding for that release, so the list stays
         # short and every addition has to be justified where it is written.
-        self.assertEqual(set(tasks.UPGRADE_FROM_NETBOX_OVERRIDES), {"2.8.0"})
+        self.assertEqual(set(tasks.UPGRADE_FROM_NETBOX_OVERRIDES), {"2.8.0", "3.0.0"})
+
+    def test_the_first_4_7_release_seeds_on_4_7(self):
+        """3.0.0 declares `min_version = "4.7.0"` and cannot load on 4.6.5.
+
+        The from side of the 3.0.1 upgrade gate is 3.0.0, so it seeds on the
+        runtime that release was tested on rather than the 4.6.5 default.
+        """
+        self.assertEqual(tasks.UPGRADE_FROM_NETBOX_OVERRIDES.get("3.0.0"), "v4.7.0")
 
     def test_every_other_pin_is_identical(self):
         expected = {
