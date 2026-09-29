@@ -34,8 +34,7 @@ VALIDATED_BRANCHING_SERIES = "1.2"
 # On NetBox 4.7 this is forward_netbox, Branching and four of the five optional
 # integrations. netbox-dlm 0.10.0 raised its ceiling to 4.7.99 on 2026-09-03;
 # netbox-validity 3.6.0 and netbox-peering-manager 0.3.1 followed in released
-# versions; netbox-routing's 4.7 support is merged on upstream main (0.4.4)
-# and is installed from that branch archive until it is tagged. netbox-cisco-aci
+# versions, as did netbox-routing 0.5.0. netbox-cisco-aci
 # 0.4.0 still declares `max_version = "4.6.99"`, and NetBox refuses to start
 # with a plugin outside its declared range. It cannot be installed here, so
 # listing it would be a claim about a runtime nobody can assemble.
@@ -69,8 +68,7 @@ VALIDATED_PLUGIN_APPS = frozenset(
 # silently lost the fast paths, because the whole tuple stopped matching.
 # Only the versions that boot on 4.7: every earlier release of each caps at
 # 4.6.99, and their 4.6 validations are evidence about a different runtime.
-# netbox-routing 0.4.4 is the version upstream main reports; it stays the
-# validated value when upstream tags it. netbox-cisco-aci is absent, not
+# netbox-routing 0.5.0 is its first release that boots on 4.7. netbox-cisco-aci is absent, not
 # removed - its registry, models and sync paths are all still here and still
 # report an absent plugin honestly; its 4.6 value (0.4.0) is recorded in
 # `docs/03_Plans/active/2026-09-02-netbox-4.7-runtime.md` so regaining it is a
@@ -78,7 +76,7 @@ VALIDATED_PLUGIN_APPS = frozenset(
 VALIDATED_OPTIONAL_DISTRIBUTIONS: dict[str, frozenset[str]] = {
     "netbox-dlm": frozenset({"0.10.0"}),
     "netbox-peering-manager": frozenset({"0.3.1"}),
-    "netbox-routing": frozenset({"0.4.4"}),
+    "netbox-routing": frozenset({"0.5.0"}),
     "netbox-validity": frozenset({"3.6.0"}),
 }
 
