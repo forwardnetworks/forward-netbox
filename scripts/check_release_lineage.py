@@ -31,6 +31,13 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+
+# Imported as a sibling when run directly and as a package member when
+# the tests import it; both spellings resolve to the same module.
+try:  # pragma: no cover - exercised by whichever entry point is in use
+    from release_lane import REMOTE_RELEASE_REF
+except ImportError:  # pragma: no cover
+    from scripts.release_lane import REMOTE_RELEASE_REF
 import sys
 from pathlib import Path
 
@@ -152,15 +159,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--version", required=True, help="Release version, e.g. 2.7.11")
     parser.add_argument(
         "--release-commit",
-        default="origin/main",
-        help="Commit about to be tagged (default: origin/main).",
+        default=REMOTE_RELEASE_REF,
+        help=f"Commit about to be tagged (default: {REMOTE_RELEASE_REF}).",
     )
     args = parser.parse_args(argv)
     try:
         result = check_release_lineage(args.release_commit, args.version)
     except LineageError as exc:
         # Name what was measured, not just the verdict. `--release-commit`
-        # defaults to `origin/main`, which is right when this runs after the
+        # defaults to the release branch head, which is right after the
         # release PR merges and wrong before it - and a bare "lineage has 3
         # commits and needs at least 4" reads as a real refusal either way.
         # Resolving the ref here costs nothing and turns "the release is

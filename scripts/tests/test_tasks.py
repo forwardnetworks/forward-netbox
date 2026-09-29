@@ -175,7 +175,12 @@ class ReleaseArtifactTaskTest(unittest.TestCase):
 
         self.assertIn("--require-hashes", workflow)
         self.assertIn("requirements-release.txt", workflow)
-        self.assertIn("refs/tags/v2.9.1", workflow)
+        # The prior-release tag is DERIVED from the verifier rather than
+        # written here. It used to be a literal, and nothing advanced it when
+        # the release anchor moved, so the workflow fetched a tag from two
+        # releases back and the bridge check had no object to resolve.
+        self.assertIn("v.PRIOR_RELEASE_TAG", workflow)
+        self.assertIn("import release_lane as r", workflow)
         self.assertIn("scripts/build_reproducible_distribution.py", workflow)
         self.assertIn("python -m invoke artifact-test", workflow)
         self.assertIn("sbom/", workflow)

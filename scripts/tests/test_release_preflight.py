@@ -11,6 +11,8 @@ import json
 import sys
 import tempfile
 import unittest
+
+from scripts.release_lane import REMOTE_RELEASE_REF
 from pathlib import Path
 from unittest import mock
 
@@ -124,13 +126,13 @@ class EvidenceBaseCommitTest(unittest.TestCase):
                 mock.patch.object(
                     preflight,
                     "_git",
-                    self._git({("rev-parse", "origin/main"): self.MAIN}),
+                    self._git({("rev-parse", REMOTE_RELEASE_REF): self.MAIN}),
                 ),
             ):
                 with self.assertRaisesRegex(preflight.PreflightError, "squash merge"):
                     preflight.check_release_plan_evidence_base("9.9.9")
 
-    def test_accepts_the_origin_main_head(self):
+    def test_accepts_the_release_branch_head(self):
         with tempfile.TemporaryDirectory() as directory:
             self._plan(directory, "9.9.9", self.MAIN)
             with (
@@ -138,11 +140,11 @@ class EvidenceBaseCommitTest(unittest.TestCase):
                 mock.patch.object(
                     preflight,
                     "_git",
-                    self._git({("rev-parse", "origin/main"): self.MAIN}),
+                    self._git({("rev-parse", REMOTE_RELEASE_REF): self.MAIN}),
                 ),
             ):
                 self.assertIn(
-                    "matches origin/main",
+                    f"matches {REMOTE_RELEASE_REF}",
                     preflight.check_release_plan_evidence_base("9.9.9"),
                 )
 
@@ -155,7 +157,9 @@ class EvidenceBaseCommitTest(unittest.TestCase):
                 mock.patch.object(
                     preflight,
                     "_git",
-                    self._git({("rev-parse", "origin/main"): self.MAIN}, tag="v9.9.9"),
+                    self._git(
+                        {("rev-parse", REMOTE_RELEASE_REF): self.MAIN}, tag="v9.9.9"
+                    ),
                 ),
             ):
                 self.assertIn(
@@ -163,7 +167,7 @@ class EvidenceBaseCommitTest(unittest.TestCase):
                     preflight.check_release_plan_evidence_base("9.9.9"),
                 )
 
-    def test_skips_when_origin_main_is_unknown(self):
+    def test_skips_when_the_release_branch_is_unknown(self):
         # A fresh clone or offline run must not fail the gate.
         with tempfile.TemporaryDirectory() as directory:
             self._plan(directory, "9.9.9", self.BRANCH_PARENT)
@@ -172,12 +176,12 @@ class EvidenceBaseCommitTest(unittest.TestCase):
                 mock.patch.object(preflight, "_git", self._git({})),
             ):
                 self.assertIn(
-                    "origin/main is unknown",
+                    f"{REMOTE_RELEASE_REF} is unknown",
                     preflight.check_release_plan_evidence_base("9.9.9"),
                 )
 
     def test_accepts_the_tag_parent_once_the_release_has_merged(self):
-        # Between merge and tag, origin/main IS the commit about to be tagged.
+        # Between merge and tag, the branch head IS the commit about to be tagged.
         # Comparing against it would demand the plan record the tagged commit in
         # place of its parent - which release_evidence_commit_binding rejects,
         # because it binds against HEAD^. The two checks contradicted each other
@@ -191,7 +195,7 @@ class EvidenceBaseCommitTest(unittest.TestCase):
                     "_git",
                     self._git(
                         {
-                            ("rev-parse", "origin/main"): self.MAIN,
+                            ("rev-parse", REMOTE_RELEASE_REF): self.MAIN,
                             ("rev-parse", "HEAD"): self.MAIN,
                             ("rev-parse", "HEAD^"): self.BRANCH_PARENT,
                         }
@@ -213,7 +217,7 @@ class EvidenceBaseCommitTest(unittest.TestCase):
                     "_git",
                     self._git(
                         {
-                            ("rev-parse", "origin/main"): self.MAIN,
+                            ("rev-parse", REMOTE_RELEASE_REF): self.MAIN,
                             ("rev-parse", "HEAD"): self.MAIN,
                             ("rev-parse", "HEAD^"): self.BRANCH_PARENT,
                         }
@@ -237,7 +241,7 @@ class EvidenceBaseCommitTest(unittest.TestCase):
                 mock.patch.object(
                     preflight,
                     "_git",
-                    self._git({("rev-parse", "origin/main"): self.MAIN}),
+                    self._git({("rev-parse", REMOTE_RELEASE_REF): self.MAIN}),
                 ),
             ):
                 self.assertIn(
