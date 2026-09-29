@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 from django.test import TestCase
+from forward_sdk.nqe.repository import RepositoryQuery
 
 from forward_netbox.utilities import forward_api_impl
 from forward_netbox.utilities.forward_api import ForwardClient
@@ -55,13 +56,11 @@ class HeadCommitResolutionTest(TestCase):
         }
 
     def _committed_query(self):
-        return SimpleNamespace(
+        return RepositoryQuery(
             query_id=QUERY_ID,
             path=PATH,
             intent="",
-            last_commit_id=HEAD,
-            last_commit=None,
-            source_code=None,
+            commit_id=HEAD,
         )
 
     def test_commitless_listing_row_falls_through_and_resolves_head(self):

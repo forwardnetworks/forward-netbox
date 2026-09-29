@@ -772,7 +772,7 @@ def _get_nqe_repository_queries(client, *, repository="org", directory="/"):
             "path": str(item.path or ""),
             "intent": str(item.intent or ""),
             "repository": repository,
-            "lastCommitId": str(item.last_commit_id or ""),
+            "lastCommitId": str(item.commit_id or ""),
         }
         for item in sdk_rows or []
     ]
@@ -937,20 +937,18 @@ def get_committed_nqe_query(
         raise ForwardClientError(
             f"Forward NQE repository lookup did not include `{query_path}`."
         )
-    # `RepositoryQuery` carries the commit under one of two names
-    # depending on what was asked for - a flat `last_commit_id` when
-    # listing at head, a nested `last_commit.id` for a specific commit -
-    # its own docstring warns that reading only one "loses the pin".
-    last_commit_id = matched.last_commit_id or (
-        matched.last_commit.id if matched.last_commit else None
-    )
+    # `RepositoryQuery` is the SDK's plain dataclass, which has already
+    # reconciled Forward's flat `lastCommitId` and nested `lastCommit` into
+    # one `commit_id`. The generated wire model carries the two raw names;
+    # this is not that.
+    last_commit_id = matched.commit_id
     normalized = {
         "queryId": str(matched.query_id or ""),
         "path": str(matched.path or ""),
         "intent": str(matched.intent or ""),
         "repository": repository,
         "lastCommitId": str(last_commit_id or ""),
-        "sourceCode": matched.source_code,
+        "sourceCode": matched.source,
     }
     client._committed_nqe_query_cache[cache_key] = dict(normalized)
     client._shared_read_cache_set(shared_cache_key, dict(normalized))
