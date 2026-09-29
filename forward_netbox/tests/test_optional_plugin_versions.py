@@ -45,9 +45,8 @@ class OptionalDistributionVersionSetTest(SimpleTestCase):
     """The validated optional-distribution sets, whatever they currently hold.
 
     On NetBox 4.7 they hold four entries - netbox-dlm 0.10.0, netbox-validity
-    3.6.0, netbox-peering-manager 0.3.1, and netbox-routing 0.4.4 (upstream
-    main, the first netbox-routing to declare 4.7, installed from its branch archive
-    until it is tagged). netbox-cisco-aci still declares a max_version in the
+    3.6.0, netbox-peering-manager 0.3.1, and netbox-routing 0.5.0 (the first
+    netbox-routing release that boots on 4.7). netbox-cisco-aci still declares a max_version in the
     4.6 series, and NetBox refuses to start with a plugin outside its declared
     range, so it cannot be installed on this runtime. Claiming a validated
     version for a plugin nobody can install would be a claim about a runtime
@@ -74,7 +73,7 @@ class OptionalDistributionVersionSetTest(SimpleTestCase):
             {
                 "netbox-dlm": frozenset({"0.10.0"}),
                 "netbox-peering-manager": frozenset({"0.3.1"}),
-                "netbox-routing": frozenset({"0.4.4"}),
+                "netbox-routing": frozenset({"0.5.0"}),
                 "netbox-validity": frozenset({"3.6.0"}),
             },
             "netbox-cisco-aci cannot be installed on NetBox 4.7, so a "
@@ -143,7 +142,7 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
                 {
                     "netbox-dlm": "0.10.0",
                     "netbox-peering-manager": "0.3.1",
-                    "netbox-routing": "0.4.4",
+                    "netbox-routing": "0.5.0",
                     "netbox-validity": "3.6.0",
                 }
                 if optional_plugins is None
@@ -221,7 +220,7 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
             {
                 "netbox-dlm": ["0.10.0"],
                 "netbox-peering-manager": ["0.3.1"],
-                "netbox-routing": ["0.4.4"],
+                "netbox-routing": ["0.5.0"],
                 "netbox-validity": ["3.6.0"],
             },
         )

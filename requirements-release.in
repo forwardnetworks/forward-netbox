@@ -7,7 +7,7 @@ mkdocs
 mkdocs-awesome-pages-plugin
 mkdocs-material
 pip-audit
-poetry-core==2.4.1
+poetry-core==2.5.0
 pre-commit
 pymdown-extensions
 python-dotenv
