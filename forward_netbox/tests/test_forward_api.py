@@ -5,6 +5,7 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 import httpx
+from forward_sdk.nqe.repository import RepositoryQuery
 
 from forward_netbox.exceptions import ForwardClientError
 from forward_netbox.exceptions import ForwardConnectivityError
@@ -1105,11 +1106,11 @@ class ForwardClientTest(TestCase):
         )
         self.client._sdk_client.nqe.repo.queries = Mock(
             return_value=[
-                SimpleNamespace(
+                RepositoryQuery(
                     query_id="FQ_devices",
                     path="/netbox/forward_devices",
                     intent="",
-                    last_commit_id="commit-1",
+                    commit_id="commit-1",
                 )
             ]
         )
@@ -1144,11 +1145,11 @@ class ForwardClientTest(TestCase):
         shared_cache = FakeSharedCache()
         self.client._sdk_client.nqe.repo.queries = Mock(
             return_value=[
-                SimpleNamespace(
+                RepositoryQuery(
                     query_id="Q_devices",
                     path="/netbox/forward_devices",
                     intent="",
-                    last_commit_id="commit-1",
+                    commit_id="commit-1",
                 )
             ]
         )
@@ -1180,17 +1181,17 @@ class ForwardClientTest(TestCase):
     def test_get_nqe_repository_queries_reads_forward_library(self):
         self.client._sdk_client.nqe.repo.queries = Mock(
             return_value=[
-                SimpleNamespace(
+                RepositoryQuery(
                     query_id="FQ_devices",
                     path="/netbox/forward_devices",
                     intent="",
-                    last_commit_id="commit-1",
+                    commit_id="commit-1",
                 ),
-                SimpleNamespace(
+                RepositoryQuery(
                     query_id="FQ_other",
                     path="/other/query",
                     intent="",
-                    last_commit_id="commit-2",
+                    commit_id="commit-2",
                 ),
             ]
         )
@@ -1306,13 +1307,11 @@ class ForwardClientTest(TestCase):
     def test_get_committed_nqe_query_resolves_repository_path(self):
         self.client._sdk_client.nqe.repo.queries = Mock(
             return_value=[
-                SimpleNamespace(
+                RepositoryQuery(
                     query_id="Q_devices",
                     path="/netbox/forward_devices",
                     intent="",
-                    last_commit_id=None,
-                    last_commit=SimpleNamespace(id="commit-1"),
-                    source_code=None,
+                    commit_id="commit-1",
                 )
             ]
         )
@@ -1336,11 +1335,11 @@ class ForwardClientTest(TestCase):
         shared_cache = FakeSharedCache()
         self.client._sdk_client.nqe.repo.queries = Mock(
             return_value=[
-                SimpleNamespace(
+                RepositoryQuery(
                     query_id="FQ_devices",
                     path="/netbox/forward_devices",
                     intent="Forward Devices",
-                    last_commit_id="commit-1",
+                    commit_id="commit-1",
                 )
             ]
         )
@@ -1367,13 +1366,12 @@ class ForwardClientTest(TestCase):
         shared_cache = FakeSharedCache()
         self.client._sdk_client.nqe.repo.queries = Mock(
             return_value=[
-                SimpleNamespace(
+                RepositoryQuery(
                     query_id="FQ_devices",
                     path="/netbox/forward_devices",
                     intent="Forward Devices",
-                    last_commit_id="commit-1",
-                    last_commit=None,
-                    source_code="select {}",
+                    commit_id="commit-1",
+                    source="select {}",
                 )
             ]
         )
@@ -1414,13 +1412,11 @@ class ForwardClientTest(TestCase):
     def test_get_committed_nqe_query_reuses_provided_query_index_on_miss(self):
         self.client._sdk_client.nqe.repo.queries = Mock(
             return_value=[
-                SimpleNamespace(
+                RepositoryQuery(
                     query_id="Q_devices",
                     path="/netbox/forward_devices",
                     intent="",
-                    last_commit_id=None,
-                    last_commit=SimpleNamespace(id="commit-1"),
-                    source_code=None,
+                    commit_id="commit-1",
                 )
             ]
         )
@@ -1459,13 +1455,11 @@ class ForwardClientTest(TestCase):
         )
         self.client._sdk_client.nqe.repo.queries = Mock(
             return_value=[
-                SimpleNamespace(
+                RepositoryQuery(
                     query_id="Q_devices",
                     path="/netbox/forward_devices",
                     intent="Forward Devices",
-                    last_commit_id="commit-2",
-                    last_commit=None,
-                    source_code=None,
+                    commit_id="commit-2",
                 )
             ]
         )
@@ -1492,21 +1486,17 @@ class ForwardClientTest(TestCase):
         self.client._sdk_client.nqe.queries = Mock(return_value=[])
         self.client._sdk_client.nqe.repo.queries = Mock(
             return_value=[
-                SimpleNamespace(
+                RepositoryQuery(
                     query_id="Q_sites",
                     path="/netbox/forward_sites",
                     intent="",
-                    last_commit_id="commit-1",
-                    last_commit=None,
-                    source_code=None,
+                    commit_id="commit-1",
                 ),
-                SimpleNamespace(
+                RepositoryQuery(
                     query_id="Q_devices",
                     path="/netbox/forward_devices",
                     intent="",
-                    last_commit_id="commit-2",
-                    last_commit=None,
-                    source_code=None,
+                    commit_id="commit-2",
                 ),
             ]
         )
@@ -1530,13 +1520,11 @@ class ForwardClientTest(TestCase):
         self.client._sdk_client.nqe.queries = Mock(return_value=[])
         self.client._sdk_client.nqe.repo.queries = Mock(
             return_value=[
-                SimpleNamespace(
+                RepositoryQuery(
                     query_id="Q_devices",
                     path="/netbox/forward_devices",
                     intent="Forward Devices",
-                    last_commit_id="commit-1",
-                    last_commit=None,
-                    source_code=None,
+                    commit_id="commit-1",
                 )
             ]
         )
@@ -1569,13 +1557,11 @@ class ForwardClientTest(TestCase):
         self.client._sdk_client.nqe.queries = Mock(return_value=[])
         self.client._sdk_client.nqe.repo.queries = Mock(
             return_value=[
-                SimpleNamespace(
+                RepositoryQuery(
                     query_id="Q_devices",
                     path="/netbox/forward_devices",
                     intent="",
-                    last_commit_id="commit-1",
-                    last_commit=None,
-                    source_code=None,
+                    commit_id="commit-1",
                 )
             ]
         )
@@ -1605,13 +1591,11 @@ class ForwardClientTest(TestCase):
         shared_cache = FakeSharedCache()
         self.client._sdk_client.nqe.repo.queries = Mock(
             return_value=[
-                SimpleNamespace(
+                RepositoryQuery(
                     query_id="Q_devices",
                     path="/netbox/forward_devices",
                     intent="",
-                    last_commit_id="commit-1",
-                    last_commit=None,
-                    source_code=None,
+                    commit_id="commit-1",
                 )
             ]
         )
@@ -1652,13 +1636,11 @@ class ForwardClientTest(TestCase):
         )
         self.client._sdk_client.nqe.repo.queries = Mock(
             return_value=[
-                SimpleNamespace(
+                RepositoryQuery(
                     query_id="Q_devices",
                     path="/netbox/forward_devices",
                     intent="",
-                    last_commit_id="commit-2",
-                    last_commit=None,
-                    source_code=None,
+                    commit_id="commit-2",
                 )
             ]
         )
