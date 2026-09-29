@@ -84,6 +84,7 @@ from .tables import ForwardSourceTable
 from .tables import ForwardSyncTable
 from .tables import ForwardValidationRunTable
 from .utilities.bulk_merge import describe_protecting_references
+from .utilities.bundle_diagnostics import bundle_diagnostics
 from .utilities.change_explainability import change_explainability_summary
 from .utilities.config_backup import config_backup_data_source
 from .utilities.diagnostics import diff_fallback_summary
@@ -92,7 +93,9 @@ from .utilities.diagnostics import safe_job_error_summary
 from .utilities.diagnostics import sanitize_job_diagnostics
 from .utilities.direct_changes import object_changes_for_ingestion
 from .utilities.execution_telemetry import build_plan_preview
+from .utilities.export_redaction import export_safe_payload
 from .utilities.health import _job_data_count_trend
+from .utilities.health import config_backup_delivery_bundle_payload
 from .utilities.health import live_data_file_health_check
 from .utilities.health import live_source_health_check
 from .utilities.health import sync_health_summary
@@ -368,13 +371,6 @@ def _ingestion_issue_bundle_payload(ingestion):
 # suffix rather than enumerated: the reconciliation report gains a sample or an
 # id list most releases, and an allowlist that has to be extended each time is
 # an allowlist that silently exports names the release after it is forgotten.
-_BUNDLE_DROP_KEY_SUFFIXES = (
-    "_sample",
-    "_detail",
-    "_names",
-    "_by_name",
-)
-_BUNDLE_COUNT_KEY_SUFFIXES = ("_device_ids", "_pks")
 
 
 def _bundle_safe_report(value):
@@ -389,23 +385,9 @@ def _bundle_safe_report(value):
     the quarantine state, the prune candidate count, the backfill reason
     breakdown - is counts and slugs and survives.
     """
-    if isinstance(value, dict):
-        cleaned = {}
-        for key, item in value.items():
-            if not isinstance(key, str):
-                continue
-            if key.endswith(_BUNDLE_COUNT_KEY_SUFFIXES):
-                cleaned[f"{key}_count"] = (
-                    len(item) if isinstance(item, (list, tuple, set)) else None
-                )
-                continue
-            if key.endswith(_BUNDLE_DROP_KEY_SUFFIXES):
-                continue
-            cleaned[key] = _bundle_safe_report(item)
-        return cleaned
-    if isinstance(value, (list, tuple)):
-        return [_bundle_safe_report(item) for item in value]
-    return value
+    # One filter, not two: this used to carry its own copy of the suffix rules,
+    # and a second copy is a second thing to forget to update.
+    return export_safe_payload(value)
 
 
 def _scope_reconciliation_bundle_payload(sync):
@@ -598,8 +580,11 @@ def _environment_bundle_payload():
     from . import _resolved_branching_version
     from . import NetboxForwardConfig
     from .utilities.plugin_integrations.registry import OPTIONAL_PLUGIN_INTEGRATIONS
-    from .utilities.validated_runtime import missing_plugin_apps
+    from .utilities.validated_runtime import OPTIONAL_PLUGIN_APP_DISTRIBUTIONS
+    from .utilities.validated_runtime import REQUIRED_PLUGIN_APPS
     from .utilities.validated_runtime import unexpected_plugin_apps
+    from .utilities.validated_runtime import VALIDATED_OPTIONAL_DISTRIBUTIONS
+    from .utilities.validated_runtime import VALIDATED_PLUGIN_APPS
 
     def _installed_version(package_name, app_label):
         from importlib.metadata import PackageNotFoundError
@@ -614,7 +599,11 @@ def _environment_bundle_payload():
         except Exception:  # noqa: BLE001 - a bundle must not fail on metadata
             return "installed (version unreadable)"
 
-    installed_apps = list(getattr(settings, "INSTALLED_APPS", ()) or ())
+    # `settings.PLUGINS`, as the fast-path gates read it. `INSTALLED_APPS`
+    # holds every Django app and each plugin's AppConfig path
+    # (`forward_netbox.NetboxForwardConfig`), which made every core app read
+    # as "unexpected" and every installed plugin as "missing".
+    plugin_apps = frozenset(getattr(settings, "PLUGINS", ()) or ())
     return {
         "plugin_version": NetboxForwardConfig.version,
         "netbox_version": str(getattr(settings, "VERSION", "") or ""),
@@ -627,14 +616,21 @@ def _environment_bundle_payload():
             )
             for integration in OPTIONAL_PLUGIN_INTEGRATIONS
         },
+        # Every version the fast paths were validated with, per app - the
+        # set their gates actually check, not the integration's single pin.
         "optional_plugin_versions_validated_against": {
-            integration.app_label: integration.required_package_version
-            for integration in OPTIONAL_PLUGIN_INTEGRATIONS
+            app: sorted(VALIDATED_OPTIONAL_DISTRIBUTIONS.get(distribution, ()))
+            for app, distribution in sorted(OPTIONAL_PLUGIN_APP_DISTRIBUTIONS.items())
         },
-        # The exact app set matters: an unlisted plugin disables COPY/SQL,
-        # set-based merge and the fast baseline with no error at all.
-        "unexpected_plugin_apps": list(unexpected_plugin_apps(installed_apps)),
-        "missing_plugin_apps": list(missing_plugin_apps(installed_apps)),
+        "plugin_apps": sorted(plugin_apps),
+        # An unlisted plugin disables COPY/SQL, set-based merge and the fast
+        # baseline; a missing REQUIRED one does too. A validated optional
+        # plugin that is simply not installed does not.
+        "unexpected_plugin_apps": list(unexpected_plugin_apps(plugin_apps)),
+        "missing_required_plugin_apps": sorted(REQUIRED_PLUGIN_APPS - plugin_apps),
+        "validated_optional_plugins_not_installed": sorted(
+            VALIDATED_PLUGIN_APPS - REQUIRED_PLUGIN_APPS - plugin_apps
+        ),
     }
 
 
@@ -650,6 +646,33 @@ def _stuck_verdict_bundle_payload(sync):
         return {"verdict": json_safe_value(classify_stuck_sync(sync))}
     except Exception as exc:
         return {"verdict": None, "classification_error": type(exc).__name__}
+
+
+def _live_query_drift_bundle_payload(sync):
+    """The stored live-drift result per map, and when it was taken.
+
+    Deliberately stored rather than fetched: the bundle makes no Forward calls.
+    An empty list means nobody has run the live check, which is itself worth
+    seeing rather than reading as "no drift".
+    """
+    rows = []
+    for query_map in sync.get_maps():
+        stored = query_map.last_live_drift or {}
+        if not stored:
+            continue
+        rows.append(
+            {
+                "map_id": query_map.pk,
+                "model": query_map.model_string,
+                "checked_at": (
+                    query_map.last_live_drift_at.isoformat()
+                    if query_map.last_live_drift_at
+                    else None
+                ),
+                **json_safe_value(stored),
+            }
+        )
+    return rows
 
 
 def _sync_support_bundle_payload(sync):
@@ -705,6 +728,12 @@ def _sync_support_bundle_payload(sync):
         },
         "query_drift_summary": health.get("query_drift_summary", {}),
         "query_drift_results": health.get("query_modes", {}).get("local_drift", []),
+        # The local drift above compares the bundled query to what NetBox
+        # stores. Only this says whether the query actually PUBLISHED in
+        # Forward still accepts the parameters this release sends - the
+        # difference between "a body changed" and "every execution will be
+        # refused". Stored by the live drift view; absent until it is run.
+        "live_query_drift": _live_query_drift_bundle_payload(sync),
         "upgrade_reconciliation": json_safe_value(
             compute_upgrade_reconciliation(include_samples=False)
         ),
@@ -730,6 +759,18 @@ def _sync_support_bundle_payload(sync):
         # nothing.
         "interface_untagged_vlans": json_safe_value(interface_untagged_vlan_keys()),
         "scope_reconciliation": _scope_reconciliation_bundle_payload(sync),
+        # What the uncovered devices are, when they became uncovered, which query
+        # each map really runs, and the rows behind each ingestion issue - the
+        # questions an investigation otherwise answers with a shell script on
+        # the customer's NetBox. Counts, pks and catalog names only.
+        "diagnostics": bundle_diagnostics(sync),
+        # The chain from our commit to Validity's compliance run: whether the
+        # data source's `branch` parameter is set, whether it has ever
+        # synced, and whether Validity is actually bound to it. Answers
+        # exactly what blocked delivery without a diagnostic script - see
+        # `operator_action_jobs.config_backup` below for the last run's own
+        # push/fetch outcome.
+        "config_backup_delivery": config_backup_delivery_bundle_payload(sync),
         "operator_action_jobs": _operator_action_jobs_bundle_payload(sync),
         "ownership_records": _ownership_records_bundle_payload(sync),
         # Why the cleanup targets cannot be deleted - the question a screenshot
@@ -791,6 +832,12 @@ def _sync_support_bundle_payload(sync):
 
 
 def _download_json_response(payload, filename):
+    # Every JSON diagnostic this plugin hands out leaves through here - the
+    # support bundle, the dependency preview, the log export, the health
+    # downloads - which is why the redaction sits at this line rather than at
+    # each caller. Two of those callers passed their payload through nothing at
+    # all before this, and a third built its own partial filter.
+    payload = export_safe_payload(payload)
     response = JsonResponse(payload, json_dumps_params={"indent": 2}, safe=True)
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
     return response
@@ -823,6 +870,8 @@ def _dependency_model_result_summary(
     comparison_queries=None,
     comparison_sql_ms=None,
     comparison_error="",
+    attribute_model_comparison=True,
+    comparison_shared_with_sibling_maps=0,
 ):
     # ``fetcher.model_results`` are ForwardModelResult dataclasses, not dicts —
     # calling result.get(...) on them raised AttributeError and errored the whole
@@ -833,14 +882,23 @@ def _dependency_model_result_summary(
         raise TypeError("Dependency preview results must be ForwardModelResult values.")
     data = result.as_dict()
     row_count = int(data.get("row_count") or 0)
+    # `comparison` is computed ONCE PER MODEL (`_compare_rows_by_model` pools
+    # every map's rows first), but several maps commonly share a model - all
+    # three `dcim.inventoryitem` maps, for one. Attributing the same
+    # model-wide deletes/creates/updates to every one of those maps counted
+    # the same removals once per map instead of once: a customer's
+    # dependency preview showed 1,394 pending inventory-item removals on a
+    # map that had fetched zero rows, because that map shared its model with
+    # two others. Attributed to exactly one map per model
+    # (`attribute_model_comparison`, set by the caller for the first map it
+    # sees for a given model) - every other map still shows its OWN
+    # Forward-declared numbers, just not a second copy of the shared ones.
+    attribute_comparison = comparison is not None and attribute_model_comparison
     # Forward's own declared deletes, plus any the comparison itself found -
     # `dcim.inventoryitem`'s module-native rows arrive as upsert rows and are
     # deleted by the apply rather than Forward's `delete_rows`, so they are
     # not in `data["delete_count"]` at all until the comparison classifies
     # them.
-    delete_count = int(data.get("delete_count") or 0) + int(
-        (comparison or {}).get("deletes") or 0
-    )
     durable_state = next(
         (
             diagnostic
@@ -849,6 +907,24 @@ def _dependency_model_result_summary(
         ),
         None,
     )
+    # Forward's declared removals, as the fetch produced them. For a model on
+    # durable workload state that is NOT what the next sync removes: rows the
+    # state has already tombstoned - removed on an earlier run, or never
+    # imported - are declared again on every run and staged never. Counting
+    # them as pending made a customer's routing policy read ~6,300 pending
+    # removals on every preview, forever, with nothing left to remove. The
+    # state's own staged count is the honest number; the rest is reported
+    # separately as already removed.
+    forward_removal_count = int(data.get("delete_count") or 0)
+    staged = (durable_state or {}).get("staged_delete_count")
+    pending_forward_removals = (
+        staged
+        if isinstance(staged, int) and staged <= forward_removal_count
+        else forward_removal_count
+    )
+    delete_count = pending_forward_removals + (
+        int(comparison.get("deletes") or 0) if attribute_comparison else 0
+    )
     return {
         "model": data.get("model") or "",
         "query_name": data.get("query_name") or "",
@@ -856,22 +932,37 @@ def _dependency_model_result_summary(
         "fetch_mode": data.get("fetch_mode") or "unknown",
         "row_count": row_count,
         "delete_count": delete_count,
+        "forward_removal_count": forward_removal_count,
+        "already_removed_count": forward_removal_count - pending_forward_removals,
         "failure_count": int(data.get("failure_count") or 0),
         "failure_exception": str(data.get("failure_exception") or ""),
         "failure_reason": str(data.get("failure_reason") or ""),
-        # Per-model change estimate. With a comparison this is how many objects
-        # actually differ - creates plus updates, deletes counted separately by
-        # the drift report - so the figure means what the page has always said
-        # it meant. Without one it stays the upper bound: every fetched row,
-        # because nothing compared them.
+        # Per-model change estimate. With a comparison ATTRIBUTED TO THIS MAP
+        # this is how many objects actually differ - creates plus updates,
+        # deletes counted separately by the drift report - so the figure
+        # means what the page has always said it meant. Without one (no
+        # comparison at all, or one shared with a sibling map that already
+        # carries it) it stays the upper bound: this map's own fetched rows,
+        # because nothing was attributed here.
         "estimated_changes": (
             comparison["creates"] + comparison["updates"]
-            if comparison
+            if attribute_comparison
             else row_count + delete_count
         ),
         "change_estimate_kind": (
-            "exact_comparison" if comparison else "workload_upper_bound"
+            "exact_comparison"
+            if attribute_comparison
+            else (
+                "shared_with_sibling_maps"
+                if comparison is not None
+                else "workload_upper_bound"
+            )
         ),
+        # How many OTHER maps target this same model - the comparison is
+        # model-wide either way, so an operator reading one map's numbers
+        # knows there are others to check, whether this is the map carrying
+        # them or not.
+        "comparison_shared_with_sibling_maps": comparison_shared_with_sibling_maps,
         # WHY this model is not measured, when a comparison exists for it and
         # raised. Empty for a model with no comparison, and for one that was
         # measured. An exception name, never a message: messages carry values.
@@ -879,8 +970,13 @@ def _dependency_model_result_summary(
         # Rows the comparison could not classify because they carry no usable
         # identity. Reported rather than folded into drift, which would read as
         # a difference between the two systems when it is a defect in the row.
-        "comparison_rejected_rows": (comparison or {}).get("rejected", 0),
-        "unchanged_rows": (comparison or {}).get("unchanged", 0),
+        # Attributed with the rest of the comparison - never duplicated per map.
+        "comparison_rejected_rows": (
+            comparison.get("rejected", 0) if attribute_comparison else 0
+        ),
+        "unchanged_rows": (
+            comparison.get("unchanged", 0) if attribute_comparison else 0
+        ),
         # How long this model's comparison took. Recorded for every model that
         # was compared, so a slow one can be named rather than inferred from a
         # total. `None` where there was no comparison to time.
@@ -901,6 +997,33 @@ def _dependency_model_result_summary(
         # source identifiers into the preview job payload.
         "durable_workload_state": durable_state,
     }
+
+
+def _catalogue_outside_scope_in_netbox(fetcher, model_string):
+    """NetBox entries of routing policy no in-scope device holds, or None.
+
+    The catalogue maps are global policy: a definition only devices outside
+    the sync's tags hold is dropped by the scope, never staged, and - when the
+    source does not prune out-of-scope rows, or the rows predate the durable
+    state - left in NetBox indefinitely. This counts them, by the definition's
+    stored name, so the drift report can say how many there are and the
+    Scope Reconciliation cleanup can act on exactly that set. Local only.
+    """
+    from rq.timeouts import JobTimeoutException
+
+    from .utilities.routing_catalogue_cleanup import outside_scope_entry_queryset
+
+    names = (getattr(fetcher, "catalogue_scope_names", None) or {}).get(model_string)
+    if not names:
+        return None
+    try:
+        return outside_scope_entry_queryset(
+            model_string, names["out_of_scope"] - names["in_scope"]
+        ).count()
+    except JobTimeoutException:
+        raise
+    except Exception:  # noqa: BLE001 - an advisory count must not fail the preview
+        return None
 
 
 def _compare_rows_by_model(sync, rows_by_model):
@@ -994,6 +1117,8 @@ class _QueryMeter:
 
 
 def _dependency_dry_run_payload(sync, *, client=None):
+    from collections import Counter
+
     from .utilities.api_usage import record_forward_api_usage
     from .utilities.branch_budget import build_branch_plan
     from .utilities.query_fetch import ForwardQueryFetcher
@@ -1004,18 +1129,38 @@ def _dependency_dry_run_payload(sync, *, client=None):
     workloads = fetcher.fetch_workloads(
         context, include_diagnostics=True, capture_comparison_rows=True
     )
-    failed_models = [
-        result.model_string
-        for result in fetcher.model_results
-        if int(result.failure_count or 0) > 0
+    failures = [
+        result for result in fetcher.model_results if int(result.failure_count or 0) > 0
     ]
-    if failed_models:
+    if failures:
+        failed_models = [result.model_string for result in failures]
         sample = ", ".join(failed_models[:5])
         suffix = "" if len(failed_models) <= 5 else ", ..."
-        raise ForwardQueryError(
-            "Dependency preview query validation failed for "
-            f"{len(failed_models)} model(s): {sample}{suffix}."
+        # Carry WHY, not just which. `failure_exception` and `failure_reason`
+        # are already populated on every failed result, and are already
+        # value-free by construction - an exception class name and a slug from
+        # the diagnostics catalogue. Collecting only `model_string` here threw
+        # them away at the one point an operator reads, so a preview that died
+        # because a published query rejected its parameters said only that two
+        # models had "failed validation", and the reason had to be reproduced
+        # by hand against the live API.
+        reasons = sorted(
+            {
+                f"{result.failure_exception or 'error'}"
+                + (f": {result.failure_reason}" if result.failure_reason else "")
+                for result in failures
+            }
         )
+        error = ForwardQueryError(
+            "Dependency preview query validation failed for "
+            f"{len(failed_models)} model(s): {sample}{suffix}"
+            + (f" ({'; '.join(reasons[:3])})." if reasons else ".")
+        )
+        error.safe_diagnosis = {
+            "failed_models": failed_models[:20],
+            "failed_model_reasons": reasons[:20],
+        }
+        raise error
     plan = build_branch_plan(
         workloads,
         max_changes_per_staging_item=sync.get_max_changes_per_staging_item(),
@@ -1115,6 +1260,38 @@ def _dependency_dry_run_payload(sync, *, client=None):
         ),
         1,
     )
+    # Several maps commonly target one model (every built-in `dcim.inventoryitem`
+    # map, for one); `comparison_by_model` is computed once per model, not once
+    # per map. Attributed to the first map seen for each model, in fetch order -
+    # every other map still reports its own Forward-declared numbers, never a
+    # second copy of the shared comparison. See `_dependency_model_result_summary`.
+    model_strings = [
+        result.as_dict().get("model") or "" for result in fetcher.model_results
+    ]
+    sibling_map_counts = Counter(model_strings)
+    attributed_models = set()
+    model_results = []
+    for result, model_string in zip(fetcher.model_results, model_strings):
+        attribute_here = model_string not in attributed_models
+        attributed_models.add(model_string)
+        model_results.append(
+            _dependency_model_result_summary(
+                result,
+                comparison=comparison_by_model.get(model_string),
+                comparison_runtime_ms=comparison_runtime_ms_by_model.get(model_string),
+                comparison_queries=comparison_queries_by_model.get(model_string),
+                comparison_sql_ms=comparison_sql_ms_by_model.get(model_string),
+                comparison_error=comparison_error_by_model.get(model_string, ""),
+                attribute_model_comparison=attribute_here,
+                comparison_shared_with_sibling_maps=sibling_map_counts[model_string]
+                - 1,
+            )
+        )
+        if attribute_here:
+            outside = _catalogue_outside_scope_in_netbox(fetcher, model_string)
+            if outside is not None:
+                model_results[-1]["outside_scope_in_netbox_count"] = outside
+
     return {
         "generated_at": timezone.now().isoformat(),
         "sync": {
@@ -1154,27 +1331,7 @@ def _dependency_dry_run_payload(sync, *, client=None):
             "sql_ms": comparison_sql_ms,
             "rows_compared": compared_rows,
         },
-        "model_results": [
-            _dependency_model_result_summary(
-                result,
-                comparison=comparison_by_model.get(
-                    (result.as_dict().get("model") or "")
-                ),
-                comparison_runtime_ms=comparison_runtime_ms_by_model.get(
-                    (result.as_dict().get("model") or "")
-                ),
-                comparison_queries=comparison_queries_by_model.get(
-                    (result.as_dict().get("model") or "")
-                ),
-                comparison_sql_ms=comparison_sql_ms_by_model.get(
-                    (result.as_dict().get("model") or "")
-                ),
-                comparison_error=comparison_error_by_model.get(
-                    (result.as_dict().get("model") or ""), ""
-                ),
-            )
-            for result in fetcher.model_results
-        ],
+        "model_results": model_results,
         "forward_api_usage": record_forward_api_usage(sync, client),
     }
 
@@ -1448,6 +1605,14 @@ class ForwardSyncView(generic.ObjectView):
             stuck_verdict = None
         data = {
             "stuck_verdict": stuck_verdict,
+            # Health checks an operator should act on, with the page that acts
+            # on them - surfaced here because the Health tab is one click away
+            # and a backlog nobody opens is a silent one.
+            "health_attention": [
+                check
+                for check in health.get("checks") or ()
+                if check.get("url") and check.get("status") in ("warn", "fail")
+            ],
             "last_ingestion": instance.last_ingestion,
             "latest_validation_run": instance.latest_validation_run,
             "enabled_models": instance.enabled_models(),
@@ -1796,6 +1961,67 @@ def _latest_scope_reconciliation_job(sync):
     return latest_scope_report_job(sync)
 
 
+def _site_relabel_pairs_payload(sync):
+    """Counts only, for the scope-reconciliation page's merge card.
+
+    Computed inline (unlike the report above): a relabel pair needs no live
+    Forward query to prove, so it costs one duplicate-name scan and two batch
+    queries - cheap even on a real fleet.
+    """
+    from rq.timeouts import JobTimeoutException
+
+    from .utilities.scope_reconciliation import site_relabel_held_by_reason
+    from .utilities.scope_reconciliation import site_relabel_pairs
+
+    try:
+        report = site_relabel_pairs(sync)
+    except JobTimeoutException:
+        raise
+    except Exception:  # noqa: BLE001 - a page render must never 500 on this
+        return {"pair_count": 0, "held_count": 0, "available": False}
+    return {
+        "pair_count": len(report["pairs"]),
+        "held_count": len(report["held"]),
+        "held_by_reason": site_relabel_held_by_reason(report),
+        "available": True,
+    }
+
+
+def _catalogue_cleanup_payload(sync):
+    """Routing policy entries no in-scope device holds, from the latest preview.
+
+    A local read of the stored preview: the count is what the preview found,
+    and the cleanup job recomputes its own set from a fresh Forward read.
+    """
+    from core.choices import JobStatusChoices
+    from core.models import Job
+    from django.contrib.contenttypes.models import ContentType
+
+    job = (
+        Job.objects.filter(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=sync.pk,
+            name__icontains="dependency preview",
+            status=JobStatusChoices.STATUS_COMPLETED,
+        )
+        .order_by("-created")
+        .first()
+    )
+    payload = job.data if job is not None and isinstance(job.data, dict) else {}
+    counts = {
+        result.get("model"): result.get("outside_scope_in_netbox_count")
+        for result in payload.get("model_results") or ()
+        if isinstance(result, dict)
+        and isinstance(result.get("outside_scope_in_netbox_count"), int)
+    }
+    return {
+        "available": bool(counts),
+        "entry_count": sum(counts.values()),
+        "by_model": sorted(counts.items()),
+        "generated_at": payload.get("generated_at"),
+    }
+
+
 def _scope_reconciliation_payload(job):
     """See `scope_reconciliation.stored_scope_report`."""
     from .utilities.scope_reconciliation import stored_scope_report
@@ -2034,6 +2260,12 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
                 # running on a page render, so the button is offered whenever
                 # the plugin is installed and the job reports what it found.
                 "dlm_available": apps.is_installed("netbox_dlm"),
+                # Unlike the report above, this needs no live Forward query -
+                # a relabel pair is provable from stored state alone (the
+                # newer device's own site IS Forward's current answer) - so
+                # it is safe to compute on every page render.
+                "site_relabel_pairs": _site_relabel_pairs_payload(sync),
+                "catalogue_cleanup": _catalogue_cleanup_payload(sync),
             },
         )
 
@@ -2284,6 +2516,108 @@ class ForwardSyncPruneUncoveredView(BaseObjectView):
         return redirect(sync.get_absolute_url())
 
 
+@register_model_view(
+    ForwardSync, "prune_out_of_scope_catalogue", path="prune-out-of-scope-catalogue"
+)
+class ForwardSyncPruneOutOfScopeCatalogueView(BaseObjectView):
+    """Delete routing policy entries no in-scope device holds.
+
+    See `routing_catalogue_cleanup.prune_out_of_scope_catalogue` for exactly
+    what is deleted and what is held.
+    """
+
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "netbox_routing.delete_prefixlist"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return redirect(
+            reverse(
+                "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                kwargs={"pk": sync.pk},
+            )
+        )
+
+    def post(self, request, pk):
+        from .utilities.sync_facade import JobAlreadyActive, enqueue_button_job
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        try:
+            job = enqueue_button_job(sync, "prune_out_of_scope_catalogue", request.user)
+        except JobAlreadyActive:
+            messages.warning(
+                request,
+                _(
+                    "A routing policy cleanup is already queued, or a sync is "
+                    "running; try again when it finishes."
+                ),
+            )
+            return redirect(sync.get_absolute_url())
+        messages.success(
+            request,
+            _(
+                "Queued job #%(pk)d to remove routing policy no in-scope device "
+                "holds. Watch the Jobs tab for the result."
+            )
+            % {"pk": job.pk},
+        )
+        return redirect(sync.get_absolute_url())
+
+
+@register_model_view(
+    ForwardSync, "merge_site_relabel_duplicates", path="merge-site-relabel-duplicates"
+)
+class ForwardSyncMergeSiteRelabelDuplicatesView(BaseObjectView):
+    """One-time repair for device pairs a site relabel duplicated.
+
+    Deletes the newer (sync-created) copy of each qualifying pair and moves
+    the older one to the newer copy's site - see
+    `scope_reconciliation.site_relabel_pairs` for exactly what qualifies.
+    """
+
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "dcim.delete_device"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return redirect(
+            reverse(
+                "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                kwargs={"pk": sync.pk},
+            )
+        )
+
+    def post(self, request, pk):
+        from .utilities.sync_facade import JobAlreadyActive, enqueue_button_job
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        try:
+            job = enqueue_button_job(
+                sync,
+                "merge_site_relabel_duplicates",
+                request.user,
+            )
+        except JobAlreadyActive:
+            messages.warning(
+                request,
+                _("An equivalent site-relabel merge job is already running."),
+            )
+            return redirect(sync.get_absolute_url())
+        messages.success(
+            request,
+            _(
+                "Queued job #%(pk)d to merge site-relabel duplicates. Watch "
+                "the Jobs tab for the result."
+            )
+            % {"pk": job.pk},
+        )
+        return redirect(sync.get_absolute_url())
+
+
 @register_model_view(ForwardSync, "config_backup", path="config-backup")
 class ForwardSyncConfigBackupView(BaseObjectView):
     """Run the config backup on demand.
@@ -2335,6 +2669,96 @@ class ForwardSyncConfigBackupView(BaseObjectView):
                 "data or logs."
             )
             % {"pk": job.pk},
+        )
+        return redirect(sync.get_absolute_url())
+
+
+@register_model_view(
+    ForwardSync,
+    "release_foreign_delete_blockers",
+    path="release-foreign-delete-blockers",
+)
+class ForwardSyncReleaseForeignDeleteBlockersView(BaseObjectView):
+    """Release exactly the netbox_routing rows named on a device's own panel.
+
+    Scoped to the sync for the same reason as the per-device prune below: one
+    deletion path, one overlap guard, one job name. It never deletes the
+    device itself, only the specific rows the ownership panel already showed
+    as foreign delete blockers - and only those, re-checked fresh against
+    what the operator saw when they clicked, so a race with a sync run or
+    another operator's action refuses rather than releasing something else.
+    """
+
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "dcim.delete_device"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return redirect(sync.get_absolute_url())
+
+    def post(self, request, pk):
+        import json
+
+        from .utilities.sync_facade import JobAlreadyActive
+        from .utilities.sync_facade import enqueue_button_job
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        try:
+            device_pk = int(request.POST.get("device") or "")
+        except (TypeError, ValueError):
+            messages.error(request, _("No device was named for this release."))
+            return redirect(sync.get_absolute_url())
+        try:
+            expected_blockers = json.loads(
+                request.POST.get("expected_blockers_json") or "{}"
+            )
+        except (TypeError, ValueError):
+            expected_blockers = {}
+        if (
+            not isinstance(expected_blockers, dict)
+            or not expected_blockers
+            or not all(
+                isinstance(label, str) and isinstance(count, int)
+                for label, count in expected_blockers.items()
+            )
+        ):
+            messages.error(
+                request, _("No delete-blocking rows were named for release.")
+            )
+            return redirect(sync.get_absolute_url())
+        try:
+            job = enqueue_button_job(
+                sync,
+                "release_foreign_delete_blockers",
+                request.user,
+                job_kwargs={
+                    "device_pk": device_pk,
+                    "expected_blockers": expected_blockers,
+                },
+            )
+        except JobAlreadyActive:
+            # Covers both an equivalent release already running and this
+            # sync itself writing inventory (`JobBlockedBySyncRun`); either
+            # way the operator just needs to try again once it clears.
+            messages.warning(
+                request,
+                _(
+                    "Cannot release delete-blocking rows right now: an "
+                    "equivalent job or this sync's own run is already active."
+                ),
+            )
+            return redirect(sync.get_absolute_url())
+        messages.success(
+            request,
+            _(
+                "Queued job #%(pk)d to release the delete-blocking rows shown "
+                "for device #%(device)d. It releases them only if they are "
+                "still exactly what was shown; the job records the reason "
+                "otherwise."
+            )
+            % {"pk": job.pk, "device": device_pk},
         )
         return redirect(sync.get_absolute_url())
 
@@ -2691,6 +3115,26 @@ class ForwardSyncHealthView(generic.ObjectView):
         return {"health": sync_health_summary(instance)}
 
 
+def _store_live_drift_results(results):
+    """Record each live drift result on its map, best effort.
+
+    A diagnostic that fails to save must not break the diagnostic the operator
+    actually asked for, so this never raises.
+    """
+    checked_at = timezone.now()
+    for result in results or []:
+        map_id = (result or {}).get("map_id")
+        if not map_id:
+            continue
+        try:
+            ForwardNQEMap.objects.filter(pk=map_id).update(
+                last_live_drift=json_safe_value(result),
+                last_live_drift_at=checked_at,
+            )
+        except Exception:  # noqa: BLE001 - storing is not the point of the view
+            continue
+
+
 @register_model_view(ForwardSync, "query_drift", path="query-drift")
 class ForwardSyncQueryDriftView(BaseObjectView):
     queryset = ForwardSync.objects.all()
@@ -2707,6 +3151,13 @@ class ForwardSyncQueryDriftView(BaseObjectView):
             for query_map in sync.get_maps()
             if sync.is_model_enabled(query_map.model_string)
         ]
+        results = live_query_binding_drifts(client=client, query_maps=maps)
+        # Persist it. This is the only place the PUBLISHED query is fetched,
+        # and the support bundle - which makes no API calls by design - has no
+        # other way to report that a map's published copy declares different
+        # parameters from the bundled one. Storing it here means the next
+        # bundle carries the answer without anyone having to run this first.
+        _store_live_drift_results(results)
         payload = {
             "exported_at": timezone.now().isoformat(),
             "sync": {
@@ -2715,7 +3166,7 @@ class ForwardSyncQueryDriftView(BaseObjectView):
                 "source": sync.source_id,
             },
             "query_drift_summary": health.get("query_drift_summary", {}),
-            "results": live_query_binding_drifts(client=client, query_maps=maps),
+            "results": results,
         }
         filename = f"forward-sync-{sync.pk}-live-query-drift.json"
         return _download_json_response(json_safe_value(payload), filename)
@@ -3536,6 +3987,19 @@ class ForwardIngestionIssueView(generic.ObjectView):
 
     queryset = ForwardIngestionIssue.objects.all()
     template_name = "forward_netbox/forwardingestionissue.html"
+
+    def get_extra_context(self, request, instance):
+        # The message names the repair in words; the page makes it one click.
+        sync_id = getattr(getattr(instance, "ingestion", None), "sync_id", None)
+        if sync_id and "site-relabel duplicate" in (instance.message or ""):
+            return {
+                "repair_url": reverse(
+                    "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                    kwargs={"pk": sync_id},
+                ),
+                "repair_label": _("Open Scope Reconciliation to merge"),
+            }
+        return {}
 
 
 @register_model_view(ForwardDeviceAnalysis, "list", path="", detail=False)

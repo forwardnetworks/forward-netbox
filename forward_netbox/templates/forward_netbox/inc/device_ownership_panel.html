@@ -125,6 +125,26 @@
         {% endblocktrans %}
       </p>
     {% endif %}
+    {% if ownership.prune.absent_detail %}
+      {# The snapshot has no such device, but Forward's configuration still  #}
+      {# lists it under an include tag - which is what the Forward UI shows, #}
+      {# and why an operator reads this as "tagged in Forward, not synced".  #}
+      <p class="text-muted small mb-0 mt-1">
+        {% blocktrans trimmed with reason=ownership.prune.absent_detail_label %}
+          Forward's device configuration still shows it: {{ reason }}. The
+          sync reads the snapshot, so a device the snapshot does not carry
+          cannot be tagged or updated in NetBox however it is tagged in
+          Forward.
+        {% endblocktrans %}
+        {% if ownership.prune.absent_detail == "absent_configured_disabled" %}
+          {% trans "Re-enable collection for the device in Forward to cover it again, or remove it here if the disable is permanent." %}
+        {% elif ownership.prune.absent_detail == "absent_configured_uncollected" %}
+          {% trans "Check the device's collection status in Forward; once a snapshot carries it again the sync covers it automatically." %}
+        {% elif ownership.prune.absent_detail == "absent_tag_only" %}
+          {% trans "The tag entry outlived the device: a vsys or vdom child the snapshot no longer models, or a device removed from collection without clearing its tags." %}
+        {% endif %}
+      </p>
+    {% endif %}
     {% if ownership.holders %}
       <p class="text-muted mb-0">
         {% blocktrans trimmed %}
@@ -151,27 +171,53 @@
             will refuse this device too and report which model refused it.
           {% endblocktrans %}
         </p>
-        <p class="mb-1">{% trans "To delete this device:" %}</p>
-        <ol class="mb-2">
-          <li>
+        {% if ownership.release_blockers.offered and perms.dcim.delete_device %}
+          <p class="mb-2">
             {% blocktrans trimmed %}
-              Delete these records first, from the pages their own plugin
-              provides:
+              These are all rows this plugin's own routing integration
+              re-syncs from Forward, so releasing them costs nothing the next
+              sync does not restore. Releasing deletes exactly the rows named
+              below - nothing else, and never the device itself.
             {% endblocktrans %}
-            {% for label, count in ownership.foreign_delete_blockers %}<code>{{ label }}</code>&nbsp;&times;&nbsp;{{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}
-          </li>
-          <li>{% trans "Then delete the device, here or from Prune uncovered devices on the owning sync; either releases the Forward records." %}</li>
-        </ol>
-        <p class="mb-0 small">
-          {% blocktrans trimmed %}
-            Records derived from Forward data are recreated by the next sync,
-            so deleting them is not a permanent loss. Anything you created by
-            hand is not — check before deleting. If you would rather we
-            confirm which is which, download the support bundle from the sync
-            page and send it: it carries these blockers and the counts behind
-            them.
-          {% endblocktrans %}
-        </p>
+          </p>
+          <form method="post" action="{{ ownership.release_blockers.url }}" class="mb-2"
+                onsubmit="return confirm('{% blocktrans %}Release the delete-blocking rows named below? This deletes them, not the device.{% endblocktrans %}');">
+            {% csrf_token %}
+            <input type="hidden" name="device" value="{{ ownership.device_pk }}">
+            <input type="hidden" name="expected_blockers_json" value="{{ ownership.release_blockers.expected_blockers_json }}">
+            <p class="mb-2">
+              {% for label, count in ownership.release_blockers.releasable %}<code>{{ label }}</code>&nbsp;&times;&nbsp;{{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}
+            </p>
+            <button type="submit" class="btn btn-sm btn-warning">
+              <i class="mdi mdi-lock-open-variant-outline" aria-hidden="true"></i>&nbsp;{% trans "Release these rows" %}
+            </button>
+          </form>
+          <p class="mb-0 small">
+            {% trans "Once released, delete the device here or from Prune uncovered devices on the owning sync." %}
+          </p>
+        {% else %}
+          <p class="mb-1">{% trans "To delete this device:" %}</p>
+          <ol class="mb-2">
+            <li>
+              {% blocktrans trimmed %}
+                Delete these records first, from the pages their own plugin
+                provides:
+              {% endblocktrans %}
+              {% for label, count in ownership.foreign_delete_blockers %}<code>{{ label }}</code>&nbsp;&times;&nbsp;{{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}
+            </li>
+            <li>{% trans "Then delete the device, here or from Prune uncovered devices on the owning sync; either releases the Forward records." %}</li>
+          </ol>
+          <p class="mb-0 small">
+            {% blocktrans trimmed %}
+              Records derived from Forward data are recreated by the next sync,
+              so deleting them is not a permanent loss. Anything you created by
+              hand is not — check before deleting. If you would rather we
+              confirm which is which, download the support bundle from the sync
+              page and send it: it carries these blockers and the counts behind
+              them.
+            {% endblocktrans %}
+          </p>
+        {% endif %}
       </div>
     {% endif %}
   </div>

@@ -558,6 +558,33 @@ BUTTON_JOB_SPECS = {
         "prune uncovered devices",
         "dcim.delete_device",
     ),
+    # A one-time repair for the duplicate device pairs a site-relabel left
+    # behind before the apply-path fix that stopped creating them. Deletes
+    # the newer (sync-created) copy and moves the older one to its site, so
+    # it takes the same permission as a prune even though it also updates a
+    # device.
+    "merge_site_relabel_duplicates": (
+        "forward_netbox.jobs.MergeSiteRelabelDuplicatesJob",
+        "merge site-relabel duplicates",
+        "dcim.delete_device",
+    ),
+    # Deletes routing policy catalogue entries (prefix, community and route
+    # map lists) that no device inside the sync's scope holds and that this
+    # sync provably created. Allowlisted to those six netbox_routing models.
+    "prune_out_of_scope_catalogue": (
+        "forward_netbox.jobs.PruneOutOfScopeCatalogueJob",
+        "prune out-of-scope routing policy",
+        "netbox_routing.delete_prefixlist",
+    ),
+    # Deletes only the specific netbox_routing (or other allowlisted-app) rows
+    # named on the device ownership panel as refusing a delete - never the
+    # device itself. Same permission as the prunes: it is preparing a device
+    # to be deleted, even though what it deletes belongs to another plugin.
+    "release_foreign_delete_blockers": (
+        "forward_netbox.jobs.ReleaseForeignDeleteBlockersJob",
+        "release foreign delete blockers",
+        "dcim.delete_device",
+    ),
     "tag_delete_eligible_ipam": (
         "forward_netbox.jobs.TagDeleteEligibleIpamJob",
         "tag delete-eligible IPAM",
@@ -658,7 +685,14 @@ def enqueue_button_job(
             raise JobAlreadyActive(active)
         # Both prune kinds delete devices; neither may run while a sync is
         # writing inventory. prune_uncovered was added without this block.
-        if kind in ("prune_orphans", "prune_uncovered"):
+        # release_foreign_delete_blockers deletes rows the routing-policy sync
+        # also writes via `_delete_by_coalesce` - same race, same guard.
+        if kind in (
+            "prune_orphans",
+            "prune_uncovered",
+            "release_foreign_delete_blockers",
+            "prune_out_of_scope_catalogue",
+        ):
             running_sync = (
                 sync.jobs.filter(
                     name__in=sync_run_job_names(sync),

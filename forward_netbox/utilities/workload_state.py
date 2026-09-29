@@ -658,6 +658,120 @@ def describe_delete_blockers(instance):
     return []
 
 
+# App labels this plugin is willing to auto-release a delete blocker from, on
+# an explicit, per-device operator confirmation naming the exact rows.
+# Deliberately narrow: `describe_delete_blockers` names every foreign PROTECT
+# relation, including ones on a customer's own manually-authored data (a
+# netbox_dlm or netbox_cisco_aci record deserves the same scrutiny a device
+# does), so this does not become a blanket release for anything it can name.
+# Just the routing integration this plugin populates and re-syncs from
+# Forward itself, where a stale row costs nothing the next sync does not
+# restore.
+RELEASABLE_FOREIGN_APP_LABELS = frozenset({"netbox_routing"})
+
+_RELEASE_ITERATION_CAP = 25
+
+
+class ForeignDeleteBlockerNotAllowlisted(RuntimeError):
+    """A blocker outside `RELEASABLE_FOREIGN_APP_LABELS` stopped the release.
+
+    Carries the blocking label/count so the caller can tell the operator
+    exactly what still needs a manual delete elsewhere - the same thing
+    `describe_delete_blockers` would have shown them.
+    """
+
+    def __init__(self, label, count):
+        super().__init__(
+            f"{count} {label} row(s) block this delete and are not in the "
+            "release allowlist."
+        )
+        self.label = label
+        self.count = count
+
+
+class ForeignDeleteBlockerSafetyCapExceeded(RuntimeError):
+    """The release loop did not converge within its bounded iteration cap.
+
+    Django's on_delete graph cannot cycle, so this should be unreachable; it
+    exists so a future allowlisted model with an unexpectedly deep chain
+    stops the job instead of looping.
+    """
+
+
+def release_foreign_delete_blockers(instance, *, allowed_app_labels=None):
+    """Delete exactly the allowlisted rows that would refuse this delete.
+
+    Re-runs the same ``Collector.collect`` walk `describe_delete_blockers`
+    reads, but instead of reporting the first protected relation it finds,
+    deletes those specific rows - only if every one of them belongs to an app
+    in `allowed_app_labels` - and collects again, until the walk finds
+    nothing left protecting `instance` or it meets a blocker outside the
+    allowlist. Everything happens in one transaction: hitting a
+    non-allowlisted blocker partway through rolls back whatever was already
+    released, so a refused release never leaves a device half-cleared.
+
+    Never deletes `instance` itself - only the rows that were refusing ITS
+    delete. The caller still performs, or declines to perform, the actual
+    delete afterward.
+
+    Returns ``{label: count}`` for every model actually released. Raises
+    `ForeignDeleteBlockerNotAllowlisted` (naming the blocker that stopped it)
+    or `ForeignDeleteBlockerSafetyCapExceeded`.
+    """
+    from django.db import DEFAULT_DB_ALIAS
+    from django.db.models.deletion import Collector
+    from django.db.models.deletion import ProtectedError
+    from django.db.models.deletion import RestrictedError
+
+    allowed_app_labels = frozenset(allowed_app_labels or RELEASABLE_FOREIGN_APP_LABELS)
+    released = {}
+
+    def _release_blockers(exc):
+        blockers = list(
+            getattr(exc, "protected_objects", None)
+            or getattr(exc, "restricted_objects", None)
+            or []
+        )
+        if not blockers:
+            raise exc
+        model = type(blockers[0])
+        if model._meta.app_label not in allowed_app_labels:
+            raise ForeignDeleteBlockerNotAllowlisted(
+                model._meta.label, len(blockers)
+            ) from exc
+        pks = [obj.pk for obj in blockers]
+        _delete_releasing(model.objects.filter(pk__in=pks))
+        released[model._meta.label] = released.get(model._meta.label, 0) + len(pks)
+
+    def _delete_releasing(queryset):
+        # A released row can itself be blocked one level deeper (an
+        # OSPFInterface protecting an OSPFInstance, say); resolve that before
+        # retrying this delete, rather than surfacing it as a fresh error.
+        for _ in range(_RELEASE_ITERATION_CAP):
+            try:
+                queryset.delete()
+            except (ProtectedError, RestrictedError) as exc:
+                _release_blockers(exc)
+                continue
+            return
+        raise ForeignDeleteBlockerSafetyCapExceeded(
+            f"Did not converge after {_RELEASE_ITERATION_CAP} rounds."
+        )
+
+    with transaction.atomic():
+        for _ in range(_RELEASE_ITERATION_CAP):
+            collector = Collector(using=DEFAULT_DB_ALIAS)
+            try:
+                collector.collect([instance])
+            except (ProtectedError, RestrictedError) as exc:
+                _release_blockers(exc)
+                continue
+            return released
+        raise ForeignDeleteBlockerSafetyCapExceeded(
+            f"Did not converge after {_RELEASE_ITERATION_CAP} rounds."
+        )
+
+
 def _claimed_device_delete_identities(delete_entries):
     from ..models import (
         ForwardDeviceIdentity,
@@ -789,6 +903,13 @@ def _owned_device_rows(sync, coalesce_fields):
 # decides what is deleted.
 CATALOG_SWEEP_MODELS = frozenset({"netbox_dlm.softwareversion"})
 
+# The device ownership/quarantine sweep's own bespoke gate operates on
+# `dcim.device` alone. Named here (rather than left as a bare string at its
+# call site) so a cross-module invariant test can assert it, like
+# `CATALOG_SWEEP_MODELS`, is always a model the generic delete producers
+# refuse outright - see test_diff_removal_allowlist.py.
+DEVICE_OWNERSHIP_SWEEP_MODELS = frozenset({"dcim.device"})
+
 
 def _software_version_catalog_rows(sync):
     """Software versions this sync can attribute to itself, as catalogue rows.
@@ -918,27 +1039,55 @@ def apply_durable_workload_deltas(sync, workloads):
     summaries = []
     for model_string, positions in positions_by_model.items():
         model_workloads = [workloads[position] for position in positions]
-        if not all(
-            workload.sync_mode == "full" for workload in model_workloads
-        ) or not any(bool(workload.query_parameters) for workload in model_workloads):
+        # Every FULL-mode workload for this model consolidates together
+        # (parameterized or not - a parameterless full map has always shared
+        # durable state with a parameterized sibling); the group only needs
+        # at least one parameterized member to trigger consolidation at all.
+        full_mode_positions = [
+            position
+            for position, workload in zip(positions, model_workloads)
+            if workload.sync_mode == "full"
+        ]
+        full_mode_workloads = [workloads[position] for position in full_mode_positions]
+        if not full_mode_workloads or not any(
+            bool(workload.query_parameters) for workload in full_mode_workloads
+        ):
             continue
-        coalesce_fields = model_workloads[0].coalesce_fields
+        # A model can have more than one enabled map (e.g. dcim.inventoryitem's
+        # three built-in maps). One map may fall back to a parameterized full
+        # fetch this run (no established diff baseline for its own contract key
+        # yet) while a sibling map is diff-eligible - that sibling's own
+        # workload is intentionally left OUT of consolidation below ("native
+        # Forward diffs remain untouched"), but its current upsert rows are
+        # still proof the identity exists, and a delete staged from the full
+        # map's stale cross-map-union baseline must not go through for it.
+        sibling_positions = [
+            position for position in positions if position not in full_mode_positions
+        ]
+        sibling_workloads = [workloads[position] for position in sibling_positions]
+
+        coalesce_fields = full_mode_workloads[0].coalesce_fields
         if any(
             workload.coalesce_fields != coalesce_fields
-            for workload in model_workloads[1:]
+            for workload in full_mode_workloads[1:]
         ):
             raise ForwardQueryError(
                 f"Parameterized full maps for `{model_string}` disagree on durable identity."
             )
 
-        target_rows = _merge_rows(model_workloads, "upsert_rows")
+        sibling_entries = build_state_entries(
+            model_string,
+            _merge_rows(sibling_workloads, "upsert_rows"),
+            coalesce_fields,
+        )
+        target_rows = _merge_rows(full_mode_workloads, "upsert_rows")
         target_entries = build_state_entries(
             model_string,
             target_rows,
             coalesce_fields,
         )
-        parameter_hash = _parameter_hash(model_workloads)
-        identity_contract_hash = _identity_contract_hash(model_workloads)
+        parameter_hash = _parameter_hash(full_mode_workloads)
+        identity_contract_hash = _identity_contract_hash(full_mode_workloads)
         current_state = _load_current_state(sync, model_string)
         compatible = bool(
             current_state is not None
@@ -948,7 +1097,7 @@ def apply_durable_workload_deltas(sync, workloads):
 
         explicit_deletes = _deduplicate_rows(
             model_string,
-            _merge_rows(model_workloads, "delete_rows"),
+            _merge_rows(full_mode_workloads, "delete_rows"),
             coalesce_fields,
         )
         bootstrap_delete_identities = set()
@@ -1088,6 +1237,8 @@ def apply_durable_workload_deltas(sync, workloads):
         )
         for identity in target_entries:
             explicit_delete_entries.pop(identity, None)
+        for identity in sibling_entries:
+            explicit_delete_entries.pop(identity, None)
         protected_identities, unrepresented_peer, _ = _peer_delete_protection(
             sync,
             model_string,
@@ -1129,7 +1280,9 @@ def apply_durable_workload_deltas(sync, workloads):
                     "action": "delete",
                 }
                 for identity, value in previous_entries.items()
-                if value["action"] == "upsert" and identity not in target_entries
+                if value["action"] == "upsert"
+                and identity not in target_entries
+                and identity not in sibling_entries
             }
             proposed_missing_count = len(missing_entries)
             missing_reference_protected = _locally_referenced_delete_identities(
@@ -1187,8 +1340,8 @@ def apply_durable_workload_deltas(sync, workloads):
                 row_count=len(target_entries),
             )
         )
-        first = model_workloads[0]
-        replacements[positions[0]] = replace(
+        first = full_mode_workloads[0]
+        replacements[full_mode_positions[0]] = replace(
             first,
             label=f"{model_string} | durable parameterized workload",
             upsert_rows=changed_rows,
@@ -1197,7 +1350,11 @@ def apply_durable_workload_deltas(sync, workloads):
             execution_mode="local_delta" if compatible else first.execution_mode,
             execution_value=model_string,
         )
-        removed_positions.update(positions[1:])
+        # Sibling (non-full-parameterized) positions - e.g. a diff-eligible
+        # map for the same model - are left in `workloads` untouched; only
+        # the OTHER full-parameterized maps collapse into the one replacement
+        # above.
+        removed_positions.update(full_mode_positions[1:])
         summaries.append(
             {
                 "model": model_string,

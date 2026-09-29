@@ -233,6 +233,100 @@ def _ensure_scope_tag(runner, name):
     return tag
 
 
+def _relabel_move_device(runner, name, site):
+    """The other-site device this row's device should be MOVED to, or None.
+
+    A device whose site was relabeled in Forward reports under the SAME name
+    at a DIFFERENT site than the one already stored. Matched on (name, site)
+    alone, that miss used to create a second device rather than move the
+    existing one - stranding the old copy (still holding its primary IP, any
+    manual cables/journal) with no Forward-side match ever again.
+
+    Mirrors `_case_variant_device`: reads only, and raises `ForwardSearchError`
+    - the established "hold, don't guess" signal - whenever it cannot prove
+    which device the row means, rather than risking a second create.
+    `ForwardDeviceIdentity` is this sync's own record of which NetBox device
+    it means by a given name; identity is finalized in main, so it is read
+    there the same way `sync_ipam._release_plan` reads ownership proof.
+    """
+    from dcim.models import Device
+
+    from ..exceptions import ForwardSearchError
+    from ..models import ForwardDeviceIdentity
+
+    if not name or site is None or getattr(site, "pk", None) is None:
+        return None
+    candidates = list(Device.objects.filter(name__iexact=name).exclude(site=site))
+    if not candidates:
+        return None
+    # `runner.sync` is a stand-in object (no real pk) for callers with no
+    # sync - the dependency preview's structural checks, for one. A `Mock`'s
+    # auto-generated `.pk` is a Mock, not None, so `is not None` alone is not
+    # enough; a real sync always has an integer pk. There is nothing to bind
+    # a name to without one, so this reads as unbound rather than let the ORM
+    # try to filter a FK on a non-integer value.
+    sync_pk = getattr(runner.sync, "pk", None)
+    bound_pk = (
+        ForwardDeviceIdentity.objects.using("default")
+        .filter(sync_id=sync_pk, source_device_key=name)
+        .values_list("device_id", flat=True)
+        .first()
+        if isinstance(sync_pk, int)
+        else None
+    )
+    if bound_pk is not None:
+        for device in candidates:
+            if device.pk == bound_pk:
+                return device
+        raise ForwardSearchError(
+            f"Device `{name}`'s identity binding does not match any "
+            f"same-named NetBox device at another site.",
+            model_string="dcim.device",
+            context={"name": name, "site": site.name},
+        )
+    if len(candidates) > 1:
+        raise ForwardSearchError(
+            f"`{name}` exists at {len(candidates)} other NetBox sites with no "
+            f"identity binding to say which one Forward's site relabel means.",
+            model_string="dcim.device",
+            context={"name": name, "site": site.name},
+        )
+    candidate = candidates[0]
+    if (
+        ForwardDeviceIdentity.objects.using("default")
+        .filter(device_id=candidate.pk)
+        .exists()
+    ):
+        raise ForwardSearchError(
+            f"The only same-named device for `{name}` at another site "
+            f"(pk {candidate.pk}) is bound to a different sync's identity.",
+            model_string="dcim.device",
+            context={"name": name, "site": site.name},
+        )
+    return candidate
+
+
+def _case_variant_device(runner, name, site):
+    """The device in `site` whose name differs from `name` only by case.
+
+    NetBox treats `CORE-SW-01` and `core-sw-01` in one site as the same device
+    (`dcim_device_unique_name_site_tenant` is `Lower("name"), "site", "tenant"`), but the
+    coalesce lookup matches names exactly - so a hostname whose case changed
+    was looked up, missed, and created again, which the constraint refuses.
+
+    Exact first, always: a device that matches exactly is left to the normal
+    path, and two case variants in one site raise rather than guess. Reads
+    only, through the runner, so the dependency preview stays read-only.
+    """
+    from dcim.models import Device
+
+    if not name or site is None or getattr(site, "pk", None) is None:
+        return None
+    if runner._get_unique_or_raise(Device, {"name": name, "site": site}) is not None:
+        return None
+    return runner._get_unique_or_raise(Device, {"name__iexact": name, "site": site})
+
+
 def apply_dcim_device(runner, row):
     from dcim.models import Device
 
@@ -289,14 +383,25 @@ def apply_dcim_device(runner, row):
             ),
         )
 
+    coalesce_sets = runner._coalesce_sets_for("dcim.device", [("name", "site")])
+    case_variant = _case_variant_device(runner, row["name"], site)
+    # Site relabel is checked only when no device already matches at THIS
+    # site (case variant included) - an exact or case-only match here always
+    # wins, same as the bulk path.
+    matched_existing = case_variant
+    if matched_existing is None:
+        matched_existing = _relabel_move_device(runner, row["name"], site)
+    if matched_existing is not None:
+        # Same device by Forward's own reckoning (a case-only rename, or a
+        # site relabel), matched by primary key so the upsert updates it
+        # instead of creating a second one.
+        defaults = {**defaults, "id": matched_existing.pk}
+        coalesce_sets = [["id"], *coalesce_sets]
     device, created = runner._upsert_values_from_defaults(
         "dcim.device",
         Device,
         values=defaults,
-        coalesce_sets=runner._coalesce_sets_for(
-            "dcim.device",
-            [("name", "site")],
-        ),
+        coalesce_sets=coalesce_sets,
     )
     record_device_identity_candidate(runner, device)
     if not created and getattr(device, "pk", None) is not None:

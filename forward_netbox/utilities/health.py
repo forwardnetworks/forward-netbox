@@ -233,74 +233,103 @@ _BASE_VARIANT_QUERY_PAIRS = (
 def _fast_path_runtime_check():
     """Say when the fast paths are switched off, and by what.
 
-    Three subsystems refuse to run unless the installed plugin set exactly
-    matches a validated tuple: the COPY/SQL apply engine, the set-based merge,
-    and the fast baseline. Failing closed is right - their SQL is generated
-    against a known schema - but the consequence is invisible. Installing any
-    NetBox plugin this release has not validated silently costs a deployment
-    all three, and for the fast baseline that is a first sync taking hours
-    instead of minutes, with no error raised anywhere and nothing in the UI
-    that mentions it.
+    Three subsystems refuse to run outside a validated runtime: the COPY/SQL
+    apply engine, the set-based merge, and the fast baseline. Failing closed
+    is right - their SQL is generated against a known schema - but the
+    consequence is invisible: for the fast baseline, a first sync taking hours
+    instead of minutes, with no error anywhere.
 
-    The decision objects already carry the reason. Nothing surfaced it, so the
-    only way to discover it was to notice a sync being slow and go reading
-    engine internals. This check names the unexpected plugins - the actionable
-    part - rather than dumping both tuples.
+    Reads each subsystem's own decision rather than re-deriving it, so this
+    row cannot disagree with what the engines will actually do. A validated
+    optional plugin that is not installed does not disable anything (it adds
+    no tables, receivers or triggers); an installed plugin nobody validated,
+    or an installed optional plugin at an unvalidated version, does.
 
-    Returns None when every fast path is available, which is the ordinary case
-    and needs no row on the page.
+    Returns None when every fast path is available.
     """
     from django.conf import settings
 
-    from .apply_engine_decision import COPY_SQL_SUPPORTED_PLUGIN_APPS
+    from .apply_engine_decision import _copy_sql_runtime_supported
     from .fast_baseline import _runtime_decision as _fast_baseline_runtime_decision
-    from .merge_set_based import SET_BASED_MERGE_SUPPORTED_PLUGIN_APPS
-    from .validated_runtime import missing_plugin_apps
-    from .validated_runtime import unexpected_plugin_apps
+    from .fast_baseline import fast_baseline_runtime_tuple
+    from .merge_set_based import _runtime_tuple_decision
+    from .validated_runtime import plugin_runtime_mismatch
 
-    actual_apps = frozenset(getattr(settings, "PLUGINS", ()) or ())
     disabled = []
+    reasons = []
 
-    try:
-        baseline = _fast_baseline_runtime_decision()
-        if not baseline.enabled and baseline.reason_code == "unsupported_runtime_tuple":
-            disabled.append("the fast baseline (first sync takes hours, not minutes)")
-    except JobTimeoutException:
-        raise
-    except Exception:  # noqa: BLE001 - a health check must not break the page
-        pass
+    def consider(label, enabled, reason):
+        if not enabled:
+            disabled.append(label)
+            reasons.append(reason)
 
-    if actual_apps != COPY_SQL_SUPPORTED_PLUGIN_APPS:
-        disabled.append("the COPY/SQL apply engine")
-    if actual_apps != SET_BASED_MERGE_SUPPORTED_PLUGIN_APPS:
-        disabled.append("the set-based merge")
+    def fast_baseline():
+        decision = _fast_baseline_runtime_decision()
+        return (
+            decision.enabled or decision.reason_code != "unsupported_runtime_tuple",
+            decision.reason_code,
+        )
+
+    def copy_sql():
+        ok, reason, _detail = _copy_sql_runtime_supported()
+        return ok, reason
+
+    def set_based_merge():
+        decision = _runtime_tuple_decision()
+        return decision.enabled, decision.reason_code
+
+    # Each engine on its own: one broken probe must not hide the others.
+    for label, decide in (
+        ("the fast baseline (first sync takes hours, not minutes)", fast_baseline),
+        ("the COPY/SQL apply engine", copy_sql),
+        ("the set-based merge", set_based_merge),
+    ):
+        try:
+            enabled, reason = decide()
+        except JobTimeoutException:
+            raise
+        except Exception:  # noqa: BLE001 - a health check must not break the page
+            continue
+        consider(label, enabled, reason)
 
     if not disabled:
         return None
 
-    # The declaration's own helpers, rather than re-deriving the comparison
-    # here: this check exists because the validated set used to be spelled out
-    # in several places, and adding another spelling would be the same mistake.
-    unexpected = unexpected_plugin_apps(actual_apps)
-    missing = missing_plugin_apps(actual_apps)
     causes = []
-    if unexpected:
-        causes.append(
-            "installed plugins this release has not validated: "
-            + ", ".join(f"`{name}`" for name in unexpected)
+    mismatch = None
+    try:
+        probe = fast_baseline_runtime_tuple()
+        mismatch = plugin_runtime_mismatch(
+            getattr(settings, "PLUGINS", ()) or (), probe["optional_plugins"]
         )
-    if missing:
-        causes.append(
-            "validated plugins that are not installed: "
-            + ", ".join(f"`{name}`" for name in missing)
-        )
+    except JobTimeoutException:
+        raise
+    except Exception:  # noqa: BLE001
+        mismatch = None
+    if mismatch is not None:
+        reason, detail = mismatch
+        if detail.get("unexpected"):
+            causes.append(
+                "installed plugins this release has not validated: "
+                + ", ".join(f"`{name}`" for name in detail["unexpected"])
+            )
+        if detail.get("missing_required"):
+            causes.append(
+                "required plugins that are not installed: "
+                + ", ".join(f"`{name}`" for name in detail["missing_required"])
+            )
+        if reason == "unsupported_optional_plugin_version":
+            causes.append(
+                f"`{detail['distribution']}` {detail['actual'] or 'unknown'} is "
+                "not a validated version ("
+                + ", ".join(sorted(detail["expected"]))
+                + ")"
+            )
     if not causes:
-        # The app set matches but a VERSION does not, which the subsystems
-        # report separately; say so rather than implying the plugin list is
-        # wrong.
         causes.append(
-            "an optional plugin version outside the validated set (the plugin "
-            "list itself matches)"
+            "the runtime is outside the validated NetBox / Branching series ("
+            + ", ".join(sorted(set(reasons)))
+            + ")"
         )
 
     return _check(
@@ -311,11 +340,245 @@ def _fast_path_runtime_check():
             + "; ".join(disabled)
             + ". Cause: "
             + "; ".join(causes)
-            + ". These subsystems require an exact runtime match and fail "
-            "closed, so syncs still succeed - only more slowly, and with no "
-            "other warning."
+            + ". These subsystems fail closed outside a validated runtime, so "
+            "syncs still succeed - only more slowly, and with no other warning."
         ),
     )
+
+
+def config_backup_delivery_state(sync):
+    """The value-free facts behind config-backup delivery, or None when off.
+
+    Single source of truth for two tiers: `_config_backup_delivery_check`
+    turns this into an operator-facing (value-carrying) message for the GUI,
+    and `config_backup_delivery_bundle_payload` exports it as-is - booleans,
+    pks and a timestamp, never a data source name or a custom-field value -
+    so the export tier never needs to re-derive or separately redact this.
+    """
+    from .config_backup import CONFIG_BACKUP_PARAMETER_NAME
+    from .config_backup import CONFIG_BACKUP_REPO_PREFIX
+
+    source_parameters = getattr(getattr(sync, "source", None), "parameters", None) or {}
+    data_source_pk = source_parameters.get(CONFIG_BACKUP_PARAMETER_NAME)
+    if not data_source_pk:
+        return None
+
+    from django.apps import apps as django_apps
+
+    from core.models import DataSource
+
+    state = {
+        "data_source_pk": data_source_pk,
+        "data_source_exists": False,
+        "data_source_name": None,
+        "branch_parameter_set": None,
+        "last_synced": None,
+        "validity_installed": django_apps.is_installed("validity"),
+        "device_config_path_set": None,
+        "device_config_path_matches_prefix": None,
+        "bound_via_tenant_or_default": None,
+        "tenant_binding_check_errored": False,
+        "url_scheme": None,
+        "credentials_set": None,
+        "proxy_applies": None,
+        "proxy_kind": None,
+        "proxy_config_errored": False,
+        "env_proxy_set": _env_proxy_set(),
+        **_last_config_backup_run(sync),
+    }
+
+    data_source = DataSource.objects.filter(pk=data_source_pk).first()
+    if data_source is None:
+        return state
+    state.update(_config_backup_transport_facts(data_source))
+
+    state["data_source_exists"] = True
+    # Not exported: the delivery bundle payload keeps this key off its export
+    # (see `config_backup_delivery_bundle_payload`). Kept here because the GUI
+    # check message names the data source.
+    state["data_source_name"] = data_source.name
+    state["branch_parameter_set"] = bool((data_source.parameters or {}).get("branch"))
+    state["last_synced"] = data_source.last_synced
+
+    if state["validity_installed"]:
+        expected_prefix = f"{CONFIG_BACKUP_REPO_PREFIX}/"
+        template = (data_source.custom_field_data or {}).get("device_config_path") or ""
+        state["device_config_path_set"] = bool(template)
+        # The layout this plugin writes is `configs/<netbox name>.cfg`; a
+        # template can reach it through filters, but it cannot without both.
+        state["device_config_path_matches_prefix"] = (
+            expected_prefix in template and ".cfg" in template
+        )
+        state["_expected_prefix"] = expected_prefix  # GUI message only
+        state["_device_config_path"] = template  # GUI message only
+        try:
+            from tenancy.models import Tenant
+
+            # Validity casts this value out of JSON, so NetBox may have
+            # stored it as a number or as a string depending on how it was
+            # set. Matching only one produces a confident FALSE warning that
+            # the binding is missing when it is right there.
+            bound = (
+                Tenant.objects.filter(
+                    custom_field_data__data_source=data_source.pk
+                ).exists()
+                or Tenant.objects.filter(
+                    custom_field_data__data_source=str(data_source.pk)
+                ).exists()
+            )
+            default = DataSource.objects.filter(
+                custom_field_data__default=True
+            ).exists()
+            state["bound_via_tenant_or_default"] = bound or default
+        except JobTimeoutException:
+            raise
+        except Exception:  # noqa: BLE001 - a health check must never fail a page
+            state["tenant_binding_check_errored"] = True
+
+    return state
+
+
+CONFIG_BACKUP_DEVICE_CONFIG_PATH = "configs/{{device.name}}.cfg"
+_URL_SCHEMES = {"http", "https", "ssh", "git", "file"}
+_ENV_PROXY_NAMES = (
+    "https_proxy",
+    "HTTPS_PROXY",
+    "http_proxy",
+    "HTTP_PROXY",
+    "all_proxy",
+    "ALL_PROXY",
+)
+
+
+def _env_proxy_set():
+    """dulwich honours these ahead of NetBox's configured proxy."""
+    import os
+
+    return any(os.environ.get(name) for name in _ENV_PROXY_NAMES)
+
+
+def _config_backup_transport_facts(data_source):
+    """Value-free facts about how config backup reaches the repository."""
+    from .config_backup import _remote_connection
+    from .config_backup import _url_scheme
+    from .config_backup import ConfigBackupError
+
+    scheme = _url_scheme(data_source.source_url)
+    facts = {
+        "url_scheme": (
+            scheme if scheme in _URL_SCHEMES else ("path" if not scheme else "other")
+        ),
+        "credentials_set": bool((data_source.parameters or {}).get("username")),
+        "proxy_applies": False,
+        "proxy_kind": None,
+        "proxy_config_errored": False,
+    }
+    try:
+        connection = _remote_connection(data_source)
+    except JobTimeoutException:
+        raise
+    except ConfigBackupError:
+        facts["proxy_config_errored"] = True
+        return facts
+    except Exception:  # noqa: BLE001 - a health check must never fail a page
+        facts["proxy_applies"] = None
+        return facts
+    if connection.socks_proxy:
+        facts.update(proxy_applies=True, proxy_kind="socks")
+    elif connection.proxy:
+        facts.update(proxy_applies=True, proxy_kind="http")
+    return facts
+
+
+def _last_config_backup_run(sync):
+    """The latest config-backup job's status and, if it failed, where and why.
+
+    Only closed tokens leave here: the stage must be a declared stage and the
+    category a declared category (or `http_NNN` / `other:<ExceptionType>`),
+    so a value that is not one of them is reported as `other` rather than
+    carried through.
+    """
+    import re
+
+    from core.models import Job
+    from django.contrib.contenttypes.models import ContentType
+
+    from ..models import ForwardSync
+    from .config_backup import CONFIG_BACKUP_FAILURE_CATEGORIES
+    from .config_backup import CONFIG_BACKUP_STAGES
+
+    empty = {
+        "last_run_status": None,
+        "last_run_at": None,
+        "last_failure_stage": None,
+        "last_failure_category": None,
+    }
+    try:
+        job = (
+            Job.objects.filter(
+                object_type=ContentType.objects.get_for_model(ForwardSync),
+                object_id=sync.pk,
+                name__icontains="config backup",
+            )
+            .order_by("-created", "-pk")
+            .first()
+        )
+    except JobTimeoutException:
+        raise
+    except Exception:  # noqa: BLE001 - a health check must never fail a page
+        return empty
+    if job is None:
+        return empty
+    data = job.data if isinstance(job.data, dict) else {}
+    stage = data.get("stage")
+    category = data.get("failure_category")
+    if category is not None and not (
+        category in CONFIG_BACKUP_FAILURE_CATEGORIES
+        or re.fullmatch(r"http_\d{3}", str(category))
+        or re.fullmatch(r"other:[A-Za-z_][A-Za-z0-9_]*", str(category))
+    ):
+        category = "other"
+    return {
+        "last_run_status": str(job.status or "") or None,
+        "last_run_at": job.completed or job.created,
+        "last_failure_stage": stage if stage in CONFIG_BACKUP_STAGES else None,
+        "last_failure_category": category,
+    }
+
+
+def _config_backup_failure_sentence(state):
+    from .config_backup import CONFIG_BACKUP_FAILURE_CATEGORIES
+
+    category = state.get("last_failure_category")
+    if not category:
+        return None
+    if category.startswith("http_"):
+        reason = f"the remote answered HTTP {category[5:]}"
+    elif category.startswith("other:"):
+        reason = f"an unexpected {category[6:]}"
+    else:
+        reason = CONFIG_BACKUP_FAILURE_CATEGORIES.get(category, category)
+    stage = state.get("last_failure_stage") or "an unknown stage"
+    sentence = f"the last backup failed at {stage}: {reason}"
+    if state.get("proxy_applies") and category in (
+        "non_git_response",
+        "redirect",
+        "proxy_connect",
+        "http_403",
+    ):
+        sentence += (
+            " - NetBox applies a proxy to this url; check it allows the repository"
+        )
+    elif not state.get("proxy_applies") and category in (
+        "connection_refused",
+        "timeout",
+        "dns",
+    ):
+        sentence += (
+            " - no NetBox proxy applies to this url; if NetBox reaches the "
+            "repository through a proxy, set HTTP_PROXIES"
+        )
+    return sentence
 
 
 def _config_backup_delivery_check(sync):
@@ -336,20 +599,11 @@ def _config_backup_delivery_check(sync):
     the failure this check exists to name, because nothing else in either
     product will. Returns None when config backup is not enabled.
     """
-    from .config_backup import CONFIG_BACKUP_PARAMETER_NAME
-    from .config_backup import CONFIG_BACKUP_REPO_PREFIX
-
-    source_parameters = getattr(getattr(sync, "source", None), "parameters", None) or {}
-    data_source_pk = source_parameters.get(CONFIG_BACKUP_PARAMETER_NAME)
-    if not data_source_pk:
+    state = config_backup_delivery_state(sync)
+    if state is None:
         return None
 
-    from django.apps import apps as django_apps
-
-    from core.models import DataSource
-
-    data_source = DataSource.objects.filter(pk=data_source_pk).first()
-    if data_source is None:
+    if not state["data_source_exists"]:
         return _check(
             name="Config backup delivery",
             status="warn",
@@ -360,55 +614,45 @@ def _config_backup_delivery_check(sync):
         )
 
     problems = []
-    if data_source.last_synced is None:
+    if state["last_synced"] is None:
         problems.append(
-            f"data source “{data_source.name}” has never synced, so its files "
-            "are not visible to anything reading it"
+            f"data source “{state['data_source_name']}” has never synced, so "
+            "its files are not visible to anything reading it"
         )
 
-    if django_apps.is_installed("validity"):
-        expected_prefix = f"{CONFIG_BACKUP_REPO_PREFIX}/"
-        template = (data_source.custom_field_data or {}).get("device_config_path") or ""
-        if not template:
+    if state["validity_installed"]:
+        expected_prefix = state["_expected_prefix"]
+        if not state["device_config_path_set"]:
             problems.append(
                 "Validity is installed but the data source has no "
                 "`device_config_path`, so Validity cannot locate any device's "
-                f"configuration (this plugin writes `{expected_prefix}"
-                "<device-name>.cfg`)"
+                "configuration - set it to "
+                f"`{CONFIG_BACKUP_DEVICE_CONFIG_PATH}`"
             )
-        elif expected_prefix not in template:
+        elif not state["device_config_path_matches_prefix"]:
             problems.append(
-                f"the data source's `device_config_path` (“{template}”) does "
-                f"not point at `{expected_prefix}`, where this plugin writes"
+                "the data source's `device_config_path` "
+                f"(“{state['_device_config_path']}”) does not match where this "
+                f"plugin writes (`{expected_prefix}<device name>.cfg`) - set it "
+                f"to `{CONFIG_BACKUP_DEVICE_CONFIG_PATH}`"
             )
-        try:
-            from tenancy.models import Tenant
+        if (
+            not state["tenant_binding_check_errored"]
+            and state["bound_via_tenant_or_default"] is False
+        ):
+            problems.append(
+                "no tenant binds devices to this data source and no data "
+                "source is marked `default`, so Validity will not read it "
+                "for any device"
+            )
 
-            # Validity casts this value out of JSON, so NetBox may have
-            # stored it as a number or as a string depending on how it was
-            # set. Matching only one produces a confident FALSE warning that
-            # the binding is missing when it is right there.
-            bound = (
-                Tenant.objects.filter(
-                    custom_field_data__data_source=data_source.pk
-                ).exists()
-                or Tenant.objects.filter(
-                    custom_field_data__data_source=str(data_source.pk)
-                ).exists()
-            )
-            default = DataSource.objects.filter(
-                custom_field_data__default=True
-            ).exists()
-            if not bound and not default:
-                problems.append(
-                    "no tenant binds devices to this data source and no data "
-                    "source is marked `default`, so Validity will not read it "
-                    "for any device"
-                )
-        except JobTimeoutException:
-            raise
-        except Exception:  # noqa: BLE001 - a health check must never fail a page
-            pass
+    failure = (
+        _config_backup_failure_sentence(state)
+        if state.get("last_run_status") in ("errored", "failed")
+        else None
+    )
+    if failure:
+        problems.insert(0, failure)
 
     if problems:
         return _check(
@@ -420,10 +664,149 @@ def _config_backup_delivery_check(sync):
         name="Config backup delivery",
         status="pass",
         message=(
-            f"Config backup writes to “{data_source.name}”, which has synced "
-            "at least once and is reachable by its consumers. Whether that "
-            "sync is newer than the most recent backup commit is not checked "
-            "here."
+            f"Config backup writes to “{state['data_source_name']}”, which "
+            "has synced at least once and is reachable by its consumers. "
+            "Whether that sync is newer than the most recent backup commit "
+            "is not checked here."
+        ),
+    )
+
+
+def config_backup_delivery_bundle_payload(sync):
+    """Value-free export of `config_backup_delivery_state`.
+
+    No data source name, no `device_config_path` text - pks, booleans and a
+    timestamp only. Answers exactly what blocked a customer's own delivery
+    chain (an unset `branch` parameter, a data source that never synced, a
+    missing Validity binding) without a diagnostic script.
+    """
+    state = config_backup_delivery_state(sync)
+    if state is None:
+        return {"enabled": False}
+    return {
+        "enabled": True,
+        "data_source_pk": state["data_source_pk"],
+        "data_source_exists": state["data_source_exists"],
+        "branch_parameter_set": state["branch_parameter_set"],
+        "last_synced": (
+            state["last_synced"].isoformat() if state["last_synced"] else None
+        ),
+        "validity_installed": state["validity_installed"],
+        "device_config_path_set": state["device_config_path_set"],
+        "device_config_path_matches_prefix": state["device_config_path_matches_prefix"],
+        "bound_via_tenant_or_default": state["bound_via_tenant_or_default"],
+        "tenant_binding_check_errored": state["tenant_binding_check_errored"],
+        # How config backup reaches the repository - never the url or proxy.
+        "url_scheme": state["url_scheme"],
+        "credentials_set": state["credentials_set"],
+        "proxy_applies": state["proxy_applies"],
+        "proxy_kind": state["proxy_kind"],
+        "proxy_config_errored": state["proxy_config_errored"],
+        "env_proxy_set": state["env_proxy_set"],
+        # The latest run, as closed tokens.
+        "last_run_status": state["last_run_status"],
+        "last_run_at": (
+            state["last_run_at"].isoformat() if state["last_run_at"] else None
+        ),
+        "last_failure_stage": state["last_failure_stage"],
+        "last_failure_category": state["last_failure_category"],
+    }
+
+
+def _site_relabel_duplicates_check(sync):
+    """A standing prompt when duplicate devices left by a site relabel exist.
+
+    The repair is an operator action on Scope Reconciliation; without this the
+    only sign of a backlog was a card on that page, and a card that rendered
+    only when something was mergeable - so an estate whose every pair was held
+    showed nothing anywhere. Local reads only; the per-pair protecting scan is
+    skipped here and done by the merge itself.
+    """
+    from django.urls import reverse
+
+    from .scope_reconciliation import site_relabel_held_by_reason
+    from .scope_reconciliation import site_relabel_pairs
+
+    try:
+        report = site_relabel_pairs(sync, check_protecting=False)
+    except JobTimeoutException:
+        raise
+    except Exception:  # noqa: BLE001 - a health page must render regardless
+        return None
+    pair_count = len(report["pairs"])
+    held = site_relabel_held_by_reason(report)
+    if not pair_count and not held:
+        return None
+    parts = []
+    if pair_count:
+        parts.append(
+            f"{pair_count} duplicate device pair(s) left by a Forward site "
+            "relabel are ready to merge: Scope Reconciliation -> Merge "
+            "site-relabel duplicates keeps the older device (its primary IP "
+            "and history) at the site Forward reports, and deletes the copy."
+        )
+    for entry in held:
+        parts.append(f"{entry['count']} held because {entry['remedy']}.")
+    check = _check(
+        name="Site-relabel duplicates", status="warn", message=" ".join(parts)
+    )
+    check["url"] = reverse(
+        "plugins:forward_netbox:forwardsync_scope_reconciliation",
+        kwargs={"pk": sync.pk},
+    )
+    check["url_label"] = "Open Scope Reconciliation"
+    return check
+
+
+def _query_signature_drift_check(sync):
+    """Warn when a map's PUBLISHED query no longer accepts what we send.
+
+    `pip install -U` never rewrites a query already published into a
+    customer's Forward org - so a release that changes a bundled query's
+    `@query` parameter list breaks every execution against the stale
+    published copy with an HTTP 400
+    (`Provided argument, 'x' is not a parameter to the given query`), and
+    the operator sees only "dependency preview query validation failed for
+    N model(s)", never why. `parameter_signature_drift` (used by the
+    on-demand "Export Live Query Drift Check") already computes this; this
+    surfaces its last STORED result (`ForwardNQEMap.last_live_drift`, no
+    live Forward call here) as a standing Health warning so an operator
+    finds out before their next sync fails, not after.
+
+    Returns None when no map has ever been checked, or every checked map's
+    signature still matches.
+    """
+    mismatched = []
+    checked_count = 0
+    for query_map in sync.get_maps():
+        stored = query_map.last_live_drift or {}
+        if not stored:
+            continue
+        checked_count += 1
+        if stored.get("status") == "live_query_id_parameter_mismatch":
+            mismatched.append(query_map)
+    if not checked_count:
+        return None
+    if not mismatched:
+        return _check(
+            name="Published query signatures",
+            status="pass",
+            message=(
+                f"{checked_count} checked map(s) still accept the "
+                "parameters this release sends."
+            ),
+        )
+    names = ", ".join(sorted(m.model_string for m in mismatched)[:5])
+    if len(mismatched) > 5:
+        names += ", …"
+    return _check(
+        name="Published query signatures",
+        status="danger",
+        message=(
+            f"{len(mismatched)} map(s) ({names}) are bound to a published "
+            "query whose parameters no longer match what this release "
+            "sends - every execution against it will fail with HTTP 400. "
+            "Run Publish Bundled Queries to republish the current version."
         ),
     )
 
@@ -569,6 +952,12 @@ def sync_health_summary(sync):
     config_backup_check = _config_backup_delivery_check(sync)
     if config_backup_check is not None:
         checks.append(config_backup_check)
+    site_relabel_check = _site_relabel_duplicates_check(sync)
+    if site_relabel_check is not None:
+        checks.append(site_relabel_check)
+    query_signature_drift_check = _query_signature_drift_check(sync)
+    if query_signature_drift_check is not None:
+        checks.append(query_signature_drift_check)
     variant_conflict_check = _base_variant_conflict_check(sync)
     if variant_conflict_check is not None:
         checks.append(variant_conflict_check)

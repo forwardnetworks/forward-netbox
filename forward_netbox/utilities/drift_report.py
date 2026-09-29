@@ -237,6 +237,8 @@ def compute_drift_report(payload):
     total_apply_work = 0
     total_upsert_candidates = 0
     total_removes = 0
+    total_already_removed = 0
+    total_outside_scope_in_netbox = 0
     models_with_rows = 0
     full_create_like = 0
     for result in model_results or []:
@@ -266,6 +268,15 @@ def compute_drift_report(payload):
         total_apply_work += apply_work
         total_upsert_candidates += upsert_candidates
         total_removes += removes
+        # Neither is drift: Forward's declared removals the durable state had
+        # already applied, and routing policy no in-scope device holds. Shown
+        # beside the pending removals so the gap between Forward's count and
+        # this page's is explained rather than hidden.
+        already_removed = _count(result.get("already_removed_count"))
+        outside_scope = result.get("outside_scope_in_netbox_count")
+        total_already_removed += already_removed
+        if isinstance(outside_scope, int):
+            total_outside_scope_in_netbox += outside_scope
         # A model looks like a "full create" (empty/unmerged baseline) when every
         # Forward row is pending with nothing to remove.
         if forward_rows > 0:
@@ -279,6 +290,10 @@ def compute_drift_report(payload):
                 "forward_rows": result.get("row_count"),
                 "pending_changes": upsert_candidates,
                 "pending_removes": removes,
+                "already_removed": already_removed,
+                "outside_scope_in_netbox": (
+                    outside_scope if isinstance(outside_scope, int) else None
+                ),
                 "estimated_apply_work": apply_work,
                 "change_estimate_kind": estimate_kind,
                 "comparison_available": comparison_available,
@@ -371,6 +386,8 @@ def compute_drift_report(payload):
         "total_apply_work": total_apply_work,
         "total_upsert_candidates": total_upsert_candidates,
         "total_removes": total_removes,
+        "total_already_removed": total_already_removed,
+        "total_outside_scope_in_netbox": total_outside_scope_in_netbox,
         # "In sync" is a claim about the whole estate, so it stays unanswered
         # while any model is uncompared. Zero drift across the measured models
         # is reported as `total_drift`, which says what it covers; answering

@@ -1005,6 +1005,144 @@ def _prune_uncovered_devices_work(
         raise
 
 
+def _merge_site_relabel_duplicates_work(job):
+    """Repair existing site-relabel duplicate device pairs for this sync.
+
+    Same discipline as the prunes above: the pair list is recomputed inside
+    the job (`merge_site_relabel_duplicates` never trusts a caller-supplied
+    set as final), a fraction-guard failure is reported by name rather than
+    a bare class, and everything recorded is pks and counts - never a device
+    or site name.
+    """
+    from .utilities.scope_reconciliation import merge_site_relabel_duplicates
+    from .utilities.scope_reconciliation import SiteRelabelPairFractionGuardError
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    try:
+        result = merge_site_relabel_duplicates(sync)
+        job.data = {
+            "merged_count": result["merged_count"],
+            "merged_pairs": result["merged_pairs"],
+            "failed_count": result["failed_count"],
+            "failed_pairs": result["failed_pairs"],
+            "held_count": result["held_count"],
+        }
+        job.save(update_fields=["data"])
+    except SiteRelabelPairFractionGuardError as exc:
+        job.data = {"error": str(exc), "error_type": exception_type(exc)}
+        job.save(update_fields=["data"])
+        logger.error(
+            "Site-relabel duplicate merge refused a large candidate set (%s).",
+            exception_type(exc),
+        )
+        raise
+    except Exception as exc:
+        job.data = {
+            "error": safe_operation_failure("Site-relabel duplicate merge", exc),
+            "error_type": exception_type(exc),
+        }
+        job.save(update_fields=["data"])
+        raise
+
+
+def _prune_out_of_scope_catalogue_work(job):
+    """Delete routing policy entries no in-scope device holds, for this sync.
+
+    Operator-initiated only. The candidate set is recomputed from a fresh
+    Forward read inside the job, and only entries this sync provably created
+    are ever deleted - see `routing_catalogue_cleanup`. Records counts per
+    model and hold reasons, never a list name.
+    """
+    from .utilities.routing_catalogue_cleanup import CatalogueCleanupRefused
+    from .utilities.routing_catalogue_cleanup import prune_out_of_scope_catalogue
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    try:
+        job.data = {"models": prune_out_of_scope_catalogue(sync)}
+        job.save(update_fields=["data"])
+    except CatalogueCleanupRefused as exc:
+        job.data = {"refused": str(exc), "error_type": exception_type(exc)}
+        job.save(update_fields=["data"])
+        raise
+    except Exception as exc:
+        job.data = {
+            "error": safe_operation_failure("Routing policy cleanup", exc),
+            "error_type": exception_type(exc),
+        }
+        job.save(update_fields=["data"])
+        raise
+
+
+def _release_foreign_delete_blockers_work(
+    job, *, device_pk=None, expected_blockers=None
+):
+    """Release exactly the netbox_routing rows an operator saw on the device panel.
+
+    ``expected_blockers`` pins ``{label: count}`` as rendered when the
+    operator clicked. A fresh `describe_delete_blockers` that no longer
+    matches means something changed underneath them - another sync ran,
+    another operator acted - and the job refuses rather than releasing a
+    different set of rows than the one it showed and got confirmed.
+
+    This action has no whole-set meaning - there is no device to act on
+    without one being named - so unlike the prunes, calling it with neither
+    argument is not a broader version of the same job, just a bad request.
+    """
+    from dcim.models import Device
+
+    from .utilities.workload_state import describe_delete_blockers
+    from .utilities.workload_state import ForeignDeleteBlockerNotAllowlisted
+    from .utilities.workload_state import ForeignDeleteBlockerSafetyCapExceeded
+    from .utilities.workload_state import release_foreign_delete_blockers
+
+    if device_pk is None:
+        job.data = {"error": "No device was named for this release."}
+        job.save(update_fields=["data"])
+        return
+    expected_blockers = expected_blockers or {}
+
+    try:
+        device = Device.objects.get(pk=device_pk)
+    except Device.DoesNotExist:
+        job.data = {"error": f"Device #{device_pk} no longer exists."}
+        job.save(update_fields=["data"])
+        return
+
+    current_blockers = dict(describe_delete_blockers(device))
+    if current_blockers != dict(expected_blockers):
+        job.data = {
+            "error": (
+                "The blocking rows changed since this was requested; nothing "
+                "was released. Reload the device page and try again."
+            ),
+            "expected_blockers": dict(expected_blockers),
+            "current_blockers": current_blockers,
+        }
+        job.save(update_fields=["data"])
+        return
+
+    try:
+        released = release_foreign_delete_blockers(device)
+    except ForeignDeleteBlockerNotAllowlisted as exc:
+        job.data = {
+            "error": str(exc),
+            "error_type": exception_type(exc),
+            "blocking_label": exc.label,
+            "blocking_count": exc.count,
+        }
+        job.save(update_fields=["data"])
+        raise
+    except ForeignDeleteBlockerSafetyCapExceeded as exc:
+        job.data = {
+            "error": safe_operation_failure("Foreign delete-blocker release", exc),
+            "error_type": exception_type(exc),
+        }
+        job.save(update_fields=["data"])
+        raise
+    job.data = {"released": released}
+    job.save(update_fields=["data"])
+
+
 def _prune_forward_orphans_work(job, *, include_quarantined=False):
     """Run reviewed orphan pruning for a JobRunner-managed sync job.
 
@@ -1136,6 +1274,7 @@ def _run_forward_config_backup_work(job, *args, **kwargs):
     The result carries counts and durations only; configuration text never
     reaches job data, logs, or bundles.
     """
+    from .utilities.config_backup import ConfigBackupError
     from .utilities.config_backup import run_config_backup
     from .utilities.post_sync import current_post_sync_snapshot
 
@@ -1164,6 +1303,27 @@ def _run_forward_config_backup_work(job, *args, **kwargs):
         job.save(update_fields=["data"])
     except StalePostSyncSnapshotError:
         _complete_stale_post_sync_overlay(job, sync, **kwargs)
+    except ConfigBackupError as exc:
+        # This subclass's own message is already operator-safe - see its
+        # docstring. Preserved verbatim rather than collapsed through
+        # `safe_operation_failure`, which is why an unset `branch` parameter
+        # or an unreachable remote used to show only "ForwardSyncError" with
+        # no way to tell the two apart without a diagnostic script.
+        # `stage` and `failure_category` are closed, value-free tokens: the
+        # support bundle redacts `error` by key, so without them an exported
+        # failure said nothing at all.
+        job.data = _overlay_job_data(
+            {
+                "error": str(exc),
+                "error_type": exception_type(exc),
+                "stage": getattr(exc, "stage", None),
+                "failure_category": getattr(exc, "category", None),
+            },
+            kwargs,
+        )
+        job.save(update_fields=["data"])
+        logger.error("Forward config backup failed (%s).", str(exc))
+        raise
     except Exception as exc:
         job.data = _overlay_job_data(
             {
@@ -1179,6 +1339,36 @@ def _run_forward_config_backup_work(job, *args, **kwargs):
             exc_info=type(exc) not in (SyncError, JobTimeoutException),
         )
         raise
+
+
+def _log_site_relabel_backlog(job, sync):
+    """One job-log warning after each sync while site-relabel duplicates exist.
+
+    The report this job just stored is what proves which copy is current, so
+    this is the moment the repair's count is freshest. Advisory: a failure to
+    count never fails the tag pass.
+    """
+    from .utilities.scope_reconciliation import site_relabel_pairs
+
+    try:
+        report = site_relabel_pairs(sync, check_protecting=False)
+    except JobTimeoutException:
+        raise
+    except Exception:  # noqa: BLE001 - advisory only
+        return
+    ready, held = len(report["pairs"]), len(report["held"])
+    if not ready and not held:
+        return
+    message = (
+        f"{ready} site-relabel duplicate device pair(s) are ready to merge and "
+        f"{held} are held. Open Scope Reconciliation -> Merge site-relabel "
+        "duplicates; the Health tab lists why each held pair is held."
+    )
+    job.log(
+        logging.makeLogRecord(
+            {"levelno": logging.WARNING, "levelname": "WARNING", "msg": message}
+        )
+    )
 
 
 def _reconcile_forward_device_scope_tags_work(job, *args, **kwargs):
@@ -1203,6 +1393,7 @@ def _reconcile_forward_device_scope_tags_work(job, *args, **kwargs):
             kwargs,
         )
         job.save(update_fields=["data"])
+        _log_site_relabel_backlog(job, sync)
         _reconcile_completed_ingestion_catchup(
             sync,
             kwargs.get("ingestion_id"),
@@ -2168,6 +2359,48 @@ class PruneUncoveredDevicesJob(ForwardJobRunner):
                 int(pk) for pk in kwargs["restrict_to_device_pks"]
             ]
         _prune_uncovered_devices_work(self.job, **extra)
+
+
+class MergeSiteRelabelDuplicatesJob(ForwardJobRunner):
+    """One-time repair for site-relabel duplicate pairs, used by the HTML action."""
+
+    class Meta:
+        # Byte-identical to BUTTON_JOB_SPECS["merge_site_relabel_duplicates"][1].
+        name = "merge site-relabel duplicates"
+
+    def run(self, *args, **kwargs):
+        _merge_site_relabel_duplicates_work(self.job)
+
+
+class PruneOutOfScopeCatalogueJob(ForwardJobRunner):
+    """Operator cleanup of routing policy no in-scope device holds."""
+
+    class Meta:
+        # Byte-identical to BUTTON_JOB_SPECS["prune_out_of_scope_catalogue"][1].
+        name = "prune out-of-scope routing policy"
+
+    def run(self, *args, **kwargs):
+        _prune_out_of_scope_catalogue_work(self.job)
+
+
+class ReleaseForeignDeleteBlockersJob(ForwardJobRunner):
+    """Releases exactly the netbox_routing rows named on the device panel."""
+
+    class Meta:
+        # Byte-identical to BUTTON_JOB_SPECS["release_foreign_delete_blockers"][1]:
+        # the overlap guard's exact-name arm depends on it.
+        name = "release foreign delete blockers"
+
+    def run(self, *args, **kwargs):
+        # Forwarded only when the caller supplied one, so the default lives
+        # in the work function's signature rather than being restated here
+        # where the two could drift apart - same shape as prune_uncovered.
+        extra = {}
+        if "device_pk" in kwargs:
+            extra["device_pk"] = int(kwargs["device_pk"])
+        if "expected_blockers" in kwargs:
+            extra["expected_blockers"] = dict(kwargs["expected_blockers"] or {})
+        _release_foreign_delete_blockers_work(self.job, **extra)
 
 
 class PruneOrphansJob(ForwardJobRunner):

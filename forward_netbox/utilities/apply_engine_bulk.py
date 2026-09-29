@@ -5,6 +5,8 @@ from netbox_branching.contextvars import active_branch
 from netbox_branching.models import ChangeDiff
 from rq.timeouts import JobTimeoutException
 
+from .constraint_diagnosis import annotate_integrity_error
+
 # Fields the bulk engines must set on CREATE but preserve on UPDATE, matching the
 # adapter's intent. Platform-map manufacturer values are authoritative in this
 # engine, so there are no create-only Platform fields.
@@ -987,6 +989,16 @@ def bulk_orm_apply_simple_models(
                         batch_size=1000,
                     )
         except IntegrityError as exc:
+            # Name the row before re-raising. Inside a branch this is the only
+            # account the operator ever gets, because the isolate path below
+            # cannot run and the rebuilt failure line drops the DETAIL.
+            annotate_integrity_error(
+                exc,
+                model,
+                create_objects=create_objects,
+                update_objects=update_objects,
+                using=using,
+            )
             if branch_active:
                 # Branch rows, ObjectChanges, and ChangeDiffs are one transaction.
                 # Do not partially isolate through signal-driven writes on a
@@ -1447,6 +1459,16 @@ def bulk_orm_apply_macaddress(runner, rows: list[dict[str, Any]], *, preview=Fal
                         batch_size=1000,
                     )
         except IntegrityError as exc:
+            # Name the row before re-raising. Inside a branch this is all the
+            # operator ever gets: the isolate path below cannot run, and the
+            # rebuilt failure line drops the database's own DETAIL.
+            annotate_integrity_error(
+                exc,
+                MACAddress,
+                create_objects=list(create_objects.values()),
+                update_objects=list(update_objects.values()),
+                using=using,
+            )
             if branch_active:
                 raise
             runner.logger.log_warning(
@@ -2030,6 +2052,16 @@ def bulk_orm_apply_interface(
                         batch_size=1000,
                     )
         except IntegrityError as exc:
+            # Name the row before re-raising. Inside a branch this is all the
+            # operator ever gets: the isolate path below cannot run, and the
+            # rebuilt failure line drops the database's own DETAIL.
+            annotate_integrity_error(
+                exc,
+                Interface,
+                create_objects=list(create_objects.values()),
+                update_objects=list(update_objects.values()),
+                using=using,
+            )
             if branch_active:
                 raise
             runner.logger.log_warning(
@@ -2134,7 +2166,19 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]], *, preview=False):
     from .sync_device import apply_dcim_device
     from .sync_device import record_device_identity_candidate
 
-    update_field_names = ["site", "role", "device_type", "platform", "serial", "status"]
+    # `name` is written too. An exact-name match never changes it, so this was
+    # never needed - until a case-only match: without it the device is matched,
+    # its new spelling set in memory, and silently not saved, leaving a drift
+    # that reappears on every run.
+    update_field_names = [
+        "name",
+        "site",
+        "role",
+        "device_type",
+        "platform",
+        "serial",
+        "status",
+    ]
 
     def _delegate(row):
         try:
@@ -2238,11 +2282,106 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]], *, preview=False):
             if device_type.model:
                 dt_by_model[(manufacturer_key, device_type.model)] = device_type
 
-    existing_by_name = defaultdict(list)
+    # Indexed by LOWERCASED name, because that is how NetBox decides two
+    # devices are the same one: `dcim_device_unique_name_site_tenant` is
+    # `UniqueConstraint(Lower("name"), "site")`. This used to fetch and match
+    # by exact name, so a device Forward reports as `CORE-SW-01` against a
+    # stored `core-sw-01` in the same site was classified as NEW - and the
+    # database then refused the whole `bulk_create` on that constraint, taking
+    # the sync down with it. A hostname whose case changed on the device was
+    # enough. One query per chunk, as before; the exact match is still
+    # preferred below, so nothing that matched before matches differently.
+    from django.db.models.functions import Lower
+
+    existing_by_folded_name = defaultdict(list)
     existing_device_names = {r["name"] for r in rows if r.get("name")}
-    for batch in _chunks(list(existing_device_names)):
-        for device in Device.objects.filter(name__in=batch):
-            existing_by_name[device.name].append(device)
+    for batch in _chunks(sorted({name.lower() for name in existing_device_names})):
+        for device in Device.objects.annotate(_forward_lname=Lower("name")).filter(
+            _forward_lname__in=batch
+        ):
+            existing_by_folded_name[device.name.lower()].append(device)
+
+    # A device whose site was relabeled in Forward reports under the SAME name
+    # at a DIFFERENT site than the one already stored. Matched on (name, site)
+    # alone, that miss used to create a second device rather than move the
+    # existing one - stranding the old copy (still holding its primary IP,
+    # any manual cables/journal) with no Forward-side match ever again.
+    #
+    # `ForwardDeviceIdentity` is this sync's own record of which NetBox
+    # device it means by a given name; identity is finalized in main, so
+    # read it there the same way `sync_ipam._release_plan` does. A device
+    # this sync has never bound to any name is "unbound" - eligible to move
+    # only when it is the SINGLE other-site device sharing the row's name, so
+    # a coincidental same-name device elsewhere is never guessed at.
+    from ..models import ForwardDeviceIdentity
+
+    # `runner.sync` is `_NullSync()` (drift_comparison.py) for the dependency
+    # preview's structural "every model, no raising" check, or an unset
+    # `Mock()` attribute in tests exercising an unrelated path - neither is a
+    # real `ForwardSync` row, and a `Mock`'s auto-generated `.pk` is a Mock,
+    # not None, so `is not None` alone is not enough. Real apply calls always
+    # carry a saved sync with an integer pk; skip these two queries entirely
+    # (there is nothing to look a relabel candidate up against anyway) rather
+    # than let the ORM try to coerce a non-integer into an `id` value.
+    sync_pk = getattr(runner.sync, "pk", None)
+    if existing_device_names and isinstance(sync_pk, int):
+        identity_device_by_name = dict(
+            ForwardDeviceIdentity.objects.using("default")
+            .filter(sync_id=sync_pk, source_device_key__in=existing_device_names)
+            .values_list("source_device_key", "device_id")
+        )
+    else:
+        identity_device_by_name = {}
+    candidate_device_ids = [
+        device.pk for devices in existing_by_folded_name.values() for device in devices
+    ]
+    if candidate_device_ids:
+        bound_device_ids_any_sync = set(
+            ForwardDeviceIdentity.objects.using("default")
+            .filter(device_id__in=candidate_device_ids)
+            .values_list("device_id", flat=True)
+        )
+    else:
+        bound_device_ids_any_sync = set()
+
+    def _relabel_move_candidate(name, site_pk):
+        """(device_to_move, hold_reason) for a row with no same-site match.
+
+        Exactly one of the two is set. `device_to_move` is None with no
+        `hold_reason` when there is simply no other-site device sharing the
+        name - the normal "this is a new device" case, unchanged. A
+        `hold_reason` means a same-name device exists elsewhere but this sync
+        will not guess which device the row means; the row is recorded as an
+        issue and skipped rather than risking a second create.
+        """
+        candidates = [
+            device
+            for device in existing_by_folded_name.get(name.lower(), [])
+            if device.site_id != site_pk
+        ]
+        if not candidates:
+            return None, None
+        bound_pk = identity_device_by_name.get(name)
+        if bound_pk is not None:
+            for device in candidates:
+                if device.pk == bound_pk:
+                    return device, None
+            return None, (
+                f"this sync's device identity for `{name}` (pk {bound_pk}) is "
+                f"not among the same-named devices found at other sites"
+            )
+        if len(candidates) > 1:
+            return None, (
+                f"`{name}` exists at {len(candidates)} other sites with no "
+                f"identity binding to disambiguate"
+            )
+        candidate = candidates[0]
+        if candidate.pk in bound_device_ids_any_sync:
+            return None, (
+                f"the only same-named device at another site (pk {candidate.pk}) "
+                f"is bound to a different sync"
+            )
+        return candidate, None
 
     create_objects = {}
     update_objects = {}
@@ -2316,11 +2455,19 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]], *, preview=False):
         if row.get("serial") not in (None, ""):
             defaults["serial"] = row["serial"]
         try:
-            matching = [
+            same_site = [
                 device
-                for device in existing_by_name.get(row["name"], [])
+                for device in existing_by_folded_name.get(row["name"].lower(), [])
                 if device.site_id == site.pk
             ]
+            # Exact name first, so an estate holding both `core-sw-01` and
+            # `CORE-SW-01` in one site (possible when their tenants differ)
+            # resolves exactly as it always did. Only when nothing matches
+            # exactly does a case-only difference count as the same device -
+            # which the update below then renames to Forward's spelling.
+            matching = [
+                device for device in same_site if device.name == row["name"]
+            ] or same_site
             if len(matching) > 1:
                 raise ForwardSearchError(
                     f"Multiple NetBox devices named `{row['name']}` exist in "
@@ -2331,16 +2478,45 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]], *, preview=False):
                 )
             existing = matching[0] if matching else None
             if existing is None:
-                create_key = (row["name"], site.pk)
-                device = create_objects.get(create_key)
-                if device is None:
-                    device = Device(**defaults)
-                    device.full_clean(validate_unique=False, validate_constraints=False)
-                    create_objects[create_key] = device
-                outcome = ["applied"]
-                row_outcomes.append(outcome)
-                row_devices.append((row, device, outcome))
-                continue
+                relabel_candidate, relabel_hold_reason = _relabel_move_candidate(
+                    row["name"], site.pk
+                )
+                if relabel_hold_reason is not None:
+                    runner._mark_dependency_failed("dcim.device", row)
+                    runner.logger.increment_statistics("dcim.device", outcome="failed")
+                    runner._record_issue(
+                        "dcim.device",
+                        f"Holding device `{row['name']}` at site `{site.name}`; "
+                        f"{relabel_hold_reason}. Not creating a duplicate.",
+                        row,
+                    )
+                    continue
+                if relabel_candidate is not None:
+                    # Move rather than create: this row's device is the same
+                    # device Forward now reports under a different site.
+                    # `existing_by_folded_name` is keyed by folded name across
+                    # ALL sites, so the update path below (which already moves
+                    # `site` and calls `clear_cross_site_untagged_vlans`) is
+                    # reused unchanged from here.
+                    existing_by_folded_name[row["name"].lower()] = [
+                        d
+                        for d in existing_by_folded_name[row["name"].lower()]
+                        if d.pk != relabel_candidate.pk
+                    ] + [relabel_candidate]
+                    existing = relabel_candidate
+                else:
+                    create_key = (row["name"], site.pk)
+                    device = create_objects.get(create_key)
+                    if device is None:
+                        device = Device(**defaults)
+                        device.full_clean(
+                            validate_unique=False, validate_constraints=False
+                        )
+                        create_objects[create_key] = device
+                    outcome = ["applied"]
+                    row_outcomes.append(outcome)
+                    row_devices.append((row, device, outcome))
+                    continue
             identity_devices[existing.pk] = existing
             changed_values = []
             for field, value in defaults.items():
@@ -2544,6 +2720,16 @@ def bulk_orm_apply_device(runner, rows: list[dict[str, Any]], *, preview=False):
                             batch_size=1000,
                         )
         except IntegrityError as exc:
+            # Name the row before re-raising. Inside a branch this is all the
+            # operator ever gets: the isolate path below cannot run, and the
+            # rebuilt failure line drops the database's own DETAIL.
+            annotate_integrity_error(
+                exc,
+                Device,
+                create_objects=list(create_objects.values()),
+                update_objects=list(update_objects.values()),
+                using=using,
+            )
             if branch_active:
                 raise
             runner.logger.log_warning(
@@ -2888,6 +3074,16 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]], *, preview=Fals
                         batch_size=1000,
                     )
         except IntegrityError as exc:
+            # Name the row before re-raising. Inside a branch this is all the
+            # operator ever gets: the isolate path below cannot run, and the
+            # rebuilt failure line drops the database's own DETAIL.
+            annotate_integrity_error(
+                exc,
+                IPAddress,
+                create_objects=list(create_objects.values()),
+                update_objects=list(update_objects.values()),
+                using=using,
+            )
             if branch_active:
                 raise
             runner.logger.log_warning(

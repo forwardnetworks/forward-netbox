@@ -33,17 +33,59 @@ the repository is the operator's config history, and pruning it is their
 decision, not a side effect of scope.
 """
 
+import re
 import time
 from dataclasses import dataclass
 from dataclasses import field
-from urllib.parse import quote
 from urllib.parse import urlsplit
-from urllib.parse import urlunsplit
 
 from rq.timeouts import JobTimeoutException
 
 from ..exceptions import ForwardSyncError
 from .forward_api import run_nqe_query
+
+
+CONFIG_BACKUP_STAGES = (
+    "resolve",
+    "fetch_remote",
+    "branch",
+    "nqe_fetch",
+    "build",
+    "push",
+    "datasource_sync",
+)
+
+
+class ConfigBackupError(ForwardSyncError):
+    """A config-backup failure whose OWN message is already operator-safe.
+
+    Every raise site in this module hand-writes a static, actionable
+    sentence, or interpolates only `_remote_failure_reason(exc)` - which is
+    built specifically to be safe (never a URL, never credentials). The job
+    wrapper (`_run_forward_config_backup_work`) recognizes this subclass and
+    preserves `str(exc)` verbatim instead of collapsing it to a bare
+    exception-name classifier via `safe_operation_failure` - the classifier
+    exists for exceptions whose text is NOT known to be safe, and collapsing
+    an already-safe, already-actionable message down to "ForwardSyncError"
+    was itself the reason a customer's config-backup failure needed a
+    diagnostic script to explain at all.
+
+    `stage` names WHERE in the pipeline this failed - one of
+    `CONFIG_BACKUP_STAGES` - and is prepended to the message as `[stage]`.
+    Every real job failure this module has produced so far completed in
+    under a second, which only rules out the stages that read from Forward
+    (`nqe_fetch` can legitimately take minutes on a large fleet); the
+    message alone could not say which of the fast ones it was without a
+    diagnostic script reproducing each step by hand.
+    """
+
+    def __init__(self, message, *, stage=None, category=None):
+        self.stage = stage
+        # A closed, value-free token (`CONFIG_BACKUP_FAILURE_CATEGORIES`) for
+        # the job data and the support bundle, which redact free text.
+        self.category = category
+        super().__init__(f"[{stage}] {message}" if stage else message)
+
 
 CONFIG_BACKUP_PARAMETER_NAME = "config_backup_data_source"
 CONFIG_BACKUP_QUERY_FILENAME = "forward_config_backup.nqe"
@@ -114,12 +156,14 @@ def config_backup_data_source(sync):
     try:
         data_source = DataSource.objects.get(pk=int(raw))
     except (TypeError, ValueError, DataSource.DoesNotExist) as exc:
-        raise ForwardSyncError(
-            "config_backup_data_source does not name an existing data source."
+        raise ConfigBackupError(
+            "config_backup_data_source does not name an existing data source.",
+            stage="resolve",
         ) from exc
     if data_source.type != "git":
-        raise ForwardSyncError(
-            "config_backup_data_source must reference a git data source."
+        raise ConfigBackupError(
+            "config_backup_data_source must reference a git data source.",
+            stage="resolve",
         )
     return data_source
 
@@ -130,32 +174,104 @@ def _load_backup_query():
     return (QUERY_DIR / CONFIG_BACKUP_QUERY_FILENAME).read_text(encoding="utf-8")
 
 
-def _authenticated_url(data_source):
-    """The data source's url with its HTTP(S) credentials embedded.
+@dataclass
+class _RemoteConnection:
+    """How to reach the data source's repository, the way NetBox itself does.
 
-    dulwich's porcelain accepts credentials most portably in the url. The
-    value exists only inside this process for the duration of the push and is
-    never logged; the assembled url must not be placed on any result or
-    message.
+    The url is the data source's own, never rewritten: credentials travel as
+    dulwich ``username``/``password`` arguments, not embedded in the url. An
+    embedded url used to reach dulwich's success line on the worker's stderr
+    (`porcelain.push` writes the remote location there) with the password in
+    it. The proxy is NetBox's: `DataSource.get_backend()` resolves
+    `HTTP_PROXIES`/`PROXY_ROUTERS` for this url exactly as NetBox's own git
+    sync does - config backup used to ignore it, which is why a data source
+    that synced fine could not be fetched by this module.
     """
+
+    url: str
+    scheme: str
+    username: str | None = None
+    password: str | None = None
+    proxy: str | None = None
+    socks_proxy: str | None = None
+
+    def transport_kwargs(self):
+        kwargs = {}
+        if self.username:
+            kwargs["username"] = self.username
+            if self.password:
+                kwargs["password"] = self.password
+        if self.socks_proxy:
+            from utilities.socks import ProxyPoolManager
+
+            kwargs["pool_manager"] = ProxyPoolManager(self.socks_proxy)
+        return kwargs
+
+
+def _url_scheme(url):
+    return (urlsplit(str(url or "")).scheme or "").lower()
+
+
+def _url_has_credentials(url):
+    return "@" in (urlsplit(str(url or "")).netloc or "")
+
+
+def _remote_connection(data_source):
+    """The `_RemoteConnection` for a git data source."""
+    from django.core.exceptions import ImproperlyConfigured
+
     url = data_source.source_url
+    scheme = _url_scheme(url)
     parameters = data_source.parameters or {}
-    username = parameters.get("username") or ""
-    password = parameters.get("password") or ""
-    if not username and not password:
-        return url
-    parts = urlsplit(url)
-    if parts.scheme not in ("http", "https"):
-        # ssh remotes authenticate with keys; embedding is neither needed nor
-        # meaningful.
-        return url
-    credentials = quote(str(username), safe="")
-    if password:
-        credentials += ":" + quote(str(password), safe="")
-    host = parts.netloc.rsplit("@", 1)[-1]
-    return urlunsplit(
-        (parts.scheme, f"{credentials}@{host}", parts.path, parts.query, "")
+    username = password = None
+    # Like NetBox's GitBackend: credentials only for HTTP(S), and never on top
+    # of credentials the url already carries.
+    if scheme in ("http", "https") and not _url_has_credentials(url):
+        username = str(parameters.get("username") or "") or None
+        password = str(parameters.get("password") or "") or None
+    proxy = socks_proxy = None
+    try:
+        backend = data_source.get_backend()
+    except JobTimeoutException:
+        raise
+    except ImproperlyConfigured as exc:
+        raise ConfigBackupError(
+            "config backup cannot use NetBox's proxy settings for this data "
+            "source: the proxy scheme is not one NetBox's git backend supports.",
+            stage="resolve",
+            category="proxy_config",
+        ) from exc
+    config = getattr(backend, "config", None)
+    if config is not None:
+        try:
+            value = config.get((b"http",), b"proxy")
+        except KeyError:
+            value = None
+        if value:
+            proxy = value.decode() if isinstance(value, bytes) else str(value)
+    socks_proxy = getattr(backend, "socks_proxy", None) or None
+    return _RemoteConnection(
+        url=url,
+        scheme=scheme,
+        username=username,
+        password=password,
+        proxy=proxy,
+        socks_proxy=socks_proxy,
     )
+
+
+def _apply_proxy_to_repo(repo, connection):
+    """Write NetBox's proxy into the temporary repo's config.
+
+    `porcelain.push` reads transport settings from the repository's config
+    stack and accepts no config argument; the fetch is handed the same stack,
+    so both directions go through the one proxy NetBox would use.
+    """
+    if not connection.proxy:
+        return
+    config = repo.get_config()
+    config.set((b"http",), b"proxy", connection.proxy.encode())
+    config.write_to_path()
 
 
 def _branch_ref(data_source, remote_refs=None):
@@ -219,37 +335,137 @@ def _safe_file_name(device_name):
     return name + ".cfg"
 
 
+# The categories a git failure is reduced to, with the sentence an operator
+# reads. Phrases deliberately contain the needles `diagnostics.failure_reason`
+# already turns into slugs (HTTP NNN, connection refused, certificate verify
+# failed, timed out, name or service not known), so the job's own error
+# summary carries them too. Never the url, a header, or a response body:
+# dulwich's messages carry the host and path, and a non-git response body is
+# customer content.
+CONFIG_BACKUP_FAILURE_CATEGORIES = {
+    "auth_401": "the data source credentials were refused, HTTP 401",
+    "proxy_auth_407": "the proxy refused the credentials, HTTP 407",
+    "not_found_404": "the remote answered HTTP 404: no git repository at that url",
+    "tls": "the TLS connection failed (certificate verify failed or handshake)",
+    "proxy_connect": "could not connect through the proxy",
+    "dns": "the repository host name did not resolve (name or service not known)",
+    "connection_refused": "connection refused or host unreachable",
+    "timeout": "the connection timed out",
+    "non_git_response": (
+        "the server answered with something that is not a git repository - "
+        "usually a proxy or single-sign-on page"
+    ),
+    "redirect": ("the remote redirected without serving git - usually to a login page"),
+    "push_rejected": "the remote refused the branch update",
+    "proxy_config": "NetBox's proxy setting for this url is not usable",
+}
+_HTTP_STATUS_RE = re.compile(r"unexpected http resp (\d{3})\b")
+
+
+def _failure_chain(exc):
+    """`exc`, its causes, and urllib3's retry reasons, outermost first."""
+    chain, seen, pending = [], set(), [exc]
+    while pending:
+        current = pending.pop(0)
+        if not isinstance(current, BaseException) or id(current) in seen:
+            continue
+        seen.add(id(current))
+        chain.append(current)
+        pending.extend(
+            (getattr(current, "reason", None), current.__cause__, current.__context__)
+        )
+    return chain
+
+
+def _classify_remote_failure(exc):
+    """``(category, operator sentence)`` for a failed git exchange."""
+    chain = _failure_chain(exc)
+    names = [type(item).__name__ for item in chain]
+    texts = [str(item) for item in chain]
+
+    def named(*candidates):
+        return any(name in candidates for name in names)
+
+    if named("HTTPUnauthorized"):
+        category = "auth_401"
+    elif named("HTTPProxyUnauthorized"):
+        category = "proxy_auth_407"
+    elif named("NotGitRepository"):
+        category = "not_found_404"
+    else:
+        status = next(
+            (m.group(1) for m in map(_HTTP_STATUS_RE.search, texts) if m), None
+        )
+        if status is not None:
+            return f"http_{status}", f"the remote answered HTTP {status}"
+        if named("SSLError", "SSLCertVerificationError", "CertificateError"):
+            category = "tls"
+        elif named("ProxyError"):
+            category = "proxy_connect"
+        elif named("NameResolutionError", "gaierror"):
+            category = "dns"
+        elif named("NewConnectionError", "ConnectionRefusedError"):
+            category = "connection_refused"
+        elif named("ConnectTimeoutError", "ReadTimeoutError", "TimeoutError"):
+            category = "timeout"
+        elif any("info/refs format" in text for text in texts) or any(
+            "Invalid content-type from server" in text for text in texts
+        ):
+            category = "non_git_response"
+        elif any("without info/refs" in text for text in texts):
+            category = "redirect"
+        else:
+            return f"other:{type(exc).__name__}", type(exc).__name__
+    return category, CONFIG_BACKUP_FAILURE_CATEGORIES[category]
+
+
 def _remote_failure_reason(exc):
-    """What to tell the operator about a failed git exchange.
+    """The operator sentence for a failed git exchange (see the classifier)."""
+    return _classify_remote_failure(exc)[1]
 
-    Never the URL or anything derived from it: the url carries the data
-    source's credentials, and dulwich's own messages can echo it. The two
-    failures an operator can act on without us are named; everything else is
-    reduced to the exception type, which is what the support bundle needs.
+
+def _remote_failure(message_prefix, exc, *, stage, connection=None):
+    category, reason = _classify_remote_failure(exc)
+    message = f"{message_prefix} ({reason})."
+    if (
+        connection is not None
+        and connection.proxy
+        and category
+        in (
+            "non_git_response",
+            "redirect",
+            "proxy_connect",
+            "http_403",
+        )
+    ):
+        message += " NetBox applies a proxy to this url; check the proxy allows it."
+    return ConfigBackupError(message, stage=stage, category=category)
+
+
+def _fetch_remote(repo, connection):
+    """Fetch the remote into `repo` and return what it advertised.
+
+    Through the transport directly, not `porcelain.fetch`, which accepts
+    neither a config nor a pool manager - the only way to hand it NetBox's
+    proxy, HTTP or SOCKS.
     """
-    name = type(exc).__name__
-    if name == "HTTPUnauthorized":
-        return "the data source credentials were refused, HTTP 401"
-    if name == "HTTPProxyUnauthorized":
-        return "the proxy refused the data source credentials, HTTP 407"
-    status = getattr(exc, "status", None) or getattr(exc, "code", None)
-    if isinstance(status, int):
-        return f"the remote answered HTTP {status}, {name}"
-    return name
-
-
-def _fetch_remote(repo, url):
-    """Fetch the remote into `repo` and return what it advertised."""
-    from dulwich import porcelain
+    from dulwich.client import get_transport_and_path
 
     try:
-        return porcelain.fetch(repo, url)
+        client, path = get_transport_and_path(
+            connection.url,
+            config=repo.get_config_stack(),
+            **connection.transport_kwargs(),
+        )
+        return client.fetch(path, repo)
     except JobTimeoutException:
         raise
     except Exception as exc:
-        raise ForwardSyncError(
-            "config backup could not fetch the data source repository "
-            f"({_remote_failure_reason(exc)})."
+        raise _remote_failure(
+            "config backup could not fetch the data source repository",
+            exc,
+            stage="fetch_remote",
+            connection=connection,
         ) from exc
 
 
@@ -284,7 +500,7 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
         result.skipped_reason = "no snapshot id"
         return result
 
-    url = _authenticated_url(data_source)
+    connection = _remote_connection(data_source)
     name_map = _identity_name_map(sync)
     if not name_map:
         # No identities means this sync manages no devices yet. Fetching would
@@ -299,14 +515,16 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
     with tempfile.TemporaryDirectory(prefix="fwd-config-backup-") as workdir:
         repo = Repo.init_bare(workdir)
         try:
-            remote_refs = _fetch_remote(repo, url)
+            _apply_proxy_to_repo(repo, connection)
+            remote_refs = _fetch_remote(repo, connection)
             branch_ref = _branch_ref(data_source, remote_refs)
             if branch_ref is None:
-                raise ForwardSyncError(
+                raise ConfigBackupError(
                     "config backup cannot choose a branch: the data source "
                     "repository is empty and advertises no default branch. Set "
                     "the data source's `branch` parameter, or make an initial "
-                    "commit on the branch NetBox should read."
+                    "commit on the branch NetBox should read.",
+                    stage="branch",
                 )
             head = _remote_head(remote_refs, branch_ref)
 
@@ -428,9 +646,10 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
                 # An empty result cannot be told from a failed fetch, and a
                 # backup that commits emptiness on a fault destroys nothing but
                 # proves nothing either. Refuse loudly.
-                raise ForwardSyncError(
+                raise ConfigBackupError(
                     "config backup fetched no configurations; refusing to "
-                    "commit an empty snapshot."
+                    "commit an empty snapshot.",
+                    stage="nqe_fetch",
                 )
             if result.written == 0 and result.unmanaged_written == 0:
                 result.skipped_reason = "no configuration changed"
@@ -468,14 +687,34 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
             result.commit = commit.id.decode("ascii")
 
             try:
-                porcelain.push(repo, url, [branch_ref + b":" + branch_ref])
+                push_result = porcelain.push(
+                    repo,
+                    connection.url,
+                    [branch_ref + b":" + branch_ref],
+                    # dulwich writes the remote location to stderr by default.
+                    errstream=porcelain.NoneStream(),
+                    **connection.transport_kwargs(),
+                )
             except JobTimeoutException:
                 raise
             except Exception as exc:
-                raise ForwardSyncError(
-                    "config backup could not push to the data source "
-                    f"repository ({_remote_failure_reason(exc)})."
+                raise _remote_failure(
+                    "config backup could not push to the data source repository",
+                    exc,
+                    stage="push",
+                    connection=connection,
                 ) from exc
+            # A per-ref refusal (a protected branch, a non-fast-forward) is not
+            # raised; it is only reported here. It used to count as pushed.
+            ref_status = getattr(push_result, "ref_status", None)
+            if ref_status is not None and ref_status.get(branch_ref):
+                raise ConfigBackupError(
+                    "config backup could not push to the data source repository "
+                    f"({CONFIG_BACKUP_FAILURE_CATEGORIES['push_rejected']}; is the "
+                    "branch protected?).",
+                    stage="push",
+                    category="push_rejected",
+                )
             result.pushed = True
         finally:
             repo.close()

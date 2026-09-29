@@ -331,7 +331,10 @@
                     <span class="badge text-bg-secondary">{% trans "Info" %}</span>
                   {% endif %}
                 </td>
-                <td>{{ check.message }}</td>
+                <td>
+                  {{ check.message }}
+                  {% if check.url %}<a href="{{ check.url }}" class="ms-1">{{ check.url_label|default:_("Open") }}</a>{% endif %}
+                </td>
               </tr>
             {% empty %}
               <tr>

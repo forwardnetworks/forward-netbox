@@ -120,7 +120,13 @@ class AddingAnIntegrationTakesOneEditTest(SimpleTestCase):
         # its absence is the case that matters most.
         installed = (VALIDATED_PLUGIN_APPS | {"stranger"}) - {"netbox_branching"}
 
+        # Refused for the stranger, not for the absent optional plugin.
         self.assertFalse(validated_runtime.validated_plugin_apps_match(installed))
+        self.assertTrue(
+            validated_runtime.validated_plugin_apps_match(
+                VALIDATED_PLUGIN_APPS - {"netbox_dlm"}
+            )
+        )
         self.assertEqual(
             validated_runtime.unexpected_plugin_apps(installed), ["stranger"]
         )

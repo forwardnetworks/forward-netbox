@@ -184,13 +184,20 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
         self.assertFalse(decision.enabled)
         self.assertEqual(decision.reason_code, "unsupported_runtime_tuple")
 
-    def test_a_validated_app_absent_from_plugins_fails_closed(self):
-        # The set is an exact match in both directions: an app the validated
-        # tuple expects and PLUGINS lacks is as much a mismatch as a stranger.
+    def test_a_validated_optional_app_absent_from_plugins_is_still_supported(self):
+        # 2.9.9 required every validated app and so lost the fast paths on any
+        # deployment missing an optional plugin. Only the REQUIRED apps must be
+        # present; an absent optional plugin adds no tables, receivers or
+        # triggers the raw-SQL paths could meet.
         decision = self._decide(
             optional_plugins={},
             plugin_apps={"forward_netbox", "netbox_branching"},
         )
+
+        self.assertTrue(decision.enabled, decision.reason_code)
+
+    def test_a_missing_required_app_fails_closed(self):
+        decision = self._decide(optional_plugins={}, plugin_apps={"forward_netbox"})
 
         self.assertFalse(decision.enabled)
         self.assertEqual(decision.reason_code, "unsupported_runtime_tuple")

@@ -35,7 +35,8 @@ from django.test import TestCase
 from extras.models import CustomField
 
 from forward_netbox.exceptions import ForwardSyncError
-from forward_netbox.utilities.config_backup import _authenticated_url
+from forward_netbox.utilities.config_backup import _classify_remote_failure
+from forward_netbox.utilities.config_backup import _remote_connection
 from forward_netbox.models import ForwardDeviceIdentity
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardSource
@@ -253,8 +254,10 @@ class ConfigBackupTest(TestCase):
         self.assertEqual(client.calls, [])
 
     def test_an_empty_fetch_refuses_rather_than_committing_emptiness(self):
-        with self.assertRaises(ForwardSyncError):
+        with self.assertRaises(ForwardSyncError) as caught:
             self._run([])
+        self.assertEqual(caught.exception.stage, "nqe_fetch")
+        self.assertIn("[nqe_fetch]", str(caught.exception))
 
     def test_a_device_name_never_becomes_repository_structure(self):
         from dcim.models import Site as _Site
@@ -429,8 +432,80 @@ class ConfigBackupTest(TestCase):
         self.sync.source.parameters["config_backup_data_source"] = local.pk
         self.sync.source.save()
 
-        with self.assertRaises(ForwardSyncError):
+        with self.assertRaises(ForwardSyncError) as caught:
             self._run([{"name": "fwd-router-1", "config": "x\n"}])
+        self.assertEqual(caught.exception.stage, "resolve")
+
+    def test_an_unreachable_remote_names_the_fetch_remote_stage(self):
+        from unittest.mock import patch
+
+        with patch(
+            "dulwich.client.get_transport_and_path",
+            side_effect=RuntimeError("no route to host"),
+        ):
+            with self.assertRaises(ForwardSyncError) as caught:
+                self._run([{"name": "fwd-router-1", "config": "x\n"}])
+        self.assertEqual(caught.exception.stage, "fetch_remote")
+
+    def test_an_unresolvable_branch_names_the_branch_stage(self):
+        from unittest.mock import patch
+
+        with patch(
+            "forward_netbox.utilities.config_backup._branch_ref",
+            return_value=None,
+        ):
+            with self.assertRaises(ForwardSyncError) as caught:
+                self._run([{"name": "fwd-router-1", "config": "x\n"}])
+        self.assertEqual(caught.exception.stage, "branch")
+
+    def test_a_failed_push_names_the_push_stage(self):
+        import dulwich.porcelain
+        from unittest.mock import patch
+
+        with patch.object(
+            dulwich.porcelain,
+            "push",
+            side_effect=RuntimeError("push to https://x@git.example.com failed"),
+        ):
+            with self.assertRaises(ForwardSyncError) as caught:
+                self._run([{"name": "fwd-router-1", "config": "x\n"}])
+        self.assertEqual(caught.exception.stage, "push")
+        # The classifier never echoes the exception text.
+        self.assertNotIn("git.example.com", str(caught.exception))
+
+    def test_a_ref_the_remote_refuses_is_a_failure_not_a_push(self):
+        import dulwich.porcelain
+        from unittest.mock import patch
+
+        class _EveryRefRefused(dict):
+            def get(self, key, default=None):
+                return "protected branch hook declined"
+
+        with patch.object(
+            dulwich.porcelain,
+            "push",
+            return_value=SimpleNamespace(ref_status=_EveryRefRefused()),
+        ):
+            with self.assertRaises(ForwardSyncError) as caught:
+                self._run([{"name": "fwd-router-1", "config": "x\n"}])
+        self.assertEqual(caught.exception.stage, "push")
+        self.assertEqual(caught.exception.category, "push_rejected")
+        self.assertIn("refused the branch update", str(caught.exception))
+
+    def test_nothing_is_written_to_stderr_by_the_push(self):
+        import dulwich.porcelain
+        from unittest.mock import patch
+
+        real_push = dulwich.porcelain.push
+        seen = {}
+
+        def spy(*args, **kwargs):
+            seen.update(kwargs)
+            return real_push(*args, **kwargs)
+
+        with patch.object(dulwich.porcelain, "push", side_effect=spy):
+            self._run([{"name": "fwd-router-1", "config": "x\n"}])
+        self.assertIsInstance(seen.get("errstream"), dulwich.porcelain.NoneStream)
 
     def test_changed_blobs_are_written_as_produced_not_accumulated(self):
         """Peak memory on a large fleet depends on this, not on page size.
@@ -628,91 +703,211 @@ class ValidityReadsWhatWeWriteTest(TestCase):
         self.assertEqual(data_file.data_as_string, config)
 
 
-class AuthenticatedUrlTest(SimpleTestCase):
-    """The one function that handles a credential, and it had no tests.
+class ConfigBackupErrorStageTest(SimpleTestCase):
+    """The `stage` prefix, in isolation from any of the raise sites."""
 
-    Every other test in this file pushes to a local bare repository, where a
-    filesystem path carries no credentials at all - so the whole HTTP(S)
-    embedding path, the characters that must be escaped in it, and the
-    property that matters most (the assembled url never leaves this function)
-    were unexercised.
+    def test_a_stage_is_prepended_to_the_message(self):
+        from forward_netbox.utilities.config_backup import ConfigBackupError
+
+        exc = ConfigBackupError("could not fetch", stage="fetch_remote")
+        self.assertEqual(exc.stage, "fetch_remote")
+        self.assertEqual(str(exc), "[fetch_remote] could not fetch")
+
+    def test_no_stage_leaves_the_message_unprefixed(self):
+        from forward_netbox.utilities.config_backup import ConfigBackupError
+
+        exc = ConfigBackupError("could not fetch")
+        self.assertIsNone(exc.stage)
+        self.assertEqual(str(exc), "could not fetch")
+
+    def test_every_raise_site_declares_a_recognized_stage(self):
+        import inspect
+
+        from forward_netbox.utilities import config_backup
+        from forward_netbox.utilities.config_backup import CONFIG_BACKUP_STAGES
+
+        source = inspect.getsource(config_backup)
+        # Every `stage="..."` literal used at a raise site must be one of
+        # the six pipeline stages - a typo here would silently produce an
+        # unrecognized stage name forever, on whichever raise it landed on.
+        import re
+
+        used_stages = set(re.findall(r'stage="([a-z_]+)"', source))
+        self.assertTrue(used_stages, "the source scan found no stage= usage at all")
+        self.assertTrue(used_stages.issubset(set(CONFIG_BACKUP_STAGES)))
+
+
+class RemoteConnectionTest(SimpleTestCase):
+    """How config backup reaches the repository: NetBox's way, not its own.
+
+    Credentials travel as transport arguments, never embedded in the url - the
+    embedded form reached dulwich's success line on the worker's stderr. The
+    proxy is whatever NetBox's own git backend would use for this url.
     """
 
-    def _source(self, url, **parameters):
-        return SimpleNamespace(source_url=url, parameters=parameters or {})
+    def _source(self, url, *, backend=None, **parameters):
 
-    def test_no_credentials_returns_the_url_unchanged(self):
-        source = self._source("https://git.example.com/configs.git")
-        self.assertEqual(
-            _authenticated_url(source), "https://git.example.com/configs.git"
+        backend = backend or SimpleNamespace(config=None, socks_proxy=None)
+        return SimpleNamespace(
+            source_url=url, parameters=parameters or {}, get_backend=lambda: backend
         )
 
-    def test_username_and_password_are_embedded(self):
-        source = self._source(
-            "https://git.example.com/configs.git", username="svc", password="s3cret"
+    def test_the_url_is_never_rewritten(self):
+        connection = _remote_connection(
+            self._source("https://git.example.com/c.git", username="svc", password="p")
         )
+        self.assertEqual(connection.url, "https://git.example.com/c.git")
         self.assertEqual(
-            _authenticated_url(source),
-            "https://svc:s3cret@git.example.com/configs.git",
+            connection.transport_kwargs(), {"username": "svc", "password": "p"}
         )
 
-    def test_special_characters_are_percent_encoded(self):
-        # An unescaped `@` or `/` in a password splits the authority and the
-        # push goes to a host nobody configured - or silently authenticates as
-        # a different user. `safe=""` is what makes that impossible.
-        source = self._source(
-            "https://git.example.com/configs.git",
-            username="svc@corp",
-            password="p@ss/w:rd?",
+    def test_a_username_alone_is_passed_alone(self):
+        connection = _remote_connection(
+            self._source("https://git.example.com/c.git", username="token")
         )
-        url = _authenticated_url(source)
-        self.assertEqual(
-            url,
-            "https://svc%40corp:p%40ss%2Fw%3Ard%3F@git.example.com/configs.git",
-        )
-        # The host survived intact: the credential did not eat it.
-        self.assertTrue(url.endswith("@git.example.com/configs.git"))
+        self.assertEqual(connection.transport_kwargs(), {"username": "token"})
 
-    def test_an_existing_credential_in_the_url_is_replaced_not_appended(self):
-        # Two `@` in the authority is not a valid url, and appending would
-        # produce one.
-        source = self._source(
-            "https://old:stale@git.example.com/configs.git",
-            username="svc",
-            password="new",
+    def test_credentials_in_the_url_win_like_netbox(self):
+        # NetBox's GitBackend passes explicit credentials only when the url
+        # carries none (its #20902); two sets must not compete.
+        connection = _remote_connection(
+            self._source(
+                "https://old:stale@git.example.com/c.git", username="svc", password="p"
+            )
         )
-        self.assertEqual(
-            _authenticated_url(source),
-            "https://svc:new@git.example.com/configs.git",
+        self.assertEqual(connection.transport_kwargs(), {})
+
+    def test_ssh_and_local_remotes_carry_no_credentials(self):
+        for url in ("ssh://git@git.example.com/c.git", "/srv/git/c.git"):
+            connection = _remote_connection(
+                self._source(url, username="svc", password="p")
+            )
+            self.assertEqual(connection.transport_kwargs(), {}, url)
+
+    def test_netboxs_http_proxy_is_picked_up(self):
+
+        from dulwich.config import ConfigDict
+
+        config = ConfigDict()
+        config.set((b"http",), b"proxy", b"http://proxy.example:3128")
+        connection = _remote_connection(
+            self._source(
+                "https://git.example.com/c.git",
+                backend=SimpleNamespace(config=config, socks_proxy=None),
+            )
+        )
+        self.assertEqual(connection.proxy, "http://proxy.example:3128")
+        self.assertIsNone(connection.socks_proxy)
+
+    def test_a_socks_proxy_becomes_a_pool_manager(self):
+
+        from utilities.socks import ProxyPoolManager
+
+        connection = _remote_connection(
+            self._source(
+                "https://git.example.com/c.git",
+                backend=SimpleNamespace(
+                    config=None, socks_proxy="socks5://proxy.example:1080"
+                ),
+            )
+        )
+        self.assertIsInstance(
+            connection.transport_kwargs()["pool_manager"], ProxyPoolManager
         )
 
-    def test_ssh_remotes_are_left_alone(self):
-        # ssh authenticates with keys; embedding is neither needed nor
-        # meaningful, and would corrupt a scp-style remote.
-        source = self._source(
-            "ssh://git@git.example.com/configs.git", username="svc", password="p"
+    def test_an_unusable_proxy_setting_is_a_resolve_failure(self):
+        from django.core.exceptions import ImproperlyConfigured
+
+        def refuse():
+            raise ImproperlyConfigured("Unsupported Git DataSource proxy scheme")
+
+        source = SimpleNamespace(
+            source_url="https://git.example.com/c.git",
+            parameters={},
+            get_backend=refuse,
+        )
+        with self.assertRaises(ForwardSyncError) as caught:
+            _remote_connection(source)
+        self.assertEqual(caught.exception.stage, "resolve")
+        self.assertEqual(caught.exception.category, "proxy_config")
+
+
+class RemoteFailureClassifierTest(SimpleTestCase):
+    """Every git failure reduces to a closed category; nothing is echoed."""
+
+    def _classify(self, exc):
+        return _classify_remote_failure(exc)
+
+    def test_http_statuses(self):
+        from dulwich.errors import GitProtocolError
+        from dulwich.errors import HangupException  # noqa: F401 - import check
+        from dulwich.errors import NotGitRepository
+
+        self.assertEqual(
+            self._classify(
+                GitProtocolError("unexpected http resp 403 for https://h/secret")
+            ),
+            ("http_403", "the remote answered HTTP 403"),
+        )
+        self.assertEqual(self._classify(NotGitRepository())[0], "not_found_404")
+
+    def test_auth(self):
+        from dulwich.client import HTTPProxyUnauthorized
+        from dulwich.client import HTTPUnauthorized
+
+        self.assertEqual(
+            self._classify(HTTPUnauthorized("Basic", "https://h/x"))[0], "auth_401"
         )
         self.assertEqual(
-            _authenticated_url(source), "ssh://git@git.example.com/configs.git"
+            self._classify(HTTPProxyUnauthorized("Basic", "https://h/x"))[0],
+            "proxy_auth_407",
         )
 
-    def test_a_username_with_no_password_omits_the_colon(self):
-        source = self._source("https://git.example.com/configs.git", username="token")
-        self.assertEqual(
-            _authenticated_url(source),
-            "https://token@git.example.com/configs.git",
-        )
+    def test_transport_causes_are_found_through_the_chain(self):
+        import urllib3
+        from dulwich.errors import GitProtocolError
 
-    def test_the_query_string_survives_and_the_fragment_is_dropped(self):
-        source = self._source(
-            "https://git.example.com/configs.git?depth=1#frag",
-            username="svc",
-            password="p",
+        def wrapped(reason):
+            outer = GitProtocolError("HTTPSConnectionPool(host='h'): Max retries")
+            outer.__cause__ = urllib3.exceptions.MaxRetryError(
+                None, "/x", reason=reason
+            )
+            return outer
+
+        cases = {
+            "tls": urllib3.exceptions.SSLError("certificate verify failed"),
+            "proxy_connect": urllib3.exceptions.ProxyError("Unable to connect", None),
+            "dns": urllib3.exceptions.NameResolutionError("h", None, "failed"),
+            "connection_refused": urllib3.exceptions.NewConnectionError(
+                None, "Connection refused"
+            ),
+            "timeout": urllib3.exceptions.ConnectTimeoutError("timed out"),
+        }
+        for expected, reason in cases.items():
+            self.assertEqual(self._classify(wrapped(reason))[0], expected, expected)
+
+    def test_a_proxy_or_sso_page_is_named_and_its_body_never_echoed(self):
+        body = (
+            "Invalid info/refs format at line 1: got b'<!DOCTYPE html><title>ACME SSO'"
         )
-        self.assertEqual(
-            _authenticated_url(source),
-            "https://svc:p@git.example.com/configs.git?depth=1",
+        category, sentence = self._classify(ValueError(body))
+        self.assertEqual(category, "non_git_response")
+        self.assertNotIn("ACME", sentence)
+
+    def test_a_login_redirect(self):
+        from dulwich.errors import GitProtocolError
+
+        category, _sentence = self._classify(
+            GitProtocolError(
+                "Redirected from URL https://h/x to URL https://sso/ without info/refs"
+            )
         )
+        self.assertEqual(category, "redirect")
+
+    def test_anything_else_is_its_type_name_only(self):
+        category, sentence = self._classify(RuntimeError("https://svc:pw@h/x"))
+        self.assertEqual(category, "other:RuntimeError")
+        self.assertEqual(sentence, "RuntimeError")
 
 
 def _seed_initial_commit(repo_path):
@@ -748,7 +943,7 @@ class _GitHttpRemote:
     remote that rejects the push after accepting the fetch.
     """
 
-    def __init__(self, path, *, username, password, refuse_push=False):
+    def __init__(self, path, *, username, password, refuse_push=False, answer=None):
         import base64
         import threading
         from wsgiref.simple_server import WSGIRequestHandler
@@ -774,6 +969,12 @@ class _GitHttpRemote:
             if refuse_push and "git-receive-pack" in environ.get("PATH_INFO", ""):
                 start_response("403 Forbidden", [("Content-Type", "text/plain")])
                 return [b"push refused"]
+            if answer is not None:
+                # What a proxy or single-sign-on front end answers instead of
+                # git: a status, a login page, or a redirect to one.
+                status, headers, body = answer
+                start_response(status, headers)
+                return [body]
             return app(environ, start_response)
 
         class _Quiet(WSGIRequestHandler):
@@ -924,6 +1125,96 @@ class ConfigBackupOverHttpTest(TestCase):
         self.assertTrue(result.pushed)
         with Repo(empty.name) as repo:
             self.assertIn(b"refs/heads/configs", repo.refs.keys())
+
+    def _failure(self, answer):
+        remote = self._remote(answer=answer)
+        sync = self._sync(remote.url, password=self.PASSWORD)
+        with self.assertRaises(ForwardSyncError) as caught:
+            self._run(sync)
+        self.assertNotIn("127.0.0.1", str(caught.exception))
+        return caught.exception
+
+    def test_a_proxy_403_names_the_status(self):
+        exc = self._failure(("403 Forbidden", [("Content-Type", "text/plain")], b"no"))
+        self.assertEqual((exc.stage, exc.category), ("fetch_remote", "http_403"))
+        self.assertIn("HTTP 403", str(exc))
+
+    def test_a_503_names_the_status(self):
+        exc = self._failure(("503 Service Unavailable", [], b""))
+        self.assertEqual(exc.category, "http_503")
+
+    def test_a_single_sign_on_page_is_a_non_git_response(self):
+        exc = self._failure(
+            (
+                "200 OK",
+                [("Content-Type", "text/html")],
+                b"<!DOCTYPE html><title>Corporate SSO login</title>",
+            )
+        )
+        self.assertEqual(exc.category, "non_git_response")
+        self.assertNotIn("Corporate", str(exc))
+
+    def test_the_last_failure_reaches_the_support_bundle(self):
+
+        from forward_netbox.utilities.health import (
+            config_backup_delivery_bundle_payload,
+        )
+
+        remote = self._remote(
+            answer=("403 Forbidden", [("Content-Type", "text/plain")], b"no")
+        )
+        sync = self._sync(remote.url, password=self.PASSWORD)
+        from core.models import Job
+        from django.contrib.contenttypes.models import ContentType
+
+        job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=sync.pk,
+            name=f"{sync.name} - config backup",
+            job_id=__import__("uuid").uuid4(),
+            status="errored",
+        )
+        # The real failure from the real remote, recorded as the job wrapper
+        # records it (the wrapper itself is pinned in
+        # test_config_backup_job_and_health).
+        with self.assertRaises(ForwardSyncError) as caught:
+            self._run(sync)
+        job.data = {
+            "error": str(caught.exception),
+            "error_type": "ConfigBackupError",
+            "stage": caught.exception.stage,
+            "failure_category": caught.exception.category,
+        }
+        job.save()
+        job.refresh_from_db()
+        self.assertEqual(job.data["stage"], "fetch_remote")
+        self.assertEqual(job.data["failure_category"], "http_403")
+
+        payload = config_backup_delivery_bundle_payload(sync)
+        self.assertEqual(payload["last_failure_stage"], "fetch_remote")
+        self.assertEqual(payload["last_failure_category"], "http_403")
+        self.assertEqual(payload["url_scheme"], "http")
+        self.assertTrue(payload["credentials_set"])
+        self.assertFalse(payload["proxy_applies"])
+
+    def test_netboxs_proxy_setting_reaches_the_fetch(self):
+        from unittest.mock import patch
+
+        from django.test import override_settings
+
+        remote = self._remote()
+        sync = self._sync(remote.url, password=self.PASSWORD)
+        seen = {}
+
+        def capture(location, config=None, **kwargs):
+            seen["proxy"] = config.get((b"http",), b"proxy")
+            raise RuntimeError("stop")
+
+        with override_settings(HTTP_PROXIES={"http": "http://proxy.example:3128"}):
+            with patch("dulwich.client.get_transport_and_path", side_effect=capture):
+                with self.assertRaises(ForwardSyncError):
+                    self._run(sync)
+        self.assertEqual(seen["proxy"], b"http://proxy.example:3128")
 
     def test_a_remote_that_refuses_the_push_is_reported_without_the_url(self):
         remote = self._remote(refuse_push=True)

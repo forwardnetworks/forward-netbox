@@ -3,6 +3,13 @@
  * @description NetBox FHRP group rows derived from Forward native HSRP and VRRP state.
  */
 
+// `nqe-lsp-validate` reports 8 "Expected identifier after foreach" errors in
+// this file, one per `foreach group in ...` below - it misparses `group` as
+// reserved for a `group by`-like construct even when used as a plain
+// `foreach` loop variable. This is a LINTER false positive, not a query bug:
+// live-confirmed against Forward, this query returns real HSRP/VRRP rows
+// (1892 in the reference probe). Do not rename the variable to "fix" this.
+
 subinterface_ipv4(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed

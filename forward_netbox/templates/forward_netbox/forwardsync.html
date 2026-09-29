@@ -111,6 +111,15 @@
 {% endblock extra_controls %}
 
 {% block content %}
+  {% for check in health_attention %}
+    <div class="alert alert-{% if check.status == 'fail' %}danger{% else %}warning{% endif %} d-flex align-items-start" role="alert">
+      <i class="mdi mdi-alert-outline me-2" aria-hidden="true"></i>
+      <div>
+        <strong>{{ check.name }}:</strong> {{ check.message }}
+        <a href="{{ check.url }}" class="alert-link ms-1">{{ check.url_label|default:_("Open") }}</a>
+      </div>
+    </div>
+  {% endfor %}
 {% include 'forward_netbox/inc/brand_bar.html' %}
 <div class="row mb-3">
   <div class="col col-md-6">
