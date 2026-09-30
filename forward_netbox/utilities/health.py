@@ -874,7 +874,133 @@ def _database_tables_check():
     )
 
 
-def sync_health_summary(sync):
+def _ingestion_url(ingestion):
+    return ingestion.get_absolute_url()
+
+
+def _run_size_check(sync):
+    """Say so when a run is far larger than this model normally sees.
+
+    Two sources, both local reads so this is safe on every sync-page load: a
+    hold the merge step recorded on the ingestion's job (Auto merge stopped this
+    run for review), and otherwise the latest run's applied counts compared with
+    what earlier runs applied. The table-size comparison needs live counts and
+    only runs at merge time and in the evidence section.
+    """
+    from .health_evidence import applied_change_history
+    from .health_evidence import _job_statistics
+    from .run_size_anomaly import assess_run_size
+    from .run_size_anomaly import describe_finding
+    from .run_size_anomaly import HOLD_JOB_DATA_KEY
+
+    latest = sync.last_ingestion
+    if latest is None:
+        return None
+    job = latest.job
+    hold = (getattr(job, "data", None) or {}).get(HOLD_JOB_DATA_KEY)
+    if hold and latest.can_queue_merge:
+        sentences = " ".join(
+            describe_finding(finding) for finding in hold.get("findings") or ()
+        )
+        check = _check(
+            name="Run held for review",
+            status="warn",
+            message=(
+                "Auto merge held this run instead of merging it: "
+                f"{sentences} Open the ingestion and review its changes. Merge "
+                "them from there if they are expected, or delete the "
+                "ingestion to discard them."
+            ),
+        )
+        check["url"] = _ingestion_url(latest)
+        check["url_label"] = "Review the held ingestion"
+        return check
+    statistics = _job_statistics(job)
+    models = {
+        model: {"changes": counts.get("applied", 0), "existing_rows": None}
+        for model, counts in statistics.items()
+    }
+    findings = assess_run_size(models, history=applied_change_history(sync))
+    if not findings:
+        return None
+    check = _check(
+        name="Unusually large run",
+        status="warn",
+        message=(
+            " ".join(describe_finding(finding) for finding in findings)
+            + " If that is not expected, compare the model's NetBox row count "
+            "with Forward's in Health before the next sync."
+        ),
+    )
+    check["url"] = _ingestion_url(latest)
+    check["url_label"] = "Open the ingestion"
+    return check
+
+
+def _baseline_never_completed_check(sync):
+    """Every run is a full run when no baseline was ever promoted."""
+    latest = sync.last_ingestion
+    if latest is None or sync.latest_baseline_ingestion() is not None:
+        return None
+    finished = sync.forwardingestion_set.filter(job__completed__isnull=False).count()
+    if finished < 2:
+        return None
+    check = _check(
+        name="Baseline never completed",
+        status="warn",
+        message=(
+            f"{finished} runs have finished but none has been promoted to a "
+            "baseline, so every run is a full run that re-derives everything. "
+            "A failed row blocks promotion: open the latest ingestion and "
+            "resolve or accept the failures listed there."
+        ),
+    )
+    check["url"] = _ingestion_url(latest)
+    check["url_label"] = "Open the ingestion"
+    return check
+
+
+def _row_count_gap_check(sync, row_counts):
+    """NetBox far below Forward means earlier runs never loaded the model."""
+    from .run_size_anomaly import MIN_ESTABLISHED_ROWS
+
+    if sync.last_ingestion is None:
+        return None
+    gaps = []
+    for entry in row_counts.get("models") or ():
+        forward = entry.get("forward_rows")
+        netbox = entry.get("netbox_rows")
+        if (
+            isinstance(forward, int)
+            and isinstance(netbox, int)
+            and forward >= MIN_ESTABLISHED_ROWS
+            and netbox * 2 < forward
+        ):
+            gaps.append(
+                f"{entry['model']}: NetBox holds {netbox:,} of the {forward:,} "
+                "rows Forward reports"
+            )
+    if not gaps:
+        return None
+    return _check(
+        name="NetBox holds far fewer rows than Forward",
+        status="warn",
+        message=(
+            "; ".join(gaps)
+            + ". The next run will create the difference. If that is not "
+            "expected, check the model's map and scope before running it."
+        ),
+    )
+
+
+def sync_health_summary(sync, *, include_evidence=False):
+    """Everything Health knows about a sync.
+
+    ``include_evidence`` adds live row counts and the recent-ingestion evidence,
+    which run aggregate queries over large tables. The Health tab and the
+    support bundle ask for them; the sync page, which builds this on every load
+    for its attention banner, does not.
+    """
     from .ownership import ownership_finalization_summary
 
     optional_plugin_capabilities = integration_capability_summary()
@@ -952,6 +1078,23 @@ def sync_health_summary(sync):
     site_relabel_check = _site_relabel_duplicates_check(sync)
     if site_relabel_check is not None:
         checks.append(site_relabel_check)
+    run_size_check = _run_size_check(sync)
+    if run_size_check is not None:
+        checks.append(run_size_check)
+    baseline_check = _baseline_never_completed_check(sync)
+    if baseline_check is not None:
+        checks.append(baseline_check)
+    row_counts = {}
+    recent_ingestions = {}
+    if include_evidence:
+        from .health_evidence import recent_ingestions_evidence
+        from .health_evidence import row_count_evidence
+
+        row_counts = row_count_evidence(sync, model_summary["enabled_models"])
+        recent_ingestions = recent_ingestions_evidence(sync)
+        row_count_gap_check = _row_count_gap_check(sync, row_counts)
+        if row_count_gap_check is not None:
+            checks.append(row_count_gap_check)
     query_signature_drift_check = _query_signature_drift_check(sync)
     if query_signature_drift_check is not None:
         checks.append(query_signature_drift_check)
@@ -1050,6 +1193,9 @@ def sync_health_summary(sync):
         "api_usage": api_usage,
         "next_run": next_run,
         "checks": checks,
+        "evidence_included": include_evidence,
+        "row_counts": row_counts,
+        "recent_ingestions": recent_ingestions,
     }
 
 

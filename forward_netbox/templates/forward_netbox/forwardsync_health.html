@@ -789,6 +789,74 @@
       </div>
     </div>
     <div class="card">
+      <h5 class="card-header">{% trans "NetBox vs Forward Row Counts" %}</h5>
+      <div class="card-body">
+        <p class="text-muted small">{% trans "Rows Forward returned in the latest validation run beside the rows NetBox holds for each enabled model. NetBox counts the whole table, including rows this sync does not manage, so a NetBox count far below Forward's is the signal that earlier runs never loaded the model." %}</p>
+        <div class="table-responsive">
+        <table class="table table-hover table-sm">
+          <thead>
+            <tr>
+              <th>{% trans "Model" %}</th>
+              <th>{% trans "Forward" %}</th>
+              <th>{% trans "NetBox" %}</th>
+              <th>{% trans "Before latest run" %}</th>
+              <th>{% trans "Created since" %}</th>
+              <th>{% trans "Duplicate groups" %}</th>
+              <th>{% trans "Note" %}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for entry in health.row_counts.models %}
+              <tr>
+                <td class="text-break">{{ entry.model }}</td>
+                <td>{{ entry.forward_rows|placeholder }}</td>
+                <td>{{ entry.netbox_rows|placeholder }}</td>
+                <td>{{ entry.rows_before_latest_run|placeholder }}</td>
+                <td>{{ entry.rows_created_since|placeholder }}</td>
+                <td>{{ entry.duplicate_groups|placeholder }}</td>
+                <td>{{ entry.note }}</td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="7" class="text-muted">{% trans "No enabled models." %}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <h5 class="card-header">{% trans "Recent Ingestions" %}</h5>
+      <div class="card-body">
+        <p class="text-muted small">{% trans "An Auto merge runs inside the sync job, so its merge shows no separate merge job; the merge time and counts below are the record of it." %}</p>
+        <div class="table-responsive">
+        <table class="table table-hover table-sm">
+          <thead>
+            <tr>
+              <th>{% trans "Ingestion" %}</th>
+              <th>{% trans "Mode" %}</th>
+              <th>{% trans "Job" %}</th>
+              <th>{% trans "Merge" %}</th>
+              <th>{% trans "Changes merged" %}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in health.recent_ingestions.ingestions %}
+              <tr>
+                <td>{{ item.ingestion }}</td>
+                <td>{{ item.sync_mode|placeholder }}{% if item.baseline_ready %} ({% trans "baseline" %}){% endif %}</td>
+                <td>{{ item.job_status|placeholder }}<br><span class="text-muted small">{{ item.job_started|placeholder }} &rarr; {{ item.job_completed|placeholder }}</span></td>
+                <td>{{ item.merge.mode }}<br><span class="text-muted small">{{ item.merge.merge_applied_at|placeholder }}</span></td>
+                <td>{{ item.merged_changes_by_model_action.total|placeholder }}{% if item.merged_changes_by_model_action.note %}<br><span class="text-muted small">{{ item.merged_changes_by_model_action.note }}</span>{% endif %}</td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="5" class="text-muted">{% trans "No ingestions yet." %}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        </div>
+      </div>
+    </div>
+    <div class="card">
       {% include 'extras/inc/configcontext_data.html' with title="Health Details" data=health format="json" copyid="forward-sync-health-details" %}
     </div>
     {% plugin_right_page object %}
