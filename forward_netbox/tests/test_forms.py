@@ -112,6 +112,59 @@ class ForwardSourceFormTest(TestCase):
             " ".join(form.non_field_errors()),
         )
 
+    @patch(
+        "forward_netbox.utilities.forward_api_impl.ForwardClient.get_networks",
+        return_value=[{"id": "test-network"}],
+    )
+    def test_config_backup_folder_and_unmanaged_survive_a_save(self, _get_networks):
+        # `save()` rebuilds the source parameters, and it used to leave out
+        # `config_backup_include_unmanaged`, so the checkbox never persisted.
+        data = self._base_form_data()
+        data["config_backup_path_prefix"] = "net/configs/"
+        data["config_backup_include_unmanaged"] = True
+
+        form = ForwardSourceForm(data=data)
+
+        self.assertTrue(form.is_valid(), form.errors)
+        source = form.save()
+        self.assertEqual(source.parameters["config_backup_path_prefix"], "net/configs")
+        self.assertIs(source.parameters["config_backup_include_unmanaged"], True)
+
+    @patch(
+        "forward_netbox.utilities.forward_api_impl.ForwardClient.get_networks",
+        return_value=[{"id": "test-network"}],
+    )
+    def test_a_blank_config_backup_folder_is_the_default(self, _get_networks):
+        data = self._base_form_data()
+        data["config_backup_path_prefix"] = ""
+
+        form = ForwardSourceForm(data=data)
+
+        self.assertTrue(form.is_valid(), form.errors)
+        self.assertEqual(form.save().parameters["config_backup_path_prefix"], "configs")
+
+    def test_an_unsafe_config_backup_folder_is_refused_with_the_reason(self):
+        for bad in ("/etc", "a/../b", "unmanaged/x", ".git", "a//b", "a\\b"):
+            with self.subTest(bad=bad):
+                data = self._base_form_data()
+                data["config_backup_path_prefix"] = bad
+
+                form = ForwardSourceForm(data=data)
+
+                self.assertFalse(form.is_valid())
+                self.assertIn("config_backup_path_prefix", form.errors)
+
+    def test_the_form_offers_the_folder_with_its_default(self):
+        form = ForwardSourceForm()
+
+        self.assertEqual(form.fields["config_backup_path_prefix"].initial, "configs")
+        self.assertIn(
+            "device_config_path", form.fields["config_backup_path_prefix"].help_text
+        )
+        self.assertIn(
+            "no longer updated", form.fields["config_backup_path_prefix"].help_text
+        )
+
     def test_device_tag_fields_use_multiselect_widget(self):
         # Regression: the include/exclude tag fields used a single-select widget
         # (APISelect), so the browser only submitted the LAST selected tag.

@@ -354,6 +354,8 @@ def config_backup_delivery_state(sync):
     """
     from .config_backup import CONFIG_BACKUP_PARAMETER_NAME
     from .config_backup import CONFIG_BACKUP_REPO_PREFIX
+    from .config_backup_path import config_backup_path_prefix
+    from .config_backup_path import device_config_path_template
 
     source_parameters = getattr(getattr(sync, "source", None), "parameters", None) or {}
     data_source_pk = source_parameters.get(CONFIG_BACKUP_PARAMETER_NAME)
@@ -373,6 +375,8 @@ def config_backup_delivery_state(sync):
         "validity_installed": django_apps.is_installed("validity"),
         "device_config_path_set": None,
         "device_config_path_matches_prefix": None,
+        "path_prefix_customized": None,
+        "path_prefix_valid": None,
         "bound_via_tenant_or_default": None,
         "tenant_binding_check_errored": False,
         "url_scheme": None,
@@ -388,6 +392,15 @@ def config_backup_delivery_state(sync):
     if data_source is None:
         return state
     state.update(_config_backup_transport_facts(data_source))
+    try:
+        folder = config_backup_path_prefix(source_parameters)
+        state["path_prefix_valid"] = True
+    except ValueError:
+        # A stored value that fails the rules cannot be written to; the backup
+        # job says so. Health falls back to the default so this page renders.
+        folder = CONFIG_BACKUP_REPO_PREFIX
+        state["path_prefix_valid"] = False
+    state["path_prefix_customized"] = folder != CONFIG_BACKUP_REPO_PREFIX
 
     state["data_source_exists"] = True
     # Not exported: the delivery bundle payload keeps this key off its export
@@ -398,15 +411,17 @@ def config_backup_delivery_state(sync):
     state["last_synced"] = data_source.last_synced
 
     if state["validity_installed"]:
-        expected_prefix = f"{CONFIG_BACKUP_REPO_PREFIX}/"
+        expected_prefix = f"{folder}/"
         template = (data_source.custom_field_data or {}).get("device_config_path") or ""
         state["device_config_path_set"] = bool(template)
-        # The layout this plugin writes is `configs/<netbox name>.cfg`; a
+        # The layout this plugin writes is `<folder>/<netbox name>.cfg`, the
+        # folder being the source's config backup folder (default `configs`); a
         # template can reach it through filters, but it cannot without both.
         state["device_config_path_matches_prefix"] = (
             expected_prefix in template and ".cfg" in template
         )
         state["_expected_prefix"] = expected_prefix  # GUI message only
+        state["_expected_device_config_path"] = device_config_path_template(folder)
         state["_device_config_path"] = template  # GUI message only
         try:
             from tenancy.models import Tenant
@@ -624,14 +639,14 @@ def _config_backup_delivery_check(sync):
                 "Validity is installed but the data source has no "
                 "`device_config_path`, so Validity cannot locate any device's "
                 "configuration - set it to "
-                f"`{CONFIG_BACKUP_DEVICE_CONFIG_PATH}`"
+                f"`{state['_expected_device_config_path']}`"
             )
         elif not state["device_config_path_matches_prefix"]:
             problems.append(
                 "the data source's `device_config_path` "
                 f"(“{state['_device_config_path']}”) does not match where this "
                 f"plugin writes (`{expected_prefix}<device name>.cfg`) - set it "
-                f"to `{CONFIG_BACKUP_DEVICE_CONFIG_PATH}`"
+                f"to `{state['_expected_device_config_path']}`"
             )
         if (
             not state["tenant_binding_check_errored"]
@@ -691,6 +706,10 @@ def config_backup_delivery_bundle_payload(sync):
         "validity_installed": state["validity_installed"],
         "device_config_path_set": state["device_config_path_set"],
         "device_config_path_matches_prefix": state["device_config_path_matches_prefix"],
+        # Whether the folder differs from the default, and whether it is usable;
+        # never the folder itself.
+        "path_prefix_customized": state["path_prefix_customized"],
+        "path_prefix_valid": state["path_prefix_valid"],
         "bound_via_tenant_or_default": state["bound_via_tenant_or_default"],
         "tenant_binding_check_errored": state["tenant_binding_check_errored"],
         # How config backup reaches the repository - never the url or proxy.
