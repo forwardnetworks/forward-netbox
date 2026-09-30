@@ -788,6 +788,153 @@
         </table>
       </div>
     </div>
+    {% if health.config_backup.enabled %}
+    <div class="card">
+      <h5 class="card-header">{% trans "Config Backup" %}</h5>
+      <div class="card-body">
+        {% if health.config_backup.shortfall %}
+          <p>{{ health.config_backup.shortfall }}</p>
+        {% endif %}
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Last run" %}</th>
+            <td>{{ health.config_backup.last_run_status|placeholder }}{% if health.config_backup.last_run_at %} &middot; {{ health.config_backup.last_run_at }}{% endif %}{% if health.config_backup.last_skipped_reason %} &middot; {{ health.config_backup.last_skipped_reason }}{% endif %}</td>
+          </tr>
+          {% if not health.config_backup.config_backup_jobs_found %}
+          <tr>
+            <th scope="row">{% trans "Note" %}</th>
+            <td>{% trans "No config backup job exists for this sync, so there is no result to show. It has not run yet, or its job record was removed by NetBox's job retention; use Back up configs on the sync page to run one and record its result." %}</td>
+          </tr>
+          {% endif %}
+          {% with result=health.config_backup.last_result %}
+          {% if result %}
+          <tr>
+            <th scope="row">{% trans "Managed devices" %}</th>
+            <td>{{ result.scoped_devices|placeholder }}{% if health.config_backup.in_scope_devices_now is not None %} ({% blocktrans with count=health.config_backup.in_scope_devices_now %}{{ count }} now{% endblocktrans %}){% endif %}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Managed devices with no config from Forward" %}</th>
+            <td>{{ result.scoped_without_config|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Rows fetched" %}</th>
+            <td>{{ result.rows|placeholder }} ({{ result.pages|placeholder }} {% trans "pages" %})</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Written / unchanged / unmapped" %}</th>
+            <td>{{ result.written|placeholder }} / {{ result.unchanged|placeholder }} / {{ result.unmapped|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Unmanaged written / unchanged" %}</th>
+            <td>{{ result.unmanaged_written|placeholder }} / {{ result.unmanaged_unchanged|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Files in the backup folder" %}</th>
+            <td>{{ result.files_in_folder|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Snapshot" %}</th>
+            <td>{{ result.snapshot_id|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Commit / pushed" %}</th>
+            <td>{{ result.commit|placeholder }} / {% if result.pushed %}{% trans "yes" %}{% else %}{% trans "no" %}{% endif %}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Duration (seconds)" %}</th>
+            <td>{{ result.duration_seconds|placeholder }}</td>
+          </tr>
+          {% endif %}
+          {% endwith %}
+          <tr>
+            <th scope="row">{% trans "Validity device_config_path" %}</th>
+            <td>
+              {% if health.config_backup.validity_installed %}
+                {% if health.config_backup.device_config_path_matches_prefix %}
+                  {% trans "Matches the backup folder." %}
+                {% elif health.config_backup.device_config_path_set %}
+                  {% trans "Does not match the backup folder." %}
+                {% else %}
+                  {% trans "Not set." %}
+                {% endif %}
+                {% trans "Set it to" %} <code>{{ health.config_backup.expected_device_config_path }}</code>
+              {% else %}
+                {% trans "Validity is not installed." %}
+              {% endif %}
+            </td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+    <div class="card">
+      <h5 class="card-header">{% trans "NetBox vs Forward Row Counts" %}</h5>
+      <div class="card-body">
+        <p class="text-muted small">{% trans "Rows Forward returned in the latest validation run beside the rows NetBox holds for each enabled model. NetBox counts the whole table, including rows this sync does not manage, so a NetBox count far below Forward's is the signal that earlier runs never loaded the model." %}</p>
+        <div class="table-responsive">
+        <table class="table table-hover table-sm">
+          <thead>
+            <tr>
+              <th>{% trans "Model" %}</th>
+              <th>{% trans "Forward" %}</th>
+              <th>{% trans "NetBox" %}</th>
+              <th>{% trans "Before latest run" %}</th>
+              <th>{% trans "Created since" %}</th>
+              <th>{% trans "Duplicate groups" %}</th>
+              <th>{% trans "Note" %}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for entry in health.row_counts.models %}
+              <tr>
+                <td class="text-break">{{ entry.model }}</td>
+                <td>{{ entry.forward_rows|placeholder }}</td>
+                <td>{{ entry.netbox_rows|placeholder }}</td>
+                <td>{{ entry.rows_before_latest_run|placeholder }}</td>
+                <td>{{ entry.rows_created_since|placeholder }}</td>
+                <td>{{ entry.duplicate_groups|placeholder }}</td>
+                <td>{{ entry.note }}</td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="7" class="text-muted">{% trans "No enabled models." %}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        </div>
+      </div>
+    </div>
+    <div class="card">
+      <h5 class="card-header">{% trans "Recent Ingestions" %}</h5>
+      <div class="card-body">
+        <p class="text-muted small">{% trans "An Auto merge runs inside the sync job, so its merge shows no separate merge job; the merge time and counts below are the record of it." %}</p>
+        <div class="table-responsive">
+        <table class="table table-hover table-sm">
+          <thead>
+            <tr>
+              <th>{% trans "Ingestion" %}</th>
+              <th>{% trans "Mode" %}</th>
+              <th>{% trans "Job" %}</th>
+              <th>{% trans "Merge" %}</th>
+              <th>{% trans "Changes merged" %}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in health.recent_ingestions.ingestions %}
+              <tr>
+                <td>{{ item.ingestion }}</td>
+                <td>{{ item.sync_mode|placeholder }}{% if item.baseline_ready %} ({% trans "baseline" %}){% endif %}</td>
+                <td>{{ item.job_status|placeholder }}<br><span class="text-muted small">{{ item.job_started|placeholder }} &rarr; {{ item.job_completed|placeholder }}</span></td>
+                <td>{{ item.merge.mode }}<br><span class="text-muted small">{{ item.merge.merge_applied_at|placeholder }}</span></td>
+                <td>{{ item.merged_changes_by_model_action.total|placeholder }}{% if item.merged_changes_by_model_action.note %}<br><span class="text-muted small">{{ item.merged_changes_by_model_action.note }}</span>{% endif %}</td>
+              </tr>
+            {% empty %}
+              <tr><td colspan="5" class="text-muted">{% trans "No ingestions yet." %}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        </div>
+      </div>
+    </div>
     <div class="card">
       {% include 'extras/inc/configcontext_data.html' with title="Health Details" data=health format="json" copyid="forward-sync-health-details" %}
     </div>

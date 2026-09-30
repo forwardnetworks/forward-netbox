@@ -42,6 +42,8 @@ from urllib.parse import urlsplit
 from rq.timeouts import JobTimeoutException
 
 from ..exceptions import ForwardSyncError
+from .config_backup_path import config_backup_path_prefix
+from .config_backup_path import path_segments
 
 
 CONFIG_BACKUP_STAGES = (
@@ -112,6 +114,13 @@ class ConfigBackupResult:
     unmapped: int = 0
     unmanaged_written: int = 0
     unmanaged_unchanged: int = 0
+    # Devices the fetch was scoped to (the sync's identities) and how many of
+    # them Forward returned NO configuration for - the number that answers
+    # "why are there fewer files than devices".
+    scoped_devices: int = 0
+    scoped_without_config: int = 0
+    # Files in the backup folder of the repository head after this run.
+    files_in_folder: int = 0
     skipped_reason: str = ""
     commit: str = ""
     pushed: bool = False
@@ -129,6 +138,9 @@ class ConfigBackupResult:
             "unmapped": self.unmapped,
             "unmanaged_written": self.unmanaged_written,
             "unmanaged_unchanged": self.unmanaged_unchanged,
+            "scoped_devices": self.scoped_devices,
+            "scoped_without_config": self.scoped_without_config,
+            "files_in_folder": self.files_in_folder,
             "skipped_reason": self.skipped_reason,
             "commit": self.commit,
             "pushed": self.pushed,
@@ -478,6 +490,59 @@ def _tree_entries(repo, tree_sha):
     return {name: (mode, sha) for name, mode, sha in tree.iteritems()}
 
 
+_TREE_MODE = 0o040000
+
+
+def _entries_at(repo, entries, segments, folder):
+    """The file entries of the folder at ``segments``, or none if it is new.
+
+    Walks down from the root entries one segment at a time. A segment that is a
+    FILE in the repository is a conflict, not a folder to replace: writing a
+    tree over it would delete a file nobody asked us to touch.
+    """
+    for segment in segments:
+        entry = entries.get(segment)
+        if entry is None:
+            return {}
+        if entry[0] != _TREE_MODE:
+            raise ConfigBackupError(
+                f"a file named `{segment.decode('utf-8', 'replace')}` is where "
+                f"the config backup folder `{folder}` needs a folder. Move or "
+                "rename it in the repository, or choose another folder in the "
+                "source's settings.",
+                stage="build",
+            )
+        entries = _tree_entries(repo, entry[1])
+    return entries
+
+
+def _replace_at(repo, entries, segments, leaf_entries, Tree):
+    """Root entries with the folder at ``segments`` replaced by ``leaf_entries``.
+
+    Every folder on the way down is rebuilt, and every sibling of the path is
+    carried over untouched, so a nested folder changes only its own files.
+    """
+    entries = dict(entries)
+    head, rest = segments[0], segments[1:]
+    if rest:
+        child = entries.get(head)
+        child_entries = (
+            _tree_entries(repo, child[1])
+            if child is not None and child[0] == _TREE_MODE
+            else {}
+        )
+        folder_entries = _replace_at(repo, child_entries, rest, leaf_entries, Tree)
+    else:
+        folder_entries = leaf_entries
+    tree = Tree()
+    for name in sorted(folder_entries):
+        mode, sha = folder_entries[name]
+        tree.add(name, mode, sha)
+    repo.object_store.add_object(tree)
+    entries[head] = (_TREE_MODE, tree.id)
+    return entries
+
+
 def run_config_backup(sync, *, snapshot_id, logger=None):
     """Fetch configs for this snapshot and push one commit of the changes."""
     import tempfile
@@ -498,6 +563,15 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
     if not snapshot_id:
         result.skipped_reason = "no snapshot id"
         return result
+    try:
+        path_prefix = config_backup_path_prefix(sync.source.parameters)
+    except ValueError as exc:
+        raise ConfigBackupError(
+            f"the source's config backup folder is not usable: {exc} Correct it "
+            "in the source's settings.",
+            stage="resolve",
+        ) from exc
+    folder_segments = path_segments(path_prefix)
 
     connection = _remote_connection(data_source)
     name_map = _identity_name_map(sync)
@@ -507,6 +581,11 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
         # none of it.
         result.skipped_reason = "no device identities for this sync"
         return result
+    result.scoped_devices = len(name_map)
+    # Forward names for which a configuration came back, among the devices this
+    # sync manages. The difference is the devices Forward has no collected
+    # configuration for.
+    configured_names = set()
     client = sync.source.get_client()
     network_id = (sync.source.parameters or {}).get("network_id")
     query = _load_backup_query()
@@ -542,11 +621,23 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
                 root_entries = _tree_entries(repo, head_commit.tree)
             else:
                 root_entries = {}
-            prefix = CONFIG_BACKUP_REPO_PREFIX.encode("ascii")
-            if prefix in root_entries:
-                config_entries = _tree_entries(repo, root_entries[prefix][1])
-            else:
-                config_entries = {}
+            config_entries = _entries_at(
+                repo, root_entries, folder_segments, path_prefix
+            )
+            default_folder = CONFIG_BACKUP_REPO_PREFIX.encode("ascii")
+            if (
+                path_prefix != CONFIG_BACKUP_REPO_PREFIX
+                and root_entries.get(default_folder, (None,))[0] == _TREE_MODE
+            ):
+                # Changing the folder leaves the old files where they were.
+                # Validity may still be reading them, and they are no longer
+                # updated, so say so instead of leaving stale configs unmarked.
+                result.warnings.append(
+                    f"the repository still holds a `{CONFIG_BACKUP_REPO_PREFIX}/` "
+                    f"folder from before the config backup folder became "
+                    f"`{path_prefix}/`; those files are no longer updated. "
+                    "Remove them, or point Validity at the new folder."
+                )
             unmanaged_prefix = UNMANAGED_BACKUP_REPO_PREFIX.encode("ascii")
             if unmanaged_prefix in root_entries:
                 unmanaged_entries = _tree_entries(
@@ -616,6 +707,7 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
                             continue
                         result.unmapped += 1
                         continue
+                    configured_names.add(forward_name)
                     blob = Blob.from_string(str(text).encode("utf-8"))
                     entry_name = file_name.encode("utf-8")
                     existing = config_entries.get(entry_name)
@@ -640,6 +732,10 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
                     break
                 offset += CONFIG_BACKUP_PAGE_SIZE
 
+            result.scoped_without_config = max(
+                0, result.scoped_devices - len(configured_names)
+            )
+            result.files_in_folder = len(config_entries)
             if result.rows == 0:
                 # An empty result cannot be told from a failed fetch, and a
                 # backup that commits emptiness on a fault destroys nothing but
@@ -653,13 +749,10 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
                 result.skipped_reason = "no configuration changed"
                 return result
 
-            config_tree = Tree()
-            for entry_name in sorted(config_entries):
-                mode, sha = config_entries[entry_name]
-                config_tree.add(entry_name, mode, sha)
-            repo.object_store.add_object(config_tree)
             root_tree = Tree()
-            root_entries[prefix] = (0o040000, config_tree.id)
+            root_entries = _replace_at(
+                repo, root_entries, folder_segments, config_entries, Tree
+            )
             if unmanaged_entries:
                 unmanaged_tree = Tree()
                 for entry_name in sorted(unmanaged_entries):

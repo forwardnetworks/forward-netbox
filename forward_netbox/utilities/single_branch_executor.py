@@ -4,6 +4,7 @@ from core.exceptions import SyncError
 from core.models import ObjectType
 from netbox_branching.choices import BranchStatusChoices
 from netbox_branching.models import Branch
+from rq.timeouts import JobTimeoutException
 
 from ..choices import ForwardSyncStatusChoices
 from .branch_budget import build_branch_plan
@@ -13,10 +14,14 @@ from .branch_lifecycle import persist_density_observations
 from .branch_lifecycle import run_item_in_branch
 from .branching import build_branch_request
 from .branching import missing_branch_table_report
+from .change_explainability import branch_model_change_counts
 from .executor_base import ForwardExecutorBase
 from .primary_ip import apply_primary_ip_from_mgmt_tags
 from .primary_ip import primary_ip_from_mgmt_tag_enabled
 from .query_fetch import ForwardQueryFetcher
+from .run_size_guard import decide_run_size_hold
+from .run_size_guard import hold_record
+from .run_size_guard import record_hold
 from .sync_reporting import persist_refused_delete_identities
 from .validation import ForwardValidationRunner
 from .workload_state import stage_and_promote_noop_workload_states
@@ -42,6 +47,42 @@ def failed_model_strings(model_results) -> list[str]:
 
 class ForwardSingleBranchExecutor(ForwardExecutorBase):
     """Stage a whole sync into ONE provisioned branch, then bulk-merge once."""
+
+    def _hold_for_run_size(self, ingestion, branch):
+        """Leave a run staged for review instead of auto-merging it, if it is huge.
+
+        Returns True when the run was held. Never raises: a guard that failed
+        would stop every sync, so an error is logged and the merge proceeds as
+        it always did (see `run_size_guard`).
+        """
+        try:
+            findings = decide_run_size_hold(
+                self.sync, ingestion, branch_model_change_counts(branch)
+            )
+        except JobTimeoutException:
+            raise
+        except Exception as exc:  # noqa: BLE001 - never fail a sync over a guard
+            self.logger.log_warning(
+                "Could not check this run's size before the automatic merge "
+                f"({type(exc).__name__}); merging as usual.",
+                obj=ingestion,
+            )
+            return False
+        if not findings:
+            return False
+        record_hold(self.logger, findings)
+        self.sync.status = ForwardSyncStatusChoices.READY_TO_MERGE
+        self.sync.__class__.objects.filter(pk=self.sync.pk).update(
+            status=self.sync.status
+        )
+        self.logger.log_warning(
+            "Auto merge is holding this run for review instead of merging it. "
+            + hold_record(findings)["summary"]
+            + " Review the changes on the ingestion and merge them from there "
+            "if they are expected, or delete the ingestion to discard them.",
+            obj=ingestion,
+        )
+        return True
 
     def run(self):
         self.logger.log_info("Starting single-branch readiness checks.", obj=self.sync)
@@ -301,6 +342,9 @@ class ForwardSingleBranchExecutor(ForwardExecutorBase):
             apply_primary_ip_from_mgmt_tags(
                 self, branch, snapshot_id=context_dict["snapshot_id"]
             )
+
+        if self.sync.auto_merge and self._hold_for_run_size(ingestion, branch):
+            return [ingestion]
 
         if not self.sync.auto_merge:
             # Leave the single branch staged for operator review.

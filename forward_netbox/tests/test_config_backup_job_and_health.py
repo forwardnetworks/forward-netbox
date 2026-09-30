@@ -296,6 +296,38 @@ class ConfigBackupDeliveryCheckTest(_Fixture):
         self.assertEqual(check["status"], "warn")
         self.assertIn("set it to `configs/{{device.name}}.cfg`", check["message"])
 
+    def _use_folder(self, folder):
+        self.source.parameters["config_backup_path_prefix"] = folder
+        self.source.save()
+        self.sync.refresh_from_db()
+
+    def test_a_custom_folder_is_what_health_tells_validity_to_use(self):
+        self._use_folder("net/configs")
+
+        check = self._with_validity(template="configs/{{device.name}}.cfg")
+
+        self.assertEqual(check["status"], "warn")
+        self.assertIn("does not match where this plugin writes", check["message"])
+        self.assertIn("`net/configs/<device name>.cfg`", check["message"])
+        self.assertIn("set it to `net/configs/{{device.name}}.cfg`", check["message"])
+
+    def test_a_template_for_the_custom_folder_passes_the_path_check(self):
+        self._use_folder("net/configs")
+
+        check = self._with_validity(template="net/configs/{{device.name}}.cfg")
+
+        self.assertNotIn("does not match", check["message"])
+        self.assertNotIn("no `device_config_path`", check["message"])
+
+    def test_the_default_template_no_longer_matches_a_custom_folder(self):
+        # Set `device_config_path` to `configs/...` and change the folder, and
+        # Validity silently reads the stale files: Health has to say so.
+        self._use_folder("elsewhere")
+
+        check = self._with_validity(template="configs/{{device.name}}.cfg")
+
+        self.assertIn("does not match where this plugin writes", check["message"])
+
     def test_no_tenant_binding_and_no_default_warns(self):
         check = self._with_validity(template="configs/{{device.name}}.cfg")
         self.assertEqual(check["status"], "warn")

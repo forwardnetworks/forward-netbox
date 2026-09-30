@@ -354,6 +354,8 @@ def config_backup_delivery_state(sync):
     """
     from .config_backup import CONFIG_BACKUP_PARAMETER_NAME
     from .config_backup import CONFIG_BACKUP_REPO_PREFIX
+    from .config_backup_path import config_backup_path_prefix
+    from .config_backup_path import device_config_path_template
 
     source_parameters = getattr(getattr(sync, "source", None), "parameters", None) or {}
     data_source_pk = source_parameters.get(CONFIG_BACKUP_PARAMETER_NAME)
@@ -373,6 +375,10 @@ def config_backup_delivery_state(sync):
         "validity_installed": django_apps.is_installed("validity"),
         "device_config_path_set": None,
         "device_config_path_matches_prefix": None,
+        "path_prefix_customized": None,
+        "path_prefix_valid": None,
+        "expected_device_config_path": None,
+        "in_scope_devices_now": None,
         "bound_via_tenant_or_default": None,
         "tenant_binding_check_errored": False,
         "url_scheme": None,
@@ -388,6 +394,29 @@ def config_backup_delivery_state(sync):
     if data_source is None:
         return state
     state.update(_config_backup_transport_facts(data_source))
+    try:
+        folder = config_backup_path_prefix(source_parameters)
+        state["path_prefix_valid"] = True
+    except ValueError:
+        # A stored value that fails the rules cannot be written to; the backup
+        # job says so. Health falls back to the default so this page renders.
+        folder = CONFIG_BACKUP_REPO_PREFIX
+        state["path_prefix_valid"] = False
+    state["path_prefix_customized"] = folder != CONFIG_BACKUP_REPO_PREFIX
+    state["expected_device_config_path"] = device_config_path_template(folder)
+    try:
+        from ..models import ForwardDeviceIdentity
+
+        state["in_scope_devices_now"] = (
+            ForwardDeviceIdentity.objects.filter(sync=sync, device__isnull=False)
+            .values("source_device_key")
+            .distinct()
+            .count()
+        )
+    except JobTimeoutException:
+        raise
+    except Exception:  # noqa: BLE001 - a health check must never fail a page
+        state["in_scope_devices_now"] = None
 
     state["data_source_exists"] = True
     # Not exported: the delivery bundle payload keeps this key off its export
@@ -398,15 +427,17 @@ def config_backup_delivery_state(sync):
     state["last_synced"] = data_source.last_synced
 
     if state["validity_installed"]:
-        expected_prefix = f"{CONFIG_BACKUP_REPO_PREFIX}/"
+        expected_prefix = f"{folder}/"
         template = (data_source.custom_field_data or {}).get("device_config_path") or ""
         state["device_config_path_set"] = bool(template)
-        # The layout this plugin writes is `configs/<netbox name>.cfg`; a
+        # The layout this plugin writes is `<folder>/<netbox name>.cfg`, the
+        # folder being the source's config backup folder (default `configs`); a
         # template can reach it through filters, but it cannot without both.
         state["device_config_path_matches_prefix"] = (
             expected_prefix in template and ".cfg" in template
         )
         state["_expected_prefix"] = expected_prefix  # GUI message only
+        state["_expected_device_config_path"] = device_config_path_template(folder)
         state["_device_config_path"] = template  # GUI message only
         try:
             from tenancy.models import Tenant
@@ -509,23 +540,26 @@ def _last_config_backup_run(sync):
         "last_run_at": None,
         "last_failure_stage": None,
         "last_failure_category": None,
+        "last_skipped_reason": None,
+        "last_result": None,
+        "config_backup_jobs_found": 0,
     }
     try:
-        job = (
+        jobs = list(
             Job.objects.filter(
                 object_type=ContentType.objects.get_for_model(ForwardSync),
                 object_id=sync.pk,
                 name__icontains="config backup",
-            )
-            .order_by("-created", "-pk")
-            .first()
+            ).order_by("-created", "-pk")[:_CONFIG_BACKUP_JOB_HISTORY]
         )
     except JobTimeoutException:
         raise
     except Exception:  # noqa: BLE001 - a health check must never fail a page
         return empty
-    if job is None:
+    if not jobs:
         return empty
+    job = jobs[0]
+    empty["config_backup_jobs_found"] = len(jobs)
     data = job.data if isinstance(job.data, dict) else {}
     stage = data.get("stage")
     category = data.get("failure_category")
@@ -540,7 +574,65 @@ def _last_config_backup_run(sync):
         "last_run_at": job.completed or job.created,
         "last_failure_stage": stage if stage in CONFIG_BACKUP_STAGES else None,
         "last_failure_category": category,
+        "last_skipped_reason": _safe_token(data.get("skipped_reason")),
+        "last_result": _last_fetch_result(jobs),
+        "config_backup_jobs_found": len(jobs),
     }
+
+
+# Recent config backup jobs read for the latest run that actually fetched.
+_CONFIG_BACKUP_JOB_HISTORY = 10
+# The counts a backup run records, and nothing else: no configuration text and
+# no names ever reach this dict.
+_CONFIG_BACKUP_RESULT_NUMBERS = (
+    "pages",
+    "rows",
+    "written",
+    "unchanged",
+    "unmapped",
+    "unmanaged_written",
+    "unmanaged_unchanged",
+    "scoped_devices",
+    "scoped_without_config",
+    "files_in_folder",
+    "duration_seconds",
+)
+
+
+def _safe_token(value):
+    """A short plain token, or None: reasons and ids, never free text."""
+    import re
+
+    text = str(value or "").strip()
+    return text if re.fullmatch(r"[A-Za-z0-9 ._:/-]{1,80}", text) else None
+
+
+def _last_fetch_result(jobs):
+    """Counts from the latest run that fetched configurations from Forward.
+
+    A run that found the snapshot already backed up records zeros, and reading
+    those as "the last backup wrote nothing" would hide the run that did the
+    work, so the newest job with rows is the one reported.
+    """
+    for job in jobs:
+        data = job.data if isinstance(job.data, dict) else {}
+        try:
+            rows = int(data.get("rows") or 0)
+        except (TypeError, ValueError):
+            continue
+        if rows <= 0:
+            continue
+        result = {}
+        for key in _CONFIG_BACKUP_RESULT_NUMBERS:
+            value = data.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                result[key] = value
+        result["snapshot_id"] = _safe_token(data.get("snapshot_id"))
+        result["commit"] = _safe_token(data.get("commit"))
+        result["pushed"] = bool(data.get("pushed"))
+        result["completed_at"] = job.completed or job.created
+        return result
+    return None
 
 
 def _config_backup_failure_sentence(state):
@@ -578,7 +670,59 @@ def _config_backup_failure_sentence(state):
     return sentence
 
 
-def _config_backup_delivery_check(sync):
+def config_backup_shortfall_sentence(state):
+    """Say in plain words how many managed devices got a file, and why not all.
+
+    Forward returns a configuration only for devices it collected one from, so a
+    device whose collection failed or is unsupported has no file however the
+    backup is set up. This is the sentence an operator otherwise asks a person
+    to work out from a device count and a file count.
+    """
+    result = state.get("last_result")
+    if not result:
+        return None
+    scoped = result.get("scoped_devices")
+    without = result.get("scoped_without_config")
+    if scoped is None or without is None:
+        # An older run recorded no scope: fall back on what it wrote or found
+        # unchanged against the managed devices there are now.
+        scoped = state.get("in_scope_devices_now")
+        mapped = int(result.get("written", 0)) + int(result.get("unchanged", 0))
+        if not scoped:
+            return None
+        without = max(0, scoped - mapped)
+    scoped, without = int(scoped), int(without)
+    returned = scoped - without
+    if scoped == 0:
+        return None
+    if without == 0:
+        sentence = (
+            f"Forward returned a configuration for all {scoped:,} managed devices "
+            "in the last backup."
+        )
+    else:
+        sentence = (
+            f"Forward returned a configuration for {returned:,} of {scoped:,} "
+            f"managed devices in the last backup; {without:,} have no collected "
+            "configuration in that snapshot (their collection failed or is not "
+            "supported), so no file exists for them."
+        )
+    files = result.get("files_in_folder")
+    if isinstance(files, (int, float)) and int(files) != returned:
+        sentence += (
+            f" The backup folder held {int(files):,} files after that run, "
+            "which also counts files left from earlier runs."
+        )
+    unmapped = int(result.get("unmapped", 0) or 0)
+    if unmapped:
+        sentence += (
+            f" {unmapped:,} configuration(s) came back for names with no NetBox "
+            "device in this sync and were not written."
+        )
+    return sentence
+
+
+def _config_backup_delivery_check(sync, state=None):
     """Is the chain from our commit to Validity's compliance run joined up?
 
     Three separate things must agree for a backed-up configuration to reach
@@ -596,7 +740,8 @@ def _config_backup_delivery_check(sync):
     the failure this check exists to name, because nothing else in either
     product will. Returns None when config backup is not enabled.
     """
-    state = config_backup_delivery_state(sync)
+    if state is None:
+        state = config_backup_delivery_state(sync)
     if state is None:
         return None
 
@@ -624,14 +769,14 @@ def _config_backup_delivery_check(sync):
                 "Validity is installed but the data source has no "
                 "`device_config_path`, so Validity cannot locate any device's "
                 "configuration - set it to "
-                f"`{CONFIG_BACKUP_DEVICE_CONFIG_PATH}`"
+                f"`{state['_expected_device_config_path']}`"
             )
         elif not state["device_config_path_matches_prefix"]:
             problems.append(
                 "the data source's `device_config_path` "
                 f"(“{state['_device_config_path']}”) does not match where this "
                 f"plugin writes (`{expected_prefix}<device name>.cfg`) - set it "
-                f"to `{CONFIG_BACKUP_DEVICE_CONFIG_PATH}`"
+                f"to `{state['_expected_device_config_path']}`"
             )
         if (
             not state["tenant_binding_check_errored"]
@@ -651,22 +796,60 @@ def _config_backup_delivery_check(sync):
     if failure:
         problems.insert(0, failure)
 
+    shortfall = config_backup_shortfall_sentence(state)
     if problems:
-        return _check(
-            name="Config backup delivery",
-            status="warn",
-            message="Config backup is enabled but " + "; ".join(problems) + ".",
-        )
-    return _check(
-        name="Config backup delivery",
-        status="pass",
-        message=(
-            f"Config backup writes to “{state['data_source_name']}”, which "
-            "has synced at least once and is reachable by its consumers. "
-            "Whether that sync is newer than the most recent backup commit "
-            "is not checked here."
-        ),
+        message = "Config backup is enabled but " + "; ".join(problems) + "."
+        if shortfall:
+            message += " " + shortfall
+        return _check(name="Config backup delivery", status="warn", message=message)
+    message = (
+        f"Config backup writes to “{state['data_source_name']}”, which "
+        "has synced at least once and is reachable by its consumers. "
+        "Whether that sync is newer than the most recent backup commit "
+        "is not checked here."
     )
+    if shortfall:
+        message += " " + shortfall
+    return _check(name="Config backup delivery", status="pass", message=message)
+
+
+def _json_ready_result(result):
+    if not result:
+        return None
+    ready = dict(result)
+    completed = ready.get("completed_at")
+    ready["completed_at"] = completed.isoformat() if completed else None
+    return ready
+
+
+def config_backup_card(state):
+    """What the Health tab's config backup card shows, or ``enabled: False``.
+
+    Everything an operator needs to answer "why are there fewer files than
+    devices" without a shell: the last fetching run's counts, the sentence that
+    explains the gap, and the exact Validity path for the folder in use.
+    """
+    if state is None:
+        return {"enabled": False}
+    return {
+        "enabled": True,
+        "data_source_exists": state["data_source_exists"],
+        "last_run_status": state["last_run_status"],
+        "last_run_at": (
+            state["last_run_at"].isoformat() if state["last_run_at"] else None
+        ),
+        "last_skipped_reason": state["last_skipped_reason"],
+        "config_backup_jobs_found": state["config_backup_jobs_found"],
+        "last_result": _json_ready_result(state["last_result"]),
+        "in_scope_devices_now": state["in_scope_devices_now"],
+        "shortfall": config_backup_shortfall_sentence(state),
+        "path_prefix_customized": state["path_prefix_customized"],
+        "path_prefix_valid": state["path_prefix_valid"],
+        "expected_device_config_path": state["expected_device_config_path"],
+        "validity_installed": state["validity_installed"],
+        "device_config_path_set": state["device_config_path_set"],
+        "device_config_path_matches_prefix": state["device_config_path_matches_prefix"],
+    }
 
 
 def config_backup_delivery_bundle_payload(sync):
@@ -691,6 +874,19 @@ def config_backup_delivery_bundle_payload(sync):
         "validity_installed": state["validity_installed"],
         "device_config_path_set": state["device_config_path_set"],
         "device_config_path_matches_prefix": state["device_config_path_matches_prefix"],
+        # Whether the folder differs from the default, and whether it is usable;
+        # never the folder itself.
+        "path_prefix_customized": state["path_prefix_customized"],
+        "path_prefix_valid": state["path_prefix_valid"],
+        "in_scope_devices_now": state["in_scope_devices_now"],
+        # The latest run that fetched from Forward: counts, ids and timestamps.
+        # `null` with `config_backup_jobs_found: 0` means no backup job row
+        # exists for this sync (never run, or removed by job retention), not
+        # that the backup produced nothing.
+        "config_backup_jobs_found": state["config_backup_jobs_found"],
+        "last_skipped_reason": state["last_skipped_reason"],
+        "last_result": _json_ready_result(state["last_result"]),
+        "shortfall": config_backup_shortfall_sentence(state),
         "bound_via_tenant_or_default": state["bound_via_tenant_or_default"],
         "tenant_binding_check_errored": state["tenant_binding_check_errored"],
         # How config backup reaches the repository - never the url or proxy.
@@ -874,7 +1070,133 @@ def _database_tables_check():
     )
 
 
-def sync_health_summary(sync):
+def _ingestion_url(ingestion):
+    return ingestion.get_absolute_url()
+
+
+def _run_size_check(sync):
+    """Say so when a run is far larger than this model normally sees.
+
+    Two sources, both local reads so this is safe on every sync-page load: a
+    hold the merge step recorded on the ingestion's job (Auto merge stopped this
+    run for review), and otherwise the latest run's applied counts compared with
+    what earlier runs applied. The table-size comparison needs live counts and
+    only runs at merge time and in the evidence section.
+    """
+    from .health_evidence import applied_change_history
+    from .health_evidence import _job_statistics
+    from .run_size_anomaly import assess_run_size
+    from .run_size_anomaly import describe_finding
+    from .run_size_anomaly import HOLD_JOB_DATA_KEY
+
+    latest = sync.last_ingestion
+    if latest is None:
+        return None
+    job = latest.job
+    hold = (getattr(job, "data", None) or {}).get(HOLD_JOB_DATA_KEY)
+    if hold and latest.can_queue_merge:
+        sentences = " ".join(
+            describe_finding(finding) for finding in hold.get("findings") or ()
+        )
+        check = _check(
+            name="Run held for review",
+            status="warn",
+            message=(
+                "Auto merge held this run instead of merging it: "
+                f"{sentences} Open the ingestion and review its changes. Merge "
+                "them from there if they are expected, or delete the "
+                "ingestion to discard them."
+            ),
+        )
+        check["url"] = _ingestion_url(latest)
+        check["url_label"] = "Review the held ingestion"
+        return check
+    statistics = _job_statistics(job)
+    models = {
+        model: {"changes": counts.get("applied", 0), "existing_rows": None}
+        for model, counts in statistics.items()
+    }
+    findings = assess_run_size(models, history=applied_change_history(sync))
+    if not findings:
+        return None
+    check = _check(
+        name="Unusually large run",
+        status="warn",
+        message=(
+            " ".join(describe_finding(finding) for finding in findings)
+            + " If that is not expected, compare the model's NetBox row count "
+            "with Forward's in Health before the next sync."
+        ),
+    )
+    check["url"] = _ingestion_url(latest)
+    check["url_label"] = "Open the ingestion"
+    return check
+
+
+def _baseline_never_completed_check(sync):
+    """Every run is a full run when no baseline was ever promoted."""
+    latest = sync.last_ingestion
+    if latest is None or sync.latest_baseline_ingestion() is not None:
+        return None
+    finished = sync.forwardingestion_set.filter(job__completed__isnull=False).count()
+    if finished < 2:
+        return None
+    check = _check(
+        name="Baseline never completed",
+        status="warn",
+        message=(
+            f"{finished} runs have finished but none has been promoted to a "
+            "baseline, so every run is a full run that re-derives everything. "
+            "A failed row blocks promotion: open the latest ingestion and "
+            "resolve or accept the failures listed there."
+        ),
+    )
+    check["url"] = _ingestion_url(latest)
+    check["url_label"] = "Open the ingestion"
+    return check
+
+
+def _row_count_gap_check(sync, row_counts):
+    """NetBox far below Forward means earlier runs never loaded the model."""
+    from .run_size_anomaly import MIN_ESTABLISHED_ROWS
+
+    if sync.last_ingestion is None:
+        return None
+    gaps = []
+    for entry in row_counts.get("models") or ():
+        forward = entry.get("forward_rows")
+        netbox = entry.get("netbox_rows")
+        if (
+            isinstance(forward, int)
+            and isinstance(netbox, int)
+            and forward >= MIN_ESTABLISHED_ROWS
+            and netbox * 2 < forward
+        ):
+            gaps.append(
+                f"{entry['model']}: NetBox holds {netbox:,} of the {forward:,} "
+                "rows Forward reports"
+            )
+    if not gaps:
+        return None
+    return _check(
+        name="NetBox holds far fewer rows than Forward",
+        status="warn",
+        message=(
+            "; ".join(gaps)
+            + ". The next run will create the difference. If that is not "
+            "expected, check the model's map and scope before running it."
+        ),
+    )
+
+
+def sync_health_summary(sync, *, include_evidence=False):
+    """Everything Health knows about a sync.
+
+    ``include_evidence`` adds live row counts and the recent-ingestion evidence,
+    which run aggregate queries over large tables. The Health tab and the
+    support bundle ask for them; the sync page, which builds this on every load
+    for its attention banner, does not.
+    """
     from .ownership import ownership_finalization_summary
 
     optional_plugin_capabilities = integration_capability_summary()
@@ -946,12 +1268,30 @@ def sync_health_summary(sync):
     fast_path_check = _fast_path_runtime_check()
     if fast_path_check is not None:
         checks.append(fast_path_check)
-    config_backup_check = _config_backup_delivery_check(sync)
+    config_backup_state = config_backup_delivery_state(sync)
+    config_backup_check = _config_backup_delivery_check(sync, config_backup_state)
     if config_backup_check is not None:
         checks.append(config_backup_check)
     site_relabel_check = _site_relabel_duplicates_check(sync)
     if site_relabel_check is not None:
         checks.append(site_relabel_check)
+    run_size_check = _run_size_check(sync)
+    if run_size_check is not None:
+        checks.append(run_size_check)
+    baseline_check = _baseline_never_completed_check(sync)
+    if baseline_check is not None:
+        checks.append(baseline_check)
+    row_counts = {}
+    recent_ingestions = {}
+    if include_evidence:
+        from .health_evidence import recent_ingestions_evidence
+        from .health_evidence import row_count_evidence
+
+        row_counts = row_count_evidence(sync, model_summary["enabled_models"])
+        recent_ingestions = recent_ingestions_evidence(sync)
+        row_count_gap_check = _row_count_gap_check(sync, row_counts)
+        if row_count_gap_check is not None:
+            checks.append(row_count_gap_check)
     query_signature_drift_check = _query_signature_drift_check(sync)
     if query_signature_drift_check is not None:
         checks.append(query_signature_drift_check)
@@ -1050,6 +1390,10 @@ def sync_health_summary(sync):
         "api_usage": api_usage,
         "next_run": next_run,
         "checks": checks,
+        "config_backup": config_backup_card(config_backup_state),
+        "evidence_included": include_evidence,
+        "row_counts": row_counts,
+        "recent_ingestions": recent_ingestions,
     }
 
 

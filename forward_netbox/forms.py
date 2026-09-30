@@ -30,6 +30,8 @@ from .models import ForwardIngestionIssue
 from .models import ForwardNQEMap
 from .models import ForwardSource
 from .models import ForwardSync
+from .utilities.config_backup_path import DEFAULT_CONFIG_BACKUP_PATH_PREFIX
+from .utilities.config_backup_path import normalize_config_backup_path_prefix
 from .utilities.forward_api import DEFAULT_FORWARD_API_REQUESTS_PER_MINUTE
 from .utilities.forward_api import DEFAULT_FORWARD_API_TIMEOUT_SECONDS
 from .utilities.forward_api import DEFAULT_FORWARD_SAAS_API_REQUESTS_PER_MINUTE
@@ -527,6 +529,21 @@ class ForwardSourceForm(NetBoxModelForm):
                 "is transferred. On, the fetch is the whole collected estate."
             ),
         )
+        self.fields["config_backup_path_prefix"] = forms.CharField(
+            required=False,
+            max_length=255,
+            label="Config Backup Folder",
+            help_text=(
+                "Folder in the repository, relative to its root, where each "
+                "device's configuration is written as `<folder>/<NetBox device "
+                "name>.cfg`. Default `configs`; a nested path such as "
+                "`net/configs` is allowed. Point Validity's `device_config_path` "
+                "at the same folder (the Health tab prints the exact value). "
+                "Changing it does not move or remove files already written "
+                "under the old folder; they stay where they were and are no "
+                "longer updated."
+            ),
+        )
         self.fields["sync_device_tags"] = FlexibleMultipleChoiceField(
             required=False,
             choices=(),
@@ -656,6 +673,10 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["config_backup_include_unmanaged"].initial = bool(
             parameters.get("config_backup_include_unmanaged")
         )
+        self.fields["config_backup_path_prefix"].initial = (
+            parameters.get("config_backup_path_prefix")
+            or DEFAULT_CONFIG_BACKUP_PATH_PREFIX
+        )
         self.fields["sync_generic_endpoints"].initial = bool(
             parameters.get("sync_generic_endpoints")
         )
@@ -734,6 +755,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "scope_endpoints_by_include_tags",
                     "config_backup_data_source",
                     "config_backup_include_unmanaged",
+                    "config_backup_path_prefix",
                     name="Parameters",
                 )
             )
@@ -770,11 +792,20 @@ class ForwardSourceForm(NetBoxModelForm):
                     "scope_endpoints_by_include_tags",
                     "config_backup_data_source",
                     "config_backup_include_unmanaged",
+                    "config_backup_path_prefix",
                     name="Parameters",
                 )
             )
 
         self.fieldsets.append(FieldSet("description", "owner", name="Metadata"))
+
+    def clean_config_backup_path_prefix(self):
+        try:
+            return normalize_config_backup_path_prefix(
+                self.cleaned_data.get("config_backup_path_prefix")
+            )
+        except ValueError as exc:
+            raise forms.ValidationError(str(exc).capitalize()) from exc
 
     def clean(self):
         cleaned = dict(self.cleaned_data)
@@ -929,6 +960,10 @@ class ForwardSourceForm(NetBoxModelForm):
             ),
             "config_backup_include_unmanaged": bool(
                 cleaned.get("config_backup_include_unmanaged")
+            ),
+            "config_backup_path_prefix": (
+                cleaned.get("config_backup_path_prefix")
+                or DEFAULT_CONFIG_BACKUP_PATH_PREFIX
             ),
             "sync_generic_endpoints": bool(cleaned.get("sync_generic_endpoints")),
             "scope_endpoints_by_include_tags": bool(
@@ -1138,6 +1173,13 @@ class ForwardSourceForm(NetBoxModelForm):
                 self.cleaned_data["config_backup_data_source"].pk
                 if self.cleaned_data.get("config_backup_data_source")
                 else None
+            ),
+            "config_backup_include_unmanaged": bool(
+                self.cleaned_data.get("config_backup_include_unmanaged")
+            ),
+            "config_backup_path_prefix": (
+                self.cleaned_data.get("config_backup_path_prefix")
+                or DEFAULT_CONFIG_BACKUP_PATH_PREFIX
             ),
             "sync_generic_endpoints": bool(
                 self.cleaned_data.get("sync_generic_endpoints")
