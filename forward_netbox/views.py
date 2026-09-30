@@ -689,7 +689,7 @@ def _sync_support_bundle_payload(sync):
     include_tags = source_parameters.get("device_tag_include_tags") or []
     exclude_tags = source_parameters.get("device_tag_exclude_tags") or []
     sync_device_tags = source_parameters.get("sync_device_tags") or []
-    health = sync_health_summary(sync)
+    health = sync_health_summary(sync, include_evidence=True)
     return {
         "exported_at": timezone.now().isoformat(),
         "sync": {
@@ -3112,7 +3112,7 @@ class ForwardSyncHealthView(generic.ObjectView):
     )
 
     def get_extra_context(self, request, instance):
-        return {"health": sync_health_summary(instance)}
+        return {"health": sync_health_summary(instance, include_evidence=True)}
 
 
 def _store_live_drift_results(results):
