@@ -788,6 +788,85 @@
         </table>
       </div>
     </div>
+    {% if health.config_backup.enabled %}
+    <div class="card">
+      <h5 class="card-header">{% trans "Config Backup" %}</h5>
+      <div class="card-body">
+        {% if health.config_backup.shortfall %}
+          <p>{{ health.config_backup.shortfall }}</p>
+        {% endif %}
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Last run" %}</th>
+            <td>{{ health.config_backup.last_run_status|placeholder }}{% if health.config_backup.last_run_at %} &middot; {{ health.config_backup.last_run_at }}{% endif %}{% if health.config_backup.last_skipped_reason %} &middot; {{ health.config_backup.last_skipped_reason }}{% endif %}</td>
+          </tr>
+          {% if not health.config_backup.config_backup_jobs_found %}
+          <tr>
+            <th scope="row">{% trans "Note" %}</th>
+            <td>{% trans "No config backup job exists for this sync, so there is no result to show. It has not run yet, or its job record was removed by NetBox's job retention; use Back up configs on the sync page to run one and record its result." %}</td>
+          </tr>
+          {% endif %}
+          {% with result=health.config_backup.last_result %}
+          {% if result %}
+          <tr>
+            <th scope="row">{% trans "Managed devices" %}</th>
+            <td>{{ result.scoped_devices|placeholder }}{% if health.config_backup.in_scope_devices_now is not None %} ({% blocktrans with count=health.config_backup.in_scope_devices_now %}{{ count }} now{% endblocktrans %}){% endif %}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Managed devices with no config from Forward" %}</th>
+            <td>{{ result.scoped_without_config|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Rows fetched" %}</th>
+            <td>{{ result.rows|placeholder }} ({{ result.pages|placeholder }} {% trans "pages" %})</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Written / unchanged / unmapped" %}</th>
+            <td>{{ result.written|placeholder }} / {{ result.unchanged|placeholder }} / {{ result.unmapped|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Unmanaged written / unchanged" %}</th>
+            <td>{{ result.unmanaged_written|placeholder }} / {{ result.unmanaged_unchanged|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Files in the backup folder" %}</th>
+            <td>{{ result.files_in_folder|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Snapshot" %}</th>
+            <td>{{ result.snapshot_id|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Commit / pushed" %}</th>
+            <td>{{ result.commit|placeholder }} / {% if result.pushed %}{% trans "yes" %}{% else %}{% trans "no" %}{% endif %}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Duration (seconds)" %}</th>
+            <td>{{ result.duration_seconds|placeholder }}</td>
+          </tr>
+          {% endif %}
+          {% endwith %}
+          <tr>
+            <th scope="row">{% trans "Validity device_config_path" %}</th>
+            <td>
+              {% if health.config_backup.validity_installed %}
+                {% if health.config_backup.device_config_path_matches_prefix %}
+                  {% trans "Matches the backup folder." %}
+                {% elif health.config_backup.device_config_path_set %}
+                  {% trans "Does not match the backup folder." %}
+                {% else %}
+                  {% trans "Not set." %}
+                {% endif %}
+                {% trans "Set it to" %} <code>{{ health.config_backup.expected_device_config_path }}</code>
+              {% else %}
+                {% trans "Validity is not installed." %}
+              {% endif %}
+            </td>
+          </tr>
+        </table>
+      </div>
+    </div>
+    {% endif %}
     <div class="card">
       <h5 class="card-header">{% trans "NetBox vs Forward Row Counts" %}</h5>
       <div class="card-body">

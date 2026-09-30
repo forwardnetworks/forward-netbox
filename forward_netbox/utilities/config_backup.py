@@ -114,6 +114,13 @@ class ConfigBackupResult:
     unmapped: int = 0
     unmanaged_written: int = 0
     unmanaged_unchanged: int = 0
+    # Devices the fetch was scoped to (the sync's identities) and how many of
+    # them Forward returned NO configuration for - the number that answers
+    # "why are there fewer files than devices".
+    scoped_devices: int = 0
+    scoped_without_config: int = 0
+    # Files in the backup folder of the repository head after this run.
+    files_in_folder: int = 0
     skipped_reason: str = ""
     commit: str = ""
     pushed: bool = False
@@ -131,6 +138,9 @@ class ConfigBackupResult:
             "unmapped": self.unmapped,
             "unmanaged_written": self.unmanaged_written,
             "unmanaged_unchanged": self.unmanaged_unchanged,
+            "scoped_devices": self.scoped_devices,
+            "scoped_without_config": self.scoped_without_config,
+            "files_in_folder": self.files_in_folder,
             "skipped_reason": self.skipped_reason,
             "commit": self.commit,
             "pushed": self.pushed,
@@ -571,6 +581,11 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
         # none of it.
         result.skipped_reason = "no device identities for this sync"
         return result
+    result.scoped_devices = len(name_map)
+    # Forward names for which a configuration came back, among the devices this
+    # sync manages. The difference is the devices Forward has no collected
+    # configuration for.
+    configured_names = set()
     client = sync.source.get_client()
     network_id = (sync.source.parameters or {}).get("network_id")
     query = _load_backup_query()
@@ -692,6 +707,7 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
                             continue
                         result.unmapped += 1
                         continue
+                    configured_names.add(forward_name)
                     blob = Blob.from_string(str(text).encode("utf-8"))
                     entry_name = file_name.encode("utf-8")
                     existing = config_entries.get(entry_name)
@@ -716,6 +732,10 @@ def run_config_backup(sync, *, snapshot_id, logger=None):
                     break
                 offset += CONFIG_BACKUP_PAGE_SIZE
 
+            result.scoped_without_config = max(
+                0, result.scoped_devices - len(configured_names)
+            )
+            result.files_in_folder = len(config_entries)
             if result.rows == 0:
                 # An empty result cannot be told from a failed fetch, and a
                 # backup that commits emptiness on a fault destroys nothing but

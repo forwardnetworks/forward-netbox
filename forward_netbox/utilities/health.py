@@ -377,6 +377,8 @@ def config_backup_delivery_state(sync):
         "device_config_path_matches_prefix": None,
         "path_prefix_customized": None,
         "path_prefix_valid": None,
+        "expected_device_config_path": None,
+        "in_scope_devices_now": None,
         "bound_via_tenant_or_default": None,
         "tenant_binding_check_errored": False,
         "url_scheme": None,
@@ -401,6 +403,20 @@ def config_backup_delivery_state(sync):
         folder = CONFIG_BACKUP_REPO_PREFIX
         state["path_prefix_valid"] = False
     state["path_prefix_customized"] = folder != CONFIG_BACKUP_REPO_PREFIX
+    state["expected_device_config_path"] = device_config_path_template(folder)
+    try:
+        from ..models import ForwardDeviceIdentity
+
+        state["in_scope_devices_now"] = (
+            ForwardDeviceIdentity.objects.filter(sync=sync, device__isnull=False)
+            .values("source_device_key")
+            .distinct()
+            .count()
+        )
+    except JobTimeoutException:
+        raise
+    except Exception:  # noqa: BLE001 - a health check must never fail a page
+        state["in_scope_devices_now"] = None
 
     state["data_source_exists"] = True
     # Not exported: the delivery bundle payload keeps this key off its export
@@ -524,23 +540,26 @@ def _last_config_backup_run(sync):
         "last_run_at": None,
         "last_failure_stage": None,
         "last_failure_category": None,
+        "last_skipped_reason": None,
+        "last_result": None,
+        "config_backup_jobs_found": 0,
     }
     try:
-        job = (
+        jobs = list(
             Job.objects.filter(
                 object_type=ContentType.objects.get_for_model(ForwardSync),
                 object_id=sync.pk,
                 name__icontains="config backup",
-            )
-            .order_by("-created", "-pk")
-            .first()
+            ).order_by("-created", "-pk")[:_CONFIG_BACKUP_JOB_HISTORY]
         )
     except JobTimeoutException:
         raise
     except Exception:  # noqa: BLE001 - a health check must never fail a page
         return empty
-    if job is None:
+    if not jobs:
         return empty
+    job = jobs[0]
+    empty["config_backup_jobs_found"] = len(jobs)
     data = job.data if isinstance(job.data, dict) else {}
     stage = data.get("stage")
     category = data.get("failure_category")
@@ -555,7 +574,65 @@ def _last_config_backup_run(sync):
         "last_run_at": job.completed or job.created,
         "last_failure_stage": stage if stage in CONFIG_BACKUP_STAGES else None,
         "last_failure_category": category,
+        "last_skipped_reason": _safe_token(data.get("skipped_reason")),
+        "last_result": _last_fetch_result(jobs),
+        "config_backup_jobs_found": len(jobs),
     }
+
+
+# Recent config backup jobs read for the latest run that actually fetched.
+_CONFIG_BACKUP_JOB_HISTORY = 10
+# The counts a backup run records, and nothing else: no configuration text and
+# no names ever reach this dict.
+_CONFIG_BACKUP_RESULT_NUMBERS = (
+    "pages",
+    "rows",
+    "written",
+    "unchanged",
+    "unmapped",
+    "unmanaged_written",
+    "unmanaged_unchanged",
+    "scoped_devices",
+    "scoped_without_config",
+    "files_in_folder",
+    "duration_seconds",
+)
+
+
+def _safe_token(value):
+    """A short plain token, or None: reasons and ids, never free text."""
+    import re
+
+    text = str(value or "").strip()
+    return text if re.fullmatch(r"[A-Za-z0-9 ._:/-]{1,80}", text) else None
+
+
+def _last_fetch_result(jobs):
+    """Counts from the latest run that fetched configurations from Forward.
+
+    A run that found the snapshot already backed up records zeros, and reading
+    those as "the last backup wrote nothing" would hide the run that did the
+    work, so the newest job with rows is the one reported.
+    """
+    for job in jobs:
+        data = job.data if isinstance(job.data, dict) else {}
+        try:
+            rows = int(data.get("rows") or 0)
+        except (TypeError, ValueError):
+            continue
+        if rows <= 0:
+            continue
+        result = {}
+        for key in _CONFIG_BACKUP_RESULT_NUMBERS:
+            value = data.get(key)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                result[key] = value
+        result["snapshot_id"] = _safe_token(data.get("snapshot_id"))
+        result["commit"] = _safe_token(data.get("commit"))
+        result["pushed"] = bool(data.get("pushed"))
+        result["completed_at"] = job.completed or job.created
+        return result
+    return None
 
 
 def _config_backup_failure_sentence(state):
@@ -593,7 +670,59 @@ def _config_backup_failure_sentence(state):
     return sentence
 
 
-def _config_backup_delivery_check(sync):
+def config_backup_shortfall_sentence(state):
+    """Say in plain words how many managed devices got a file, and why not all.
+
+    Forward returns a configuration only for devices it collected one from, so a
+    device whose collection failed or is unsupported has no file however the
+    backup is set up. This is the sentence an operator otherwise asks a person
+    to work out from a device count and a file count.
+    """
+    result = state.get("last_result")
+    if not result:
+        return None
+    scoped = result.get("scoped_devices")
+    without = result.get("scoped_without_config")
+    if scoped is None or without is None:
+        # An older run recorded no scope: fall back on what it wrote or found
+        # unchanged against the managed devices there are now.
+        scoped = state.get("in_scope_devices_now")
+        mapped = int(result.get("written", 0)) + int(result.get("unchanged", 0))
+        if not scoped:
+            return None
+        without = max(0, scoped - mapped)
+    scoped, without = int(scoped), int(without)
+    returned = scoped - without
+    if scoped == 0:
+        return None
+    if without == 0:
+        sentence = (
+            f"Forward returned a configuration for all {scoped:,} managed devices "
+            "in the last backup."
+        )
+    else:
+        sentence = (
+            f"Forward returned a configuration for {returned:,} of {scoped:,} "
+            f"managed devices in the last backup; {without:,} have no collected "
+            "configuration in that snapshot (their collection failed or is not "
+            "supported), so no file exists for them."
+        )
+    files = result.get("files_in_folder")
+    if isinstance(files, (int, float)) and int(files) != returned:
+        sentence += (
+            f" The backup folder held {int(files):,} files after that run, "
+            "which also counts files left from earlier runs."
+        )
+    unmapped = int(result.get("unmapped", 0) or 0)
+    if unmapped:
+        sentence += (
+            f" {unmapped:,} configuration(s) came back for names with no NetBox "
+            "device in this sync and were not written."
+        )
+    return sentence
+
+
+def _config_backup_delivery_check(sync, state=None):
     """Is the chain from our commit to Validity's compliance run joined up?
 
     Three separate things must agree for a backed-up configuration to reach
@@ -611,7 +740,8 @@ def _config_backup_delivery_check(sync):
     the failure this check exists to name, because nothing else in either
     product will. Returns None when config backup is not enabled.
     """
-    state = config_backup_delivery_state(sync)
+    if state is None:
+        state = config_backup_delivery_state(sync)
     if state is None:
         return None
 
@@ -666,22 +796,60 @@ def _config_backup_delivery_check(sync):
     if failure:
         problems.insert(0, failure)
 
+    shortfall = config_backup_shortfall_sentence(state)
     if problems:
-        return _check(
-            name="Config backup delivery",
-            status="warn",
-            message="Config backup is enabled but " + "; ".join(problems) + ".",
-        )
-    return _check(
-        name="Config backup delivery",
-        status="pass",
-        message=(
-            f"Config backup writes to “{state['data_source_name']}”, which "
-            "has synced at least once and is reachable by its consumers. "
-            "Whether that sync is newer than the most recent backup commit "
-            "is not checked here."
-        ),
+        message = "Config backup is enabled but " + "; ".join(problems) + "."
+        if shortfall:
+            message += " " + shortfall
+        return _check(name="Config backup delivery", status="warn", message=message)
+    message = (
+        f"Config backup writes to “{state['data_source_name']}”, which "
+        "has synced at least once and is reachable by its consumers. "
+        "Whether that sync is newer than the most recent backup commit "
+        "is not checked here."
     )
+    if shortfall:
+        message += " " + shortfall
+    return _check(name="Config backup delivery", status="pass", message=message)
+
+
+def _json_ready_result(result):
+    if not result:
+        return None
+    ready = dict(result)
+    completed = ready.get("completed_at")
+    ready["completed_at"] = completed.isoformat() if completed else None
+    return ready
+
+
+def config_backup_card(state):
+    """What the Health tab's config backup card shows, or ``enabled: False``.
+
+    Everything an operator needs to answer "why are there fewer files than
+    devices" without a shell: the last fetching run's counts, the sentence that
+    explains the gap, and the exact Validity path for the folder in use.
+    """
+    if state is None:
+        return {"enabled": False}
+    return {
+        "enabled": True,
+        "data_source_exists": state["data_source_exists"],
+        "last_run_status": state["last_run_status"],
+        "last_run_at": (
+            state["last_run_at"].isoformat() if state["last_run_at"] else None
+        ),
+        "last_skipped_reason": state["last_skipped_reason"],
+        "config_backup_jobs_found": state["config_backup_jobs_found"],
+        "last_result": _json_ready_result(state["last_result"]),
+        "in_scope_devices_now": state["in_scope_devices_now"],
+        "shortfall": config_backup_shortfall_sentence(state),
+        "path_prefix_customized": state["path_prefix_customized"],
+        "path_prefix_valid": state["path_prefix_valid"],
+        "expected_device_config_path": state["expected_device_config_path"],
+        "validity_installed": state["validity_installed"],
+        "device_config_path_set": state["device_config_path_set"],
+        "device_config_path_matches_prefix": state["device_config_path_matches_prefix"],
+    }
 
 
 def config_backup_delivery_bundle_payload(sync):
@@ -710,6 +878,15 @@ def config_backup_delivery_bundle_payload(sync):
         # never the folder itself.
         "path_prefix_customized": state["path_prefix_customized"],
         "path_prefix_valid": state["path_prefix_valid"],
+        "in_scope_devices_now": state["in_scope_devices_now"],
+        # The latest run that fetched from Forward: counts, ids and timestamps.
+        # `null` with `config_backup_jobs_found: 0` means no backup job row
+        # exists for this sync (never run, or removed by job retention), not
+        # that the backup produced nothing.
+        "config_backup_jobs_found": state["config_backup_jobs_found"],
+        "last_skipped_reason": state["last_skipped_reason"],
+        "last_result": _json_ready_result(state["last_result"]),
+        "shortfall": config_backup_shortfall_sentence(state),
         "bound_via_tenant_or_default": state["bound_via_tenant_or_default"],
         "tenant_binding_check_errored": state["tenant_binding_check_errored"],
         # How config backup reaches the repository - never the url or proxy.
@@ -1091,7 +1268,8 @@ def sync_health_summary(sync, *, include_evidence=False):
     fast_path_check = _fast_path_runtime_check()
     if fast_path_check is not None:
         checks.append(fast_path_check)
-    config_backup_check = _config_backup_delivery_check(sync)
+    config_backup_state = config_backup_delivery_state(sync)
+    config_backup_check = _config_backup_delivery_check(sync, config_backup_state)
     if config_backup_check is not None:
         checks.append(config_backup_check)
     site_relabel_check = _site_relabel_duplicates_check(sync)
@@ -1212,6 +1390,7 @@ def sync_health_summary(sync, *, include_evidence=False):
         "api_usage": api_usage,
         "next_run": next_run,
         "checks": checks,
+        "config_backup": config_backup_card(config_backup_state),
         "evidence_included": include_evidence,
         "row_counts": row_counts,
         "recent_ingestions": recent_ingestions,
