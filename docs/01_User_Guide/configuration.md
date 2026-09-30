@@ -665,7 +665,9 @@ Three settings connect the two sides, all of them NetBox objects this plugin
 deliberately does not write:
 
 1. On the git data source, set the `device_config_path` custom field to
-   `configs/{{device.name}}.cfg` - that is where config backup writes.
+   `configs/{{device.name}}.cfg` - that is where config backup writes by
+   default. If you set **Config Backup Folder** on the source (below), use that
+   folder instead; the Health tab prints the exact value.
 2. Bind devices to the data source the way Validity expects: set the
    `data_source` custom field on the devices' **tenant**, or mark one data
    source `default`.
@@ -691,8 +693,13 @@ traceable to a named snapshot; the commit message records it. The push uses the
 data source's own URL, credentials, and branch - the plugin stores only the
 data source reference, never a credential - and the data source is synced
 afterward so DataFiles (and consumers such as Validity's golden-config checks)
-are current immediately. Files are written as `configs/<device-name>.cfg` using
-the NetBox device name. Only devices this sync manages are written; a run in
+are current immediately. Files are written as `<folder>/<device-name>.cfg` using
+the NetBox device name, where the folder is **Config Backup Folder**
+(`config_backup_path_prefix`, default `configs`, relative to the repository
+root, nested paths such as `net/configs` allowed). Changing the folder does not
+move or remove files already written under the old one; they stay and are no
+longer updated, and the backup job reports it when a `configs/` folder is still
+present. Only devices this sync manages are written; a run in
 which no configuration changed makes no commit, and a run against an
 already-backed-up snapshot skips the fetch entirely. Forward strips collected
 credentials, but configuration text retains hashed secrets (for example

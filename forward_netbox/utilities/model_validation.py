@@ -68,6 +68,7 @@ def clean_forward_source(source):
             "config_backup_data_source",
             "config_backup_include_unmanaged",
             "enable_predict",
+            "config_backup_path_prefix",
         }
     )
     if invalid:
@@ -95,6 +96,15 @@ def clean_forward_source(source):
         raise ValidationError(_("`config_backup_include_unmanaged` must be a boolean."))
     if not isinstance(parameters.get("enable_predict", False), bool):
         raise ValidationError(_("`enable_predict` must be a boolean."))
+    if "config_backup_path_prefix" in parameters:
+        from .config_backup_path import normalize_config_backup_path_prefix
+
+        try:
+            normalize_config_backup_path_prefix(parameters["config_backup_path_prefix"])
+        except ValueError as exc:
+            raise ValidationError(
+                _("`config_backup_path_prefix`: %(reason)s") % {"reason": exc}
+            ) from exc
     if not isinstance(parameters.get("sync_generic_endpoints", False), bool):
         raise ValidationError(_("`sync_generic_endpoints` must be a boolean."))
     parameters.setdefault("scope_endpoints_by_include_tags", True)
