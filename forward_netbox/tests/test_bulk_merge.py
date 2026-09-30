@@ -3456,7 +3456,10 @@ class SingleBranchExecutorTest(CleanTransactionTestCase):
         if workloads is None:
             workloads = self._site_workloads()
         logger = Mock()
+        # `record_hold` writes into the logger's data, so it needs a real dict.
+        logger.log_data = {}
         self.sync.logger = logger
+        self.logger = logger
         provision_calls = []
         original_provision = Branch.provision
 
@@ -3490,6 +3493,79 @@ class SingleBranchExecutorTest(CleanTransactionTestCase):
         # All 15 sites merged into main.
         self.assertEqual(Site.objects.filter(slug__startswith="sbe-site-").count(), 15)
         self.assertTrue(ingestions[0].baseline_ready)
+
+    def _flagged(self):
+        return [
+            {
+                "model": "dcim.site",
+                "changes": 30_000,
+                "multiple": 25.0,
+                "basis": "netbox_rows",
+                "norm": 1_200,
+                "runs": None,
+            }
+        ]
+
+    def test_a_run_the_guard_flags_is_left_staged_and_not_merged(self):
+        from forward_netbox.choices import ForwardSyncStatusChoices
+        from forward_netbox.utilities.run_size_anomaly import HOLD_JOB_DATA_KEY
+
+        with patch(
+            "forward_netbox.utilities.single_branch_executor.decide_run_size_hold",
+            return_value=self._flagged(),
+        ):
+            ingestions, _ = self._run_executor()
+
+        self.assertEqual(Site.objects.filter(slug__startswith="sbe-site-").count(), 0)
+        self.sync.refresh_from_db()
+        self.assertEqual(self.sync.status, ForwardSyncStatusChoices.READY_TO_MERGE)
+        self.assertTrue(ingestions[0].can_queue_merge)
+        self.assertFalse(ingestions[0].baseline_ready)
+        self.assertEqual(
+            self.logger.log_data[HOLD_JOB_DATA_KEY]["findings"], self._flagged()
+        )
+        warnings = [call.args[0] for call in self.logger.log_warning.call_args_list]
+        held = [text for text in warnings if "Auto merge is holding" in text]
+        self.assertEqual(len(held), 1)
+        self.assertIn("delete the ingestion to discard", held[0])
+
+    def test_a_held_run_can_still_be_merged_by_the_operator(self):
+        from forward_netbox.utilities.ingestion_merge import sync_merge_ingestion
+
+        with patch(
+            "forward_netbox.utilities.single_branch_executor.decide_run_size_hold",
+            return_value=self._flagged(),
+        ):
+            ingestions, _ = self._run_executor()
+
+        sync_merge_ingestion(ingestions[0], remove_branch=True)
+
+        self.assertEqual(Site.objects.filter(slug__startswith="sbe-site-").count(), 15)
+
+    def test_a_sync_with_auto_merge_off_never_asks_the_guard(self):
+        self.sync.auto_merge = False
+        self.sync.save(update_fields=["auto_merge"])
+
+        with patch(
+            "forward_netbox.utilities.single_branch_executor.decide_run_size_hold"
+        ) as decide:
+            self._run_executor()
+
+        decide.assert_not_called()
+
+    def test_an_error_in_the_guard_fails_open_and_the_run_merges(self):
+        with patch(
+            "forward_netbox.utilities.single_branch_executor.decide_run_size_hold",
+            side_effect=RuntimeError("arithmetic bug"),
+        ):
+            ingestions, _ = self._run_executor()
+
+        self.assertEqual(Site.objects.filter(slug__startswith="sbe-site-").count(), 15)
+        self.assertTrue(ingestions[0].baseline_ready)
+        warnings = [call.args[0] for call in self.logger.log_warning.call_args_list]
+        failed_open = [text for text in warnings if "Could not check this run" in text]
+        self.assertEqual(len(failed_open), 1)
+        self.assertNotIn("arithmetic bug", failed_open[0])
 
     def test_fresh_database_seeded_core_sync_fetches_validates_and_merges(self):
         from forward_netbox.choices import forward_configured_models

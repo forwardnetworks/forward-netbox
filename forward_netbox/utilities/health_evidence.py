@@ -71,6 +71,15 @@ def _model_class(model_string):
         return None
 
 
+def existing_row_count(model_string):
+    """``(count, note)`` for a model's NetBox table; the note says why not."""
+    model = _model_class(model_string)
+    if model is None:
+        return None, "not installed"
+    count, skipped = _guarded(lambda: model.objects.count())
+    return count, skipped or ""
+
+
 def _forward_row_counts(sync):
     """Rows Forward returned per model in the latest validation run."""
     run = sync.latest_validation_run

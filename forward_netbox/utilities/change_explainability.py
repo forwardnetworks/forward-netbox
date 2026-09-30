@@ -83,6 +83,11 @@ def change_explainability_summary(ingestion, *, max_changes=DEFAULT_MAX_CHANGE_D
     }
 
 
+def branch_model_change_counts(branch):
+    """Staged changes per ``app.model`` over every change in the branch."""
+    return dict(_full_counts(branch)[1])
+
+
 def _full_counts(branch):
     """Action, model and model-by-action counts over every change in the branch."""
     from netbox_branching.models import ChangeDiff
