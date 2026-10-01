@@ -636,6 +636,7 @@ packaging==26.2 \
     #   pip-audit
     #   pip-requirements-parser
     #   twine
+    #   virtualenv
 paginate==0.5.7 \
     --hash=sha256:22bd083ab41e1a8b4f3690544afb2c60c25e5c9a63a30fa2f483f6c60c8e5945 \
     --hash=sha256:b885e2af73abcf01d9559fd5216b57ef722f8c42affbb63942377668e35c7591
@@ -662,7 +663,6 @@ platformdirs==4.10.1 \
     # via
     #   mkdocs-get-deps
     #   pip-audit
-    #   python-discovery
     #   virtualenv
 poetry-core==2.5.0 \
     --hash=sha256:81d04c9253b19d0604718268d781867c8f7b2128e5b25bbf1e84141eec6b89c4 \
@@ -705,9 +705,9 @@ python-dateutil==2.9.0.post0 \
     --hash=sha256:37dd54208da7e1cd875388217d5e00ebd4179249f90fb72437e91a35459a0ad3 \
     --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427
     # via ghp-import
-python-discovery==1.4.4 \
-    --hash=sha256:5cad33982d412c1f3ffb8f9ca4ea292c9680bca3942451d30b69c37fce53a4a3 \
-    --hash=sha256:abebe9120b43453b68c908acfb1e72a19d1a959ed2cb620ad38fc57d08056dbe
+python-discovery==1.6.1 \
+    --hash=sha256:cf87d3627dfb4412437fdd5b13eae402607722998d21567993aedbc59b23c15e \
+    --hash=sha256:d43fcdef879fe795352bd13ccf8d185ba5a9f86f36cfcd00529f596e737442b3
     # via virtualenv
 python-dotenv==1.2.3 \
     --hash=sha256:904552145e8bfed22162c09dab1c2b9b54fefa7b23ba780f4f26ca0316b0f0d9 \
@@ -893,16 +893,16 @@ twine==7.0.0 \
     --hash=sha256:85cdb29c518efef867360ae4acd4b0dfd61c8654a22fca08e6f8539f05022177 \
     --hash=sha256:b854164df26db268af05f49aa5c0344b10e27a494343ff05b1e0bad3b135f5a7
     # via -r requirements-release.in
-urllib3==2.7.0 \
-    --hash=sha256:231e0ec3b63ceb14667c67be60f2f2c40a518cb38b03af60abc813da26505f4c \
-    --hash=sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897
+urllib3==2.8.0 \
+    --hash=sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3 \
+    --hash=sha256:63bf2ead4c879426ebf22ef2a781eeb4aa3b4ae798a0435506f8687fd5bb9b63
     # via
     #   id
     #   requests
     #   twine
-virtualenv==21.6.1 \
-    --hash=sha256:15f978b7cd329f24855ff4a0c4b4899cc7678589f49adbdcbbb4d3232e641128 \
-    --hash=sha256:afe991df855715a2b2f60edfcc0107ef95a79fdfd8cb4cdaa71603d1c12e463b
+virtualenv==21.14.2 \
+    --hash=sha256:571930928b11e43db690073ad8228162eca8a3f8fd3a87acdeae07df7dd57068 \
+    --hash=sha256:6a8b7fd4e4ee00ebcdc1c5ee8cffd035d1fe130e354e8c9a44f510aac8affdc1
     # via pre-commit
 watchdog==6.0.0 \
     --hash=sha256:07df1fdd701c5d4c8e55ef6cf55b8f0120fe1aef7ef39a1c6fc6bc2e606d517a \

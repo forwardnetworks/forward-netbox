@@ -31,6 +31,7 @@ configuration, without making the query depend on either existing.
 - `forward_netbox/tests/test_config_backup_query.py`
 - `docs/01_User_Guide/configuration.md`
 - `scripts/tests/test_verify_release_provenance.py` (main only, see Decision Log)
+- `requirements-release.txt` (see Decision Log)
 - this plan
 
 ## Approach
@@ -75,3 +76,7 @@ Revert the commit; the query returns to fetching only collected commands.
   now that tag. Every push to `main` runs that suite, so nothing could land
   until it was fixed. The 2.9.x lane already derives the tag under test from
   the anchor; `main` takes the same test file.
+- **Release-tooling pins bumped in the same change.** `urllib3` 2.7.0 and
+  `virtualenv` 21.6.1 gained published advisories overnight, and the release
+  preflight refuses every push, on both lanes, while one is pinned. Only those
+  two packages were regenerated (`python-discovery` moves with `virtualenv`).
