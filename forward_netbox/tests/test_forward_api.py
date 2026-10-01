@@ -2829,3 +2829,77 @@ class WorkloadFetchBudgetTest(TestCase):
                 status="RUNNING",
                 deadline=past,
             )
+
+
+class MgmtTagEndpointBranchTest(TestCase):
+    """`Mgmt_*` tags are read for SNMP endpoints too, not only for devices.
+
+    Endpoints live under `network.endpoints`; a read of `network.devices` alone
+    meant an endpoint with a `Mgmt_<iface>` tag never got a primary IP.
+    """
+
+    def setUp(self):
+        self.client = ForwardClient(
+            SimpleNamespace(
+                url="https://fwd.app",
+                parameters={
+                    "username": "user@example.com",
+                    "password": encrypt_secret("secret"),
+                    "verify": True,
+                    "timeout": 1200,
+                },
+            )
+        )
+
+    def _run(self, device_rows, endpoint_rows, **kwargs):
+        queries = []
+
+        def fake_run(*, query, **_kw):
+            queries.append(query)
+            if "network.endpoints" in query:
+                return endpoint_rows
+            return device_rows
+
+        with patch.object(self.client, "run_nqe_query", side_effect=fake_run):
+            result = self.client.get_device_mgmt_tags("n", "s", **kwargs)
+        return result, queries
+
+    def test_endpoint_mgmt_tags_are_returned_with_the_devices(self):
+        result, queries = self._run(
+            [{"device": "sw-1", "tag": "Mgmt_Vl211"}],
+            [{"device": "acs-1", "tag": "Mgmt_eth0"}],
+        )
+
+        self.assertEqual(result, {"sw-1": ["Mgmt_Vl211"], "acs-1": ["Mgmt_eth0"]})
+        self.assertEqual(len(queries), 2)
+
+    def test_only_management_tags_are_kept_for_endpoints(self):
+        result, _queries = self._run(
+            [],
+            [
+                {"device": "acs-1", "tag": "Avocent"},
+                {"device": "acs-1", "tag": "mgmt_eth0"},
+            ],
+        )
+
+        self.assertEqual(result, {"acs-1": ["mgmt_eth0"]})
+
+    def test_endpoints_honour_exclude_tags_but_not_the_include_scope(self):
+        _result, queries = self._run(
+            [], [], include_tags=["Keep"], exclude_tags=["Skip"]
+        )
+
+        endpoint_query = next(q for q in queries if "network.endpoints" in q)
+        self.assertIn("Skip", endpoint_query)
+        self.assertNotIn("Keep", endpoint_query)
+        device_query = next(q for q in queries if "network.devices" in q)
+        self.assertIn("Keep", device_query)
+
+    def test_a_tag_on_both_sides_of_a_name_is_not_duplicated(self):
+        result, _queries = self._run(
+            [{"device": "x", "tag": "Mgmt_Lo0"}],
+            [{"device": "x", "tag": "Mgmt_Lo0"}],
+        )
+
+        self.assertEqual(result, {"x": ["Mgmt_Lo0"]})
+

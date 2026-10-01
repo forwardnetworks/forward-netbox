@@ -1166,8 +1166,28 @@ class ForwardClient:
             snapshot_id=snapshot_id,
             fetch_all=True,
         )
+        # SNMP endpoints carry tags too and have their own interfaces and IPs
+        # in NetBox, but they live under `network.endpoints`, so a read of
+        # `network.devices` alone never saw their `Mgmt_*` tag and no endpoint
+        # ever got a primary IP. Only the exclude tags apply here: this only
+        # decides which interface a tag names, and the caller sets a primary
+        # IP only on devices that exist in NetBox.
+        endpoint_query = "\n".join(
+            [
+                "foreach endpoint in network.endpoints",
+                *build_endpoint_tag_scope_where([], exclude_tags, include_match),
+                "foreach tag in endpoint.tagNames",
+                "select {device: endpoint.name, tag: tag}",
+            ]
+        )
+        endpoint_rows = self.run_nqe_query(
+            query=endpoint_query,
+            network_id=network_id,
+            snapshot_id=snapshot_id,
+            fetch_all=True,
+        )
         device_tags: dict[str, list[str]] = {}
-        for row in rows or []:
+        for row in list(rows or []) + list(endpoint_rows or []):
             device = str(row.get("device") or "").strip()
             tag = str(row.get("tag") or "").strip()
             if not device or not tag or not tag.lower().startswith("mgmt_"):
