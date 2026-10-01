@@ -705,6 +705,18 @@ already-backed-up snapshot skips the fetch entirely. Forward strips collected
 credentials, but configuration text retains hashed secrets (for example
 `enable secret`), so treat the repository as access-controlled material.
 
+Most platforms have a collected configuration command in Forward, and its text
+is written verbatim. Cisco NX-OS switches in ACI mode, Cisco APIC controllers
+and F5 hypervisors have none: Forward holds only a parsed configuration for
+them, and the backup renders that to text (nested lines are indented, and on
+NX-OS the result matches the collected text line for line). A device with
+neither is skipped, so a gap between files and managed devices is devices
+Forward collected no configuration for - the Config Backup card on Health
+counts them. Endpoints (SNMP-profiled devices such as CIMC controllers and
+console servers) are written only when Forward collected a configuration-style
+CLI command from them; SNMP-only endpoints hold no configuration text and emit
+nothing.
+
 Each sync records one resolved snapshot, validation run, ingestion, native
 Branching branch, and its stage/merge jobs. Dependency-ordered plan items are
 progress units inside that branch, not independent branches. If staging fails,
