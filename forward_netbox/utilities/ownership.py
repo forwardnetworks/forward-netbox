@@ -1,3 +1,4 @@
+import time
 from collections import Counter
 from collections import defaultdict
 from contextlib import contextmanager
@@ -10,6 +11,7 @@ from django.db.models import F
 from django.db.models import Q
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
+from utilities.exceptions import AbortRequest
 
 from .tag_contracts import candidate_managed_tag_slugs
 from .tag_contracts import validate_scope_tag_names
@@ -65,15 +67,103 @@ def _object_pk(value):
         return value
 
 
+# How long an operator-initiated delete waits for the ownership lock before it
+# stops and says who holds it. A delete that waited behind another session's
+# idle-in-transaction connection sat for over seventeen minutes with nothing on
+# screen; the wait was real, but silent and unbounded.
+OWNERSHIP_LOCK_OPERATOR_WAIT_SECONDS = 120
+OWNERSHIP_LOCK_POLL_SECONDS = 0.5
+
+
+class OwnershipLockTimeout(AbortRequest):
+    """The ownership lock stayed held; the message names the holding session.
+
+    An `AbortRequest`, so NetBox's delete views show the message on the page
+    rather than a server error.
+    """
+
+
+def _try_acquire_ownership_lock(cursor):
+    cursor.execute(
+        "SELECT pg_try_advisory_xact_lock(%s)",
+        [OWNERSHIP_ADVISORY_LOCK_ID],
+    )
+    return bool(cursor.fetchone()[0])
+
+
+def _format_duration(seconds):
+    seconds = max(int(seconds or 0), 0)
+    if seconds >= 3600:
+        return f"{seconds // 3600}h {seconds % 3600 // 60}m"
+    if seconds >= 60:
+        return f"{seconds // 60}m {seconds % 60}s"
+    return f"{seconds}s"
+
+
+def ownership_lock_holder_summary(cursor=None):
+    """Who holds the ownership lock, as a sentence with no query text.
+
+    Database session id, state and how long its transaction has been open -
+    enough for an operator to see an idle-in-transaction session that will
+    never release it. Never raises: this runs while building an error message.
+    """
+    try:
+        owns_cursor = cursor is None
+        cursor = cursor or connection.cursor()
+        try:
+            cursor.execute(
+                "SELECT a.pid, a.state, "
+                "EXTRACT(EPOCH FROM (now() - a.xact_start)), "
+                "EXTRACT(EPOCH FROM (now() - a.state_change)) "
+                "FROM pg_locks l JOIN pg_stat_activity a ON a.pid = l.pid "
+                "WHERE l.locktype = 'advisory' AND l.granted "
+                "AND l.classid = %s AND l.objid = %s AND l.objsubid = 1 "
+                "AND a.pid <> pg_backend_pid() ORDER BY a.xact_start LIMIT 1",
+                [OWNERSHIP_ADVISORY_LOCK_ID >> 32, OWNERSHIP_ADVISORY_LOCK_ID & 0xFFFFFFFF],
+            )
+            row = cursor.fetchone()
+        finally:
+            if owns_cursor:
+                cursor.close()
+    except Exception:  # noqa: BLE001 - a diagnostic must never mask the failure
+        return "the holder could not be identified"
+    if not row:
+        return "the holder could not be identified"
+    pid, state, xact_age, state_age = row
+    return (
+        f"held by database session {pid} ({state or 'unknown state'}, "
+        f"transaction open {_format_duration(xact_age)}, "
+        f"in that state {_format_duration(state_age)})"
+    )
+
+
 @contextmanager
-def ownership_write_lock():
-    """Serialize global claim materialization across sources and workers."""
+def ownership_write_lock(*, max_wait_seconds=None):
+    """Serialize global claim materialization across sources and workers.
+
+    ``max_wait_seconds=None`` waits as long as it takes, which is right for the
+    sync itself. An operator-initiated action passes a limit: past it the lock
+    is reported as held, with the holding session, instead of hanging.
+    """
     with transaction.atomic():
         with connection.cursor() as cursor:
-            cursor.execute(
-                "SELECT pg_advisory_xact_lock(%s)",
-                [OWNERSHIP_ADVISORY_LOCK_ID],
-            )
+            if max_wait_seconds is None:
+                cursor.execute(
+                    "SELECT pg_advisory_xact_lock(%s)",
+                    [OWNERSHIP_ADVISORY_LOCK_ID],
+                )
+            else:
+                deadline = time.monotonic() + max_wait_seconds
+                while not _try_acquire_ownership_lock(cursor):
+                    if time.monotonic() >= deadline:
+                        raise OwnershipLockTimeout(
+                            "Another operation is holding the ownership lock "
+                            f"({ownership_lock_holder_summary(cursor)}). "
+                            f"Waited {_format_duration(max_wait_seconds)}; "
+                            "nothing was changed. Retry once that session "
+                            "finishes."
+                        )
+                    time.sleep(OWNERSHIP_LOCK_POLL_SECONDS)
         yield
 
 
@@ -1732,7 +1822,7 @@ def release_sync_ownership(sync):
 
     if not sync.pk:
         return
-    with ownership_write_lock():
+    with ownership_write_lock(max_wait_seconds=OWNERSHIP_LOCK_OPERATOR_WAIT_SECONDS):
         vdc_ids = set(
             ForwardVirtualParentClaim.objects.filter(sync=sync)
             .exclude(virtual_context_id=None)
