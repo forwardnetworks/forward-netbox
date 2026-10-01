@@ -36,6 +36,7 @@ from .sync_primitives import forget_lookup_object
 from .sync_reporting import EXPANDED_COMMUNITY_LIST_REASON
 from .sync_reporting import NON_NUMERIC_COMMUNITY_REASON
 from .sync_reporting import POLICY_NAME_TOO_LONG_REASON
+from .sync_reporting import BGP_PEER_POLICY_UNRESOLVED_REASON
 from .sync_reporting import ROUTE_MAP_LINK_FALLBACK_REASON
 from .sync_reporting import ROUTE_MAP_LINK_UNRESOLVED_REASON
 from .sync_reporting import SEQUENCE_OUT_OF_RANGE_REASON
@@ -62,6 +63,7 @@ ROUTING_POLICY_ROLLUP_REASONS = frozenset(
         SEQUENCE_OUT_OF_RANGE_REASON,
         ROUTE_MAP_LINK_FALLBACK_REASON,
         ROUTE_MAP_LINK_UNRESOLVED_REASON,
+        BGP_PEER_POLICY_UNRESOLVED_REASON,
     }
 )
 
@@ -201,10 +203,12 @@ def _ensure_policy_parent(runner, model_string, model, name, values):
 LINK_PARENT_MODELS = {
     "prefixlist": ("netbox_routing.prefixlist", "PrefixList"),
     "communitylist": ("netbox_routing.communitylist", "CommunityList"),
+    "routemap": ("netbox_routing.routemap", "RouteMap"),
 }
 _LINK_KIND_BY_ENTRY_MODEL = {
     PREFIX_LIST_MODEL: "prefixlist",
     COMMUNITY_LIST_MODEL: "communitylist",
+    ROUTE_MAP_MODEL: "routemap",
 }
 
 
@@ -234,7 +238,7 @@ def _link_index(runner):
 def record_policy_variant_holders(runner, model_string, row):
     """What this list row says about its name's variants, for link resolution."""
     kind = _LINK_KIND_BY_ENTRY_MODEL.get(model_string)
-    configured = str(row.get("list_name") or "").strip().lower()
+    configured = str(row.get("list_name") or row.get("map_name") or "").strip().lower()
     if kind is None or not configured:
         return
     index = _link_index(runner)[kind]
@@ -846,6 +850,7 @@ def ensure_route_map(runner, row):
             "description": policy_description(row, row.get("map_name")),
         },
     )
+    record_policy_variant_holders(runner, ROUTE_MAP_MODEL, row)
     return _ensure_policy_parent(
         runner, "netbox_routing.routemap", RouteMap, name, values
     )

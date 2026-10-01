@@ -616,6 +616,53 @@ def resolve_bgp_address_family_for_delete(runner, row):
     )
 
 
+# The route map and prefix list a peer address family attaches, by row field.
+# A field is set only when a policy was found AND is imported: a row whose
+# configuration the query could not read leaves an existing link alone rather
+# than clearing one an operator may have set.
+BGP_PEER_POLICY_FIELDS = (
+    ("routemap_in", "routemap"),
+    ("routemap_out", "routemap"),
+    ("prefixlist_in", "prefixlist"),
+    ("prefixlist_out", "prefixlist"),
+)
+
+
+def resolve_bgp_peer_policy_links(runner, row):
+    """``{field: RouteMap|PrefixList}`` for the policies this row names.
+
+    Resolves through the same catalogue the route-map and prefix-list maps
+    build (`resolve_policy_link`): the variant the peer's own device holds,
+    else the shared definition. A name that is not imported under any
+    spelling leaves the field alone and is counted once per run.
+    """
+    from .sync_reporting import BGP_PEER_POLICY_UNRESOLVED_REASON
+    from .sync_routing_policy import resolve_policy_link
+
+    links = {}
+    device = row.get("device")
+    for field, kind in BGP_PEER_POLICY_FIELDS:
+        name = str(row.get(field) or "").strip()
+        if not name:
+            continue
+        obj, _outcome = resolve_policy_link(runner, kind, name, device)
+        if obj is not None:
+            links[field] = obj
+            continue
+        warn = getattr(runner, "_record_aggregated_skip_warning", None)
+        if warn is not None:
+            warn(
+                model_string="netbox_routing.bgppeeraddressfamily",
+                reason=BGP_PEER_POLICY_UNRESOLVED_REASON,
+                warning_message=(
+                    f"BGP peer address family names {field.replace('_', ' ')} "
+                    f"`{name}`, which is not imported under any spelling."
+                ),
+                sample=f"{device} {row.get('neighbor_address')} {field}",
+            )
+    return links
+
+
 def ensure_bgp_peer_address_family(runner, row, *, preview=False):
     BGPPeerAddressFamily = runner._optional_model(
         "netbox_routing",
@@ -637,6 +684,7 @@ def ensure_bgp_peer_address_family(runner, row, *, preview=False):
             "enabled": bool(row.get("enabled")),
             "description": "Observed by Forward from BGP RIB AFI/SAFI state.",
             "comments": bgp_peer_address_family_comments(row),
+            **resolve_bgp_peer_policy_links(runner, row),
         },
     )
     peer_af, _ = runner._upsert_values_from_defaults(

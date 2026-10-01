@@ -599,7 +599,30 @@ class RoutingPolicyAdapterTest(TestCase):
         entry = apply_netbox_routing_routemapentry(maps, self._rm_row(device="pol-b"))
         self.assertEqual(self._links(entry)["prefix"], ["PL-OUT@pol-b"])
         self.assertEqual(maps._aggregated_skip_warning_counts, {})
-        self.assertEqual(set(new_link_index()), {"prefixlist", "communitylist"})
+        self.assertEqual(
+            set(new_link_index()), {"prefixlist", "communitylist", "routemap"}
+        )
+
+    def test_a_route_map_row_records_the_devices_holding_its_variant(self):
+        # A BGP peer links to the route-map definition ITS device holds, which
+        # is only knowable if the route-map rows say who holds each variant.
+        runner = self._runner()
+        row = self._rm_row(device="pol-b")
+        row.update(
+            {
+                "name": "RM-X@pol-b",
+                "map_name": "RM-X",
+                "holder_devices": ["pol-a", "pol-c"],
+            }
+        )
+
+        apply_netbox_routing_routemapentry(runner, row)
+
+        index = runner._routing_policy_link_index["routemap"]
+        self.assertIn("rm-x", index["seen"])
+        self.assertEqual(
+            index["holders"]["rm-x"], {"pol-a": "RM-X@pol-b", "pol-c": "RM-X@pol-b"}
+        )
 
     def test_a_list_not_fetched_this_run_falls_back_to_the_shared_definition(self):
         self._import_lists(self._runner(), variants=True)
