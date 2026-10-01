@@ -1974,7 +1974,58 @@ def _site_relabel_pairs_payload(sync):
         "pair_count": len(report["pairs"]),
         "held_count": len(report["held"]),
         "held_by_reason": site_relabel_held_by_reason(report),
+        "last_repair": _last_site_relabel_repair(sync),
         "available": True,
+    }
+
+
+def _last_site_relabel_repair(sync):
+    """What the last merge run did, so a refused repair is visible on the page.
+
+    Counts and model labels only. Before this, the reason a pair was refused
+    existed only in the job's data and the support bundle.
+    """
+    from collections import Counter
+
+    from core.models import Job
+    from django.contrib.contenttypes.models import ContentType
+
+    from .utilities.sync_facade import BUTTON_JOB_SPECS
+
+    try:
+        suffix = BUTTON_JOB_SPECS["merge_site_relabel_duplicates"][1]
+        job = (
+            Job.objects.filter(
+                object_type=ContentType.objects.get_for_model(ForwardSync),
+                object_id=sync.pk,
+                name__icontains=suffix,
+            )
+            .order_by("-created")
+            .first()
+        )
+    except Exception:  # noqa: BLE001 - a page render must never 500 on this
+        return None
+    data = getattr(job, "data", None)
+    if not isinstance(data, dict) or "merged_count" not in data:
+        return None
+    refused = Counter()
+    for failed in data.get("failed_pairs") or ():
+        refused[failed.get("reason") or "unknown"] += 1
+    released = Counter()
+    for merged in data.get("merged_pairs") or ():
+        for model, count in (merged.get("routing_rows_released") or {}).items():
+            released[model] += count
+    blocking = Counter()
+    for failed in data.get("failed_pairs") or ():
+        for model in failed.get("blocking_models") or ():
+            blocking[model] += 1
+    return {
+        "job_pk": job.pk,
+        "merged_count": data.get("merged_count", 0),
+        "failed_count": data.get("failed_count", 0),
+        "failed_by_reason": sorted(refused.items()),
+        "blocking_models": sorted(blocking.items()),
+        "routing_rows_released": sorted(released.items()),
     }
 
 

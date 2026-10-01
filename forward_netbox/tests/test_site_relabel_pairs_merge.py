@@ -563,3 +563,55 @@ class SiteRelabelPairsTest(TestCase):
                 "netbox_routing.ospfinstance",
             },
         )
+
+    # -- the last repair is visible on the page ------------------------------
+
+    def _repair_job(self, data):
+        from forward_netbox.utilities.sync_facade import BUTTON_JOB_SPECS
+
+        suffix = BUTTON_JOB_SPECS["merge_site_relabel_duplicates"][1]
+        return Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name=f"{self.sync.name} - {suffix}",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            completed=timezone.now(),
+            job_id=uuid.uuid4(),
+            data=data,
+        )
+
+    def test_the_page_payload_reports_a_refused_repair_and_what_blocked_it(self):
+        from forward_netbox.views import _last_site_relabel_repair
+
+        self._repair_job(
+            {
+                "merged_count": 1,
+                "failed_count": 2,
+                "held_count": 0,
+                "merged_pairs": [
+                    {"routing_rows_released": {"netbox_routing.bgppeer": 3}}
+                ],
+                "failed_pairs": [
+                    {
+                        "reason": "newer_device_delete_refused",
+                        "blocking_models": ["ipam.service"],
+                    },
+                    {"reason": "newer_device_delete_refused", "blocking_models": None},
+                ],
+            }
+        )
+
+        last = _last_site_relabel_repair(self.sync)
+
+        self.assertEqual(last["merged_count"], 1)
+        self.assertEqual(last["failed_count"], 2)
+        self.assertEqual(last["failed_by_reason"], [("newer_device_delete_refused", 2)])
+        self.assertEqual(last["blocking_models"], [("ipam.service", 1)])
+        self.assertEqual(last["routing_rows_released"], [("netbox_routing.bgppeer", 3)])
+
+    def test_the_page_payload_has_no_last_repair_before_one_has_run(self):
+        from forward_netbox.views import _last_site_relabel_repair
+
+        self.assertIsNone(_last_site_relabel_repair(self.sync))
+        self._repair_job({"error": "refused", "error_type": "X"})
+        self.assertIsNone(_last_site_relabel_repair(self.sync))
