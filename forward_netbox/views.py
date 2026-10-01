@@ -631,10 +631,11 @@ def _stuck_verdict_bundle_payload(sync):
     The Recover-stuck-sync button is offered on this verdict; if an operator
     says the button never appeared, this is the field that says why.
     """
-    from .utilities.stuck_recovery import classify_stuck_sync
+    from .utilities.stuck_recovery import stuck_verdict_with_reason
 
     try:
-        return {"verdict": json_safe_value(classify_stuck_sync(sync))}
+        verdict, reason = stuck_verdict_with_reason(sync)
+        return {"verdict": json_safe_value(verdict), "reason": reason}
     except Exception as exc:
         return {"verdict": None, "classification_error": type(exc).__name__}
 

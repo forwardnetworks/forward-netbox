@@ -18,6 +18,7 @@ from forward_netbox.models import ForwardOwnershipReconciliation
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.stuck_recovery import classify_stuck_sync
+from forward_netbox.utilities.stuck_recovery import stuck_verdict_with_reason
 from forward_netbox.utilities.stuck_recovery import FORWARD_STUCK_MERGE_REQUEUE_LIMIT
 from forward_netbox.utilities.stuck_recovery import recover_stuck_sync
 
@@ -191,6 +192,79 @@ class StuckRecoveryTest(TestCase):
         )
 
         self.assertIsNone(self._classify_without_live_workers(sync))
+
+    # -- an empty verdict says why ------------------------------------------
+
+    def _reason(self, sync, **kwargs):
+        with patch(
+            "forward_netbox.utilities.stuck_recovery.job_has_live_execution",
+            return_value=False,
+        ):
+            return stuck_verdict_with_reason(sync, **kwargs)
+
+    def test_a_staged_run_explains_that_it_is_waiting_for_review(self):
+        sync, _ingestion = self._ready_sync_with_ingestion(
+            "why-staged", merge_applied=False, branch_status=BranchStatusChoices.READY
+        )
+
+        verdict, reason = self._reason(sync, grace_seconds=0)
+
+        self.assertIsNone(verdict)
+        self.assertIn("waiting for review", reason)
+
+    def test_a_live_job_is_named_as_the_reason(self):
+        sync, ingestion = self._ready_sync_with_ingestion("why-live", merge_applied=True)
+        ForwardIngestion.objects.filter(pk=ingestion.pk).update(
+            merge_job=self._merge_job(sync)
+        )
+
+        with patch(
+            "forward_netbox.utilities.stuck_recovery.job_has_live_execution",
+            return_value=True,
+        ):
+            verdict, reason = stuck_verdict_with_reason(sync, grace_seconds=0)
+
+        self.assertIsNone(verdict)
+        self.assertIn("still running", reason)
+
+    def test_the_grace_window_is_named_as_the_reason(self):
+        sync = self._sync(
+            "why-recent",
+            ForwardSyncStatusChoices.READY_TO_MERGE,
+            updated_ago=timedelta(seconds=5),
+        )
+        ForwardIngestion.objects.create(
+            sync=sync, snapshot_id="snapshot-why", merge_applied_at=timezone.now()
+        )
+
+        verdict, reason = self._reason(sync)
+
+        self.assertIsNone(verdict)
+        self.assertIn("grace window", reason)
+
+    def test_a_status_recovery_does_not_act_on_names_the_status(self):
+        sync = self._sync("why-idle", ForwardSyncStatusChoices.NEW)
+
+        verdict, reason = self._reason(sync)
+
+        self.assertIsNone(verdict)
+        self.assertIn("not one recovery acts on", reason)
+
+    def test_a_real_verdict_carries_its_own_reason(self):
+        sync, _ingestion = self._ready_sync_with_ingestion("why-real", merge_applied=True)
+
+        verdict, reason = self._reason(sync, grace_seconds=0)
+
+        self.assertEqual(verdict["action"], "finalize_merged_bookkeeping")
+        self.assertEqual(reason, verdict["reason"])
+
+    def test_classify_and_the_reason_variant_agree(self):
+        sync, _ingestion = self._ready_sync_with_ingestion("why-agree", merge_applied=True)
+
+        self.assertEqual(
+            self._classify_without_live_workers(sync, grace_seconds=0),
+            self._reason(sync, grace_seconds=0)[0],
+        )
 
     def test_future_scheduled_first_sync_is_not_recovered_as_dead(self):
         sync = self._sync("future-first", ForwardSyncStatusChoices.QUEUED)

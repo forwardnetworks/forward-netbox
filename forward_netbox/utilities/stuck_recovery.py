@@ -191,7 +191,14 @@ def _stuck_recovery_state(sync):
     return dict((sync.parameters or {}).get("stuck_recovery") or {})
 
 
-def _classify_merged_but_ready_to_merge(sync, *, grace_seconds, now):
+def _no_verdict(why, reason):
+    """Record why nothing is wrong, and return the "no verdict" value."""
+    if why is not None:
+        why.append(reason)
+    return None
+
+
+def _classify_merged_but_ready_to_merge(sync, *, grace_seconds, now, why=None):
     """A sync still marked READY_TO_MERGE after its branch merge was applied.
 
     ``READY_TO_MERGE`` is written by several paths (staged for review, a
@@ -205,17 +212,22 @@ def _classify_merged_but_ready_to_merge(sync, *, grace_seconds, now):
     """
     ingestion = _latest_ingestion(sync)
     if ingestion is None or getattr(ingestion, "merge_applied_at", None) is None:
-        return None
+        return _no_verdict(
+            why,
+            "waiting for review: no merge has been applied for the latest run",
+        )
     branch = getattr(ingestion, "branch", None)
     if branch is not None and (
         str(getattr(branch, "status", "") or "") != BranchStatusChoices.MERGED
     ):
-        return None
+        return _no_verdict(
+            why, "waiting for review: the run's branch has not been merged"
+        )
 
     groups = _candidate_job_groups(sync)
     jobs = groups["all_jobs"]
     if any(job_has_live_execution(job) for job in jobs):
-        return None
+        return _no_verdict(why, "a job for this sync is still running")
     timestamps = [
         ts
         for ts in (
@@ -231,7 +243,7 @@ def _classify_merged_but_ready_to_merge(sync, *, grace_seconds, now):
     ]
     newest = max(timestamps) if timestamps else None
     if newest is not None and (now - newest).total_seconds() < grace_seconds:
-        return None
+        return _no_verdict(why, "recent activity: inside the recovery grace window")
 
     return {
         "action": "finalize_merged_bookkeeping",
@@ -244,7 +256,23 @@ def _classify_merged_but_ready_to_merge(sync, *, grace_seconds, now):
 
 def classify_stuck_sync(sync, *, grace_seconds=RECOVERY_GRACE_SECONDS):
     """Return a verdict dict for a wedged sync, or None if it is healthy or
-    out of scope.
+    out of scope. `stuck_verdict_with_reason` says which, and why.
+    """
+    return _classify_stuck_sync(sync, grace_seconds=grace_seconds, why=None)
+
+
+def stuck_verdict_with_reason(sync, *, grace_seconds=RECOVERY_GRACE_SECONDS):
+    """``(verdict, reason)``: a verdict dict or None, and a short sentence for
+    the None case so an empty answer in a bundle explains itself."""
+    why = []
+    verdict = _classify_stuck_sync(sync, grace_seconds=grace_seconds, why=why)
+    if verdict is not None:
+        return verdict, verdict.get("reason", "")
+    return None, (why[0] if why else "no stuck condition was detected")
+
+
+def _classify_stuck_sync(sync, *, grace_seconds, why):
+    """The classification itself; ``why`` collects the reason for a None.
 
     Verdict actions: "requeue_merge" (dead merge, branch resumable),
     "fail_sync" (dead sync run, or MERGING with no branch left), "give_up"
@@ -273,10 +301,12 @@ def classify_stuck_sync(sync, *, grace_seconds=RECOVERY_GRACE_SECONDS):
         # touched. The one exception is a sync whose branch merge was already
         # applied - nothing is left to wait for.
         return _classify_merged_but_ready_to_merge(
-            sync, grace_seconds=grace_seconds, now=now
+            sync, grace_seconds=grace_seconds, now=now, why=why
         )
     if sync.status not in _RECOVERABLE_STATUSES:
-        return None
+        return _no_verdict(
+            why, f"status {sync.status!s} is not one recovery acts on"
+        )
 
     ingestion = _latest_ingestion(sync)
     merge_applied = bool(getattr(ingestion, "merge_applied_at", None))
@@ -290,7 +320,9 @@ def classify_stuck_sync(sync, *, grace_seconds=RECOVERY_GRACE_SECONDS):
         }
     )
     if sync.status == ForwardSyncStatusChoices.FAILED and not merge_applied:
-        return None
+        return _no_verdict(
+            why, "failed before any merge was applied: nothing to recover"
+        )
     groups = _candidate_job_groups(sync)
     jobs = groups["all_jobs"]
     verdict_jobs = _job_verdict_fields(groups)
@@ -300,12 +332,12 @@ def classify_stuck_sync(sync, *, grace_seconds=RECOVERY_GRACE_SECONDS):
 
         finalization = ownership_finalization_summary(sync)
         if finalization["complete"] and not jobs and not catchup_incomplete:
-            return None
+            return _no_verdict(why, "completed and fully finalized")
 
     # Never disturb a branch a live worker is still merging (liveness treats an
     # un-inspectable Redis as alive by design).
     if any(job_has_live_execution(job) for job in jobs):
-        return None
+        return _no_verdict(why, "a job for this sync is still running")
 
     timestamps = [
         ts
@@ -341,7 +373,7 @@ def classify_stuck_sync(sync, *, grace_seconds=RECOVERY_GRACE_SECONDS):
             )
     newest = max(timestamps) if timestamps else None
     if newest is not None and (now - newest).total_seconds() < grace_seconds:
-        return None
+        return _no_verdict(why, "recent activity: inside the recovery grace window")
 
     state = _stuck_recovery_state(sync)
     ingestion_id = getattr(ingestion, "pk", None)
