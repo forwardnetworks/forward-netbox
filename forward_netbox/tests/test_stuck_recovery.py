@@ -76,9 +76,121 @@ class StuckRecoveryTest(TestCase):
             self.assertIsNone(classify_stuck_sync(sync))
 
     def test_ready_to_merge_is_never_recovered(self):
-        # Operator review lane — out of scope entirely.
+        # Operator review lane - a sync with nothing merged is out of scope.
         sync = self._sync("review", ForwardSyncStatusChoices.READY_TO_MERGE)
         self.assertIsNone(classify_stuck_sync(sync))
+
+    # -- a sync left ready to merge after its merge was applied -------------
+
+    def _ready_sync_with_ingestion(self, name, *, merge_applied, branch_status=None):
+        sync = self._sync(name, ForwardSyncStatusChoices.READY_TO_MERGE)
+        branch = None
+        if branch_status is not None:
+            branch = Branch.objects.create(name=f"{name}-branch")
+            Branch.objects.filter(pk=branch.pk).update(status=branch_status)
+            branch.refresh_from_db()
+        ingestion = ForwardIngestion.objects.create(
+            sync=sync,
+            branch=branch,
+            snapshot_id=f"snapshot-{name}",
+            merge_applied_at=timezone.now() if merge_applied else None,
+        )
+        return sync, ingestion
+
+    def _classify_without_live_workers(self, sync, **kwargs):
+        with patch(
+            "forward_netbox.utilities.stuck_recovery.job_has_live_execution",
+            return_value=False,
+        ):
+            return classify_stuck_sync(sync, **kwargs)
+
+    def test_ready_to_merge_with_an_applied_merge_and_no_branch_is_closed_out(self):
+        sync, ingestion = self._ready_sync_with_ingestion("applied-gone", merge_applied=True)
+
+        verdict = self._classify_without_live_workers(sync, grace_seconds=0)
+
+        self.assertEqual(verdict["action"], "finalize_merged_bookkeeping")
+        self.assertEqual(verdict["ingestion_id"], ingestion.pk)
+
+    def test_ready_to_merge_with_an_applied_merge_on_a_merged_branch_is_closed_out(
+        self,
+    ):
+        sync, _ingestion = self._ready_sync_with_ingestion(
+            "applied-merged", merge_applied=True, branch_status=BranchStatusChoices.MERGED
+        )
+
+        verdict = self._classify_without_live_workers(sync, grace_seconds=0)
+
+        self.assertEqual(verdict["action"], "finalize_merged_bookkeeping")
+
+    def test_closing_out_a_merged_ready_to_merge_sync_completes_it(self):
+        sync, ingestion = self._ready_sync_with_ingestion("close-out", merge_applied=True)
+
+        with (
+            patch(
+                "forward_netbox.utilities.stuck_recovery.job_has_live_execution",
+                return_value=False,
+            ),
+            patch(
+                "forward_netbox.utilities.ingestion_merge.latest_processed_catchup_decision",
+                return_value={"should_queue": False},
+            ),
+            patch(
+                "forward_netbox.jobs._enqueue_post_sync_overlays",
+                return_value={"scheduled": True},
+            ),
+        ):
+            verdict = classify_stuck_sync(sync, grace_seconds=0)
+            result = recover_stuck_sync(sync, verdict, user=self.user)
+
+        self.assertEqual(result["action"], "finalized_merged_bookkeeping")
+        sync.refresh_from_db()
+        ingestion.refresh_from_db()
+        self.assertEqual(sync.status, ForwardSyncStatusChoices.COMPLETED)
+        self.assertTrue(ingestion.baseline_ready)
+
+    def test_a_staged_run_waiting_for_review_is_never_closed_out(self):
+        # The review lane proper: a branch staged and ready, nothing applied.
+        sync, _ingestion = self._ready_sync_with_ingestion(
+            "staged", merge_applied=False, branch_status=BranchStatusChoices.READY
+        )
+
+        self.assertIsNone(self._classify_without_live_workers(sync, grace_seconds=0))
+
+    def test_a_merge_nobody_can_prove_was_applied_is_never_closed_out(self):
+        # No branch and no durable merge-applied evidence: not provable.
+        sync, _ingestion = self._ready_sync_with_ingestion("unproven", merge_applied=False)
+
+        self.assertIsNone(self._classify_without_live_workers(sync, grace_seconds=0))
+
+    def test_an_applied_merge_with_a_branch_still_ready_is_left_to_the_operator(self):
+        sync, _ingestion = self._ready_sync_with_ingestion(
+            "branch-ready", merge_applied=True, branch_status=BranchStatusChoices.READY
+        )
+
+        self.assertIsNone(self._classify_without_live_workers(sync, grace_seconds=0))
+
+    def test_a_live_job_blocks_the_close_out(self):
+        sync, ingestion = self._ready_sync_with_ingestion("live-job", merge_applied=True)
+        ForwardIngestion.objects.filter(pk=ingestion.pk).update(
+            merge_job=self._merge_job(sync)
+        )
+
+        with patch(
+            "forward_netbox.utilities.stuck_recovery.job_has_live_execution",
+            return_value=True,
+        ):
+            self.assertIsNone(classify_stuck_sync(sync, grace_seconds=0))
+
+    def test_the_close_out_waits_out_the_grace_window(self):
+        sync = self._sync(
+            "recent", ForwardSyncStatusChoices.READY_TO_MERGE, updated_ago=timedelta(seconds=5)
+        )
+        ForwardIngestion.objects.create(
+            sync=sync, snapshot_id="snapshot-recent", merge_applied_at=timezone.now()
+        )
+
+        self.assertIsNone(self._classify_without_live_workers(sync))
 
     def test_future_scheduled_first_sync_is_not_recovered_as_dead(self):
         sync = self._sync("future-first", ForwardSyncStatusChoices.QUEUED)
