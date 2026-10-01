@@ -1,0 +1,106 @@
+{% load form_helpers %}
+{% load i18n %}
+
+<form action="{{ form_url }}" method="post">
+  {# Render hidden fields #}
+  {% csrf_token %}
+  {% for field in form.hidden_fields %}
+    {{ field }}
+  {% endfor %}
+
+  <div class="modal-header">
+    <h5 class="modal-title">{% trans "Confirm Deletion" %}</h5>
+  </div>
+
+  <div class="modal-body">
+    <p>
+      {% blocktrans trimmed %}
+        Are you sure you want to <strong class="text-danger">delete</strong> {{ object_type }} <strong>{{ object }}</strong>?
+      {% endblocktrans %}
+    </p>
+    {% if tag_impact %}
+      <div class="alert alert-warning" id="sync-delete-impact">
+        <p class="mb-2">
+          {% trans "Deleting this sync also deletes its settings (scope, tags, schedule); they cannot be recovered. A new sync only re-applies tags that match its own Sync Device Tags selection." %}
+        </p>
+        {% if tag_impact.devices %}
+          <p class="mb-2">
+            {% blocktrans trimmed with devices=tag_impact.devices %}
+              No other sync claims these tags, so deleting this one removes them from <strong>{{ devices }}</strong> device(s):
+            {% endblocktrans %}
+          </p>
+          <ul class="mb-2">
+            {% for entry in tag_impact.tags %}
+              <li><code>{{ entry.tag }}</code> &mdash; {{ entry.devices }}</li>
+            {% endfor %}
+          </ul>
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" name="keep_device_tags" id="keep_device_tags" value="1">
+            <label class="form-check-label" for="keep_device_tags">
+              {% trans "Leave these tags on the devices" %}
+            </label>
+          </div>
+        {% else %}
+          <p class="mb-0">{% trans "No device tags would be removed." %}</p>
+        {% endif %}
+      </div>
+    {% endif %}
+    {% if dependent_objects %}
+      <p>
+        {% trans "The following objects will be deleted as a result of this action." %}
+      </p>
+      <div class="accordion mb-3" id="deleteAccordion">
+        {% for model, instances in dependent_objects.items %}
+          {% with object_count=instances|length %}
+            <div class="accordion-item">
+              <h2 class="accordion-header h4" id="deleteheading{{ forloop.counter }}">
+                {# High-cardinality relations (e.g. jobs) are summarized by count and are not #}
+                {# expandable, since their instances are intentionally not loaded (see #22812). #}
+                {% if instances.count_only %}
+                  <div class="accordion-button collapsed" style="cursor: default;">
+                    {{ object_count }}
+                    {% if object_count == 1 %}{{ model|meta:"verbose_name" }}{% else %}{{ model|meta:"verbose_name_plural" }}{% endif %}
+                  </div>
+                {% else %}
+                  <button class="accordion-button collapsed" type="button" data-bs-toggle="collapse" data-bs-target="#collapse{{ forloop.counter }}" aria-expanded="false" aria-controls="collapse{{ forloop.counter }}">
+                    {{ object_count }}
+                    {% if object_count == 1 %}{{ model|meta:"verbose_name" }}{% else %}{{ model|meta:"verbose_name_plural" }}{% endif %}
+                  </button>
+                {% endif %}
+              </h2>
+              {% if not instances.count_only %}
+                <div id="collapse{{ forloop.counter }}" class="accordion-collapse collapse" aria-labelledby="deleteheading{{ forloop.counter }}" data-bs-parent="#deleteAccordion">
+                  <div class="accordion-body p-0">
+                    <div class="list-group list-group-flush">
+                      {% for instance in instances %}
+                        {% with url=instance.get_absolute_url %}
+                          <a {% if url %}href="{{ url }}" {% endif %}class="list-group-item list-group-item-action">{{ instance }}</a>
+                        {% endwith %}
+                      {% endfor %}
+                    </div>
+                  </div>
+                </div>
+              {% endif %}
+            </div>
+          {% endwith %}
+        {% endfor %}
+      </div>
+    {% endif %}
+
+    {# Meta fields #}
+    {% if form.changelog_message %}
+      <div class="bg-primary-subtle border border-primary rounded-1 pt-3 px-3">
+        {% render_field form.changelog_message %}
+      </div>
+    {% endif %}
+  </div>
+
+  <div class="modal-footer">
+    {% if return_url %}
+      <a href="{{ return_url }}" class="btn btn-outline-secondary">{% trans "Cancel" %}</a>
+    {% else %}
+      <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">{% trans "Cancel" %}</button>
+    {% endif %}
+    <button type="submit" class="btn btn-danger">{% trans "Delete" %}</button>
+  </div>
+</form>

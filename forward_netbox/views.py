@@ -3533,7 +3533,68 @@ class ForwardSyncDataFileHealthView(BaseObjectView):
 
 @register_model_view(ForwardSync, "delete")
 class ForwardSyncDeleteView(generic.ObjectDeleteView):
+    """Delete a sync, saying first what that does to device tags.
+
+    Deleting the only sync that claims a managed tag takes the tag off every
+    device that carries it, and the sync's own settings are gone with it. An
+    operator who deleted his only sync found every include tag stripped and
+    learned why only afterwards. The confirmation now states that, and offers to
+    leave the tags on the devices.
+    """
+
     queryset = ForwardSync.objects.all()
+    template_name = "forward_netbox/forwardsync_delete.html"
+
+    def get_object(self, **kwargs):
+        obj = super().get_object(**kwargs)
+        request = getattr(self, "request", None)
+        if request is not None and request.method == "POST":
+            obj._keep_device_tags_on_delete = bool(request.POST.get("keep_device_tags"))
+        return obj
+
+    def get(self, request, *args, **kwargs):
+        from django.db.models import ProtectedError
+        from django.db.models import RestrictedError
+        from utilities.forms import DeleteForm
+        from utilities.htmx import htmx_partial
+        from utilities.views import get_action_url
+
+        from .utilities.ownership import sync_delete_tag_impact
+
+        obj = self.get_object(**kwargs)
+        form = DeleteForm(instance=obj, initial=request.GET)
+        try:
+            dependent_objects = self._get_dependent_objects(obj)
+        except ProtectedError as exc:
+            return self._handle_protected_objects(
+                obj, exc.protected_objects, request, exc
+            )
+        except RestrictedError as exc:
+            return self._handle_protected_objects(
+                obj, exc.restricted_objects, request, exc
+            )
+        try:
+            tag_impact = sync_delete_tag_impact(obj)
+        except Exception:  # noqa: BLE001 - never block the page on the preview
+            logger.warning("Sync delete tag impact failed", exc_info=True)
+            tag_impact = None
+        context = {
+            "object": obj,
+            "object_type": self.queryset.model._meta.verbose_name,
+            "form": form,
+            "form_url": get_action_url(
+                self.queryset.model, action="delete", kwargs={"pk": obj.pk}
+            ),
+            "return_url": self.get_return_url(request, obj),
+            "dependent_objects": dependent_objects,
+            "tag_impact": tag_impact,
+            **self.get_extra_context(request, obj),
+        }
+        if htmx_partial(request):
+            return render(
+                request, "forward_netbox/htmx/forwardsync_delete_form.html", context
+            )
+        return render(request, self.template_name, context)
 
 
 @register_model_view(ForwardSync, "bulk_edit", path="edit", detail=False)

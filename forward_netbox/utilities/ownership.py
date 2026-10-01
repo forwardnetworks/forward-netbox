@@ -1812,8 +1812,52 @@ def reconcile_virtual_parent_claims(
         }
 
 
-def release_sync_ownership(sync):
-    """Release every ownership assertion before deleting a sync."""
+def sync_delete_tag_impact(sync):
+    """What deleting ``sync`` would take off devices, without changing anything.
+
+    Mirrors the tag pass of `release_sync_ownership` exactly: for each managed
+    tag, the devices that carry it now but would be desired by no other sync
+    (and were not set by an operator beforehand). Deleting the only sync that
+    claims a tag therefore takes it off every device, which an operator found
+    out only afterwards. Returns ``{"tags": [{"tag", "devices"}], "devices"}``
+    where ``devices`` is the number of distinct devices losing any tag.
+    """
+    from ..models import ForwardManagedDeviceTag
+    from ..models import ForwardPreservedDeviceTagAssignment
+
+    if not getattr(sync, "pk", None):
+        return {"tags": [], "devices": 0}
+    tags = []
+    losing_any = set()
+    for managed_tag in ForwardManagedDeviceTag.objects.select_related("tag"):
+        desired = _desired_tag_device_ids(
+            managed_tag.tag_id,
+            managed_tag.claim_type,
+            excluded_sync_ids={sync.pk},
+        )
+        assigned = _tag_assignment_device_ids(managed_tag.tag)
+        preserved = set(
+            ForwardPreservedDeviceTagAssignment.objects.filter(
+                tag_id=managed_tag.tag_id
+            ).values_list("device_id", flat=True)
+        )
+        desired.update(preserved & assigned)
+        losing = assigned - desired
+        if losing:
+            losing_any.update(losing)
+            tags.append({"tag": managed_tag.tag.name, "devices": len(losing)})
+    tags.sort(key=lambda item: (-item["devices"], item["tag"]))
+    return {"tags": tags, "devices": len(losing_any)}
+
+
+def release_sync_ownership(sync, *, keep_device_tags=False):
+    """Release every ownership assertion before deleting a sync.
+
+    ``keep_device_tags`` leaves the managed tags assigned to the devices that
+    carry them: the sync's claims are still released, so nothing is owned by it,
+    but the tags stay on the devices until another sync's finalization
+    reconciles them.
+    """
     from ..models import ForwardDeviceIdentity
     from ..models import ForwardDeviceTagClaim
     from ..models import ForwardManagedDeviceTag
@@ -1832,12 +1876,13 @@ def release_sync_ownership(sync):
         ForwardDeviceIdentity.objects.filter(sync=sync).delete()
         ForwardVirtualParentClaim.objects.filter(sync=sync).delete()
         ForwardOwnershipReconciliation.objects.filter(sync=sync).delete()
-        for managed_tag in ForwardManagedDeviceTag.objects.select_related("tag"):
-            _materialize_managed_tag(
-                managed_tag,
-                excluded_sync_ids={sync.pk},
-                force_current=True,
-            )
+        if not keep_device_tags:
+            for managed_tag in ForwardManagedDeviceTag.objects.select_related("tag"):
+                _materialize_managed_tag(
+                    managed_tag,
+                    excluded_sync_ids={sync.pk},
+                    force_current=True,
+                )
         _materialize_virtual_parents(
             excluded_sync_ids={sync.pk},
             force_current=True,

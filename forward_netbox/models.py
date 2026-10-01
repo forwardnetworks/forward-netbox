@@ -539,7 +539,12 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
 
         with transaction.atomic():
             protect_sync_from_deletion_while_jobs_active(self)
-            release_sync_ownership(self)
+            release_sync_ownership(
+                self,
+                keep_device_tags=bool(
+                    getattr(self, "_keep_device_tags_on_delete", False)
+                ),
+            )
             return super().delete(*args, **kwargs)
 
     @property
