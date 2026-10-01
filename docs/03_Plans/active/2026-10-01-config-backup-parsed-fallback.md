@@ -30,6 +30,7 @@ configuration, without making the query depend on either existing.
 - `forward_netbox/queries/forward_config_backup.nqe`
 - `forward_netbox/tests/test_config_backup_query.py`
 - `docs/01_User_Guide/configuration.md`
+- `requirements-release.txt` (see Decision Log)
 - this plan
 
 ## Approach
@@ -68,3 +69,7 @@ Revert the commit; the query returns to fetching only collected commands.
 - **Endpoints are conditional on CLI output.** Forward collects endpoints over
   SNMP by default, which carries no configuration text, so nothing is invented
   from SNMP descriptions.
+- **Release-tooling pins bumped in the same change.** `urllib3` 2.7.0 and
+  `virtualenv` 21.6.1 gained published advisories overnight, and the release
+  preflight refuses every push, on both lanes, while one is pinned. Only those
+  two packages were regenerated (`python-discovery` moves with `virtualenv`).
