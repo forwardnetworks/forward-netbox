@@ -398,6 +398,38 @@ def _scope_reconciliation_bundle_payload(sync):
     }
 
 
+def _primary_ip_bundle_payload(sync):
+    """Is the primary-IP-from-tag step on, and how many devices lack one.
+
+    A customer flagged for devices with no primary IP could not tell from the
+    bundle whether the step was even enabled. Counts only, over the devices
+    this sync has bound an identity for - no names.
+    """
+    from collections import Counter
+
+    from dcim.models import Device
+
+    from .models import ForwardDeviceIdentity
+    from .utilities.primary_ip import PRIMARY_IP_FROM_MGMT_TAG_PARAMETER
+
+    enabled = bool((sync.parameters or {}).get(PRIMARY_IP_FROM_MGMT_TAG_PARAMETER))
+    device_ids = ForwardDeviceIdentity.objects.filter(sync=sync).values_list(
+        "device_id", flat=True
+    )
+    devices = Device.objects.filter(pk__in=device_ids)
+    total = devices.count()
+    missing = devices.filter(primary_ip4__isnull=True, primary_ip6__isnull=True)
+    by_role = Counter(
+        missing.values_list("role__name", flat=True)
+    )
+    return {
+        "enabled": enabled,
+        "sync_devices": total,
+        "without_primary_ip": missing.count(),
+        "without_primary_ip_by_role": dict(by_role.most_common(15)),
+    }
+
+
 def _operator_action_jobs_bundle_payload(sync):
     """The last run of every operator button, with its diagnostics.
 
@@ -769,6 +801,7 @@ def _sync_support_bundle_payload(sync):
         # of NetBox's delete dialog was the only evidence for.
         "delete_blockers": _delete_blocker_survey_bundle_payload(sync),
         "stuck_sync": _stuck_verdict_bundle_payload(sync),
+        "primary_ip": _primary_ip_bundle_payload(sync),
         "latest_ingestion": (
             {
                 "pk": latest_ingestion.pk,
@@ -3083,8 +3116,28 @@ class ForwardSyncAuditReportView(BaseObjectView):
         return redirect(here)
 
 
+def _latest_module_readiness_job(sync):
+    """The newest completed module-readiness job for a sync, or None."""
+    from core.choices import JobStatusChoices
+    from core.models import Job
+    from django.contrib.contenttypes.models import ContentType
+
+    return (
+        Job.objects.filter(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=sync.pk,
+            name__icontains="module readiness",
+            status=JobStatusChoices.STATUS_COMPLETED,
+        )
+        .order_by("-completed", "-pk")
+        .first()
+    )
+
+
 @register_model_view(ForwardSync, "module_readiness", path="module-readiness")
 class ForwardSyncModuleReadinessView(BaseObjectView):
+    """Render the stored module-readiness report; computing it is a job."""
+
     queryset = ForwardSync.objects.all()
     template_name = "forward_netbox/forwardsync_module_readiness.html"
 
@@ -3092,27 +3145,60 @@ class ForwardSyncModuleReadinessView(BaseObjectView):
         return "forward_netbox.view_forwardsync"
 
     def get(self, request, pk):
-        from .utilities.module_readiness import compute_module_readiness_for_sync
-
         sync = get_object_or_404(self.queryset, pk=pk)
-        try:
-            report = compute_module_readiness_for_sync(sync)
-        except Exception as exc:
-            logger.warning("Module readiness report failed (%s)", type(exc).__name__)
-            messages.error(
-                request,
-                _("Module readiness check failed. Review server logs before retrying."),
-            )
-            return redirect(sync.get_absolute_url())
+        job = _latest_module_readiness_job(sync)
+        data = job.data if job is not None and isinstance(job.data, dict) else {}
+        error = str(data.get("error") or "")
+        stored = None if error else data
         return render(
             request,
             self.template_name,
             {
                 "object": sync,
-                "payload": report.as_dict(),
-                "module_bay_plan_rows": report.module_bay_plan_rows,
-                "missing_device_names": report.missing_device_names,
+                "payload": (stored or {}).get("payload") or {},
+                "module_bay_plan_rows": (stored or {}).get("module_bay_plan_rows")
+                or [],
+                "missing_device_names": (stored or {}).get("missing_device_names")
+                or [],
+                "has_report": bool(stored and stored.get("payload")),
+                "generated_at": job.completed if job is not None else None,
+                "report_error": error,
             },
+        )
+
+
+@register_model_view(
+    ForwardSync, "refresh_module_readiness", path="module-readiness/refresh"
+)
+class ForwardSyncRefreshModuleReadinessView(BaseObjectView):
+    """Enqueue the report instead of computing it inside a web request."""
+
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardsync"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return redirect(
+            reverse("plugins:forward_netbox:forwardsync_module_readiness", args=[sync.pk])
+        )
+
+    def post(self, request, pk):
+        from .jobs import ModuleReadinessJob
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        ModuleReadinessJob.enqueue(
+            instance=sync,
+            user=request.user,
+            name=f"{sync.name} - module readiness",
+        )
+        messages.success(
+            request,
+            _("Module readiness queued. Reload this page when it completes."),
+        )
+        return redirect(
+            reverse("plugins:forward_netbox:forwardsync_module_readiness", args=[sync.pk])
         )
 
 

@@ -360,6 +360,22 @@ class ForwardIngestionLogExportViewTest(TestCase):
         self.assertIsNone(merge["applied_at"])
         self.assertIsNone(merge["finalized_at"])
 
+    def test_sync_support_bundle_reports_primary_ip_coverage(self):
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_support_bundle",
+                kwargs={"pk": self.sync.pk},
+            )
+        )
+
+        primary_ip = json.loads(response.content)["primary_ip"]
+        self.assertFalse(primary_ip["enabled"])
+        self.assertEqual(primary_ip["sync_devices"], 0)
+        self.assertEqual(primary_ip["without_primary_ip"], 0)
+        self.assertEqual(primary_ip["without_primary_ip_by_role"], {})
+
     def test_sync_support_bundle_reports_type_only_diff_fallback_reason(self):
         sentinel = "customer-query-path"
         self.ingestion.model_results = [

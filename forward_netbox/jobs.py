@@ -1677,6 +1677,43 @@ def _scope_reconciliation_work(job):
         raise
 
 
+def _module_readiness_work(job):
+    """Compute the module-readiness report off the request path.
+
+    The page used to compute this on GET: a live Forward fetch of every module
+    row plus every device name and module bay loaded into memory. During a sync
+    that contended for the same Forward throttle and database, and an operator
+    got a 504 with the work still running. Compute once in the background,
+    store the result on the job, and let the page render what is stored.
+    """
+    from .utilities.json_safe import json_safe_value
+    from .utilities.module_readiness import compute_module_readiness_for_sync
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    try:
+        sync.logger = SyncLogging(job=job.pk)
+        report = compute_module_readiness_for_sync(sync)
+        job.data = json_safe_value(
+            {
+                "payload": report.as_dict(),
+                "module_bay_plan_rows": list(report.module_bay_plan_rows),
+                "missing_device_names": list(report.missing_device_names),
+            }
+        )
+        job.save(update_fields=["data"])
+    except Exception as exc:
+        job.data = {
+            "error": safe_operation_failure("Forward module readiness", exc),
+            "error_type": exception_type(exc),
+        }
+        job.save(update_fields=["data"])
+        if type(exc) in (SyncError, JobTimeoutException):
+            logger.error(
+                "Forward module readiness failed (%s).", exception_type(exc)
+            )
+        raise
+
+
 def _complete_recovered_sync_producers(sync, producer_job_pks):
     producer_job_pks = list(dict.fromkeys(producer_job_pks or []))
     if not producer_job_pks:
@@ -2274,6 +2311,18 @@ class ScopeReconciliationJob(ForwardJobRunner):
         if _skip_if_immediate_equivalent_active(self.job, "scope reconciliation"):
             return
         _scope_reconciliation_work(self.job)
+
+
+class ModuleReadinessJob(ForwardJobRunner):
+    """Background module-readiness report; the GET path must not query Forward."""
+
+    class Meta:
+        name = "module readiness"
+
+    def run(self, *args, **kwargs):
+        if _skip_if_immediate_equivalent_active(self.job, "module readiness"):
+            return
+        _module_readiness_work(self.job)
 
 
 class ValidationJob(ForwardJobRunner):
