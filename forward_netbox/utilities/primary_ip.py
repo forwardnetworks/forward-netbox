@@ -102,12 +102,14 @@ def _branch_interface_ips(device_names):
     from ipam.models import IPAddress
 
     interface_ct = ObjectType.objects.get_for_model(Interface)
-    devices = {d.name: d for d in Device.objects.filter(name__in=list(device_names))}
-    device_interface_ips = {}
-    ip_lookup = {}
-    for name, device in devices.items():
+    by_name = {}
+    for device in Device.objects.filter(name__in=list(device_names)):
+        by_name.setdefault(device.name, []).append(device)
+
+    def interface_ips(device):
         interfaces = {i.pk: i for i in Interface.objects.filter(device=device)}
         per_interface = {i.name: [] for i in interfaces.values()}
+        lookup = {}
         ips = IPAddress.objects.filter(
             assigned_object_type=interface_ct,
             assigned_object_id__in=list(interfaces.keys()),
@@ -118,8 +120,28 @@ def _branch_interface_ips(device_names):
                 continue
             addr = str(ip.address)
             per_interface.setdefault(interface.name, []).append(addr)
-            ip_lookup[(name, interface.name, addr)] = ip
+            lookup[(device.name, interface.name, addr)] = ip
+        return per_interface, lookup
+
+    devices = {}
+    device_interface_ips = {}
+    ip_lookup = {}
+    for name, group in by_name.items():
+        resolved = [(device, *interface_ips(device)) for device in group]
+        if len(resolved) > 1:
+            # Two devices share this name (a site relabel leaves a pair). The
+            # name-keyed map used to keep whichever came last, which could be
+            # the copy with no addresses, so a tagged device never got its
+            # primary IP. Take the one copy that has interface addresses; with
+            # none or several, the name is ambiguous and stays unresolved.
+            with_addresses = [row for row in resolved if any(row[1].values())]
+            if len(with_addresses) != 1:
+                continue
+            resolved = with_addresses
+        device, per_interface, lookup = resolved[0]
+        devices[name] = device
         device_interface_ips[name] = per_interface
+        ip_lookup.update(lookup)
     return devices, device_interface_ips, ip_lookup
 
 
