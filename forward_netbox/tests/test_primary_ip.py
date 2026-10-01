@@ -84,3 +84,87 @@ class ResolvePrimaryIpAssignmentsTest(SimpleTestCase):
             },
         )
         self.assertEqual(set(result.keys()), {"r1", "r2"})
+
+
+class ResolveManagementIpAssignmentsTest(SimpleTestCase):
+    """The fallback for devices with no Mgmt_ tag: narrow on purpose."""
+
+    def _resolve(self, management_ips, interface_ips, **kwargs):
+        from forward_netbox.utilities.primary_ip import (
+            resolve_management_ip_assignments,
+        )
+
+        return resolve_management_ip_assignments(
+            management_ips, interface_ips, **kwargs
+        )
+
+    def test_the_single_address_on_one_interface_is_chosen(self):
+        result = self._resolve(
+            {"r1": ["10.0.0.1"]},
+            {"r1": {"Loopback0": ["10.0.0.1/32"], "Gi0/0": ["192.0.2.1/24"]}},
+        )
+
+        self.assertEqual(
+            result, {"r1": {"interface": "Loopback0", "v4": "10.0.0.1/32", "v6": None}}
+        )
+
+    def test_the_netbox_prefix_length_does_not_matter(self):
+        result = self._resolve(
+            {"r1": ["10.0.0.1/24"]}, {"r1": {"Vlan10": ["10.0.0.1/32"]}}
+        )
+
+        self.assertEqual(result["r1"]["v4"], "10.0.0.1/32")
+
+    def test_an_ipv6_management_address_fills_v6(self):
+        result = self._resolve(
+            {"r1": ["2001:db8::1"]}, {"r1": {"Lo0": ["2001:db8::1/128"]}}
+        )
+
+        self.assertEqual(
+            result, {"r1": {"interface": "Lo0", "v4": None, "v6": "2001:db8::1/128"}}
+        )
+
+    def test_several_recorded_addresses_are_ambiguous_and_skipped(self):
+        result = self._resolve(
+            {"r1": ["10.0.0.1", "10.0.0.2"]},
+            {"r1": {"Lo0": ["10.0.0.1/32"], "Lo1": ["10.0.0.2/32"]}},
+        )
+
+        self.assertEqual(result, {})
+
+    def test_the_same_address_recorded_twice_is_one_address(self):
+        result = self._resolve(
+            {"r1": ["10.0.0.1", "10.0.0.1/32"]}, {"r1": {"Lo0": ["10.0.0.1/32"]}}
+        )
+
+        self.assertIn("r1", result)
+
+    def test_an_address_on_no_interface_is_skipped(self):
+        result = self._resolve({"r1": ["10.0.0.1"]}, {"r1": {"Lo0": ["10.9.9.9/32"]}})
+
+        self.assertEqual(result, {})
+
+    def test_an_address_on_two_interfaces_is_skipped(self):
+        result = self._resolve(
+            {"r1": ["10.0.0.1"]},
+            {"r1": {"Lo0": ["10.0.0.1/32"], "Vlan1": ["10.0.0.1/24"]}},
+        )
+
+        self.assertEqual(result, {})
+
+    def test_a_device_with_a_mgmt_tag_is_never_given_the_fallback(self):
+        result = self._resolve(
+            {"r1": ["10.0.0.1"]},
+            {"r1": {"Lo0": ["10.0.0.1/32"]}},
+            skip={"r1"},
+        )
+
+        self.assertEqual(result, {})
+
+    def test_a_device_with_no_interfaces_or_garbage_addresses_is_skipped(self):
+        result = self._resolve(
+            {"r1": ["10.0.0.1"], "r2": ["not-an-ip"], "r3": []},
+            {"r2": {"Lo0": ["10.0.0.1/32"]}},
+        )
+
+        self.assertEqual(result, {})

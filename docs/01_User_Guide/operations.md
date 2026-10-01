@@ -654,6 +654,26 @@ not on the device in NetBox), and `interface_present_no_ip` (the interface exist
 but no IP is assigned to it in NetBox — an import/assignment gap, since the
 resolver reads NetBox assignments, not Forward). Never writes.
 
+Both devices and SNMP endpoints are read, so an endpoint carrying a
+`Mgmt_<iface>` tag (for example `Mgmt_eth0` on a console server) gets its
+primary IP from the matching interface. When two NetBox devices share a name, the
+copy that holds interface addresses is used; if none or several do, the name is
+left unresolved until the duplicate is merged (Scope Reconciliation → merge
+site-relabel duplicates).
+
+### Falling back to Forward's management address
+
+A device with no `Mgmt_<iface>` tag can be given a primary IP from the single
+management address Forward records for it. Turn on **Fall back to Forward's
+management IP** (`set_primary_ip_from_forward_management_ip`, off by default).
+The address is used only when Forward records exactly one for the device and
+that exact address is already on exactly one of the device's interfaces in
+NetBox. A device with a `Mgmt_` tag, several recorded addresses, or an address
+on no interface is left alone. The audit above reports tag resolution only.
+
+The support bundle's `primary_ip` section shows whether each source is on, how
+many devices the sync manages, and how many have no primary IP, by role.
+
 ## Releasing the plugin
 
 Maintainers cut releases with `invoke release` (see `scripts/release.py`):

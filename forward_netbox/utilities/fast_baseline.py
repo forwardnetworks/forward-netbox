@@ -364,7 +364,9 @@ def fast_baseline_static_decision(*, sync, workloads, model_results=None):
         return FastBaselineDecision(False, "auto_merge_required", {})
     if not _enabled(parameters, "enable_bulk_orm"):
         return FastBaselineDecision(False, "bulk_orm_required", {})
-    if _enabled(parameters, "set_primary_ip_from_mgmt_tag"):
+    if _enabled(parameters, "set_primary_ip_from_mgmt_tag") or _enabled(
+        parameters, "set_primary_ip_from_forward_management_ip"
+    ):
         return FastBaselineDecision(False, "primary_ip_overlay_not_supported", {})
     if any(str(workload.sync_mode) != "full" for workload in workloads):
         return FastBaselineDecision(False, "full_workloads_required", {})

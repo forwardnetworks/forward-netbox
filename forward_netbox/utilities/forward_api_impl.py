@@ -1197,6 +1197,68 @@ class ForwardClient:
                 tags.append(tag)
         return device_tags
 
+    def get_device_management_ips(
+        self,
+        network_id,
+        snapshot_id,
+        *,
+        include_tags=None,
+        exclude_tags=None,
+        include_match="any",
+    ):
+        """Return ``{device_name: [address, ...]}`` of Forward's management IPs.
+
+        The fallback source for a device with no ``Mgmt_<iface>`` tag. Forward
+        records the address it reached the device on as
+        ``platform.managementIps``; the device-tag scope mirrors the sync's so
+        the same devices are considered.
+        """
+        network_id = str(network_id or "").strip()
+        if not network_id:
+            raise ForwardClientError("get_device_management_ips requires a network_id.")
+        snapshot_id = str(snapshot_id or "").strip()
+        if not snapshot_id:
+            raise ForwardClientError(
+                "get_device_management_ips requires a snapshot_id."
+            )
+        include_tags = [
+            str(tag).strip() for tag in (include_tags or []) if str(tag).strip()
+        ]
+        exclude_tags = [
+            str(tag).strip() for tag in (exclude_tags or []) if str(tag).strip()
+        ]
+        if include_match not in {"any", "all"}:
+            include_match = "any"
+        scope_where = build_device_tag_scope_where(
+            include_tags, exclude_tags, include_match
+        )
+        query = "\n".join(
+            [
+                "foreach device in network.devices",
+                "where device.snapshotInfo.result == DeviceSnapshotResult.completed",
+                "where device.platform.vendor != Vendor.FORWARD_CUSTOM",
+                *scope_where,
+                "foreach address in device.platform.managementIps",
+                "select {device: device.name, address: toString(address)}",
+            ]
+        )
+        rows = self.run_nqe_query(
+            query=query,
+            network_id=network_id,
+            snapshot_id=snapshot_id,
+            fetch_all=True,
+        )
+        management_ips: dict[str, list[str]] = {}
+        for row in rows or []:
+            device = str(row.get("device") or "").strip()
+            address = str(row.get("address") or "").strip()
+            if not device or not address:
+                continue
+            addresses = management_ips.setdefault(device, [])
+            if address not in addresses:
+                addresses.append(address)
+        return management_ips
+
     def get_configured_device_tags(self, network_id):
         """``{tag_name: {device_name, ...}}`` from Forward's device configuration.
 

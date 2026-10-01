@@ -2902,3 +2902,55 @@ class MgmtTagEndpointBranchTest(TestCase):
         )
 
         self.assertEqual(result, {"x": ["Mgmt_Lo0"]})
+
+
+class ManagementIpLookupTest(TestCase):
+    def setUp(self):
+        self.client = ForwardClient(
+            SimpleNamespace(
+                url="https://fwd.app",
+                parameters={
+                    "username": "user@example.com",
+                    "password": encrypt_secret("secret"),
+                    "verify": True,
+                    "timeout": 1200,
+                },
+            )
+        )
+
+    def _run(self, rows, **kwargs):
+        with patch.object(self.client, "run_nqe_query", return_value=rows) as run:
+            result = self.client.get_device_management_ips("n", "s", **kwargs)
+        return result, run.call_args.kwargs["query"]
+
+    def test_addresses_are_grouped_per_device_without_duplicates(self):
+        result, _query = self._run(
+            [
+                {"device": "r1", "address": "10.0.0.1"},
+                {"device": "r1", "address": "10.0.0.1"},
+                {"device": "r1", "address": "10.0.0.2"},
+                {"device": "r2", "address": "10.0.1.1"},
+            ]
+        )
+
+        self.assertEqual(result, {"r1": ["10.0.0.1", "10.0.0.2"], "r2": ["10.0.1.1"]})
+
+    def test_blank_rows_are_dropped(self):
+        result, _query = self._run(
+            [{"device": "", "address": "10.0.0.1"}, {"device": "r1", "address": ""}]
+        )
+
+        self.assertEqual(result, {})
+
+    def test_the_query_reads_platform_management_ips_under_the_device_scope(self):
+        _result, query = self._run([], include_tags=["Keep"], exclude_tags=["Skip"])
+
+        self.assertIn("device.platform.managementIps", query)
+        self.assertIn("Keep", query)
+        self.assertIn("Skip", query)
+
+    def test_a_missing_network_or_snapshot_is_refused(self):
+        with self.assertRaises(ForwardClientError):
+            self.client.get_device_management_ips("", "s")
+        with self.assertRaises(ForwardClientError):
+            self.client.get_device_management_ips("n", "")

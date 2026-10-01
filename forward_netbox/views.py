@@ -410,9 +410,10 @@ def _primary_ip_bundle_payload(sync):
     from dcim.models import Device
 
     from .models import ForwardDeviceIdentity
-    from .utilities.primary_ip import PRIMARY_IP_FROM_MGMT_TAG_PARAMETER
+    from .utilities.primary_ip import primary_ip_from_management_ip_enabled
+    from .utilities.primary_ip import primary_ip_from_mgmt_tag_enabled
 
-    enabled = bool((sync.parameters or {}).get(PRIMARY_IP_FROM_MGMT_TAG_PARAMETER))
+    enabled = primary_ip_from_mgmt_tag_enabled(sync)
     device_ids = ForwardDeviceIdentity.objects.filter(sync=sync).values_list(
         "device_id", flat=True
     )
@@ -422,6 +423,7 @@ def _primary_ip_bundle_payload(sync):
     by_role = Counter(missing.values_list("role__name", flat=True))
     return {
         "enabled": enabled,
+        "management_ip_fallback_enabled": primary_ip_from_management_ip_enabled(sync),
         "sync_devices": total,
         "without_primary_ip": missing.count(),
         "without_primary_ip_by_role": dict(by_role.most_common(15)),
