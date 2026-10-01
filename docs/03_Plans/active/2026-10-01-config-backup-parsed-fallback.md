@@ -30,6 +30,7 @@ configuration, without making the query depend on either existing.
 - `forward_netbox/queries/forward_config_backup.nqe`
 - `forward_netbox/tests/test_config_backup_query.py`
 - `docs/01_User_Guide/configuration.md`
+- `scripts/tests/test_verify_release_provenance.py` (main only, see Decision Log)
 - this plan
 
 ## Approach
@@ -68,3 +69,9 @@ Revert the commit; the query returns to fetching only collected commands.
 - **Endpoints are conditional on CLI output.** Forward collects endpoints over
   SNMP by default, which carries no configuration text, so nothing is invented
   from SNMP descriptions.
+- **Provenance test fixture fixed on main in the same change.** Advancing the
+  anchor to `v3.0.1` made `main`'s scripts suite fail thirteen tests, because
+  its fixture hard-coded `v3.0.1` as the release under test and the anchor is
+  now that tag. Every push to `main` runs that suite, so nothing could land
+  until it was fixed. The 2.9.x lane already derives the tag under test from
+  the anchor; `main` takes the same test file.
