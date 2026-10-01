@@ -1,4 +1,5 @@
 import json
+from datetime import timedelta
 from unittest.mock import patch
 
 from core.choices import JobStatusChoices
@@ -323,6 +324,41 @@ class ForwardIngestionLogExportViewTest(TestCase):
             "<redacted diagnostic>",
         )
         self.assertNotIn(sentinel, response.content.decode())
+
+    def test_sync_support_bundle_carries_the_merge_evidence(self):
+        applied = timezone.now() - timedelta(minutes=5)
+        finalized = timezone.now() - timedelta(minutes=1)
+        self.ingestion.merge_applied_at = applied
+        self.ingestion.merge_finalized_at = finalized
+        self.ingestion.save(update_fields=["merge_applied_at", "merge_finalized_at"])
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_support_bundle",
+                kwargs={"pk": self.sync.pk},
+            )
+        )
+
+        merge = json.loads(response.content)["latest_ingestion"]["merge"]
+        self.assertEqual(merge["applied_at"], applied.isoformat())
+        self.assertEqual(merge["finalized_at"], finalized.isoformat())
+        self.assertEqual(merge["branch_id"], self.ingestion.branch_id)
+        self.assertIn("branch_status", merge)
+
+    def test_sync_support_bundle_merge_evidence_is_null_before_a_merge(self):
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_support_bundle",
+                kwargs={"pk": self.sync.pk},
+            )
+        )
+
+        merge = json.loads(response.content)["latest_ingestion"]["merge"]
+        self.assertIsNone(merge["applied_at"])
+        self.assertIsNone(merge["finalized_at"])
 
     def test_sync_support_bundle_reports_type_only_diff_fallback_reason(self):
         sentinel = "customer-query-path"

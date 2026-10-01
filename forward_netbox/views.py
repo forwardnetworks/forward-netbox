@@ -806,6 +806,27 @@ def _sync_support_bundle_payload(sync):
                 "branch": (
                     latest_ingestion.branch.name if latest_ingestion.branch else ""
                 ),
+                # The durable merge evidence the stuck-sync close-out reads. A
+                # sync stuck "Ready to merge" after its merge applied could not
+                # be diagnosed from a bundle that omitted these four.
+                "merge": {
+                    "applied_at": (
+                        latest_ingestion.merge_applied_at.isoformat()
+                        if latest_ingestion.merge_applied_at
+                        else None
+                    ),
+                    "finalized_at": (
+                        latest_ingestion.merge_finalized_at.isoformat()
+                        if latest_ingestion.merge_finalized_at
+                        else None
+                    ),
+                    "branch_id": latest_ingestion.branch_id,
+                    "branch_status": (
+                        str(latest_ingestion.branch.status or "")
+                        if latest_ingestion.branch
+                        else ""
+                    ),
+                },
                 "job": _job_export_payload(latest_ingestion.job),
                 "merge_job": _job_export_payload(latest_ingestion.merge_job),
                 "change_explainability": json_safe_value(
