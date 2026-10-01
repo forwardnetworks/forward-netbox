@@ -1,2 +1,3 @@
 from .sync_routing_impl import *  # noqa: F401,F403
 from .sync_routing_policy import *  # noqa: F401,F403
+from .sync_routing_static import *  # noqa: F401,F403

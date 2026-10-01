@@ -91,6 +91,9 @@ SEQUENCE_OUT_OF_RANGE_REASON = "sequence-out-of-range"
 # see `resolve_policy_links` in sync_routing_policy.py.
 ROUTE_MAP_LINK_FALLBACK_REASON = "route-map-link-shared-definition"
 ROUTE_MAP_LINK_UNRESOLVED_REASON = "route-map-link-unresolved"
+# A configured static-route line the adapter will not guess at; see
+# sync_routing_static.py.
+STATIC_ROUTE_UNREADABLE_REASON = "static-route-line-unreadable"
 # A BGP peer address family names a route map or prefix list that is not
 # imported under any spelling; see `ensure_bgp_peer_address_family`.
 BGP_PEER_POLICY_UNRESOLVED_REASON = "bgp-peer-policy-link-unresolved"
@@ -120,6 +123,11 @@ ROLLUP_SUMMARY_TEMPLATES = {
         "is not imported under any spelling; the JSON `match` keeps the "
         "configured name. Enable Forward Routing Prefix Lists and Community "
         "Lists so the lists import first. Entries: {examples}{suffix}."
+    ),
+    STATIC_ROUTE_UNREADABLE_REASON: (
+        "Skipped {total} {model} line(s) the adapter could not read as a static "
+        "route (an unfamiliar destination or next-hop form); they were skipped "
+        "rather than guessed. Lines: {examples}{suffix}."
     ),
     BGP_PEER_POLICY_UNRESOLVED_REASON: (
         "Stored {total} {model} row(s) without the route-map or prefix-list "

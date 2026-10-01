@@ -11,6 +11,7 @@ from django.db.models import F
 from django.db.models import Q
 from django.db.models.deletion import ProtectedError
 from django.utils import timezone
+from rq.timeouts import JobTimeoutException
 from utilities.exceptions import AbortRequest
 
 from .tag_contracts import candidate_managed_tag_slugs
@@ -128,6 +129,8 @@ def ownership_lock_holder_summary(cursor=None):
         finally:
             if owns_cursor:
                 cursor.close()
+    except JobTimeoutException:
+        raise
     except Exception:  # noqa: BLE001 - a diagnostic must never mask the failure
         return "the holder could not be identified"
     if not row:

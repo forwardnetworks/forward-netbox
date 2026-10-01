@@ -107,6 +107,7 @@ from .sync_routing import apply_netbox_routing_ospfinstance
 from .sync_routing import apply_netbox_routing_ospfinterface
 from .sync_routing import apply_netbox_routing_prefixlistentry
 from .sync_routing import apply_netbox_routing_routemapentry
+from .sync_routing import apply_netbox_routing_staticroute
 from .sync_routing import bgp_address_family_comments
 from .sync_routing import bgp_peer_address_family_comments
 from .sync_routing import bgp_peer_comments
@@ -123,6 +124,7 @@ from .sync_routing import delete_netbox_routing_ospfinstance
 from .sync_routing import delete_netbox_routing_ospfinterface
 from .sync_routing import delete_netbox_routing_prefixlistentry
 from .sync_routing import delete_netbox_routing_routemapentry
+from .sync_routing import delete_netbox_routing_staticroute
 from .sync_routing import ensure_bgp_address_family
 from .sync_routing import ensure_bgp_peer_address_family
 from .sync_routing import ensure_bgp_peer_ip
@@ -147,6 +149,7 @@ from .sync_routing import resolve_bgp_peer_for_delete
 from .sync_routing import resolve_bgp_scope_for_delete
 from .sync_routing import rib_presence_label
 from .sync_routing import ROUTING_POLICY_ROLLUP_REASONS
+from .sync_routing import ROUTING_STATIC_ROLLUP_REASONS
 from .sync_routing import routing_vrf
 from .sync_runner_adapters import ForwardSyncRunnerAdapterMixin
 from .sync_runner_contracts import ForwardSyncRunnerContractMixin
@@ -244,6 +247,7 @@ _SYNC_RUNNER_IMPORT_ANCHORS = (
     apply_netbox_routing_prefixlistentry,
     apply_netbox_routing_communitylistentry,
     apply_netbox_routing_routemapentry,
+    apply_netbox_routing_staticroute,
     bgp_address_family_comments,
     bgp_peer_address_family_comments,
     bgp_peer_comments,
@@ -260,6 +264,7 @@ _SYNC_RUNNER_IMPORT_ANCHORS = (
     delete_netbox_routing_prefixlistentry,
     delete_netbox_routing_communitylistentry,
     delete_netbox_routing_routemapentry,
+    delete_netbox_routing_staticroute,
     ensure_bgp_address_family,
     ensure_bgp_peer_address_family,
     ensure_bgp_peer_ip,
@@ -304,6 +309,7 @@ class ForwardSyncRunner(ForwardSyncRunnerContractMixin, ForwardSyncRunnerAdapter
             "component-claimed-by-another-module",
             UNOWNED_PRIMARY_IP_HOLDER_REASON,
             *ROUTING_POLICY_ROLLUP_REASONS,
+            *ROUTING_STATIC_ROLLUP_REASONS,
             ACI_NODE_DEVICE_AMBIGUOUS_REASON,
             ACI_EPG_BRIDGE_DOMAIN_MISSING_REASON,
             ACI_FILTER_ENTRY_PORT_RANGE_REASON,

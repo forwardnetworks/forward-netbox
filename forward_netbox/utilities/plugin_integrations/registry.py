@@ -171,6 +171,7 @@ ROUTING_INTEGRATION = OptionalPluginIntegration(
         "netbox_routing.communitylistentry",
         "netbox_routing.routemap",
         "netbox_routing.routemapentry",
+        "netbox_routing.staticroute",
     ),
     supported_models=(
         "netbox_routing.bgppeer",
@@ -182,6 +183,7 @@ ROUTING_INTEGRATION = OptionalPluginIntegration(
         "netbox_routing.prefixlistentry",
         "netbox_routing.communitylistentry",
         "netbox_routing.routemapentry",
+        "netbox_routing.staticroute",
     ),
     query_maps=(
         "Forward BGP Peers",
@@ -193,6 +195,7 @@ ROUTING_INTEGRATION = OptionalPluginIntegration(
         "Forward Routing Prefix Lists",
         "Forward Routing Community Lists",
         "Forward Routing Route Maps",
+        "Forward Static Routes",
     ),
     package_name="netbox-routing",
     adapter_module="forward_netbox.utilities.sync_routing_impl",

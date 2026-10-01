@@ -1364,6 +1364,20 @@ Parses `ip community-list` from `device.files.config` for the IOS / IOS-XE (`sta
 
 Parses `route-map NAME permit|deny SEQ` stanzas from `device.files.config` (IOS / IOS-XE / NX-OS / EOS share the syntax), one row per sequence, carrying the stanza's child lines. The adapter turns `match` and `set` clauses into the entry's `match` / `set` JSON (keyed by clause head, e.g. `ip_address_prefix_list: ["NAME"]`, `community_exact_match: true`, `as_path_prepend: ["65000", "65000"]`), `continue N` into `flow_control` and `description` into the description. The referenced prefix-list and community-list names stay in the JSON verbatim, and the entry's `netbox-routing` `match_prefix_list` / `match_community_list` links are written to the list the entry's device actually holds: the list maps carry, on each row of a non-owner variant, the devices holding it, so `match ip address prefix-list X` on a device that holds a divergent `X` links to `X@<device>` and every other device links to the shared `X`. When the list rows were not fetched in the same run (a diff run, a preview), the link the entry already carries for that name is kept; a link that has to fall back to the shared definition, or cannot be resolved at all, is counted in one rolled-up warning each. Because `netbox-routing` names these objects globally and a fleet defines the same name differently on different devices, the query builds a catalogue: per configured name, every device's definition is grouped by content, the definition shared by the most devices is stored under the bare name, and each other definition is stored as `<name>@<lowest device holding it>` with the device count in its description. Shared policy appears once under its real name and nothing is dropped. Org-backed customers must run *Publish Bundled Queries* once after upgrading for this map to resolve.
 
+## Forward Static Routes
+
+- `NetBox Model`: `netbox_routing.staticroute`
+- Expected fields: `device`, `os`, `vrf`, `family`, `args`
+- Query file: [`forward_static_routes.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_static_routes.nqe)
+- Enabled: disabled by default (opt-in)
+- Feature flag: enabled unless `PLUGINS_CONFIG["forward_netbox"]["enable_bgp_sync"] = False`
+- Optional dependency: requires the `netbox-routing` NetBox plugin
+- Stability: supported
+
+Forward's structured model has no configured-static-route field: the forwarding table's static origin is the installed routes, which also include derived and redistributed ones, so it is not a list of what an operator configured. This map reads the configured `ip route` and `ipv6 route` lines from `device.files.config` (IOS, IOS-XE, NX-OS and Arista EOS): global lines, `ip route vrf NAME` lines, and NX-OS routes under `vrf context NAME`. Each row carries the line's arguments verbatim and the adapter parses the destination (CIDR, or address and netmask), the next hop or interface, and the optional distance, `tag`, `name` and `permanent` keywords, because their order differs by platform. A line it cannot read is skipped and counted in one rolled-up warning, never guessed. `track` and `vrf` leak options are ignored: a `StaticRoute` holds neither.
+
+A `netbox-routing` `StaticRoute` is shared by every device that configures it (it has a `devices` relation and is unique on VRF, prefix and next hop), so a default route configured on hundreds of devices is one object with all of them attached. A route's distance, tag, name and permanent flag are single values, so they come from the device whose name sorts first. When a device stops configuring a route only that device is detached; the route is deleted only when its last device leaves and it carries this sync's marker, so a route created by hand is never deleted. Org-backed customers must run *Publish Bundled Queries* once after upgrading for this map to resolve.
+
 ## Forward Peering Sessions
 
 - `NetBox Model`: `netbox_peering_manager.peeringsession`

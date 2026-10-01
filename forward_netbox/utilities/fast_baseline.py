@@ -62,6 +62,7 @@ FAST_BASELINE_MODEL_SPEC_VERSIONS = {
     "netbox_routing.prefixlistentry": 1,
     "netbox_routing.communitylistentry": 1,
     "netbox_routing.routemapentry": 1,
+    "netbox_routing.staticroute": 1,
     # Cisco ACI models are adapter-written like the netbox_routing entries
     # above: the fast baseline proves their required fields up front and the
     # adapter resolves fabric/tenant/VRF parents with recorded skips. Before
@@ -160,6 +161,7 @@ FAST_BASELINE_REQUIRED_FIELD_CONTRACT = {
     "netbox_routing.prefixlistentry": ("action", "prefix_list", "sequence"),
     "netbox_routing.communitylistentry": ("action", "community", "community_list"),
     "netbox_routing.routemapentry": ("action", "route_map", "sequence"),
+    "netbox_routing.staticroute": ("prefix",),
 }
 
 

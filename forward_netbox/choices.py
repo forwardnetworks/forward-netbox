@@ -13,6 +13,7 @@ FORWARD_BGP_MODELS = (
     "netbox_routing.prefixlistentry",
     "netbox_routing.communitylistentry",
     "netbox_routing.routemapentry",
+    "netbox_routing.staticroute",
     "netbox_peering_manager.peeringsession",
 )
 
