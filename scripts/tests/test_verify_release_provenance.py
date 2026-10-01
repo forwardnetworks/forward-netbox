@@ -22,7 +22,35 @@ provenance = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(provenance)
 
 
+def _next_patch_version(tag: str) -> str:
+    """The version after this tag, e.g. "v2.9.4" -> "2.9.5".
+
+    The tag under test has to be the NEXT release, never the anchor, and the
+    anchor advances every release. Hardcoding it meant the anchor-advance
+    commit silently collided with the fixture and left this lane's `invoke ci`
+    red until someone tried the following release. Deriving it removes the
+    manual step the tooling never knew to perform.
+    """
+    major, minor, patch = tag.lstrip("v").split(".")
+    return f"{major}.{minor}.{int(patch) + 1}"
+
+
+_NEXT_VERSION = _next_patch_version(provenance.PRIOR_RELEASE_TAG)
+
+
 class ReleaseProvenanceTest(unittest.TestCase):
+    # The tag being verified must be the NEXT release, never the anchor. When
+    # the anchor advanced to 2.9.3 this still said "v2.9.3", so the fixture's
+    # two entries for `refs/tags/v2.9.3` - one mapping it to the release commit,
+    # one to the prior release commit - became duplicate keys in a single dict
+    # literal, the later won, and every test resolved the tag under
+    # verification to the PRIOR release. Thirteen of them then failed on a
+    # missing `merge-base` response, which reads as a bug in the lane-lineage
+    # check rather than in this fixture. `test_the_tag_under_test_is_not_the_anchor`
+    # makes the next anchor advance fail loudly instead.
+    VERSION_UNDER_TEST = _NEXT_VERSION
+    TAG_UNDER_TEST = f"v{_NEXT_VERSION}"
+
     prior_release_commit = "1" * 40
     anchor_commit = "2" * 40
     release_commit = "a" * 40
@@ -33,8 +61,15 @@ class ReleaseProvenanceTest(unittest.TestCase):
 
     def _git(self, *arguments):
         responses = {
-            ("cat-file", "-t", "refs/tags/v3.0.1"): "tag",
-            ("rev-parse", "refs/tags/v3.0.1^{commit}"): self.release_commit,
+            (
+                "cat-file",
+                "-t",
+                f"refs/tags/{self.TAG_UNDER_TEST}",
+            ): "tag",
+            (
+                "rev-parse",
+                f"refs/tags/{self.TAG_UNDER_TEST}^{{commit}}",
+            ): self.release_commit,
             ("rev-parse", provenance.LANE.remote_tracking_ref): self.release_commit,
             (
                 "merge-base",
@@ -54,7 +89,10 @@ class ReleaseProvenanceTest(unittest.TestCase):
                 "--name-only",
                 self.production_commit,
                 self.release_commit,
-            ): "docs/03_Plans/active/2026-07-18-release-3.0.1-scope-convergence.md",
+            ): (
+                "docs/03_Plans/active/"
+                f"2026-07-18-release-{self.VERSION_UNDER_TEST}-scope-convergence.md"
+            ),
             (
                 "cat-file",
                 "-t",
@@ -266,7 +304,19 @@ class ReleaseProvenanceTest(unittest.TestCase):
                 provenance, "_github_json", side_effect=github or self._github
             ),
         ):
-            return provenance.verify_release_provenance("v3.0.1", "token")
+            return provenance.verify_release_provenance(self.TAG_UNDER_TEST, "token")
+
+    def test_the_tag_under_test_is_not_the_anchor(self):
+        """The fixture is only coherent while these two tags differ.
+
+        Both map `refs/tags/<tag>` in one dict literal - to the release commit
+        and to the prior release commit - so if they ever name the same tag the
+        keys collapse silently and every other test in this class starts
+        verifying the wrong commit. This is the guard that says so directly
+        rather than letting thirteen unrelated failures imply it.
+        """
+        self.assertNotEqual(self.TAG_UNDER_TEST, provenance.PRIOR_RELEASE_TAG)
+        self.assertEqual(self.TAG_UNDER_TEST, f"v{self.VERSION_UNDER_TEST}")
 
     def test_accepts_reviewed_bootstrap_and_release_lineage(self):
         result = self._verify()
@@ -285,7 +335,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
         argv = [
             "verify_release_provenance.py",
             "--tag",
-            "v3.0.1",
+            self.TAG_UNDER_TEST,
         ]
         with (
             patch.dict(os.environ, {"GH_TOKEN": secret}, clear=True),
@@ -481,12 +531,12 @@ class ReleaseProvenanceTest(unittest.TestCase):
                 tagger,
                 "tag",
                 "-a",
-                "v3.0.1",
+                "v2.9.3",
                 "-m",
-                "Forward NetBox 3.0.1",
+                "Forward NetBox 2.9.3",
                 release_commit,
             )
-            run(tagger, "push", "origin", "refs/tags/v3.0.1")
+            run(tagger, "push", "origin", "refs/tags/v2.9.3")
             run(
                 tagger,
                 "fetch",
@@ -505,7 +555,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
                     "--git-dir",
                     str(origin),
                     "rev-parse",
-                    "refs/tags/v3.0.1^{commit}",
+                    "refs/tags/v2.9.3^{commit}",
                 ),
                 release_commit,
             )
@@ -565,7 +615,8 @@ class ReleaseProvenanceTest(unittest.TestCase):
                 return (
                     "forward_netbox/models.py\n"
                     "docs/03_Plans/active/"
-                    "2026-07-18-release-3.0.1-scope-convergence.md"
+                    f"2026-07-18-release-{self.VERSION_UNDER_TEST}"
+                    "-scope-convergence.md"
                 )
             return result
 
