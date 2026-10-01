@@ -30,7 +30,12 @@ class BgpPeerAfQueryContractTest(TestCase):
     def test_it_emits_the_four_policy_columns(self):
         code = _code()
 
-        for column in ("routemap_in", "routemap_out", "prefixlist_in", "prefixlist_out"):
+        for column in (
+            "routemap_in",
+            "routemap_out",
+            "prefixlist_in",
+            "prefixlist_out",
+        ):
             self.assertIn(f"{column}: if isPresent(", code)
 
     def test_a_row_without_a_policy_carries_null_not_a_missing_row(self):

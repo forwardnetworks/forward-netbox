@@ -304,9 +304,7 @@ def _classify_stuck_sync(sync, *, grace_seconds, why):
             sync, grace_seconds=grace_seconds, now=now, why=why
         )
     if sync.status not in _RECOVERABLE_STATUSES:
-        return _no_verdict(
-            why, f"status {sync.status!s} is not one recovery acts on"
-        )
+        return _no_verdict(why, f"status {sync.status!s} is not one recovery acts on")
 
     ingestion = _latest_ingestion(sync)
     merge_applied = bool(getattr(ingestion, "merge_applied_at", None))

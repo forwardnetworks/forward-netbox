@@ -119,7 +119,10 @@ def ownership_lock_holder_summary(cursor=None):
                 "WHERE l.locktype = 'advisory' AND l.granted "
                 "AND l.classid = %s AND l.objid = %s AND l.objsubid = 1 "
                 "AND a.pid <> pg_backend_pid() ORDER BY a.xact_start LIMIT 1",
-                [OWNERSHIP_ADVISORY_LOCK_ID >> 32, OWNERSHIP_ADVISORY_LOCK_ID & 0xFFFFFFFF],
+                [
+                    OWNERSHIP_ADVISORY_LOCK_ID >> 32,
+                    OWNERSHIP_ADVISORY_LOCK_ID & 0xFFFFFFFF,
+                ],
             )
             row = cursor.fetchone()
         finally:

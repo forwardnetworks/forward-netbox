@@ -462,9 +462,7 @@ class SiteRelabelPairsTest(TestCase):
         rir = RIR.objects.get_or_create(name="rir-a", slug="rir-a")[0]
         local = ASN.objects.get_or_create(asn=65000, defaults={"rir": rir})[0]
         remote = ASN.objects.get_or_create(asn=65001, defaults={"rir": rir})[0]
-        interface = Interface.objects.create(
-            device=device, name="Lo0", type="virtual"
-        )
+        interface = Interface.objects.create(device=device, name="Lo0", type="virtual")
         address = IPAddress.objects.create(address="10.10.0.2/32", status="active")
         address.assigned_object = interface
         address.save()

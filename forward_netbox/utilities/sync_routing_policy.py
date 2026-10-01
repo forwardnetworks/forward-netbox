@@ -33,10 +33,10 @@ from ipaddress import ip_network
 
 from ..exceptions import ForwardQueryError
 from .sync_primitives import forget_lookup_object
+from .sync_reporting import BGP_PEER_POLICY_UNRESOLVED_REASON
 from .sync_reporting import EXPANDED_COMMUNITY_LIST_REASON
 from .sync_reporting import NON_NUMERIC_COMMUNITY_REASON
 from .sync_reporting import POLICY_NAME_TOO_LONG_REASON
-from .sync_reporting import BGP_PEER_POLICY_UNRESOLVED_REASON
 from .sync_reporting import ROUTE_MAP_LINK_FALLBACK_REASON
 from .sync_reporting import ROUTE_MAP_LINK_UNRESOLVED_REASON
 from .sync_reporting import SEQUENCE_OUT_OF_RANGE_REASON

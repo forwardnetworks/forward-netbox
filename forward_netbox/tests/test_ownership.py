@@ -1,5 +1,6 @@
 import importlib
 import threading
+from unittest.mock import patch
 
 from dcim.models import Device
 from dcim.models import DeviceRole
@@ -9,8 +10,6 @@ from dcim.models import Site
 from dcim.models import VirtualDeviceContext
 from django.core.exceptions import ValidationError
 from django.db import close_old_connections
-from unittest.mock import patch
-
 from django.db.models.deletion import ProtectedError
 from django.test import TestCase
 from django.test import TransactionTestCase
@@ -29,7 +28,6 @@ from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.models import ForwardVirtualParentClaim
 from forward_netbox.utilities.ownership import finalize_device_tag_domain
-from forward_netbox.views import ForwardSyncDeleteView
 from forward_netbox.utilities.ownership import latest_baseline_generation
 from forward_netbox.utilities.ownership import mark_ownership_pending
 from forward_netbox.utilities.ownership import ownership_finalization_summary
@@ -38,10 +36,11 @@ from forward_netbox.utilities.ownership import OwnershipConflictError
 from forward_netbox.utilities.ownership import reconcile_source_device_tag_claims
 from forward_netbox.utilities.ownership import reconcile_sync_scope_tag_claims
 from forward_netbox.utilities.ownership import reconcile_virtual_parent_claims
-from forward_netbox.utilities.ownership import sync_delete_tag_impact
 from forward_netbox.utilities.ownership import (
     release_authoritative_device_delete_ownership,
 )
+from forward_netbox.utilities.ownership import sync_delete_tag_impact
+from forward_netbox.views import ForwardSyncDeleteView
 
 
 class OwnershipControlPlaneTest(TestCase):

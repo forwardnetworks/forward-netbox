@@ -2902,4 +2902,3 @@ class MgmtTagEndpointBranchTest(TestCase):
         )
 
         self.assertEqual(result, {"x": ["Mgmt_Lo0"]})
-

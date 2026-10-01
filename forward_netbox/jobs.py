@@ -1708,9 +1708,7 @@ def _module_readiness_work(job):
         }
         job.save(update_fields=["data"])
         if type(exc) in (SyncError, JobTimeoutException):
-            logger.error(
-                "Forward module readiness failed (%s).", exception_type(exc)
-            )
+            logger.error("Forward module readiness failed (%s).", exception_type(exc))
         raise
 
 

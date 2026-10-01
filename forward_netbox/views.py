@@ -419,9 +419,7 @@ def _primary_ip_bundle_payload(sync):
     devices = Device.objects.filter(pk__in=device_ids)
     total = devices.count()
     missing = devices.filter(primary_ip4__isnull=True, primary_ip6__isnull=True)
-    by_role = Counter(
-        missing.values_list("role__name", flat=True)
-    )
+    by_role = Counter(missing.values_list("role__name", flat=True))
     return {
         "enabled": enabled,
         "sync_devices": total,
@@ -3181,7 +3179,9 @@ class ForwardSyncRefreshModuleReadinessView(BaseObjectView):
     def get(self, request, pk):
         sync = get_object_or_404(self.queryset, pk=pk)
         return redirect(
-            reverse("plugins:forward_netbox:forwardsync_module_readiness", args=[sync.pk])
+            reverse(
+                "plugins:forward_netbox:forwardsync_module_readiness", args=[sync.pk]
+            )
         )
 
     def post(self, request, pk):
@@ -3198,7 +3198,9 @@ class ForwardSyncRefreshModuleReadinessView(BaseObjectView):
             _("Module readiness queued. Reload this page when it completes."),
         )
         return redirect(
-            reverse("plugins:forward_netbox:forwardsync_module_readiness", args=[sync.pk])
+            reverse(
+                "plugins:forward_netbox:forwardsync_module_readiness", args=[sync.pk]
+            )
         )
 
 

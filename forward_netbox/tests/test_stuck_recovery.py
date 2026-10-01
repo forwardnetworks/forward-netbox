@@ -18,9 +18,9 @@ from forward_netbox.models import ForwardOwnershipReconciliation
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.utilities.stuck_recovery import classify_stuck_sync
-from forward_netbox.utilities.stuck_recovery import stuck_verdict_with_reason
 from forward_netbox.utilities.stuck_recovery import FORWARD_STUCK_MERGE_REQUEUE_LIMIT
 from forward_netbox.utilities.stuck_recovery import recover_stuck_sync
+from forward_netbox.utilities.stuck_recovery import stuck_verdict_with_reason
 
 
 class StuckRecoveryTest(TestCase):
@@ -106,7 +106,9 @@ class StuckRecoveryTest(TestCase):
             return classify_stuck_sync(sync, **kwargs)
 
     def test_ready_to_merge_with_an_applied_merge_and_no_branch_is_closed_out(self):
-        sync, ingestion = self._ready_sync_with_ingestion("applied-gone", merge_applied=True)
+        sync, ingestion = self._ready_sync_with_ingestion(
+            "applied-gone", merge_applied=True
+        )
 
         verdict = self._classify_without_live_workers(sync, grace_seconds=0)
 
@@ -117,7 +119,9 @@ class StuckRecoveryTest(TestCase):
         self,
     ):
         sync, _ingestion = self._ready_sync_with_ingestion(
-            "applied-merged", merge_applied=True, branch_status=BranchStatusChoices.MERGED
+            "applied-merged",
+            merge_applied=True,
+            branch_status=BranchStatusChoices.MERGED,
         )
 
         verdict = self._classify_without_live_workers(sync, grace_seconds=0)
@@ -125,7 +129,9 @@ class StuckRecoveryTest(TestCase):
         self.assertEqual(verdict["action"], "finalize_merged_bookkeeping")
 
     def test_closing_out_a_merged_ready_to_merge_sync_completes_it(self):
-        sync, ingestion = self._ready_sync_with_ingestion("close-out", merge_applied=True)
+        sync, ingestion = self._ready_sync_with_ingestion(
+            "close-out", merge_applied=True
+        )
 
         with (
             patch(
@@ -160,7 +166,9 @@ class StuckRecoveryTest(TestCase):
 
     def test_a_merge_nobody_can_prove_was_applied_is_never_closed_out(self):
         # No branch and no durable merge-applied evidence: not provable.
-        sync, _ingestion = self._ready_sync_with_ingestion("unproven", merge_applied=False)
+        sync, _ingestion = self._ready_sync_with_ingestion(
+            "unproven", merge_applied=False
+        )
 
         self.assertIsNone(self._classify_without_live_workers(sync, grace_seconds=0))
 
@@ -172,7 +180,9 @@ class StuckRecoveryTest(TestCase):
         self.assertIsNone(self._classify_without_live_workers(sync, grace_seconds=0))
 
     def test_a_live_job_blocks_the_close_out(self):
-        sync, ingestion = self._ready_sync_with_ingestion("live-job", merge_applied=True)
+        sync, ingestion = self._ready_sync_with_ingestion(
+            "live-job", merge_applied=True
+        )
         ForwardIngestion.objects.filter(pk=ingestion.pk).update(
             merge_job=self._merge_job(sync)
         )
@@ -185,7 +195,9 @@ class StuckRecoveryTest(TestCase):
 
     def test_the_close_out_waits_out_the_grace_window(self):
         sync = self._sync(
-            "recent", ForwardSyncStatusChoices.READY_TO_MERGE, updated_ago=timedelta(seconds=5)
+            "recent",
+            ForwardSyncStatusChoices.READY_TO_MERGE,
+            updated_ago=timedelta(seconds=5),
         )
         ForwardIngestion.objects.create(
             sync=sync, snapshot_id="snapshot-recent", merge_applied_at=timezone.now()
@@ -213,7 +225,9 @@ class StuckRecoveryTest(TestCase):
         self.assertIn("waiting for review", reason)
 
     def test_a_live_job_is_named_as_the_reason(self):
-        sync, ingestion = self._ready_sync_with_ingestion("why-live", merge_applied=True)
+        sync, ingestion = self._ready_sync_with_ingestion(
+            "why-live", merge_applied=True
+        )
         ForwardIngestion.objects.filter(pk=ingestion.pk).update(
             merge_job=self._merge_job(sync)
         )
@@ -251,7 +265,9 @@ class StuckRecoveryTest(TestCase):
         self.assertIn("not one recovery acts on", reason)
 
     def test_a_real_verdict_carries_its_own_reason(self):
-        sync, _ingestion = self._ready_sync_with_ingestion("why-real", merge_applied=True)
+        sync, _ingestion = self._ready_sync_with_ingestion(
+            "why-real", merge_applied=True
+        )
 
         verdict, reason = self._reason(sync, grace_seconds=0)
 
@@ -259,7 +275,9 @@ class StuckRecoveryTest(TestCase):
         self.assertEqual(reason, verdict["reason"])
 
     def test_classify_and_the_reason_variant_agree(self):
-        sync, _ingestion = self._ready_sync_with_ingestion("why-agree", merge_applied=True)
+        sync, _ingestion = self._ready_sync_with_ingestion(
+            "why-agree", merge_applied=True
+        )
 
         self.assertEqual(
             self._classify_without_live_workers(sync, grace_seconds=0),
