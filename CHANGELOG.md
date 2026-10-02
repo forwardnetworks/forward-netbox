@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v2.9.12
 
-Release candidate; Stuck-sync close-out, duplicate-repair fix, primary-IP coverage (endpoints, duplicates, Forward management-IP fallback), BGP peer policy links, static routes, config-backup parsed-tree fallback
+Stuck-sync close-out, duplicate-repair fix, primary-IP coverage (endpoints, duplicates, Forward management-IP fallback), BGP peer policy links, static routes, config-backup parsed-tree fallback
 
 ## v2.9.11
 
