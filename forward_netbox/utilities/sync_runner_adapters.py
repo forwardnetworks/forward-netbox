@@ -116,6 +116,7 @@ from .sync_routing import apply_netbox_routing_ospfinstance
 from .sync_routing import apply_netbox_routing_ospfinterface
 from .sync_routing import apply_netbox_routing_prefixlistentry
 from .sync_routing import apply_netbox_routing_routemapentry
+from .sync_routing import apply_netbox_routing_staticroute
 from .sync_routing import bgp_address_family_comments
 from .sync_routing import bgp_peer_address_family_comments
 from .sync_routing import bgp_peer_comments
@@ -132,6 +133,7 @@ from .sync_routing import delete_netbox_routing_ospfinstance
 from .sync_routing import delete_netbox_routing_ospfinterface
 from .sync_routing import delete_netbox_routing_prefixlistentry
 from .sync_routing import delete_netbox_routing_routemapentry
+from .sync_routing import delete_netbox_routing_staticroute
 from .sync_routing import ensure_bgp_address_family
 from .sync_routing import ensure_bgp_peer_address_family
 from .sync_routing import ensure_bgp_peer_ip
@@ -908,6 +910,9 @@ class ForwardSyncRunnerAdapterMixin:
     def _delete_netbox_routing_routemapentry(self, row):
         return delete_netbox_routing_routemapentry(self, row)
 
+    def _delete_netbox_routing_staticroute(self, row):
+        return delete_netbox_routing_staticroute(self, row)
+
     def _delete_netbox_cisco_aci_acifabric(self, row):
         return delete_netbox_cisco_aci_acifabric(self, row)
 
@@ -1036,6 +1041,9 @@ class ForwardSyncRunnerAdapterMixin:
 
     def _apply_netbox_routing_routemapentry(self, row):
         return apply_netbox_routing_routemapentry(self, row)
+
+    def _apply_netbox_routing_staticroute(self, row):
+        return apply_netbox_routing_staticroute(self, row)
 
     def _apply_netbox_peering_manager_peeringsession(self, row):
         return apply_netbox_peering_manager_peeringsession(self, row)

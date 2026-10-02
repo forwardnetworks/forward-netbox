@@ -21,6 +21,7 @@ from .forward_api_impl import ForwardClient  # noqa: F401
 from .forward_api_impl import get_classic_device_collection  # noqa: F401
 from .forward_api_impl import get_committed_nqe_query  # noqa: F401
 from .forward_api_impl import get_configured_device_tags  # noqa: F401
+from .forward_api_impl import get_device_management_ips  # noqa: F401
 from .forward_api_impl import get_device_mgmt_tags  # noqa: F401
 from .forward_api_impl import get_latest_collected_snapshot_id  # noqa: F401
 from .forward_api_impl import get_latest_processed_snapshot  # noqa: F401

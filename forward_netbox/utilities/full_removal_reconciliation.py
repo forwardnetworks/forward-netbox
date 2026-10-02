@@ -104,6 +104,11 @@ BASELINE_REMOVAL_MODELS = frozenset(
         "netbox_routing.prefixlistentry",
         "netbox_routing.communitylistentry",
         "netbox_routing.routemapentry",
+        # A removed line takes only that device off its shared route; the
+        # route itself is deleted only when its last device leaves and it
+        # carries the sync's own marker (`delete_netbox_routing_staticroute`),
+        # so an operator's hand-made route is never deleted from here.
+        "netbox_routing.staticroute",
     }
 )
 

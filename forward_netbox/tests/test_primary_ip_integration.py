@@ -170,6 +170,79 @@ class PrimaryIpFromMgmtTagIntegrationTest(TransactionTestCase):
             current_request.reset(token)
         return ingestion, target, target_interface
 
+    def _fallback_executor(self, *, mgmt_tags=None, management_ips=None):
+        executor = self._executor(mgmt_tags or {})
+        executor.client.get_device_management_ips.return_value = management_ips or {}
+        return executor
+
+    def _enable(self, *, tag, fallback):
+        self.sync.parameters = {
+            **self.sync.parameters,
+            "set_primary_ip_from_mgmt_tag": tag,
+            "set_primary_ip_from_forward_management_ip": fallback,
+        }
+        self.sync.save()
+
+    def test_the_management_address_fallback_sets_an_untagged_devices_primary_ip(self):
+        self._enable(tag=False, fallback=True)
+        branch = provision_branch(user=self.user, name="Fallback Branch")
+        executor = self._fallback_executor(management_ips={"r1": ["10.0.211.2"]})
+
+        updated = apply_primary_ip_from_mgmt_tags(
+            executor, branch, snapshot_id="snap-1"
+        )
+
+        self.assertEqual(updated, 1)
+        executor.client.get_device_mgmt_tags.assert_not_called()
+        executor.client.get_device_management_ips.assert_called_once()
+        with activate_branch(branch):
+            self.assertEqual(
+                Device.objects.get(pk=self.device.pk).primary_ip4_id, self.ip.pk
+            )
+
+    def test_the_fallback_is_not_queried_unless_enabled(self):
+        self._enable(tag=True, fallback=False)
+        branch = provision_branch(user=self.user, name="Fallback Off Branch")
+        executor = self._fallback_executor(mgmt_tags={"r1": ["Mgmt_Vl211"]})
+
+        apply_primary_ip_from_mgmt_tags(executor, branch, snapshot_id="snap-1")
+
+        executor.client.get_device_management_ips.assert_not_called()
+
+    def test_a_tagged_device_ignores_the_management_address(self):
+        other = Interface.objects.create(
+            device=self.device, name="Loopback9", type="virtual"
+        )
+        elsewhere = IPAddress.objects.create(
+            address="10.9.9.9/32", assigned_object=other
+        )
+        self._enable(tag=True, fallback=True)
+        branch = provision_branch(user=self.user, name="Tag Wins Branch")
+        executor = self._fallback_executor(
+            mgmt_tags={"r1": ["Mgmt_Vl211"]},
+            management_ips={"r1": ["10.9.9.9"]},
+        )
+
+        apply_primary_ip_from_mgmt_tags(executor, branch, snapshot_id="snap-1")
+
+        with activate_branch(branch):
+            chosen = Device.objects.get(pk=self.device.pk).primary_ip4_id
+        self.assertEqual(chosen, self.ip.pk)
+        self.assertNotEqual(chosen, elsewhere.pk)
+
+    def test_an_address_on_no_interface_leaves_the_device_without_a_primary_ip(self):
+        self._enable(tag=False, fallback=True)
+        branch = provision_branch(user=self.user, name="No Match Branch")
+        executor = self._fallback_executor(management_ips={"r1": ["10.77.77.77"]})
+
+        updated = apply_primary_ip_from_mgmt_tags(
+            executor, branch, snapshot_id="snap-1"
+        )
+
+        self.assertEqual(updated, 0)
+        with activate_branch(branch):
+            self.assertIsNone(Device.objects.get(pk=self.device.pk).primary_ip4_id)
+
     def test_sets_primary_ip_and_merges_into_main(self):
         # Device starts with no primary IP.
         self.assertIsNone(self.device.primary_ip4_id)

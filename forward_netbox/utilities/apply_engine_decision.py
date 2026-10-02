@@ -227,6 +227,14 @@ ADAPTER_MODEL_BLOCKERS = {
             "the match/set JSON from config clauses in the adapter."
         ),
     },
+    "netbox_routing.staticroute": {
+        "blocker_code": "plugin_model_dependencies",
+        "blocker_reason": (
+            "Static-route writes parse configured lines in the adapter, share one "
+            "route across the devices that configure it, and delete only routes "
+            "the sync created."
+        ),
+    },
     "netbox_cisco_aci.acifabric": {
         "blocker_code": "plugin_model_dependencies",
         "blocker_reason": (

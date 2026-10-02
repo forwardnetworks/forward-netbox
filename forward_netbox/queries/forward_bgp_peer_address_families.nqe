@@ -1,7 +1,101 @@
 /**
  * @intent Forward BGP Peer Address Families
  * @description Optional raw NQE for netbox-routing BGP peer address-family rows derived from Forward BGP RIB AFI/SAFI state.
+ * Each row also carries the route-map and prefix-list the neighbor's configuration attaches for that address family
+ * (`routemap_in/out`, `prefixlist_in/out`; null when none is found). Forward's BGP neighbor model has no policy
+ * fields, so these are read from `device.files.config` with block patterns for NX-OS (including `inherit peer`
+ * templates), Arista EOS and IOS-XE. Neighbors that inherit policy through a peer group are not resolved.
  */
+
+nxVrfTwo = ```
+router bgp {asn:string}
+  vrf {vrf:string}
+    neighbor {peer:string}
+      address-family {afi:string} {safi:string}
+        route-map {policy:string} {direction:string}
+```;
+nxVrfOne = ```
+router bgp {asn:string}
+  vrf {vrf:string}
+    neighbor {peer:string} remote-as {peerAs:string}
+      address-family {afi:string} {safi:string}
+        route-map {policy:string} {direction:string}
+```;
+nxDflTwo = ```
+router bgp {asn:string}
+  neighbor {peer:string}
+    address-family {afi:string} {safi:string}
+      route-map {policy:string} {direction:string}
+```;
+nxDflOne = ```
+router bgp {asn:string}
+  neighbor {peer:string} remote-as {peerAs:string}
+    address-family {afi:string} {safi:string}
+      route-map {policy:string} {direction:string}
+```;
+flatRm = ```
+router bgp {asn:string}
+  neighbor {peer:string} route-map {policy:string} {direction:string}
+```;
+flatPl = ```
+router bgp {asn:string}
+  neighbor {peer:string} prefix-list {policy:string} {direction:string}
+```;
+afRm = ```
+router bgp {asn:string}
+  address-family {afi:string}
+    neighbor {peer:string} route-map {policy:string} {direction:string}
+```;
+afPl = ```
+router bgp {asn:string}
+  address-family {afi:string}
+    neighbor {peer:string} prefix-list {policy:string} {direction:string}
+```;
+afVrfRm = ```
+router bgp {asn:string}
+  address-family {afi:string} vrf {vrf:string}
+    neighbor {peer:string} route-map {policy:string} {direction:string}
+```;
+afVrfPl = ```
+router bgp {asn:string}
+  address-family {afi:string} vrf {vrf:string}
+    neighbor {peer:string} prefix-list {policy:string} {direction:string}
+```;
+vrfRm = ```
+router bgp {asn:string}
+  vrf {vrf:string}
+    neighbor {peer:string} route-map {policy:string} {direction:string}
+```;
+
+inhDefault = ```
+router bgp {asn:string}
+  neighbor {peer:string}
+    inherit peer {tmpl:string}
+```;
+inhVrf = ```
+router bgp {asn:string}
+  vrf {vrf:string}
+    neighbor {peer:string}
+      inherit peer {tmpl:string}
+```;
+tmplAf = ```
+router bgp {asn:string}
+  template peer {tmpl:string}
+    address-family {afi:string} {safi:string}
+      route-map {policy:string} {direction:string}
+```;
+
+
+// `address-family` text as configured, mapped to the AFI/SAFI names Forward reports.
+afiKey(text: String) =
+  if text == "ipv4 unicast" || text == "ipv4" then "AfiSafiType.IPV4_UNICAST"
+  else if text == "ipv6 unicast" || text == "ipv6" then "AfiSafiType.IPV6_UNICAST"
+  else if text == "ipv4 multicast" then "AfiSafiType.IPV4_MULTICAST"
+  else if text == "ipv6 multicast" then "AfiSafiType.IPV6_MULTICAST"
+  else if text == "l2vpn evpn" then "AfiSafiType.L2VPN_EVPN"
+  else if text == "vpnv4 unicast" then "AfiSafiType.L3VPN_IPV4_UNICAST"
+  else if text == "vpnv6 unicast" then "AfiSafiType.L3VPN_IPV6_UNICAST"
+  else "";
 
 @query
 f(forward_netbox_shard_keys: List<String>) =
@@ -10,6 +104,25 @@ where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
 where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
 where isPresent(device.bgpRib)
+let cfg = device.files.config
+let directRows =
+  (foreach m in blockMatches(cfg, nxVrfTwo) select {vrf: m.data.vrf, peer: m.data.peer, afi: m.data.afi + " " + m.data.safi, kind: "route-map", policy: m.data.policy, direction: m.data.direction})
+  + (foreach m in blockMatches(cfg, nxVrfOne) select {vrf: m.data.vrf, peer: m.data.peer, afi: m.data.afi + " " + m.data.safi, kind: "route-map", policy: m.data.policy, direction: m.data.direction})
+  + (foreach m in blockMatches(cfg, nxDflTwo) select {vrf: "default", peer: m.data.peer, afi: m.data.afi + " " + m.data.safi, kind: "route-map", policy: m.data.policy, direction: m.data.direction})
+  + (foreach m in blockMatches(cfg, nxDflOne) select {vrf: "default", peer: m.data.peer, afi: m.data.afi + " " + m.data.safi, kind: "route-map", policy: m.data.policy, direction: m.data.direction})
+  + (foreach m in blockMatches(cfg, flatRm) select {vrf: "default", peer: m.data.peer, afi: "", kind: "route-map", policy: m.data.policy, direction: m.data.direction})
+  + (foreach m in blockMatches(cfg, flatPl) select {vrf: "default", peer: m.data.peer, afi: "", kind: "prefix-list", policy: m.data.policy, direction: m.data.direction})
+  + (foreach m in blockMatches(cfg, afRm) select {vrf: "default", peer: m.data.peer, afi: m.data.afi, kind: "route-map", policy: m.data.policy, direction: m.data.direction})
+  + (foreach m in blockMatches(cfg, afPl) select {vrf: "default", peer: m.data.peer, afi: m.data.afi, kind: "prefix-list", policy: m.data.policy, direction: m.data.direction})
+  + (foreach m in blockMatches(cfg, afVrfRm) select {vrf: m.data.vrf, peer: m.data.peer, afi: m.data.afi, kind: "route-map", policy: m.data.policy, direction: m.data.direction})
+  + (foreach m in blockMatches(cfg, afVrfPl) select {vrf: m.data.vrf, peer: m.data.peer, afi: m.data.afi, kind: "prefix-list", policy: m.data.policy, direction: m.data.direction})
+  + (foreach m in blockMatches(cfg, vrfRm) select {vrf: m.data.vrf, peer: m.data.peer, afi: "", kind: "route-map", policy: m.data.policy, direction: m.data.direction})
+let inheritedPeers =
+  (foreach m in blockMatches(cfg, inhDefault) select {vrf: "default", peer: m.data.peer, tmpl: m.data.tmpl})
+  + (foreach m in blockMatches(cfg, inhVrf) select {vrf: m.data.vrf, peer: m.data.peer, tmpl: m.data.tmpl})
+let templateRows = (foreach m in blockMatches(cfg, tmplAf) select {tmpl: m.data.tmpl, afi: m.data.afi + " " + m.data.safi, policy: m.data.policy, direction: m.data.direction})
+let inheritedRows = (foreach i in inheritedPeers foreach t in templateRows where t.tmpl == i.tmpl select {vrf: i.vrf, peer: i.peer, afi: t.afi, kind: "route-map", policy: t.policy, direction: t.direction})
+let policyRows = directRows + inheritedRows
 foreach afi in device.bgpRib.afiSafis
 let afi_safi = toString(afi.afiSafiName)
 where afi_safi == "AfiSafiType.IPV4_ANY"
@@ -50,6 +163,13 @@ let local_asn = if isPresent(neighbor.localAS) then neighbor.localAS else if isP
 where isPresent(local_asn)
 where local_asn >= 1
 where neighbor.peerAS >= 1
+let peer_text = toString(neighbor.neighborAddress)
+let primary_family = if matches(peer_text, "*:*") then "AfiSafiType.IPV6_UNICAST" else "AfiSafiType.IPV4_UNICAST"
+let attached = (foreach p in policyRows where p.peer == peer_text && p.vrf == network_instance.name && (afiKey(p.afi) == afi_safi || (p.afi == "" && afi_safi == primary_family)) select p)
+let routemap_in_opt = max(foreach p in attached where p.kind == "route-map" && p.direction == "in" select p.policy)
+let routemap_out_opt = max(foreach p in attached where p.kind == "route-map" && p.direction == "out" select p.policy)
+let prefixlist_in_opt = max(foreach p in attached where p.kind == "prefix-list" && p.direction == "in" select p.policy)
+let prefixlist_out_opt = max(foreach p in attached where p.kind == "prefix-list" && p.direction == "out" select p.policy)
 select distinct {
   device: device.name,
   vrf: if network_instance.name != "default" then network_instance.name else null : String,
@@ -61,5 +181,9 @@ select distinct {
   enabled: neighbor.enabled,
   status: if neighbor.enabled then "active" else "offline",
   has_adj_rib_in: isPresent(rib_neighbor.adjRibInPost),
-  has_adj_rib_out: isPresent(rib_neighbor.adjRibOutPost)
+  has_adj_rib_out: isPresent(rib_neighbor.adjRibOutPost),
+  routemap_in: if isPresent(routemap_in_opt) then routemap_in_opt else null : String,
+  routemap_out: if isPresent(routemap_out_opt) then routemap_out_opt else null : String,
+  prefixlist_in: if isPresent(prefixlist_in_opt) then prefixlist_in_opt else null : String,
+  prefixlist_out: if isPresent(prefixlist_out_opt) then prefixlist_out_opt else null : String
 };

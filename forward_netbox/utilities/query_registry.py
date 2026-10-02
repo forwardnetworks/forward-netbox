@@ -676,6 +676,12 @@ BUILTIN_OPTIONAL_QUERY_MAPS = [
         "enabled": False,
     },
     {
+        "model_string": "netbox_routing.staticroute",
+        "name": "Forward Static Routes",
+        "filename": "forward_static_routes.nqe",
+        "enabled": False,
+    },
+    {
         "model_string": "netbox_peering_manager.peeringsession",
         "name": "Forward Peering Sessions",
         "filename": "forward_peering_sessions.nqe",

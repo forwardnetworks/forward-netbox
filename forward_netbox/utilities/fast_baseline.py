@@ -62,6 +62,7 @@ FAST_BASELINE_MODEL_SPEC_VERSIONS = {
     "netbox_routing.prefixlistentry": 1,
     "netbox_routing.communitylistentry": 1,
     "netbox_routing.routemapentry": 1,
+    "netbox_routing.staticroute": 1,
     # Cisco ACI models are adapter-written like the netbox_routing entries
     # above: the fast baseline proves their required fields up front and the
     # adapter resolves fabric/tenant/VRF parents with recorded skips. Before
@@ -166,6 +167,7 @@ FAST_BASELINE_REQUIRED_FIELD_CONTRACT = {
     "netbox_routing.prefixlistentry": ("action", "prefix_list", "sequence"),
     "netbox_routing.communitylistentry": ("action", "community", "community_list"),
     "netbox_routing.routemapentry": ("action", "route_map", "sequence"),
+    "netbox_routing.staticroute": ("prefix",),
 }
 
 
@@ -352,7 +354,9 @@ def fast_baseline_static_decision(*, sync, workloads, model_results=None):
         return FastBaselineDecision(False, "auto_merge_required", {})
     if not _enabled(parameters, "enable_bulk_orm"):
         return FastBaselineDecision(False, "bulk_orm_required", {})
-    if _enabled(parameters, "set_primary_ip_from_mgmt_tag"):
+    if _enabled(parameters, "set_primary_ip_from_mgmt_tag") or _enabled(
+        parameters, "set_primary_ip_from_forward_management_ip"
+    ):
         return FastBaselineDecision(False, "primary_ip_overlay_not_supported", {})
     if any(str(workload.sync_mode) != "full" for workload in workloads):
         return FastBaselineDecision(False, "full_workloads_required", {})

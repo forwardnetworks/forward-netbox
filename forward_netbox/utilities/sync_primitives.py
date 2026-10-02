@@ -76,6 +76,9 @@ UNIQUE_LOOKUP_CACHE_FIELD_SETS = {
     "netbox_routing.community": (("community",),),
     "netbox_routing.routemap": (("name",),),
     "netbox_routing.routemapentry": (("route_map", "sequence"),),
+    "netbox_routing.staticroute": (
+        ("vrf", "prefix", "next_hop", "interface_next_hop"),
+    ),
     "netbox_routing.ospfinstance": (
         ("device", "process_id"),
         ("device", "vrf", "process_id"),

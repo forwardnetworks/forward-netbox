@@ -546,8 +546,29 @@ def get_device_mgmt_tags(
         snapshot_id=snapshot_id,
         fetch_all=True,
     )
+    # SNMP endpoints carry tags too and have their own interfaces and IPs in
+    # NetBox, but they live under `network.endpoints`, so a read of
+    # `network.devices` alone never saw their `Mgmt_*` tag and no endpoint ever
+    # got a primary IP. Only the exclude tags apply here: this only decides
+    # which interface a tag names, and the caller sets a primary IP only on
+    # devices that exist in NetBox.
+    endpoint_query = "\n".join(
+        [
+            "foreach endpoint in network.endpoints",
+            *build_endpoint_tag_scope_where([], exclude_tags, include_match),
+            "foreach tag in endpoint.tagNames",
+            "select {device: endpoint.name, tag: tag}",
+        ]
+    )
+    endpoint_rows = run_nqe_query(
+        client,
+        query=endpoint_query,
+        network_id=network_id,
+        snapshot_id=snapshot_id,
+        fetch_all=True,
+    )
     device_tags: dict[str, list[str]] = {}
-    for row in rows or []:
+    for row in list(rows or []) + list(endpoint_rows or []):
         device = str(row.get("device") or "").strip()
         tag = str(row.get("tag") or "").strip()
         if not device or not tag or not tag.lower().startswith("mgmt_"):
@@ -556,6 +577,68 @@ def get_device_mgmt_tags(
         if tag not in tags:
             tags.append(tag)
     return device_tags
+
+
+def get_device_management_ips(
+    client,
+    network_id,
+    snapshot_id,
+    *,
+    include_tags=None,
+    exclude_tags=None,
+    include_match="any",
+):
+    """Return ``{device_name: [address, ...]}`` of Forward's management IPs.
+
+    The fallback source for a device with no ``Mgmt_<iface>`` tag. Forward
+    records the address it reached the device on as
+    ``platform.managementIps``; the device-tag scope mirrors the sync's so the
+    same devices are considered.
+    """
+    network_id = str(network_id or "").strip()
+    if not network_id:
+        raise ForwardClientError("get_device_management_ips requires a network_id.")
+    snapshot_id = str(snapshot_id or "").strip()
+    if not snapshot_id:
+        raise ForwardClientError("get_device_management_ips requires a snapshot_id.")
+    include_tags = [
+        str(tag).strip() for tag in (include_tags or []) if str(tag).strip()
+    ]
+    exclude_tags = [
+        str(tag).strip() for tag in (exclude_tags or []) if str(tag).strip()
+    ]
+    if include_match not in {"any", "all"}:
+        include_match = "any"
+    scope_where = build_device_tag_scope_where(
+        include_tags, exclude_tags, include_match
+    )
+    query = "\n".join(
+        [
+            "foreach device in network.devices",
+            "where device.snapshotInfo.result == DeviceSnapshotResult.completed",
+            "where device.platform.vendor != Vendor.FORWARD_CUSTOM",
+            *scope_where,
+            "foreach address in device.platform.managementIps",
+            "select {device: device.name, address: toString(address)}",
+        ]
+    )
+    rows = run_nqe_query(
+        client,
+        query=query,
+        network_id=network_id,
+        snapshot_id=snapshot_id,
+        fetch_all=True,
+    )
+    management_ips: dict[str, list[str]] = {}
+    for row in rows or []:
+        device = str(row.get("device") or "").strip()
+        address = str(row.get("address") or "").strip()
+        if not device or not address:
+            continue
+        addresses = management_ips.setdefault(device, [])
+        if address not in addresses:
+            addresses.append(address)
+    return management_ips
 
 
 def get_configured_device_tags(client, network_id):
