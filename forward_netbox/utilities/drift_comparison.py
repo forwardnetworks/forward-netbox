@@ -922,6 +922,7 @@ def _peering_comparisons():
     from .sync_routing_policy import apply_netbox_routing_communitylistentry
     from .sync_routing_policy import apply_netbox_routing_prefixlistentry
     from .sync_routing_policy import apply_netbox_routing_routemapentry
+    from .sync_routing_static import apply_netbox_routing_staticroute
 
     return {
         "netbox_routing.bgppeer": apply_netbox_routing_bgppeer,
@@ -938,6 +939,7 @@ def _peering_comparisons():
         "netbox_routing.prefixlistentry": apply_netbox_routing_prefixlistentry,
         "netbox_routing.communitylistentry": (apply_netbox_routing_communitylistentry),
         "netbox_routing.routemapentry": apply_netbox_routing_routemapentry,
+        "netbox_routing.staticroute": apply_netbox_routing_staticroute,
     }
 
 

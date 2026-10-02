@@ -1299,6 +1299,17 @@ class ForwardSyncForm(NetBoxModelForm):
             "interface (e.g. Vlan211). Off by default."
         ),
     )
+    set_primary_ip_from_forward_management_ip = forms.BooleanField(
+        required=False,
+        label="Fall back to Forward's management IP",
+        help_text=(
+            "For a device with no `Mgmt_<interface>` tag, set its primary IP to "
+            "the single management address Forward records for it, but only if "
+            "that exact address is already on one of the device's interfaces. "
+            "Devices with a `Mgmt_` tag, several management addresses, or an "
+            "address on no interface are left alone. Off by default."
+        ),
+    )
     diff_fallback_mode = forms.ChoiceField(
         choices=tuple(
             (value, label)
@@ -1409,6 +1420,9 @@ class ForwardSyncForm(NetBoxModelForm):
             "set_primary_ip_from_mgmt_tag",
             False,
         )
+        self.fields["set_primary_ip_from_forward_management_ip"].initial = (
+            parameters.get("set_primary_ip_from_forward_management_ip", False)
+        )
         self.fields["diff_fallback_mode"].initial = parameters.get(
             "diff_fallback_mode",
             ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
@@ -1455,6 +1469,7 @@ class ForwardSyncForm(NetBoxModelForm):
                 "enable_copy_sql",
                 "copy_sql_kill_switches",
                 "set_primary_ip_from_mgmt_tag",
+                "set_primary_ip_from_forward_management_ip",
                 "diff_fallback_mode",
                 "scheduled",
                 "interval",
@@ -1532,6 +1547,9 @@ class ForwardSyncForm(NetBoxModelForm):
             "set_primary_ip_from_mgmt_tag": bool(
                 cleaned.get("set_primary_ip_from_mgmt_tag", False)
             ),
+            "set_primary_ip_from_forward_management_ip": bool(
+                cleaned.get("set_primary_ip_from_forward_management_ip", False)
+            ),
             "diff_fallback_mode": cleaned.get("diff_fallback_mode")
             or ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
             "webhook_secret": str(cleaned.get("webhook_secret") or ""),
@@ -1566,6 +1584,11 @@ class ForwardSyncForm(NetBoxModelForm):
             ),
             "set_primary_ip_from_mgmt_tag": bool(
                 self.cleaned_data.get("set_primary_ip_from_mgmt_tag", False)
+            ),
+            "set_primary_ip_from_forward_management_ip": bool(
+                self.cleaned_data.get(
+                    "set_primary_ip_from_forward_management_ip", False
+                )
             ),
             "diff_fallback_mode": self.cleaned_data.get("diff_fallback_mode")
             or ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,

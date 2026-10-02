@@ -1,5 +1,6 @@
 import importlib
 import threading
+from unittest.mock import patch
 
 from dcim.models import Device
 from dcim.models import DeviceRole
@@ -38,6 +39,8 @@ from forward_netbox.utilities.ownership import reconcile_virtual_parent_claims
 from forward_netbox.utilities.ownership import (
     release_authoritative_device_delete_ownership,
 )
+from forward_netbox.utilities.ownership import sync_delete_tag_impact
+from forward_netbox.views import ForwardSyncDeleteView
 
 
 class OwnershipControlPlaneTest(TestCase):
@@ -504,6 +507,104 @@ class OwnershipControlPlaneTest(TestCase):
         self.assertGreaterEqual(deleted, 1)
         self.assertFalse(ForwardSync.objects.filter(pk=self.sync.pk).exists())
         self.assertFalse(ForwardDeviceTagClaim.objects.exists())
+        self.assertFalse(self.device.tags.filter(name="Claim Tag").exists())
+
+    def _claim_the_tag(self):
+        reconcile_sync_scope_tag_claims(
+            self.sync,
+            {self.device.name: ["Claim Tag"]},
+            generation=self.ingestion.pk,
+            snapshot_id=self.ingestion.snapshot_id,
+        )
+
+    def test_sync_delete_impact_names_the_tags_it_would_strip(self):
+        self._claim_the_tag()
+
+        impact = sync_delete_tag_impact(self.sync)
+
+        self.assertEqual(impact["devices"], 1)
+        self.assertEqual(impact["tags"], [{"tag": "Claim Tag", "devices": 1}])
+        self.assertTrue(self.device.tags.filter(name="Claim Tag").exists())
+
+    def test_sync_delete_impact_is_empty_when_nothing_is_claimed(self):
+        self.assertEqual(sync_delete_tag_impact(self.sync), {"tags": [], "devices": 0})
+
+    def test_deleting_a_sync_strips_its_tags_by_default(self):
+        self._claim_the_tag()
+
+        self.sync.delete()
+
+        self.assertFalse(self.device.tags.filter(name="Claim Tag").exists())
+
+    def test_keeping_device_tags_leaves_them_on_the_devices(self):
+        self._claim_the_tag()
+        self.sync._keep_device_tags_on_delete = True
+
+        self.sync.delete()
+
+        self.assertFalse(ForwardSync.objects.filter(pk=self.sync.pk).exists())
+        self.assertFalse(ForwardDeviceTagClaim.objects.exists())
+        self.assertTrue(self.device.tags.filter(name="Claim Tag").exists())
+
+    def _admin_client(self):
+        from django.contrib.auth import get_user_model
+        from django.test import Client
+
+        user = get_user_model().objects.create_user(username="del-admin", password="x")
+        user.is_superuser = True
+        user.is_staff = True
+        user.save()
+        client = Client()
+        client.force_login(user)
+        return client
+
+    def test_the_delete_page_states_the_impact_and_offers_to_keep_tags(self):
+        from django.urls import reverse
+
+        self._claim_the_tag()
+
+        # The stock dependent-object preview refuses while ownership rows exist
+        # in a test client; production releases them on a real request. This
+        # test is about what the page says, so give it an empty preview.
+        with patch.object(
+            ForwardSyncDeleteView, "_get_dependent_objects", return_value={}
+        ):
+            response = self._admin_client().get(
+                reverse(
+                    "plugins:forward_netbox:forwardsync_delete", args=[self.sync.pk]
+                )
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Claim Tag")
+        self.assertContains(response, "keep_device_tags")
+        self.assertContains(response, "settings")
+
+    def test_posting_the_keep_option_through_the_view_keeps_the_tags(self):
+        from django.urls import reverse
+
+        self._claim_the_tag()
+
+        response = self._admin_client().post(
+            reverse("plugins:forward_netbox:forwardsync_delete", args=[self.sync.pk]),
+            {"confirm": True, "keep_device_tags": "1"},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertFalse(ForwardSync.objects.filter(pk=self.sync.pk).exists())
+        self.assertTrue(self.device.tags.filter(name="Claim Tag").exists())
+
+    def test_posting_without_the_option_strips_the_tags(self):
+        from django.urls import reverse
+
+        self._claim_the_tag()
+
+        self._admin_client().post(
+            reverse("plugins:forward_netbox:forwardsync_delete", args=[self.sync.pk]),
+            {"confirm": True},
+        )
+
+        self.assertFalse(ForwardSync.objects.filter(pk=self.sync.pk).exists())
         self.assertFalse(self.device.tags.filter(name="Claim Tag").exists())
 
     def test_source_delete_releases_claims_and_materialized_tags(self):

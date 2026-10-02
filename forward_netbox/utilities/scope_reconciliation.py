@@ -2561,6 +2561,77 @@ def site_relabel_held_by_reason(report) -> list:
     ]
 
 
+# The only rows the duplicate repair deletes on its own to free the newer
+# device: routing rows the sync itself builds per device, which the next sync
+# rebuilds against the surviving device. Anything else that protects the newer
+# device still refuses the delete. Pinned by tests in both directions.
+SITE_RELABEL_RELEASABLE_ROUTING_MODELS = frozenset(
+    {
+        "netbox_routing.bgppeeraddressfamily",
+        "netbox_routing.bgppeer",
+        "netbox_routing.bgpscope",
+        "netbox_routing.bgprouter",
+        "netbox_routing.ospfinterface",
+        "netbox_routing.ospfinstance",
+    }
+)
+SITE_RELABEL_ROUTING_RELEASE_ROUNDS = 6
+
+
+def _objects_protecting_device(device):
+    """Objects whose PROTECT/RESTRICT reference stops this device being deleted.
+
+    Reads Django's own deletion plan, so it sees references reached through the
+    device's interfaces and other cascades, which a direct look at the device's
+    foreign keys misses.
+    """
+    from django.db import DEFAULT_DB_ALIAS
+    from django.db.models.deletion import Collector
+    from django.db.models.deletion import RestrictedError
+
+    collector = Collector(using=DEFAULT_DB_ALIAS)
+    try:
+        collector.collect([device])
+    except ProtectedError as exc:
+        return list(exc.protected_objects)
+    except RestrictedError as exc:
+        return list(exc.restricted_objects)
+    return []
+
+
+def _release_routing_rows_protecting(device):
+    """Delete the allowlisted routing rows that block ``device``'s delete.
+
+    Returns ``(released_by_model, refused_by_model)``. Refused is non-empty when
+    something outside the allowlist also protects the device; in that case
+    nothing is deleted, so a partial release never leaves a half-cleared device.
+    """
+    released = {}
+    for _round in range(SITE_RELABEL_ROUTING_RELEASE_ROUNDS):
+        blockers = _objects_protecting_device(device)
+        if not blockers:
+            return released, {}
+        refused = {}
+        releasable = []
+        for obj in blockers:
+            label = obj._meta.label_lower
+            if label in SITE_RELABEL_RELEASABLE_ROUTING_MODELS:
+                releasable.append(obj)
+            elif not label.startswith("forward_netbox."):
+                refused[label] = refused.get(label, 0) + 1
+        if refused:
+            return released, refused
+        if not releasable:
+            # Only this plugin's own ownership records remain; the device
+            # delete that follows releases those itself.
+            return released, {}
+        for obj in releasable:
+            label = obj._meta.label_lower
+            obj.delete()
+            released[label] = released.get(label, 0) + 1
+    return released, {"unresolved_after_rounds": 1}
+
+
 def merge_site_relabel_duplicates(sync, *, pairs=None):
     """Repair existing site-relabel duplicate pairs: keep the older device.
 
@@ -2648,6 +2719,20 @@ def merge_site_relabel_duplicates(sync, *, pairs=None):
                     .values_list("source_device_key", flat=True)
                     .first()
                 ) or older.name
+                released_routing, refused_routing = _release_routing_rows_protecting(
+                    newer
+                )
+                if refused_routing:
+                    failed.append(
+                        {
+                            "older_pk": older.pk,
+                            "newer_pk": newer.pk,
+                            "reason": "newer_device_delete_refused",
+                            "blocking_models": sorted(refused_routing),
+                        }
+                    )
+                    transaction.set_rollback(True)
+                    continue
                 deleted_ids, _total, protected_tally, blocked_ids = (
                     _delete_prunable_devices(sync, [newer.pk])
                 )
@@ -2682,6 +2767,7 @@ def merge_site_relabel_duplicates(sync, *, pairs=None):
                         "older_pk": older.pk,
                         "newer_pk": newer.pk,
                         "action": pair["action"],
+                        "routing_rows_released": released_routing or None,
                     }
                 )
         except JobTimeoutException:

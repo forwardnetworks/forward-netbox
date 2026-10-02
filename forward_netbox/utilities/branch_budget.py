@@ -41,6 +41,7 @@ DEFAULT_MODEL_CHANGE_DENSITY = {
     "netbox_routing.prefixlistentry": 2.0,
     "netbox_routing.communitylistentry": 2.0,
     "netbox_routing.routemapentry": 2.0,
+    "netbox_routing.staticroute": 2.0,
     "netbox_peering_manager.peeringsession": 2.0,
     "ipam.fhrpgroup": 3.0,
 }
@@ -83,6 +84,7 @@ APPLY_DEPENDENCY_MODEL_ORDER = (
     "netbox_routing.prefixlistentry",
     "netbox_routing.communitylistentry",
     "netbox_routing.routemapentry",
+    "netbox_routing.staticroute",
     "netbox_routing.bgppeer",
     "netbox_routing.bgpaddressfamily",
     "netbox_routing.bgppeeraddressfamily",
@@ -202,6 +204,7 @@ DELETE_DEPENDENCY_MODEL_ORDER = (
     "netbox_routing.bgppeer",
     "netbox_routing.bgpscope",
     "netbox_routing.bgprouter",
+    "netbox_routing.staticroute",
     "netbox_routing.routemapentry",
     "netbox_routing.communitylistentry",
     "netbox_routing.prefixlistentry",

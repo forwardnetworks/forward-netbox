@@ -17,7 +17,7 @@ from .branching import missing_branch_table_report
 from .change_explainability import branch_model_change_counts
 from .executor_base import ForwardExecutorBase
 from .primary_ip import apply_primary_ip_from_mgmt_tags
-from .primary_ip import primary_ip_from_mgmt_tag_enabled
+from .primary_ip import primary_ip_step_enabled
 from .query_fetch import ForwardQueryFetcher
 from .run_size_guard import decide_run_size_hold
 from .run_size_guard import hold_record
@@ -334,9 +334,10 @@ class ForwardSingleBranchExecutor(ForwardExecutorBase):
         # Optional: set device primary_ip4/6 from Forward Mgmt_<iface> tags. Runs
         # in the branch after every workload is staged (interfaces + IPs exist),
         # before merge, so the primary-IP updates merge with the rest of the sync.
-        if primary_ip_from_mgmt_tag_enabled(self.sync):
+        if primary_ip_step_enabled(self.sync):
             self.logger.log_info(
-                "Resolving device primary IPs from Mgmt_ tags.",
+                "Resolving device primary IPs from Mgmt_ tags and Forward's "
+                "management addresses.",
                 obj=self.sync,
             )
             apply_primary_ip_from_mgmt_tags(

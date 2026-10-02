@@ -42,6 +42,7 @@ FAST_BASELINE_ADAPTER_CONTRACT_MODELS = frozenset(
         "netbox_routing.prefixlistentry",
         "netbox_routing.communitylistentry",
         "netbox_routing.routemapentry",
+        "netbox_routing.staticroute",
         "netbox_cisco_aci.acifabric",
         "netbox_cisco_aci.acipod",
         "netbox_cisco_aci.acinode",

@@ -99,6 +99,26 @@ class FastBaselineLoadTest(TransactionTestCase):
             )
         ]
 
+    def test_either_primary_ip_source_keeps_the_fast_baseline_off(self):
+        # The primary-IP step runs in the staged branch, which the fast
+        # baseline does not use; the management-address fallback is the same
+        # step as the Mgmt_ tag one.
+        for parameter in (
+            "set_primary_ip_from_mgmt_tag",
+            "set_primary_ip_from_forward_management_ip",
+        ):
+            self.sync.parameters[parameter] = True
+
+            decision = fast_baseline_static_decision(
+                sync=self.sync, workloads=self.workloads
+            )
+
+            self.assertFalse(decision.enabled, parameter)
+            self.assertEqual(
+                decision.reason_code, "primary_ip_overlay_not_supported", parameter
+            )
+            self.sync.parameters[parameter] = False
+
     def test_static_selection_fails_closed(self):
         decision = fast_baseline_static_decision(
             sync=self.sync,

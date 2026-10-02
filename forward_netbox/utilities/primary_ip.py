@@ -15,6 +15,7 @@ from .interface_naming import parse_mgmt_tag
 from .interface_naming import resolve_mgmt_interface_name
 
 PRIMARY_IP_FROM_MGMT_TAG_PARAMETER = "set_primary_ip_from_mgmt_tag"
+PRIMARY_IP_FROM_MANAGEMENT_IP_PARAMETER = "set_primary_ip_from_forward_management_ip"
 
 
 def _host_ip(value):
@@ -86,8 +87,66 @@ def resolve_primary_ip_assignments(device_mgmt_tags, device_interface_ips):
     return assignments
 
 
+def resolve_management_ip_assignments(
+    device_management_ips, device_interface_ips, *, skip=()
+):
+    """Resolve primary v4/v6 from Forward's recorded management address.
+
+    The fallback for a device that carries no ``Mgmt_`` tag. Deliberately
+    narrow: Forward must record exactly one management address for the device,
+    and that exact address must already sit on exactly one of the device's
+    interfaces in NetBox. Several recorded addresses, an address that is on no
+    interface, or one on several interfaces is ambiguous and is skipped rather
+    than guessed. ``skip`` names devices that carry a ``Mgmt_`` tag: an explicit
+    tag always wins, even when it did not resolve.
+
+    Returns the same shape as `resolve_primary_ip_assignments`.
+    """
+    assignments = {}
+    skipped = set(skip or ())
+    for device_name, raw_ips in (device_management_ips or {}).items():
+        if device_name in skipped:
+            continue
+        hosts = {
+            host
+            for host in (_host_ip(raw) for raw in raw_ips or ())
+            if host is not None
+        }
+        if len(hosts) != 1:
+            continue
+        host = next(iter(hosts))
+        matches = [
+            (interface_name, address)
+            for interface_name, addresses in (
+                (device_interface_ips or {}).get(device_name) or {}
+            ).items()
+            for address in addresses
+            if _host_ip(address) == host
+        ]
+        if len(matches) != 1:
+            continue
+        interface_name, address = matches[0]
+        assignments[device_name] = {
+            "interface": interface_name,
+            "v4": address if host.version == 4 else None,
+            "v6": address if host.version == 6 else None,
+        }
+    return assignments
+
+
 def primary_ip_from_mgmt_tag_enabled(sync):
     return bool((sync.parameters or {}).get(PRIMARY_IP_FROM_MGMT_TAG_PARAMETER))
+
+
+def primary_ip_from_management_ip_enabled(sync):
+    return bool((sync.parameters or {}).get(PRIMARY_IP_FROM_MANAGEMENT_IP_PARAMETER))
+
+
+def primary_ip_step_enabled(sync):
+    """Either source turns the post-staging primary-IP step on."""
+    return primary_ip_from_mgmt_tag_enabled(
+        sync
+    ) or primary_ip_from_management_ip_enabled(sync)
 
 
 def _branch_interface_ips(device_names):
@@ -102,12 +161,14 @@ def _branch_interface_ips(device_names):
     from ipam.models import IPAddress
 
     interface_ct = ObjectType.objects.get_for_model(Interface)
-    devices = {d.name: d for d in Device.objects.filter(name__in=list(device_names))}
-    device_interface_ips = {}
-    ip_lookup = {}
-    for name, device in devices.items():
+    by_name = {}
+    for device in Device.objects.filter(name__in=list(device_names)):
+        by_name.setdefault(device.name, []).append(device)
+
+    def interface_ips(device):
         interfaces = {i.pk: i for i in Interface.objects.filter(device=device)}
         per_interface = {i.name: [] for i in interfaces.values()}
+        lookup = {}
         ips = IPAddress.objects.filter(
             assigned_object_type=interface_ct,
             assigned_object_id__in=list(interfaces.keys()),
@@ -118,8 +179,28 @@ def _branch_interface_ips(device_names):
                 continue
             addr = str(ip.address)
             per_interface.setdefault(interface.name, []).append(addr)
-            ip_lookup[(name, interface.name, addr)] = ip
+            lookup[(device.name, interface.name, addr)] = ip
+        return per_interface, lookup
+
+    devices = {}
+    device_interface_ips = {}
+    ip_lookup = {}
+    for name, group in by_name.items():
+        resolved = [(device, *interface_ips(device)) for device in group]
+        if len(resolved) > 1:
+            # Two devices share this name (a site relabel leaves a pair). The
+            # name-keyed map used to keep whichever came last, which could be
+            # the copy with no addresses, so a tagged device never got its
+            # primary IP. Take the one copy that has interface addresses; with
+            # none or several, the name is ambiguous and stays unresolved.
+            with_addresses = [row for row in resolved if any(row[1].values())]
+            if len(with_addresses) != 1:
+                continue
+            resolved = with_addresses
+        device, per_interface, lookup = resolved[0]
+        devices[name] = device
         device_interface_ips[name] = per_interface
+        ip_lookup.update(lookup)
     return devices, device_interface_ips, ip_lookup
 
 
@@ -165,15 +246,29 @@ def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
             logger.log_info("primary_ip-from-tag: no network on the source; skipping.")
             return 0
         include_tags, exclude_tags, include_match = device_tag_scope(sync)
-        device_mgmt_tags = executor.client.get_device_mgmt_tags(
-            network_id,
-            snapshot_id,
-            include_tags=include_tags,
-            exclude_tags=exclude_tags,
-            include_match=include_match,
-        )
-        if not device_mgmt_tags:
-            logger.log_info("primary_ip-from-tag: no Mgmt_ device tags found.")
+        device_mgmt_tags = {}
+        if primary_ip_from_mgmt_tag_enabled(sync):
+            device_mgmt_tags = executor.client.get_device_mgmt_tags(
+                network_id,
+                snapshot_id,
+                include_tags=include_tags,
+                exclude_tags=exclude_tags,
+                include_match=include_match,
+            )
+        device_management_ips = {}
+        if primary_ip_from_management_ip_enabled(sync):
+            device_management_ips = executor.client.get_device_management_ips(
+                network_id,
+                snapshot_id,
+                include_tags=include_tags,
+                exclude_tags=exclude_tags,
+                include_match=include_match,
+            )
+        if not device_mgmt_tags and not device_management_ips:
+            logger.log_info(
+                "primary_ip-from-tag: no Mgmt_ device tags or management "
+                "addresses found."
+            )
             return 0
     except JobTimeoutException:
         raise
@@ -191,11 +286,19 @@ def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
         active_branch.set(branch)
         try:
             devices, device_interface_ips, ip_lookup = _branch_interface_ips(
-                device_mgmt_tags.keys()
+                set(device_mgmt_tags) | set(device_management_ips)
             )
-            assignments = resolve_primary_ip_assignments(
+            tag_assignments = resolve_primary_ip_assignments(
                 device_mgmt_tags, device_interface_ips
             )
+            # A device with any Mgmt_ tag is the tag's to decide, resolved or
+            # not; the management-address fallback only covers untagged ones.
+            fallback_assignments = resolve_management_ip_assignments(
+                device_management_ips,
+                device_interface_ips,
+                skip=set(device_mgmt_tags),
+            )
+            assignments = {**fallback_assignments, **tag_assignments}
             updated = []
             unresolved = 0
             # NetBox enforces UNIQUE(primary_ip4_id) and UNIQUE(primary_ip6_id):
@@ -245,11 +348,18 @@ def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
                     obj=getattr(executor, "current_ingestion", None) or sync,
                 )
             # Devices whose Mgmt_ tag pointed at no resolvable interface/IP.
-            unresolved = len(device_mgmt_tags) - len(assignments)
+            unresolved = len(device_mgmt_tags) - len(tag_assignments)
             if updated:
                 emit_branch_object_changes([], updated)
+            from_fallback = sum(
+                1
+                for device in updated
+                if device.name in fallback_assignments
+                and device.name not in tag_assignments
+            )
             logger.log_info(
                 f"primary_ip-from-tag: set primary IP on {len(updated)} device(s)"
+                f" ({from_fallback} from Forward's management address)"
                 f"; {unresolved} tag(s) unresolved."
             )
             return len(updated)
