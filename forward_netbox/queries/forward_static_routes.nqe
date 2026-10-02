@@ -1,0 +1,48 @@
+/**
+ * @intent Forward Static Routes
+ * @description Optional config-derived NQE for netbox-routing static routes. Forward's structured
+ * model has no configured-static-route field: the forwarding table's STATIC origin is the INSTALLED
+ * routes (it also holds derived and redistributed ones, and passes the NQE row cap on a large
+ * estate), not what an operator configured. So this reads the configured `ip route` / `ipv6 route`
+ * lines from `device.files.config` for the IOS, IOS-XE, NX-OS and Arista EOS dialects: global lines
+ * and `ip route vrf NAME` lines, plus NX-OS routes declared under `vrf context NAME`.
+ *
+ * One row per configured line, carrying the line's arguments verbatim (`args`); the adapter parses
+ * the destination (CIDR, or address and mask), the next hop or interface, and the optional distance,
+ * tag, name and permanent keywords, because their order differs by platform. Lines the adapter
+ * cannot read are counted and skipped, never guessed.
+ */
+
+globalRegex = re`^(?<family>ip|ipv6) route (?:vrf (?<vrf>\S+) )?(?<args>.*)$`;
+vrfContextRegex = re`^vrf context (?<vrf>\S+)$`;
+contextRouteRegex = re`^(?<family>ip|ipv6) route (?<args>.*)$`;
+
+@query
+f(forward_netbox_shard_keys: List<String>) =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
+where device.platform.os in [OS.IOS, OS.IOS_XE, OS.NXOS, OS.ARISTA_EOS]
+where isPresent(device.files.config)
+let globalRows =
+  (foreach line in device.files.config
+   where matches(line.text, "ip* route *")
+   foreach m in regexMatches(line.text, globalRegex)
+   select {vrf: m.data.vrf, family: m.data.family, args: m.data.args})
+let contextRows =
+  (foreach line in device.files.config
+   where matches(line.text, "vrf context *")
+   foreach context in regexMatches(line.text, vrfContextRegex)
+   foreach child in line.children
+   where matches(child.text, "ip* route *")
+   foreach m in regexMatches(child.text, contextRouteRegex)
+   select {vrf: context.data.vrf, family: m.data.family, args: m.data.args})
+foreach route in globalRows + contextRows
+select distinct {
+  device: device.name,
+  os: toString(device.platform.os),
+  vrf: route.vrf,
+  family: route.family,
+  args: route.args
+};

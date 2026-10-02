@@ -1,0 +1,18 @@
+{% extends 'generic/_base.html' %}
+{% load helpers %}
+{% load form_helpers %}
+{% load i18n %}
+
+{% block title %}
+  {% trans "Delete" %} {{ object|meta:"verbose_name" }}?
+{% endblock %}
+
+{% block content %}
+  <div class="modal modal-lg" tabindex="-1" style="display: block; position: static">
+    <div class="modal-dialog">
+      <div class="modal-content border-1 border-danger">
+        {% include 'forward_netbox/htmx/forwardsync_delete_form.html' %}
+      </div>
+    </div>
+  </div>
+{% endblock %}

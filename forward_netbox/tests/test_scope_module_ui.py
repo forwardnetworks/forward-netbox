@@ -10,7 +10,6 @@ from dcim.models import Manufacturer
 from dcim.models import Rack
 from dcim.models import Site
 from django.contrib.auth import get_user_model
-from django.contrib.messages import get_messages
 from django.test import Client
 from django.test import TestCase
 from django.urls import reverse
@@ -847,6 +846,32 @@ class ScopeModuleUiTest(TestCase):
             "snapshot-pinned",
         )
 
+    def _run_module_readiness_job(self):
+        """Compute and store the report the way production does."""
+        from uuid import uuid4
+
+        from core.choices import JobStatusChoices
+        from django.contrib.contenttypes.models import ContentType
+
+        from forward_netbox.jobs import _module_readiness_work
+
+        job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name=f"{self.sync.name} - module readiness",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            completed=timezone.now(),
+            job_id=uuid4(),
+        )
+        _module_readiness_work(job)
+        return job
+
+    def _module_readiness_url(self):
+        return reverse(
+            "plugins:forward_netbox:forwardsync_module_readiness",
+            kwargs={"pk": self.sync.pk},
+        )
+
     def test_module_readiness_view_reports_branch_plan(self):
         self._device("dev-m")
         client = self._superuser_client()
@@ -854,39 +879,57 @@ class ScopeModuleUiTest(TestCase):
             "forward_netbox.utilities.module_readiness.fetch_module_rows_for_sync",
             return_value=[{"device": "dev-m", "module_bay": "Slot 1"}],
         ):
-            resp = client.get(
+            self._run_module_readiness_job()
+        resp = client.get(self._module_readiness_url())
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "Missing bays")
+        self.assertContains(resp, "created inside the sync branch")
+        self.assertContains(resp, "Slot 1")
+
+    def test_module_readiness_view_never_queries_forward(self):
+        client = self._superuser_client()
+        with patch(
+            "forward_netbox.utilities.module_readiness.fetch_module_rows_for_sync"
+        ) as fetch:
+            resp = client.get(self._module_readiness_url())
+
+        fetch.assert_not_called()
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, "No report yet")
+        self.assertContains(resp, "Run check")
+
+    def test_module_readiness_refresh_queues_a_job(self):
+        client = self._superuser_client()
+        with patch("forward_netbox.jobs.ModuleReadinessJob.enqueue") as enqueue:
+            resp = client.post(
                 reverse(
-                    "plugins:forward_netbox:forwardsync_module_readiness",
+                    "plugins:forward_netbox:forwardsync_refresh_module_readiness",
                     kwargs={"pk": self.sync.pk},
                 )
             )
-            self.assertEqual(resp.status_code, 200)
-            self.assertContains(resp, "Missing bays")
-            self.assertContains(resp, "created inside the sync branch")
 
-    def test_module_readiness_view_does_not_expose_exception_details(self):
+        self.assertEqual(resp.status_code, 302)
+        enqueue.assert_called_once()
+        self.assertEqual(
+            enqueue.call_args.kwargs["name"], f"{self.sync.name} - module readiness"
+        )
+
+    def test_module_readiness_failure_is_stored_without_exception_details(self):
         client = self._superuser_client()
         with (
-            self.assertLogs("forward_netbox.views", level="WARNING") as logs,
             patch(
                 "forward_netbox.utilities.module_readiness.compute_module_readiness_for_sync",
                 side_effect=RuntimeError("sentinel-private-detail"),
             ),
+            self.assertRaises(RuntimeError),
         ):
-            response = client.get(
-                reverse(
-                    "plugins:forward_netbox:forwardsync_module_readiness",
-                    kwargs={"pk": self.sync.pk},
-                )
-            )
+            self._run_module_readiness_job()
+        response = client.get(self._module_readiness_url())
 
-        rendered_messages = " ".join(
-            str(message) for message in get_messages(response.wsgi_request)
-        )
-        self.assertEqual(response.status_code, 302)
-        self.assertNotIn("sentinel-private-detail", rendered_messages)
-        self.assertNotIn("sentinel-private-detail", " ".join(logs.output))
-        self.assertIn("Review server logs", rendered_messages)
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Last run failed")
+        self.assertNotContains(response, "sentinel-private-detail")
 
     # --- absence quarantine on the panel --------------------------------------
 

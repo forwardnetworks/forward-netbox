@@ -153,11 +153,13 @@ class ForwardOwnershipReleaseQuerySet(RestrictedQuerySet):
     """Route bulk source/sync deletion through model ownership cleanup."""
 
     def delete(self):
-        from .utilities.ownership import ownership_write_lock
+        from .utilities import ownership
 
         total = 0
         details = {}
-        with ownership_write_lock():
+        with ownership.ownership_write_lock(
+            max_wait_seconds=ownership.OWNERSHIP_LOCK_OPERATOR_WAIT_SECONDS
+        ):
             objects = list(self.select_for_update())
             for obj in objects:
                 deleted, deleted_by_model = obj.delete()
@@ -562,7 +564,12 @@ class ForwardSync(ForwardPluginModelDocsMixin, JobsMixin, TagsMixin, ChangeLogge
             # it, losing terminal diagnostics, and a standing RQ schedule would
             # keep firing against a sync that no longer exists.
             enforce_sync_job_safety(self)
-            release_sync_ownership(self)
+            release_sync_ownership(
+                self,
+                keep_device_tags=bool(
+                    getattr(self, "_keep_device_tags_on_delete", False)
+                ),
+            )
             return super().delete(*args, **kwargs)
 
     @property

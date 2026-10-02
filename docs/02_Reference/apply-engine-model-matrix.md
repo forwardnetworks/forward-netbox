@@ -81,6 +81,7 @@ These models remain adapter-required with explicit blocker codes:
 - `netbox_routing.ospfinterface` | `plugin_model_dependencies`
 - `netbox_routing.prefixlistentry` | `plugin_model_dependencies`
 - `netbox_routing.routemapentry` | `plugin_model_dependencies`
+- `netbox_routing.staticroute` | `plugin_model_dependencies`
 
 ## Drift Guard
 

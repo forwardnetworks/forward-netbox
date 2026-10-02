@@ -462,6 +462,27 @@
             </button>
           </form>
         {% endif %}
+        {% if site_relabel_pairs.last_repair %}
+          <p class="mt-3 mb-1">
+            {% blocktrans with job=site_relabel_pairs.last_repair.job_pk merged=site_relabel_pairs.last_repair.merged_count failed=site_relabel_pairs.last_repair.failed_count %}Last merge (job #{{ job }}): {{ merged }} merged, {{ failed }} refused.{% endblocktrans %}
+          </p>
+          {% if site_relabel_pairs.last_repair.routing_rows_released %}
+            <p class="mb-1 text-muted">
+              {% trans "Routing rows released so the newer copy could be deleted (the next sync rebuilds them on the surviving device):" %}
+              {% for model, count in site_relabel_pairs.last_repair.routing_rows_released %}{{ model }} &times; {{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}
+            </p>
+          {% endif %}
+          {% if site_relabel_pairs.last_repair.failed_count %}
+            <p class="mb-1 text-muted">
+              {% trans "Refused:" %}
+              {% for reason, count in site_relabel_pairs.last_repair.failed_by_reason %}{{ reason }} &times; {{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}
+              {% if site_relabel_pairs.last_repair.blocking_models %}
+                &mdash; {% trans "blocked by" %}
+                {% for model, count in site_relabel_pairs.last_repair.blocking_models %}{{ model }} &times; {{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}
+              {% endif %}
+            </p>
+          {% endif %}
+        {% endif %}
         {% if site_relabel_pairs.held_count %}
           <p class="mt-3 mb-1">
             {% blocktrans count counter=site_relabel_pairs.held_count %}{{ counter }} duplicated name is held - it cannot be proven safe to merge yet:{% plural %}{{ counter }} duplicated names are held - they cannot be proven safe to merge yet:{% endblocktrans %}

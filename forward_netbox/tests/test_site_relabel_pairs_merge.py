@@ -422,3 +422,194 @@ class SiteRelabelPairsTest(TestCase):
             self.assertFalse(Device.objects.filter(pk=newer.pk).exists())
             older.refresh_from_db()
             self.assertEqual(older.site_id, self.new_site.pk)
+
+    # -- routing rows on the newer device ----------------------------------
+
+    def _ospf_interface_on(self, device):
+        from forward_netbox.utilities.sync_primitives import optional_model
+
+        label = "netbox_routing.ospfinterface"
+        OSPFInstance = optional_model("netbox_routing", "OSPFInstance", label)
+        OSPFArea = optional_model("netbox_routing", "OSPFArea", label)
+        OSPFInterface = optional_model("netbox_routing", "OSPFInterface", label)
+        interface = Interface.objects.create(
+            device=device, name="Gi0/0", type="1000base-t"
+        )
+        instance = OSPFInstance.objects.create(
+            name=f"{device.name} OSPF 1",
+            router_id="10.0.0.1",
+            process_id=1,
+            device=device,
+        )
+        area = OSPFArea.objects.get_or_create(
+            area_id="0.0.0.0", defaults={"area_type": "standard"}
+        )[0]
+        return OSPFInterface.objects.create(
+            instance=instance, area=area, interface=interface
+        )
+
+    def _bgp_peer_addressed_on(self, device):
+        from ipam.models import ASN
+        from ipam.models import IPAddress
+        from ipam.models import RIR
+
+        from forward_netbox.utilities.sync_primitives import optional_model
+
+        label = "netbox_routing.bgppeer"
+        BGPRouter = optional_model("netbox_routing", "BGPRouter", label)
+        BGPScope = optional_model("netbox_routing", "BGPScope", label)
+        BGPPeer = optional_model("netbox_routing", "BGPPeer", label)
+        rir = RIR.objects.get_or_create(name="rir-a", slug="rir-a")[0]
+        local = ASN.objects.get_or_create(asn=65000, defaults={"rir": rir})[0]
+        remote = ASN.objects.get_or_create(asn=65001, defaults={"rir": rir})[0]
+        interface = Interface.objects.create(device=device, name="Lo0", type="virtual")
+        address = IPAddress.objects.create(address="10.10.0.2/32", status="active")
+        address.assigned_object = interface
+        address.save()
+        router = BGPRouter.objects.create(
+            name=f"{device.name} AS65000",
+            assigned_object_type=ContentType.objects.get_for_model(Device),
+            assigned_object_id=device.pk,
+            asn=local,
+        )
+        scope = BGPScope.objects.create(router=router, vrf=None)
+        return BGPPeer.objects.create(
+            scope=scope,
+            peer=address,
+            name="peer",
+            remote_as=remote,
+            local_as=local,
+            enabled=True,
+            status="active",
+        )
+
+    def test_ospf_rows_on_the_newer_device_are_released_so_the_merge_completes(self):
+        from forward_netbox.utilities.sync_primitives import optional_model
+
+        older, newer, sites = self._pair(identity="older")
+        self._ospf_interface_on(newer)
+        self._report(sites)
+
+        result = merge_site_relabel_duplicates(self.sync)
+
+        self.assertEqual(result["failed_count"], 0)
+        self.assertEqual(result["merged_count"], 1)
+        released = result["merged_pairs"][0]["routing_rows_released"]
+        self.assertEqual(released["netbox_routing.ospfinterface"], 1)
+        self.assertFalse(Device.objects.filter(pk=newer.pk).exists())
+        older.refresh_from_db()
+        self.assertEqual(older.site_id, self.new_site.pk)
+        OSPFInterface = optional_model(
+            "netbox_routing", "OSPFInterface", "netbox_routing.ospfinterface"
+        )
+        self.assertEqual(OSPFInterface.objects.count(), 0)
+
+    def test_a_bgp_peer_addressed_on_the_newer_device_is_released(self):
+        older, newer, sites = self._pair(identity="older")
+        self._bgp_peer_addressed_on(newer)
+        self._report(sites)
+
+        result = merge_site_relabel_duplicates(self.sync)
+
+        self.assertEqual(result["failed_count"], 0, result["failed_pairs"])
+        self.assertFalse(Device.objects.filter(pk=newer.pk).exists())
+        self.assertIn(
+            "netbox_routing.bgppeer", result["merged_pairs"][0]["routing_rows_released"]
+        )
+
+    def test_a_non_routing_protector_refuses_and_releases_nothing(self):
+        from types import SimpleNamespace
+
+        from forward_netbox.utilities.sync_primitives import optional_model
+
+        older, newer, sites = self._pair(identity="older")
+        ospf_interface = self._ospf_interface_on(newer)
+        self._report(sites)
+        manual = SimpleNamespace(_meta=SimpleNamespace(label_lower="ipam.service"))
+
+        with patch(
+            "forward_netbox.utilities.scope_reconciliation._objects_protecting_device",
+            return_value=[ospf_interface, manual],
+        ):
+            result = merge_site_relabel_duplicates(self.sync)
+
+        self.assertEqual(result["merged_count"], 0)
+        failed = result["failed_pairs"][0]
+        self.assertEqual(failed["reason"], "newer_device_delete_refused")
+        self.assertEqual(failed["blocking_models"], ["ipam.service"])
+        self.assertTrue(Device.objects.filter(pk=newer.pk).exists())
+        OSPFInterface = optional_model(
+            "netbox_routing", "OSPFInterface", "netbox_routing.ospfinterface"
+        )
+        self.assertEqual(OSPFInterface.objects.count(), 1)
+        older.refresh_from_db()
+        self.assertEqual(older.site_id, self.old_site.pk)
+
+    def test_only_sync_built_routing_models_are_releasable(self):
+        from forward_netbox.utilities.scope_reconciliation import (
+            SITE_RELABEL_RELEASABLE_ROUTING_MODELS,
+        )
+
+        self.assertEqual(
+            set(SITE_RELABEL_RELEASABLE_ROUTING_MODELS),
+            {
+                "netbox_routing.bgppeeraddressfamily",
+                "netbox_routing.bgppeer",
+                "netbox_routing.bgpscope",
+                "netbox_routing.bgprouter",
+                "netbox_routing.ospfinterface",
+                "netbox_routing.ospfinstance",
+            },
+        )
+
+    # -- the last repair is visible on the page ------------------------------
+
+    def _repair_job(self, data):
+        from forward_netbox.utilities.sync_facade import BUTTON_JOB_SPECS
+
+        suffix = BUTTON_JOB_SPECS["merge_site_relabel_duplicates"][1]
+        return Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name=f"{self.sync.name} - {suffix}",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            completed=timezone.now(),
+            job_id=uuid.uuid4(),
+            data=data,
+        )
+
+    def test_the_page_payload_reports_a_refused_repair_and_what_blocked_it(self):
+        from forward_netbox.views import _last_site_relabel_repair
+
+        self._repair_job(
+            {
+                "merged_count": 1,
+                "failed_count": 2,
+                "held_count": 0,
+                "merged_pairs": [
+                    {"routing_rows_released": {"netbox_routing.bgppeer": 3}}
+                ],
+                "failed_pairs": [
+                    {
+                        "reason": "newer_device_delete_refused",
+                        "blocking_models": ["ipam.service"],
+                    },
+                    {"reason": "newer_device_delete_refused", "blocking_models": None},
+                ],
+            }
+        )
+
+        last = _last_site_relabel_repair(self.sync)
+
+        self.assertEqual(last["merged_count"], 1)
+        self.assertEqual(last["failed_count"], 2)
+        self.assertEqual(last["failed_by_reason"], [("newer_device_delete_refused", 2)])
+        self.assertEqual(last["blocking_models"], [("ipam.service", 1)])
+        self.assertEqual(last["routing_rows_released"], [("netbox_routing.bgppeer", 3)])
+
+    def test_the_page_payload_has_no_last_repair_before_one_has_run(self):
+        from forward_netbox.views import _last_site_relabel_repair
+
+        self.assertIsNone(_last_site_relabel_repair(self.sync))
+        self._repair_job({"error": "refused", "error_type": "X"})
+        self.assertIsNone(_last_site_relabel_repair(self.sync))

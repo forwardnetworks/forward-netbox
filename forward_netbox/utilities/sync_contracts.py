@@ -264,6 +264,14 @@ MODEL_SYNC_CONTRACTS: dict[str, ModelSyncContract] = {
         allowed_coalesce_fields=("name", "sequence"),
         default_coalesce_fields=(("name", "sequence"),),
     ),
+    # One row per configured line, the line's arguments verbatim (`args`); the
+    # adapter parses destination, next hop and options. `device` plus the line
+    # identify the row.
+    "netbox_routing.staticroute": ModelSyncContract(
+        required_fields=("device", "family", "args"),
+        allowed_coalesce_fields=("device", "vrf", "family", "args"),
+        default_coalesce_fields=(("device", "vrf", "family", "args"),),
+    ),
     "netbox_routing.ospfinterface": ModelSyncContract(
         required_fields=(
             "device",

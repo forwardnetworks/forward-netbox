@@ -12,6 +12,31 @@
 
 {% block content %}
 <div class="row mb-3">
+  <div class="col">
+    <div class="card">
+      <div class="card-body d-flex align-items-center justify-content-between">
+        <div>
+          {% if report_error %}
+            <span class="badge text-bg-danger">{% trans "Last run failed" %}</span>
+            <span class="text-muted">{{ report_error }}</span>
+          {% elif has_report %}
+            <span class="text-muted">{% blocktrans with when=generated_at|date:"Y-m-d H:i" %}Report from {{ when }}.{% endblocktrans %}</span>
+          {% else %}
+            <span class="text-muted">{% trans "No report yet. The check reads Forward in the background, so it never ties up this page." %}</span>
+          {% endif %}
+        </div>
+        <form method="post" action="{% url 'plugins:forward_netbox:forwardsync_refresh_module_readiness' pk=object.pk %}">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-primary">
+            <i class="mdi mdi-refresh" aria-hidden="true"></i>&nbsp;{% trans "Run check" %}
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% if has_report %}
+<div class="row mb-3">
   <div class="col col-md-6">
     <div class="card">
       <h5 class="card-header">{% trans "Module Bay Plan" %}</h5>
@@ -68,4 +93,5 @@
     </div>
   </div>
 </div>
+{% endif %}
 {% endblock content %}

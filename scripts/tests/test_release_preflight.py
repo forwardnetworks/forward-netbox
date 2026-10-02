@@ -426,6 +426,11 @@ class DependabotAlertsTest(unittest.TestCase):
         )
         patcher.start()
         self.addCleanup(patcher.stop)
+        # These cases are about the rule, not about whichever alerts the repo
+        # is currently waiving, so run each against an empty waiver list.
+        waiver = mock.patch.object(preflight, "ACCEPTED_DEPENDABOT_ALERTS", set())
+        waiver.start()
+        self.addCleanup(waiver.stop)
 
     def test_no_open_alerts_passes_silently(self):
         with mock.patch.object(preflight.provenance, "_github_json", return_value=[]):
