@@ -9,7 +9,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ("contenttypes", "0002_remove_content_type_name"),
-        ("forward_netbox", "0057_nqe_map_last_live_drift"),
+        ("forward_netbox", "0060_merge_maint_2_9_x_history"),
     ]
 
     operations = [

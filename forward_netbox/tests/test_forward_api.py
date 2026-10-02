@@ -2107,6 +2107,7 @@ class WorkloadFetchBudgetTest(TestCase):
         execution.wait.assert_called_once()
         self.assertEqual(execution.wait.call_args.kwargs["timeout"], 0.0)
 
+
 class MgmtTagEndpointBranchTest(TestCase):
     """`Mgmt_*` tags are read for SNMP endpoints too, not only for devices.
 
@@ -2130,14 +2131,16 @@ class MgmtTagEndpointBranchTest(TestCase):
     def _run(self, device_rows, endpoint_rows, **kwargs):
         queries = []
 
-        def fake_run(*, query, **_kw):
+        def fake_run(client, *, query, **_kw):
             queries.append(query)
             if "network.endpoints" in query:
                 return endpoint_rows
             return device_rows
 
-        with patch.object(self.client, "run_nqe_query", side_effect=fake_run):
-            result = self.client.get_device_mgmt_tags("n", "s", **kwargs)
+        with patch.object(forward_api_impl, "run_nqe_query", side_effect=fake_run):
+            result = forward_api_impl.get_device_mgmt_tags(
+                self.client, "n", "s", **kwargs
+            )
         return result, queries
 
     def test_endpoint_mgmt_tags_are_returned_with_the_devices(self):
@@ -2195,9 +2198,17 @@ class ManagementIpLookupTest(TestCase):
         )
 
     def _run(self, rows, **kwargs):
-        with patch.object(self.client, "run_nqe_query", return_value=rows) as run:
-            result = self.client.get_device_management_ips("n", "s", **kwargs)
+        with patch.object(forward_api_impl, "run_nqe_query", return_value=rows) as run:
+            result = forward_api_impl.get_device_management_ips(
+                self.client, "n", "s", **kwargs
+            )
         return result, run.call_args.kwargs["query"]
+
+    def test_a_missing_network_or_snapshot_is_refused(self):
+        with self.assertRaises(ForwardClientError):
+            forward_api_impl.get_device_management_ips(self.client, "", "s")
+        with self.assertRaises(ForwardClientError):
+            forward_api_impl.get_device_management_ips(self.client, "n", "")
 
     def test_addresses_are_grouped_per_device_without_duplicates(self):
         result, _query = self._run(
@@ -2224,9 +2235,3 @@ class ManagementIpLookupTest(TestCase):
         self.assertIn("device.platform.managementIps", query)
         self.assertIn("Keep", query)
         self.assertIn("Skip", query)
-
-    def test_a_missing_network_or_snapshot_is_refused(self):
-        with self.assertRaises(ForwardClientError):
-            self.client.get_device_management_ips("", "s")
-        with self.assertRaises(ForwardClientError):
-            self.client.get_device_management_ips("n", "")

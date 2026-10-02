@@ -172,7 +172,12 @@ class PrimaryIpFromMgmtTagIntegrationTest(TransactionTestCase):
 
     def _fallback_executor(self, *, mgmt_tags=None, management_ips=None):
         executor = self._executor(mgmt_tags or {})
-        executor.client.get_device_management_ips.return_value = management_ips or {}
+        patcher = patch(
+            "forward_netbox.utilities.primary_ip.get_device_management_ips",
+            return_value=management_ips or {},
+        )
+        executor.get_device_management_ips = patcher.start()
+        self.addCleanup(patcher.stop)
         return executor
 
     def _enable(self, *, tag, fallback):
@@ -193,8 +198,8 @@ class PrimaryIpFromMgmtTagIntegrationTest(TransactionTestCase):
         )
 
         self.assertEqual(updated, 1)
-        executor.client.get_device_mgmt_tags.assert_not_called()
-        executor.client.get_device_management_ips.assert_called_once()
+        executor.get_device_mgmt_tags.assert_not_called()
+        executor.get_device_management_ips.assert_called_once()
         with activate_branch(branch):
             self.assertEqual(
                 Device.objects.get(pk=self.device.pk).primary_ip4_id, self.ip.pk
@@ -207,7 +212,7 @@ class PrimaryIpFromMgmtTagIntegrationTest(TransactionTestCase):
 
         apply_primary_ip_from_mgmt_tags(executor, branch, snapshot_id="snap-1")
 
-        executor.client.get_device_management_ips.assert_not_called()
+        executor.get_device_management_ips.assert_not_called()
 
     def test_a_tagged_device_ignores_the_management_address(self):
         other = Interface.objects.create(
