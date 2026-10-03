@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v3.0.2
 
-Release candidate; Port of 2.9.13's PeeringSession crash + endpoint /32 fixes, plus the 3.0.1 upgrade-runtime override fix
+Port of 2.9.13's PeeringSession crash + endpoint /32 fixes, plus the 3.0.1 upgrade-runtime override fix
 
 ## v3.0.1
 
