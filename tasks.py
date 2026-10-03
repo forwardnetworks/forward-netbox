@@ -49,6 +49,10 @@ UPGRADE_FROM_NETBOX_OVERRIDES = {
     # `min_version = "4.7.0"` and refuses to load on the 4.6.5 default, so the
     # from side seeds on the runtime it was tested on.
     "3.0.0": "v4.7.0",
+    # 3.0.1 inherits the same 4.7.0 minimum; the override is per-version, not
+    # a range, so each 3.x release needs its own entry here until the default
+    # from-side runtime moves to 4.7 (see the next release that does).
+    "3.0.1": "v4.7.0",
 }
 UPGRADE_FROM_CONSTRAINTS = "/source/development/constraints-upgrade-from.txt"
 ISOLATED_REDIS_DATABASE = 14
