@@ -678,7 +678,7 @@ class EvidenceCommandTest(unittest.TestCase):
         "FORWARD_NETBOX_DOCKER_PROJECT": "forward-netbox-release-gate",
         "FORWARD_NETBOX_POSTGRES_DATA_PATH": "netbox-postgres-data",
         "FORWARD_NETBOX_WORKER_AUTORELOAD": "0",
-        "NETBOX_VER": "v4.7.1",
+        "NETBOX_VER": "v4.7.2",
         "FORWARD_NETBOX_HOST_PORT": "18080",
         "NETBOX_URL": "http://127.0.0.1:18080",
         "HOME": "/nowhere",
@@ -690,7 +690,7 @@ class EvidenceCommandTest(unittest.TestCase):
             command,
             "rtk env FORWARD_NETBOX_DOCKER_PROJECT=forward-netbox-release-gate "
             "FORWARD_NETBOX_POSTGRES_DATA_PATH=netbox-postgres-data "
-            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.7.1 invoke ci",
+            "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.7.2 invoke ci",
         )
 
     def test_the_artifact_command_carries_the_pair_and_nothing_foreign(self):
@@ -715,8 +715,8 @@ class RenderReleaseAuthorizationTest(unittest.TestCase):
         environment = EvidenceCommandTest.ENVIRONMENT
         record = {
             "version": "2.9.2",
-            "netbox_version": "4.7.1",
-            "branching_version": "1.2.0",
+            "netbox_version": "4.7.2",
+            "branching_version": "1.2.1",
             "python_version": "3.14",
             "wheel": "forward_netbox-2.9.2-py3-none-any.whl",
             "gate": {
