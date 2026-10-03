@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.9.13
+
+Release candidate; Site-relabel repair PeeringSession fix, endpoint IPv4 real netmask
+
 ## v2.9.12
 
 Stuck-sync close-out, duplicate-repair fix, primary-IP coverage (endpoints, duplicates, Forward management-IP fallback), BGP peer policy links, static routes, config-backup parsed-tree fallback
