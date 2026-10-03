@@ -40,8 +40,8 @@ GITHUB_API_URL = "https://api.github.com"
 #         from two commits, so their provenance could not be verified.
 UNPUBLISHED_RELEASE_TAGS = ("v2.7.3", "v2.7.7", "v2.7.8", "v2.7.10")
 
-PRIOR_RELEASE_TAG = "v2.9.12"
-PRIOR_POST_RELEASE_DOC_COMMIT = "119c19a97c40e82c2562c6cf837d70beb3ab5357"
+PRIOR_RELEASE_TAG = "v2.9.13"
+PRIOR_POST_RELEASE_DOC_COMMIT = "2f9e3ed002b5f9511d8dd2374e4432fba5b27902"
 
 # Content a specific bridge commit is excused for carrying, keyed by commit hash.
 #

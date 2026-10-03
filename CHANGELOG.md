@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v2.9.13
 
-Release candidate; Site-relabel repair PeeringSession fix, endpoint IPv4 real netmask
+Site-relabel repair PeeringSession fix, endpoint IPv4 real netmask
 
 ## v2.9.12
 
