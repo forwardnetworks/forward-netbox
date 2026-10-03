@@ -2573,6 +2573,10 @@ SITE_RELABEL_RELEASABLE_ROUTING_MODELS = frozenset(
         "netbox_routing.bgprouter",
         "netbox_routing.ospfinterface",
         "netbox_routing.ospfinstance",
+        # Built from a BGPPeer this sync owns, one-to-one, PROTECTing it - so
+        # deleting an allowlisted BGPPeer that still has a session fails
+        # unless this is released first too. See `_delete_releasable_object`.
+        "netbox_peering_manager.peeringsession",
     }
 )
 SITE_RELABEL_ROUTING_RELEASE_ROUNDS = 6
@@ -2599,12 +2603,57 @@ def _objects_protecting_device(device):
     return []
 
 
+def _delete_releasable_object(obj, released, *, depth=0):
+    """Delete ``obj``, recursively releasing allowlisted rows that protect it.
+
+    Rows on the allowlist can themselves protect each other -
+    `netbox_peering_manager.PeeringSession` PROTECTs the `BGPPeer` it is built
+    from, one-to-one, and that protection is invisible to
+    `_objects_protecting_device`'s device-level check: Django's Collector
+    finds PeeringSession only when something tries to delete the BGPPeer it
+    points at, not when it inspects the device. Deleting an allowlisted
+    BGPPeer with a live session therefore raised a bare `ProtectedError` that
+    the per-pair loop in `merge_site_relabel_duplicates` caught as a crash -
+    reported to an operator as the literal text "ProtectedError", naming
+    neither the model nor that routing rows were even involved.
+
+    Returns ``None`` on success, or a ``{label: count}`` refusal when
+    something outside the allowlist protects ``obj``, or recursion runs past
+    `SITE_RELABEL_ROUTING_RELEASE_ROUNDS` levels deep.
+    """
+    if depth >= SITE_RELABEL_ROUTING_RELEASE_ROUNDS:
+        return {obj._meta.label_lower: 1}
+    try:
+        obj.delete()
+    except ProtectedError as exc:
+        refused = {}
+        for blocker in exc.protected_objects:
+            blabel = blocker._meta.label_lower
+            if blabel in SITE_RELABEL_RELEASABLE_ROUTING_MODELS:
+                sub_refused = _delete_releasable_object(
+                    blocker, released, depth=depth + 1
+                )
+                if sub_refused:
+                    return sub_refused
+            else:
+                refused[blabel] = refused.get(blabel, 0) + 1
+        if refused:
+            return refused
+        # Every blocker was on the allowlist and is now gone; retry.
+        return _delete_releasable_object(obj, released, depth=depth + 1)
+    label = obj._meta.label_lower
+    released[label] = released.get(label, 0) + 1
+    return None
+
+
 def _release_routing_rows_protecting(device):
     """Delete the allowlisted routing rows that block ``device``'s delete.
 
     Returns ``(released_by_model, refused_by_model)``. Refused is non-empty when
-    something outside the allowlist also protects the device; in that case
-    nothing is deleted, so a partial release never leaves a half-cleared device.
+    something outside the allowlist also protects the device (or one of its
+    own allowlisted rows); the caller runs this inside the pair's own
+    transaction, so a refusal here rolls back whatever this function already
+    deleted along with everything else in the pair.
     """
     released = {}
     for _round in range(SITE_RELABEL_ROUTING_RELEASE_ROUNDS):
@@ -2626,9 +2675,9 @@ def _release_routing_rows_protecting(device):
             # delete that follows releases those itself.
             return released, {}
         for obj in releasable:
-            label = obj._meta.label_lower
-            obj.delete()
-            released[label] = released.get(label, 0) + 1
+            refusal = _delete_releasable_object(obj, released)
+            if refusal:
+                return released, refusal
     return released, {"unresolved_after_rounds": 1}
 
 

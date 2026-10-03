@@ -14,6 +14,7 @@ the happy path: a pair this cannot prove is left completely alone.
 
 import uuid
 from datetime import timedelta
+from unittest.mock import Mock
 from unittest.mock import patch
 
 from core.choices import JobStatusChoices
@@ -545,6 +546,95 @@ class SiteRelabelPairsTest(TestCase):
         older.refresh_from_db()
         self.assertEqual(older.site_id, self.old_site.pk)
 
+    def test_an_object_protected_by_a_non_allowlisted_model_refuses_cleanly(self):
+        from django.db.models.deletion import ProtectedError
+        from types import SimpleNamespace
+
+        from forward_netbox.utilities.scope_reconciliation import (
+            _delete_releasable_object,
+        )
+
+        manual = SimpleNamespace(_meta=SimpleNamespace(label_lower="ipam.service"))
+        victim = Mock()
+        victim._meta = SimpleNamespace(label_lower="netbox_routing.bgppeer")
+        victim.delete.side_effect = ProtectedError("blocked", [manual])
+
+        refusal = _delete_releasable_object(victim, {})
+
+        self.assertEqual(refusal, {"ipam.service": 1})
+
+    def test_an_allowlisted_blocker_is_released_before_the_retry(self):
+        from django.db.models.deletion import ProtectedError
+        from types import SimpleNamespace
+
+        from forward_netbox.utilities.scope_reconciliation import (
+            _delete_releasable_object,
+        )
+
+        session = Mock()
+        session._meta = SimpleNamespace(
+            label_lower="netbox_peering_manager.peeringsession"
+        )
+        peer = Mock()
+        peer._meta = SimpleNamespace(label_lower="netbox_routing.bgppeer")
+        peer.delete.side_effect = [ProtectedError("blocked", [session]), None]
+
+        refusal = _delete_releasable_object(peer, {})
+
+        self.assertIsNone(refusal)
+        session.delete.assert_called_once()
+        self.assertEqual(peer.delete.call_count, 2)
+
+    def test_recursion_past_the_round_limit_refuses_instead_of_looping_forever(self):
+        from django.db.models.deletion import ProtectedError
+        from types import SimpleNamespace
+
+        from forward_netbox.utilities.scope_reconciliation import (
+            _delete_releasable_object,
+        )
+
+        a = Mock()
+        a._meta = SimpleNamespace(label_lower="netbox_routing.bgppeer")
+        b = Mock()
+        b._meta = SimpleNamespace(label_lower="netbox_peering_manager.peeringsession")
+        # Each blocks the other forever - a pathological case the real schema
+        # cannot produce, but the recursion must still terminate.
+        a.delete.side_effect = ProtectedError("blocked", [b])
+        b.delete.side_effect = ProtectedError("blocked", [a])
+
+        refusal = _delete_releasable_object(a, {})
+
+        self.assertIsNotNone(refusal)
+
+    def _peering_session_on(self, bgp_peer):
+        from forward_netbox.utilities.sync_primitives import optional_model
+
+        PeeringSession = optional_model(
+            "netbox_peering_manager",
+            "PeeringSession",
+            "netbox_peering_manager.peeringsession",
+        )
+        if PeeringSession is None:
+            self.skipTest("netbox-peering-manager optional plugin is not installed")
+        return PeeringSession.objects.create(bgp_peer=bgp_peer)
+
+    def test_a_peering_session_on_the_newer_devices_peer_is_released_too(self):
+        # PeeringSession PROTECTs the BGPPeer it is built from, one-to-one.
+        # Deleting an allowlisted BGPPeer that still has a session used to
+        # raise a bare ProtectedError the merge loop caught as a crash.
+        older, newer, sites = self._pair(identity="older")
+        bgp_peer = self._bgp_peer_addressed_on(newer)
+        self._peering_session_on(bgp_peer)
+        self._report(sites)
+
+        result = merge_site_relabel_duplicates(self.sync)
+
+        self.assertEqual(result["failed_count"], 0, result["failed_pairs"])
+        self.assertFalse(Device.objects.filter(pk=newer.pk).exists())
+        released = result["merged_pairs"][0]["routing_rows_released"]
+        self.assertIn("netbox_routing.bgppeer", released)
+        self.assertIn("netbox_peering_manager.peeringsession", released)
+
     def test_only_sync_built_routing_models_are_releasable(self):
         from forward_netbox.utilities.scope_reconciliation import (
             SITE_RELABEL_RELEASABLE_ROUTING_MODELS,
@@ -559,6 +649,7 @@ class SiteRelabelPairsTest(TestCase):
                 "netbox_routing.bgprouter",
                 "netbox_routing.ospfinterface",
                 "netbox_routing.ospfinstance",
+                "netbox_peering_manager.peeringsession",
             },
         )
 
