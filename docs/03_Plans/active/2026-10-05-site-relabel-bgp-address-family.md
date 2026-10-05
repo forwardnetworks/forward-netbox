@@ -46,3 +46,28 @@ rebuilt by the next sync against the surviving device.
 
 - **Allowlisted one model, not a broad rule.** Releasing "everything that
   protects the device" is the unbounded delete this list exists to prevent.
+
+## Also in this change: primary-IP fallback and its reasons
+
+A customer on 2.9.13 still had about 1,500 devices without a primary IP. Their
+own bundle said `590 tag(s) unresolved`, and the code comment explained why
+those devices stayed bare: a device with any `Mgmt_` tag was excluded from the
+management-address fallback "resolved or not". A tag that resolved nothing
+leaves the device with no primary IP at all, so the fallback is strictly better
+than nothing there. The fallback now skips only devices whose tag RESOLVED.
+On that estate's current data the fallback resolves 233 of the 235 devices with
+an unresolved tag.
+
+The rest of the gap is not a failure to resolve: 579 firewalls are virtual
+systems that report their parent's management address (22 devices on one
+address). NetBox allows one primary-IP owner per address and the IPv4 query
+keeps one device per address, so only one of them can hold it. The sync's log
+now says so, with counts, instead of reading as an unexplained shortfall:
+shared with another device, on no synced interface, several management
+addresses, on several interfaces.
+
+Touched: `forward_netbox/utilities/primary_ip.py`,
+`forward_netbox/tests/test_primary_ip.py`,
+`forward_netbox/tests/test_primary_ip_integration.py`.
+Rollback is the same revert; a device that gains a primary IP keeps it until a
+later sync changes it.

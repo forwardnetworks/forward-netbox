@@ -152,6 +152,31 @@ class ResolveManagementIpAssignmentsTest(SimpleTestCase):
 
         self.assertEqual(result, {})
 
+    def test_unresolved_devices_report_why(self):
+        reasons = {}
+        self._resolve(
+            {
+                "many": ["10.0.0.1", "10.0.0.2"],
+                "none": ["10.0.0.3"],
+                "two": ["10.0.0.4"],
+            },
+            {
+                "many": {"Lo0": ["10.0.0.1/32"]},
+                "none": {"Lo0": ["10.9.9.9/32"]},
+                "two": {"Lo0": ["10.0.0.4/32"], "Vlan1": ["10.0.0.4/24"]},
+            },
+            reasons=reasons,
+        )
+
+        self.assertEqual(
+            reasons,
+            {
+                "many": "multiple-addresses",
+                "none": "no-interface",
+                "two": "several-interfaces",
+            },
+        )
+
     def test_a_device_with_a_mgmt_tag_is_never_given_the_fallback(self):
         result = self._resolve(
             {"r1": ["10.0.0.1"]},
