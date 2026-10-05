@@ -104,9 +104,9 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
             "optional_plugins": {
                 "netbox-cisco-aci": "0.4.0",
                 "netbox-dlm": dlm_version,
-                "netbox-peering-manager": "0.3.0",
-                "netbox-routing": "0.4.3",
-                "netbox-validity": "3.5.2",
+                "netbox-peering-manager": "0.3.1",
+                "netbox-routing": "0.5.0",
+                "netbox-validity": "3.6.0",
             },
             "plugin_apps": sorted(
                 {
@@ -135,9 +135,9 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
             "optional_plugins": {
                 "netbox-cisco-aci": "0.4.0",
                 "netbox-dlm": "0.5.0",
-                "netbox-peering-manager": "0.3.0",
-                "netbox-routing": "0.4.3",
-                "netbox-validity": "3.5.2",
+                "netbox-peering-manager": "0.3.1",
+                "netbox-routing": "0.5.0",
+                "netbox-validity": "3.6.0",
             },
             "plugin_apps": sorted(
                 {

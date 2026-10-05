@@ -657,7 +657,7 @@ before adding it to `PLUGINS`** - NetBox refuses to start with a plugin listed
 that is not installed:
 
 ```bash
-pip install netbox-validity==3.5.2   # then add "validity" to PLUGINS
+pip install netbox-validity==3.6.0   # then add "validity" to PLUGINS
 python manage.py migrate
 ```
 
