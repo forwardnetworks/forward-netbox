@@ -59,9 +59,9 @@ VALIDATED_OPTIONAL_DISTRIBUTIONS = {
     "netbox-dlm": frozenset(
         {"0.4.1", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.9.1", "0.10.0"}
     ),
-    "netbox-peering-manager": frozenset({"0.3.0"}),
-    "netbox-routing": frozenset({"0.4.3"}),
-    "netbox-validity": frozenset({"3.5.2"}),
+    "netbox-peering-manager": frozenset({"0.3.1"}),
+    "netbox-routing": frozenset({"0.5.0"}),
+    "netbox-validity": frozenset({"3.6.0"}),
 }
 
 # The distributions whose versions a runtime probe reports. Derived rather than

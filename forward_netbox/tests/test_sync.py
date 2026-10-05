@@ -9328,7 +9328,7 @@ class QueryParameterContractTest(TestCase):
         return_value={
             "available": False,
             "availability_status": "unsupported_version",
-            "availability_reason": "Canonical package version must be exactly 0.4.3.",
+            "availability_reason": "Canonical package version must be exactly 0.5.0.",
         },
     )
     def test_query_fetch_skips_optional_model_when_exact_contract_is_unavailable(

@@ -13,9 +13,9 @@ REQUIRED_COMPONENTS = {
     "netbox": "4.6.10",
     "netbox-cisco-aci": "0.4.0",
     "netbox-dlm": "0.10.0",
-    "netbox-peering-manager": "0.3.0",
-    "netbox-routing": "0.4.3",
-    "netbox-validity": "3.5.2",
+    "netbox-peering-manager": "0.3.1",
+    "netbox-routing": "0.5.0",
+    "netbox-validity": "3.6.0",
     "netboxlabs-netbox-branching": "1.1.3",
     "pyzipper": "0.4.0",
 }
