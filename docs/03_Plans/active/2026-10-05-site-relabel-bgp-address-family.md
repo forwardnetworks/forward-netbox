@@ -71,3 +71,16 @@ Touched: `forward_netbox/utilities/primary_ip.py`,
 `forward_netbox/tests/test_primary_ip_integration.py`.
 Rollback is the same revert; a device that gains a primary IP keeps it until a
 later sync changes it.
+
+## Also in this change: say which duplicate names are held
+
+The Site-Relabel Duplicates card reported "5 held - the sync's device map gave
+no NetBox site for this name" with no names, so the operator could not check
+which devices to look at. The page now lists the held device names under each
+reason (first ten, then a count). Names are attached in the page view only;
+the support bundle and Health share the counts-only helper and stay free of
+customer names, pinned by a test.
+
+Touched: `forward_netbox/views.py`,
+`forward_netbox/templates/forward_netbox/forwardsync_scope_reconciliation.html`,
+`forward_netbox/tests/test_site_relabel_prompts.py`.

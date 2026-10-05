@@ -489,7 +489,11 @@
           </p>
           <ul class="mb-0">
             {% for entry in site_relabel_pairs.held_by_reason %}
-              <li><strong>{{ entry.count }}</strong> - {{ entry.remedy|default:entry.reason }}</li>
+              <li><strong>{{ entry.count }}</strong> - {{ entry.remedy|default:entry.reason }}
+                {% if entry.names %}
+                  <div class="text-muted small">{{ entry.names|join:", " }}{% if entry.more_names %}, +{{ entry.more_names }} {% trans "more" %}{% endif %}</div>
+                {% endif %}
+              </li>
             {% endfor %}
           </ul>
         {% endif %}
