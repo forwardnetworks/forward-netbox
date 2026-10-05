@@ -133,6 +133,23 @@ class HealthCheckTest(SiteRelabelPromptFixture):
         scan.assert_not_called()
 
 
+class HeldNamesStayOutOfTheBundleTest(SiteRelabelPromptFixture):
+    def test_the_shared_helper_carries_counts_only(self):
+        from forward_netbox.utilities.scope_reconciliation import (
+            site_relabel_held_by_reason,
+            site_relabel_pairs,
+        )
+
+        older, _newer = self._pair()
+
+        entries = site_relabel_held_by_reason(site_relabel_pairs(self.sync))
+
+        self.assertTrue(entries)
+        for entry in entries:
+            self.assertNotIn("names", entry)
+        self.assertNotIn(older.name, str(entries))
+
+
 class PagesTest(SiteRelabelPromptFixture):
     def test_the_sync_page_shows_the_backlog_with_a_link(self):
         older, newer = self._pair()
@@ -162,6 +179,9 @@ class PagesTest(SiteRelabelPromptFixture):
         self.assertContains(response, 'id="site-relabel-duplicates"')
         self.assertContains(response, "cannot be proven safe to merge yet")
         self.assertContains(response, "refresh Scope Reconciliation")
+        # The operator cannot act on "N held" without knowing which devices.
+        older = Device.objects.order_by("created", "pk").first()
+        self.assertContains(response, older.name)
         # Nothing is mergeable, so no merge button.
         self.assertNotContains(
             response,

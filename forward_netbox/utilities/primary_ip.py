@@ -90,7 +90,7 @@ def resolve_primary_ip_assignments(device_mgmt_tags, device_interface_ips):
 
 
 def resolve_management_ip_assignments(
-    device_management_ips, device_interface_ips, *, skip=()
+    device_management_ips, device_interface_ips, *, skip=(), reasons=None
 ):
     """Resolve primary v4/v6 from Forward's recorded management address.
 
@@ -99,8 +99,14 @@ def resolve_management_ip_assignments(
     and that exact address must already sit on exactly one of the device's
     interfaces in NetBox. Several recorded addresses, an address that is on no
     interface, or one on several interfaces is ambiguous and is skipped rather
-    than guessed. ``skip`` names devices that carry a ``Mgmt_`` tag: an explicit
-    tag always wins, even when it did not resolve.
+    than guessed. ``skip`` names devices whose ``Mgmt_`` tag already resolved:
+    an explicit tag that resolved always wins. A tag that did NOT resolve leaves
+    the device with no primary IP at all, so it is not skipped - the management
+    address is strictly better than nothing there.
+
+    ``reasons``, when given, receives ``{device: slug}`` for every device this
+    could not resolve: ``multiple-addresses``, ``no-interface`` or
+    ``several-interfaces``.
 
     Returns the same shape as `resolve_primary_ip_assignments`.
     """
@@ -115,6 +121,8 @@ def resolve_management_ip_assignments(
             if host is not None
         }
         if len(hosts) != 1:
+            if reasons is not None and hosts:
+                reasons[device_name] = "multiple-addresses"
             continue
         host = next(iter(hosts))
         matches = [
@@ -126,6 +134,10 @@ def resolve_management_ip_assignments(
             if _host_ip(address) == host
         ]
         if len(matches) != 1:
+            if reasons is not None:
+                reasons[device_name] = (
+                    "no-interface" if not matches else "several-interfaces"
+                )
             continue
         interface_name, address = matches[0]
         assignments[device_name] = {
@@ -225,6 +237,34 @@ def _existing_primary_ip_owners():
     return owners
 
 
+def _devices_sharing_management_address(unresolved, device_management_ips):
+    """Devices whose one management address is already held by another device.
+
+    A virtual system or an HA peer reports its parent's management address, so
+    several devices name the same one. NetBox allows one primary-IP owner per
+    address, so only one of them can ever have it - that is not a failure to
+    resolve, and it should not read like one.
+    """
+    from ipam.models import IPAddress
+
+    shared = set()
+    for name in unresolved:
+        hosts = {
+            host
+            for host in (_host_ip(raw) for raw in device_management_ips.get(name) or ())
+            if host is not None
+        }
+        if len(hosts) != 1:
+            continue
+        host = str(next(iter(hosts)))
+        for ip in IPAddress.objects.filter(address__net_host=host)[:5]:
+            owner = getattr(ip.assigned_object, "device", None)
+            if owner is not None and owner.name != name:
+                shared.add(name)
+                break
+    return shared
+
+
 def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
     """Set device primary_ip4/6 from Forward ``Mgmt_<iface>`` tags, in the branch.
 
@@ -295,12 +335,16 @@ def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
             tag_assignments = resolve_primary_ip_assignments(
                 device_mgmt_tags, device_interface_ips
             )
-            # A device with any Mgmt_ tag is the tag's to decide, resolved or
-            # not; the management-address fallback only covers untagged ones.
+            # A tag that resolved is the tag's to decide. A tag that did not
+            # resolve leaves the device with no primary IP, so the
+            # management-address fallback covers it too: 590 tagged devices on
+            # one estate were left bare because an unresolved tag blocked it.
+            fallback_reasons = {}
             fallback_assignments = resolve_management_ip_assignments(
                 device_management_ips,
                 device_interface_ips,
-                skip=set(device_mgmt_tags),
+                skip=set(tag_assignments),
+                reasons=fallback_reasons,
             )
             assignments = {**fallback_assignments, **tag_assignments}
             updated = []
@@ -366,6 +410,31 @@ def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
                 f" ({from_fallback} from Forward's management address)"
                 f"; {unresolved} tag(s) unresolved."
             )
+            self_unresolved = {
+                name: reason
+                for name, reason in fallback_reasons.items()
+                if name not in assignments
+            }
+            if self_unresolved:
+                shared = _devices_sharing_management_address(
+                    self_unresolved, device_management_ips
+                )
+                counts = {}
+                for name, reason in self_unresolved.items():
+                    key = "shared" if name in shared else reason
+                    counts[key] = counts.get(key, 0) + 1
+                logger.log_info(
+                    "primary_ip-from-tag: "
+                    f"{len(self_unresolved)} device(s) left without a primary IP "
+                    "from the management address: "
+                    f"{counts.get('shared', 0)} share it with another device "
+                    "(NetBox allows one primary-IP owner per address), "
+                    f"{counts.get('no-interface', 0)} have it on no synced "
+                    f"interface, {counts.get('multiple-addresses', 0)} have "
+                    "several management addresses, "
+                    f"{counts.get('several-interfaces', 0)} have it on several "
+                    "interfaces."
+                )
             return len(updated)
         finally:
             active_branch.set(None)

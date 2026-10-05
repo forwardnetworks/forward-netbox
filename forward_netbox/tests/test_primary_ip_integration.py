@@ -214,6 +214,49 @@ class PrimaryIpFromMgmtTagIntegrationTest(TransactionTestCase):
 
         executor.get_device_management_ips.assert_not_called()
 
+    def test_a_tag_that_resolves_nothing_still_gets_the_management_address(self):
+        # `Mgmt_Nope` names no interface, so the tag leaves the device bare. It
+        # used to block the fallback too, which left 590 tagged devices on one
+        # estate without a primary IP even though their management address sat
+        # on an interface.
+        self._enable(tag=True, fallback=True)
+        branch = provision_branch(user=self.user, name="Unresolved Tag Branch")
+        executor = self._fallback_executor(
+            mgmt_tags={"r1": ["Mgmt_Nope9"]},
+            management_ips={"r1": ["10.0.211.2"]},
+        )
+
+        updated = apply_primary_ip_from_mgmt_tags(
+            executor, branch, snapshot_id="snap-1"
+        )
+
+        self.assertEqual(updated, 1)
+        with activate_branch(branch):
+            self.assertEqual(
+                Device.objects.get(pk=self.device.pk).primary_ip4_id, self.ip.pk
+            )
+
+    def test_a_shared_management_address_is_recognised_as_shared(self):
+        from forward_netbox.utilities.primary_ip import (
+            _devices_sharing_management_address,
+        )
+
+        parent = Device.objects.create(
+            name="fw-parent",
+            site=self.device.site,
+            role=self.device.role,
+            device_type=self.device.device_type,
+        )
+        mgmt = Interface.objects.create(device=parent, name="mgmt", type="virtual")
+        IPAddress.objects.create(address="10.55.0.1/24", assigned_object=mgmt)
+
+        shared = _devices_sharing_management_address(
+            {"fw-vsys2": "no-interface", "r1": "no-interface"},
+            {"fw-vsys2": ["10.55.0.1"], "r1": ["10.66.0.1"]},
+        )
+
+        self.assertEqual(shared, {"fw-vsys2"})
+
     def test_a_tagged_device_ignores_the_management_address(self):
         other = Interface.objects.create(
             device=self.device, name="Loopback9", type="virtual"
