@@ -32,3 +32,6 @@ netbox-peering-manager==0.3.0
 netbox-routing==0.4.3
 netbox-validity==3.5.2
 pyzipper==0.4.0
+# scrapli 2026.10.3 dropped AsyncDriver; scrapli_netconf (via netbox-validity) requires
+# scrapli>=2022.07.30 with no ceiling, so an unpinned image build fails to boot NetBox.
+scrapli==2026.2.20

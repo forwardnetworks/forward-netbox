@@ -165,6 +165,10 @@ _FAILURE_REASON_RULES = (
     ("missing-snapshot-id", "requires a snapshot id"),
     ("device-tag-scope-query-failed", "device tag filter query failed"),
     ("shard-fetch-failed", "shard-scoped nqe fetch failed"),
+    # A fetched row whose identity fields are not all present. The sentence is
+    # composed by the plugin, so naming it discloses nothing; before this slug a
+    # wholesale skip of a model read as `unrecognized-fetch-failure`.
+    ("row-identity-incomplete", "does not satisfy any configured coalesce field set"),
 )
 
 # `403` and `503` are HTTP status codes, not customer data, and they are the
