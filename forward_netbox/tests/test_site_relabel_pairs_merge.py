@@ -635,6 +635,39 @@ class SiteRelabelPairsTest(TestCase):
         self.assertIn("netbox_routing.bgppeer", released)
         self.assertIn("netbox_peering_manager.peeringsession", released)
 
+    def test_a_bgp_address_family_on_the_newer_devices_scope_is_released_too(self):
+        # BGPAddressFamily PROTECTs its BGPScope. Without it on the allowlist the
+        # scope could not be released and the device delete was refused with
+        # `blocked by netbox_routing.bgpaddressfamily`.
+        from forward_netbox.utilities.sync_primitives import optional_model
+
+        older, newer, sites = self._pair(identity="older")
+        bgp_peer = self._bgp_peer_addressed_on(newer)
+        label = "netbox_routing.bgpaddressfamily"
+        BGPAddressFamily = optional_model("netbox_routing", "BGPAddressFamily", label)
+        choice = BGPAddressFamily._meta.get_field("address_family").choices[0][0]
+        BGPAddressFamily.objects.create(scope=bgp_peer.scope, address_family=choice)
+        self._report(sites)
+
+        result = merge_site_relabel_duplicates(self.sync)
+
+        self.assertEqual(result["failed_count"], 0, result["failed_pairs"])
+        self.assertFalse(Device.objects.filter(pk=newer.pk).exists())
+        released = result["merged_pairs"][0]["routing_rows_released"]
+        self.assertIn("netbox_routing.bgpaddressfamily", released)
+
+    def test_operator_made_bgp_templates_still_refuse_the_delete(self):
+        from forward_netbox.utilities.scope_reconciliation import (
+            SITE_RELABEL_RELEASABLE_ROUTING_MODELS,
+        )
+
+        for label in (
+            "netbox_routing.bgpsessiontemplate",
+            "netbox_routing.bgppolicytemplate",
+            "netbox_routing.bgppeertemplate",
+        ):
+            self.assertNotIn(label, SITE_RELABEL_RELEASABLE_ROUTING_MODELS)
+
     def test_only_sync_built_routing_models_are_releasable(self):
         from forward_netbox.utilities.scope_reconciliation import (
             SITE_RELABEL_RELEASABLE_ROUTING_MODELS,
@@ -646,6 +679,7 @@ class SiteRelabelPairsTest(TestCase):
                 "netbox_routing.bgppeeraddressfamily",
                 "netbox_routing.bgppeer",
                 "netbox_routing.bgpscope",
+                "netbox_routing.bgpaddressfamily",
                 "netbox_routing.bgprouter",
                 "netbox_routing.ospfinterface",
                 "netbox_routing.ospfinstance",
