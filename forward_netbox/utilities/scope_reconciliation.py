@@ -2570,6 +2570,9 @@ SITE_RELABEL_RELEASABLE_ROUTING_MODELS = frozenset(
         "netbox_routing.bgppeeraddressfamily",
         "netbox_routing.bgppeer",
         "netbox_routing.bgpscope",
+        # Built per scope by the sync; PROTECTs its BGPScope, so a scope that
+        # still has one could not be released and refused the device delete.
+        "netbox_routing.bgpaddressfamily",
         "netbox_routing.bgprouter",
         "netbox_routing.ospfinterface",
         "netbox_routing.ospfinstance",
