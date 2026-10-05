@@ -54,6 +54,22 @@ UPGRADE_FROM_NETBOX_OVERRIDES = {
     # from-side runtime moves to 4.7 (see the next release that does).
     "3.0.1": "v4.7.0",
 }
+# Every 3.x release declares `min_version = "4.7.0"` and refuses to load on the
+# 4.6.5 default, so the from side of any 3.x upgrade gate seeds on 4.7.0 without
+# needing its own entry above. Per-release entries were a trap: each new 3.x
+# release failed its first upgrade gate until someone remembered to add one.
+UPGRADE_FROM_NETBOX_VER_4_7 = "v4.7.0"
+
+
+def upgrade_from_default_netbox_version(from_version):
+    """The NetBox runtime an upgrade gate's from side seeds on by default."""
+    try:
+        major = int(str(from_version).split(".", 1)[0])
+    except ValueError:
+        return UPGRADE_FROM_NETBOX_VER
+    return UPGRADE_FROM_NETBOX_VER_4_7 if major >= 3 else UPGRADE_FROM_NETBOX_VER
+
+
 UPGRADE_FROM_CONSTRAINTS = "/source/development/constraints-upgrade-from.txt"
 ISOLATED_REDIS_DATABASE = 14
 ISOLATED_REDIS_CACHE_DATABASE = 15
@@ -1386,7 +1402,7 @@ def artifact_upgrade_test(context, from_version=None, from_netbox_ver=None):
     from_netbox_version = str(
         from_netbox_ver
         or UPGRADE_FROM_NETBOX_OVERRIDES.get(from_version)
-        or UPGRADE_FROM_NETBOX_VER
+        or upgrade_from_default_netbox_version(from_version)
     ).strip()
     previous_image = f"forward-netbox-upgrade-from:{from_version}"
     upgraded_image = f"forward-netbox-upgrade-to:{version}"

@@ -1457,6 +1457,22 @@ class UpgradeFromConstraintsTests(unittest.TestCase):
         """
         self.assertEqual(tasks.UPGRADE_FROM_NETBOX_OVERRIDES.get("3.0.1"), "v4.7.0")
 
+    def test_every_3x_release_seeds_on_4_7_without_its_own_entry(self):
+        """The per-release entries were a trap: 3.0.1 and then 3.0.2 each needed
+        one added by hand or the upgrade gate loaded the plugin on 4.6.5."""
+        for version in ("3.0.2", "3.0.3", "3.1.0", "4.0.0"):
+            with self.subTest(version=version):
+                self.assertNotIn(version, tasks.UPGRADE_FROM_NETBOX_OVERRIDES)
+                self.assertEqual(
+                    tasks.upgrade_from_default_netbox_version(version), "v4.7.0"
+                )
+
+    def test_a_2x_release_still_seeds_on_the_4_6_default(self):
+        self.assertEqual(tasks.upgrade_from_default_netbox_version("2.9.13"), "v4.6.5")
+        self.assertEqual(
+            tasks.upgrade_from_default_netbox_version("not-a-version"), "v4.6.5"
+        )
+
     def test_every_other_pin_is_identical(self):
         expected = {
             name: pin
