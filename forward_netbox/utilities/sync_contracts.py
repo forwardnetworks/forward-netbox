@@ -642,12 +642,16 @@ def validate_row_shape_for_model(
         )
 
 
+# A null or empty `vrf` is a legitimate identity for these models: a prefix or a
+# configured static route outside any VRF lives in the global table. Requiring a
+# VRF name rejected every global static route, so the whole model was skipped.
+_NULLABLE_VRF_IDENTITY_MODELS = frozenset({"ipam.prefix", "netbox_routing.staticroute"})
+
+
 def row_coalesce_field_is_complete(model_string: str, row: dict, field_name: str):
     if field_name not in row:
         return False
     value = row[field_name]
-    if value == "":
-        return model_string == "ipam.prefix" and field_name == "vrf"
-    if value is None:
-        return model_string == "ipam.prefix" and field_name == "vrf"
+    if value == "" or value is None:
+        return field_name == "vrf" and model_string in _NULLABLE_VRF_IDENTITY_MODELS
     return True
