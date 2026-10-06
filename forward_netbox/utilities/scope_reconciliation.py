@@ -380,14 +380,53 @@ def _resolve_context_on_snapshot(fetcher, sync, snapshot_id):
         del sync.resolve_snapshot_id
 
 
-def _has_duplicated_device_names(netbox_device_name_by_pk) -> bool:
-    seen = set()
-    for name in netbox_device_name_by_pk.values():
-        lname = name.casefold()
-        if lname in seen:
-            return True
-        seen.add(lname)
-    return False
+def _site_mismatch_summary(netbox_device_name_by_pk, forward_sites, limit=15):
+    """Devices sitting at a different NetBox site than the device map puts them.
+
+    Primary keys and counts only. A device is compared only when the map places
+    its casefolded name at exactly one site; a name placed nowhere or at several
+    is counted separately, never guessed between. The pairs show which site the
+    devices are stuck at and where Forward would have them.
+    """
+    from collections import Counter
+
+    from dcim.models import Device
+
+    if not forward_sites:
+        return {"available": False}
+    site_by_pk = dict(Device.objects.values_list("pk", "site_id"))
+    compared = unplaced = ambiguous = 0
+    by_netbox_site = Counter()
+    by_pair = Counter()
+    for device_pk, name in netbox_device_name_by_pk.items():
+        site_pks = forward_sites.get(name.casefold()) or set()
+        if not site_pks:
+            unplaced += 1
+            continue
+        if len(site_pks) > 1:
+            ambiguous += 1
+            continue
+        compared += 1
+        (forward_site,) = site_pks
+        netbox_site = site_by_pk.get(device_pk)
+        if netbox_site != forward_site:
+            by_netbox_site[netbox_site] += 1
+            by_pair[(netbox_site, forward_site)] += 1
+    return {
+        "available": True,
+        "compared": compared,
+        "mismatched": sum(by_netbox_site.values()),
+        "name_not_placed_by_map": unplaced,
+        "name_placed_at_several_sites": ambiguous,
+        "by_netbox_site_pk": [
+            {"site_pk": site_pk, "devices": count}
+            for site_pk, count in by_netbox_site.most_common(limit)
+        ],
+        "by_netbox_and_forward_site_pk": [
+            {"netbox_site_pk": a, "forward_site_pk": b, "devices": count}
+            for (a, b), count in by_pair.most_common(limit)
+        ],
+    }
 
 
 def _duplicated_device_forward_sites(netbox_device_name_by_pk, forward_sites):
@@ -708,17 +747,13 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
     # duplicated device name belongs at, from the sync's own device map. Only
     # needed to tell the copies of a duplicated name apart, so an estate
     # without any pays nothing for it.
-    if _has_duplicated_device_names(netbox_device_name_by_pk):
-        forward_sites, forward_site_source = _forward_device_sites(
-            sync, snapshot_id=snapshot_id
-        )
-    else:
-        forward_sites = {}
-        forward_site_source = {
-            "available": False,
-            "error": "no_duplicated_device_names",
-            "rows": 0,
-        }
+    # Always asked now: besides telling duplicate copies apart, the same map
+    # answers how many devices sit at a site other than the one Forward puts
+    # them at (`site_mismatch`), which a customer needed to explain 320 devices
+    # at a fallback site.
+    forward_sites, forward_site_source = _forward_device_sites(
+        sync, snapshot_id=snapshot_id
+    )
     forward_site_id_by_device_pk, forward_site_ambiguous_ids = (
         _duplicated_device_forward_sites(netbox_device_name_by_pk, forward_sites)
     )
@@ -784,6 +819,9 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         "forward_site_id_by_device_pk": forward_site_id_by_device_pk,
         "forward_site_ambiguous_device_ids": forward_site_ambiguous_ids,
         "forward_site_source": forward_site_source,
+        "site_mismatch": _site_mismatch_summary(
+            netbox_device_name_by_pk, forward_sites
+        ),
         # "Carries neither include tag" covers two opposite situations. Orphans
         # can read zero while hundreds of devices are untagged, because a device
         # this sync never claimed is not an orphan of it.

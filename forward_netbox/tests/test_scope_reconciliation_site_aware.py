@@ -223,15 +223,67 @@ class ScopeReconciliationSiteAwareTest(TestCase):
             set(report["forward_site_id_by_device_pk"]), {str(old.pk), str(new.pk)}
         )
 
-    def test_an_estate_without_duplicates_never_fetches_the_device_map(self):
-        self._device("solo-01", self.old_site)
+    def test_an_estate_without_duplicates_still_reads_the_map_for_site_mismatch(self):
+        # The map is read on every refresh now: it answers how many devices sit
+        # at a different site than Forward puts them, whether or not any name is
+        # duplicated. Per-device sites are still recorded only for duplicates.
+        stuck = self._device("solo-01", self.old_site)
+        self._device("solo-02", self.new_site)
         report = self._report(
-            [self._scope_row("solo-01", "")], fetch_error=AssertionError("fetched")
+            [self._scope_row("solo-01", ""), self._scope_row("solo-02", "")],
+            [
+                self._map_row("solo-01", self.new_site),
+                self._map_row("solo-02", self.new_site),
+            ],
         )
 
+        self.assertEqual(report["forward_site_id_by_device_pk"], {})
+        mismatch = report["site_mismatch"]
+        self.assertTrue(mismatch["available"])
+        self.assertEqual(mismatch["compared"], 2)
+        self.assertEqual(mismatch["mismatched"], 1)
         self.assertEqual(
-            report["forward_site_source"]["error"], "no_duplicated_device_names"
+            mismatch["by_netbox_and_forward_site_pk"],
+            [
+                {
+                    "netbox_site_pk": self.old_site.pk,
+                    "forward_site_pk": self.new_site.pk,
+                    "devices": 1,
+                }
+            ],
         )
+        self.assertNotIn(str(stuck.name), str(mismatch))
+
+    def test_site_mismatch_separates_unplaced_and_ambiguous_names(self):
+        self._device("placed-01", self.old_site)
+        self._device("nowhere-01", self.old_site)
+        self._device("both-01", self.old_site)
+        report = self._report(
+            [
+                self._scope_row("placed-01", ""),
+                self._scope_row("nowhere-01", ""),
+                self._scope_row("both-01", ""),
+            ],
+            [
+                self._map_row("placed-01", self.old_site),
+                self._map_row("both-01", self.old_site),
+                self._map_row("both-01", self.new_site),
+            ],
+        )
+
+        mismatch = report["site_mismatch"]
+        self.assertEqual(mismatch["compared"], 1)
+        self.assertEqual(mismatch["mismatched"], 0)
+        self.assertEqual(mismatch["name_not_placed_by_map"], 1)
+        self.assertEqual(mismatch["name_placed_at_several_sites"], 1)
+
+    def test_site_mismatch_says_unavailable_when_the_map_cannot_be_read(self):
+        self._device("solo-01", self.old_site)
+        report = self._report(
+            [self._scope_row("solo-01", "")], fetch_error=RuntimeError("down")
+        )
+
+        self.assertEqual(report["site_mismatch"], {"available": False})
 
     def test_a_name_the_map_places_at_two_sites_is_ambiguous_not_guessed(self):
         old = self._device("core-sw-01", self.old_site)

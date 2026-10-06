@@ -84,3 +84,18 @@ closed with counts and versions only (no names):
 Touched: `forward_netbox/views.py`,
 `forward_netbox/utilities/bundle_diagnostics.py`,
 `forward_netbox/tests/test_bundle_triage_diagnostics.py`.
+
+## Also: devices sitting at a different site than Forward puts them
+
+A customer saw 320 devices at one fallback site while Forward places only a small
+share of its scoped devices there. The stored scope report could not say why: it
+recorded Forward's site only for devices whose names are duplicated, to keep the
+refresh cheap. The refresh now always reads the sync's device map (one more
+Forward call per Refresh Scope Reconciliation) and records `site_mismatch`: how
+many devices were compared, how many sit at a different NetBox site than the map
+puts them, which site pairs account for them, and how many names the map places
+nowhere or at several sites. Primary keys and counts only; the per-device site map
+is still recorded for duplicated names only. Touched:
+`forward_netbox/utilities/scope_reconciliation.py` (`_site_mismatch_summary`),
+`forward_netbox/tests/test_scope_reconciliation_site_aware.py` (the test that pinned
+"no Forward call without duplicates" now pins the opposite, on purpose).
