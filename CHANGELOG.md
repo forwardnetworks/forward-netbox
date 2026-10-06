@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v3.0.3
+
+Release candidate; Static routes in the global table import; site-relabel repair releases BGP address families; primary IP falls back to the management address when a tag cannot resolve; interfaces holding a VLAN from a previous site are cleared instead of refused on every sync; scrapli capped so NetBox starts with netbox-validity; OSPF instances named per VRF for netbox-routing 0.5.0; support bundle gains dependency versions, scope-report age, site mismatch, a primary-IP split and mask breakdown, and per-rule issue counts; tested on NetBox 4.7.2 and netbox-branching 1.2.1
+
 ## v3.0.2
 
 Port of 2.9.13's PeeringSession crash + endpoint /32 fixes, plus the 3.0.1 upgrade-runtime override fix
