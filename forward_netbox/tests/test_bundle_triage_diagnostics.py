@@ -1,13 +1,11 @@
-"""The support bundle answers the questions a customer report actually asks.
-
-A customer's report this cycle could not be matched to its bundle: a three-day-old
-scope report sat beside a same-day sync, the primary-IP count had no split to
-reconcile against the device list, 147 issues had to be tallied by hand to find
-that 130 were one rule, and a dependency release that stopped NetBox starting left
-no version in the file. These pin the figures that close each gap, and that the
-export still carries counts rather than names.
-"""
-
+# The support bundle answers the questions a customer report actually asks.
+#
+# A customer's report this cycle could not be matched to its bundle: a three-day-old
+# scope report sat beside a same-day sync, the primary-IP count had no split to
+# reconcile against the device list, 147 issues had to be tallied by hand to find
+# that 130 were one rule, and a dependency release that stopped NetBox starting left
+# no version in the file. These pin the figures that close each gap, and that the
+# export still carries counts rather than names.
 import json
 
 from dcim.models import Device
