@@ -2830,12 +2830,12 @@ type = ["pytest-mypy (>=1.0.1) ; platform_python_implementation != \"PyPy\""]
 [extras]
 aci = ["netbox-cisco-aci"]
 dlm = ["netbox-dlm"]
-integrations = ["netbox-cisco-aci", "netbox-dlm", "netbox-peering-manager", "netbox-routing", "netbox-validity"]
+integrations = ["netbox-cisco-aci", "netbox-dlm", "netbox-peering-manager", "netbox-routing", "netbox-validity", "scrapli"]
 peering = ["netbox-peering-manager"]
 routing = ["netbox-routing"]
-validity = ["netbox-validity"]
+validity = ["netbox-validity", "scrapli"]
 
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.15"
-content-hash = "7818a4583c36eab94a1bcc182d7f1e78a69bc7492825aeada648c2298be808b5"
+content-hash = "68220fa95ef651429bfbaf9d5c253acf31df261bad0945b154cbeae6980a6c18"

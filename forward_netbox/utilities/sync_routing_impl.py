@@ -730,6 +730,21 @@ def ospf_process_values(row):
     return process_id, raw_process_id
 
 
+def ospf_instance_name(device_name, process_label, vrf_name=None):
+    """A name unique per device, process and VRF.
+
+    netbox-routing 0.5.0 enforces unique (device, name) on OSPF instances. A
+    device that runs the same OSPF process in two VRFs produced two instances
+    named `<device> OSPF <process>`, which made that release's migration fail
+    on every install already holding the pair. The VRF is part of the identity
+    the instance is matched on, so it is part of the name too; the global table
+    keeps the name it always had. Truncation cuts the base, never the suffix.
+    """
+    base = f"{device_name} OSPF {process_label}"
+    suffix = f" ({vrf_name})" if vrf_name else ""
+    return base[: max(0, 100 - len(suffix))] + suffix
+
+
 def ospf_instance_comments(row, process_label):
     lines = ["Observed by Forward from structured OSPF state."]
     for label, value in (
@@ -791,7 +806,8 @@ def ensure_ospf_instance(runner, row, *, preview=False):
     values = runner._model_field_values(
         OSPFInstance,
         {
-            "name": (row.get("name") or f"{device.name} OSPF {process_label}")[:100],
+            "name": row.get("name")
+            or ospf_instance_name(device.name, process_label, row.get("vrf")),
             "router_id": router_id,
             "process_id": process_id,
             "device": device,
