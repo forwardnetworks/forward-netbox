@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v2.9.14
 
-Release candidate; Global-table static routes apply, 4.6-lane plugins updated, BGP address-family release, primary-IP fallback for unresolved tags, held duplicate names
+Global-table static routes apply, 4.6-lane plugins updated, BGP address-family release, primary-IP fallback for unresolved tags, held duplicate names
 
 ## v2.9.13
 
