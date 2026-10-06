@@ -1544,6 +1544,7 @@ def bulk_orm_apply_interface(
     from .diagnostics import is_preexisting_rule_rejection
     from .interface_naming import canonical_interface_key
     from .sync_interface import _interface_untagged_vlan
+    from .sync_interface import stale_cross_site_untagged_vlan
     from .sync_primitives import forget_lookup_object
 
     update_field_names = [
@@ -1880,6 +1881,15 @@ def bulk_orm_apply_interface(
             if row.get("lag"):
                 lag_links.append((row, device, interface, outcome))
             continue
+
+        # An untagged VLAN left behind by a device that moved sites makes NetBox
+        # refuse EVERY write to the interface, including one that only changes
+        # its MTU. This row supplied no valid VLAN for the device's site, so the
+        # old site's VLAN cannot be kept: clear it and let the row converge.
+        if "untagged_vlan" not in defaults and stale_cross_site_untagged_vlan(
+            runner, existing, device
+        ):
+            defaults["untagged_vlan"] = None
 
         # Existing interface: only write when a field actually changes,
         # otherwise every sync re-PATCHes unchanged interfaces.

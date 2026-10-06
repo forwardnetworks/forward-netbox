@@ -398,6 +398,18 @@ class FieldScopedValidationRuleTests(SimpleTestCase):
             ["untagged-vlan-outside-device-site"], diagnosis["validation_rules"]
         )
 
+    def test_an_ospf_name_collision_is_named(self):
+        # netbox-routing 0.5.0 unique (device, name): reported on a customer sync
+        # as an unrecognised rule until this slug existed.
+        diagnosis = structured_failure_diagnosis(
+            ValidationError(
+                "Name must be unique per device Only a single empty name is "
+                "permitted per device"
+            )
+        )
+        self.assertEqual(["name-not-unique-per-device"], diagnosis["validation_rules"])
+        self.assertNotIn("unrecognized_validation_rules", diagnosis)
+
     def test_untagged_vlan_without_mode_is_named(self):
         diagnosis = structured_failure_diagnosis(self.UNTAGGED_VLAN_MODE)
         self.assertEqual(

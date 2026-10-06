@@ -241,6 +241,33 @@ def _interface_untagged_vlan(runner, device, row):
     return True, vlan
 
 
+def stale_cross_site_untagged_vlan(runner, existing, device):
+    """True when `existing` holds an untagged VLAN NetBox will not accept.
+
+    NetBox refuses an untagged VLAN that belongs to a site other than the
+    interface's device (`untagged-vlan-outside-device-site`). The plugin leaves
+    that state behind when a device moves sites, and then every later sync that
+    changes ANY field of the interface is refused on a VLAN the row never
+    mentions. Forward is the source of truth for the VLAN: when a row does not
+    supply a valid one for the device's site, the old site's VLAN cannot be
+    kept, so the caller clears it.
+
+    One lookup per distinct VLAN per run, cached on the runner.
+    """
+    vlan_id = getattr(existing, "untagged_vlan_id", None)
+    if vlan_id is None or device.site_id is None:
+        return False
+    cache = runner.__dict__.setdefault("_vlan_site_cache", {})
+    if vlan_id not in cache:
+        from ipam.models import VLAN
+
+        cache[vlan_id] = (
+            VLAN.objects.filter(pk=vlan_id).values_list("site_id", flat=True).first()
+        )
+    vlan_site_id = cache[vlan_id]
+    return vlan_site_id is not None and vlan_site_id != device.site_id
+
+
 def apply_dcim_interface(runner, row):
     from dcim.models import Interface
 
@@ -281,6 +308,12 @@ def apply_dcim_interface(runner, row):
         if found_vlan:
             defaults["untagged_vlan"] = vlan
     existing_interface = runner._lookup_interface(device, row["name"])
+    if (
+        "untagged_vlan" not in defaults
+        and existing_interface is not None
+        and stale_cross_site_untagged_vlan(runner, existing_interface, device)
+    ):
+        defaults["untagged_vlan"] = None
     if row["type"] == "lag" and existing_interface is not None:
         existing_cable = getattr(existing_interface, "cable", None)
         if existing_cable is not None:

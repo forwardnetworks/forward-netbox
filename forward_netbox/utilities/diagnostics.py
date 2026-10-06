@@ -767,6 +767,10 @@ _VALIDATION_RULES = (
         "untagged-vlan-outside-device-site",
         "must belong to the same site as the interface's parent",
     ),
+    # netbox-routing 0.5.0 unique (device, name) on OSPF instances. NetBox words
+    # the constraint "Name must be unique per device"; the instance and its
+    # interfaces (which create their instance first) both surface it.
+    ("name-not-unique-per-device", "name must be unique per device"),
 )
 
 
