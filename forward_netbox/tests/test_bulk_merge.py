@@ -4516,8 +4516,19 @@ class Phase4BulkStageTest(CleanTransactionTestCase):
             request_id=merge_request_id,
         )
         # The member is audited as CREATE plus the internal deferred-LAG UPDATE;
-        # the two audit rows still count as one logical branch change.
-        self.assertEqual(audits.count(), 4)
+        # the two audit rows still count as one logical branch change. Deleting
+        # the cable also clears the parent's cached cable fields (`cable`,
+        # `_path`, `cable_end`), which netbox-branching 1.2.1 records as its own
+        # UPDATE: five rows, still all attributed to the invoking user.
+        self.assertEqual(audits.count(), 5)
+        self.assertEqual(
+            audits.filter(
+                changed_object_type=interface_type,
+                changed_object_id=main_parent.pk,
+                action="update",
+            ).count(),
+            2,
+        )
         self.assertEqual(
             set(audits.values_list("user_id", flat=True)), {invoking_user.pk}
         )
@@ -4530,7 +4541,7 @@ class Phase4BulkStageTest(CleanTransactionTestCase):
         )
         self.assertEqual(
             branch.get_merged_changes().filter(pk__in=audits).count(),
-            4,
+            5,
         )
         self.assertEqual(
             list(

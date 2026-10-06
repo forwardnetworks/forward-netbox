@@ -136,7 +136,7 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
 
         tuple_ = {
             "netbox": netbox,
-            "branching": "1.2.0",
+            "branching": "1.2.1",
             "forward_netbox": fast_baseline.forward_config.version,
             "optional_plugins": (
                 {

@@ -77,10 +77,11 @@ class OspfPreviewTest(TestCase):
 
     def _existing_instance(self, *, router_id="10.0.0.1", vrf=None):
         from forward_netbox.utilities.sync_routing_impl import ospf_instance_comments
+        from forward_netbox.utilities.sync_routing_impl import ospf_instance_name
 
         OSPFInstance, _, _ = _ospf_models()
         return OSPFInstance.objects.create(
-            name=f"{self.device.name} OSPF 1",
+            name=ospf_instance_name(self.device.name, "1", vrf.name if vrf else None),
             router_id=router_id,
             process_id=1,
             device=self.device,
@@ -238,6 +239,27 @@ class OspfPreviewTest(TestCase):
         self._existing_instance(vrf=vrf)
         result = compare_model_rows(None, INSTANCE, [self._row(vrf="TENANT-B")])
         self.assertEqual(result["unchanged"], 1)
+
+    def test_a_vrf_instance_with_the_old_unsuffixed_name_is_renamed_not_created(self):
+        # Instances written before the name carried the VRF are matched on
+        # (device, vrf, process_id), so the sync renames them in place.
+        from forward_netbox.utilities.sync_routing_impl import ospf_instance_comments
+
+        OSPFInstance, _, _ = _ospf_models()
+        vrf = VRF.objects.create(name="TENANT-C")
+        OSPFInstance.objects.create(
+            name=f"{self.device.name} OSPF 1",
+            router_id="10.0.0.1",
+            process_id=1,
+            device=self.device,
+            vrf=vrf,
+            comments=ospf_instance_comments(self._row(), "1"),
+        )
+
+        result = compare_model_rows(None, INSTANCE, [self._row(vrf="TENANT-C")])
+
+        self.assertEqual(result["creates"], 0)
+        self.assertEqual(result["unchanged"], 0)
 
     # --- rows the apply refuses -------------------------------------------
 

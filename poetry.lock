@@ -1675,15 +1675,15 @@ docs = ["mkdocs (==1.6.1)", "mkdocs-include-markdown-plugin (==7.3.0)", "mkdocs-
 
 [[package]]
 name = "netboxlabs-netbox-branching"
-version = "1.2.0"
+version = "1.2.1"
 description = "A git-like branching implementation for NetBox"
 optional = false
 python-versions = ">=3.12"
 groups = ["main"]
 markers = "python_version >= \"3.12\""
 files = [
-    {file = "netboxlabs_netbox_branching-1.2.0-py3-none-any.whl", hash = "sha256:222b88291a1e0e5e9762d8586a764bc5caf462929706179aae2db749d606ee52"},
-    {file = "netboxlabs_netbox_branching-1.2.0.tar.gz", hash = "sha256:97102bdb2d1d25f94851e0468f8643e9ef80cf9cba77e402918f1522c0211461"},
+    {file = "netboxlabs_netbox_branching-1.2.1-py3-none-any.whl", hash = "sha256:56ce02b1ab0aecb39f740f75378ecb46c58dc9463834998ca15a6b7b16d153a2"},
+    {file = "netboxlabs_netbox_branching-1.2.1.tar.gz", hash = "sha256:931b247d24fc7c32d89d428944cefa2b74781a4aed12faa66dc618af40425e32"},
 ]
 
 [package.extras]
@@ -2830,12 +2830,12 @@ type = ["pytest-mypy (>=1.0.1) ; platform_python_implementation != \"PyPy\""]
 [extras]
 aci = ["netbox-cisco-aci"]
 dlm = ["netbox-dlm"]
-integrations = ["netbox-cisco-aci", "netbox-dlm", "netbox-peering-manager", "netbox-routing", "netbox-validity"]
+integrations = ["netbox-cisco-aci", "netbox-dlm", "netbox-peering-manager", "netbox-routing", "netbox-validity", "scrapli"]
 peering = ["netbox-peering-manager"]
 routing = ["netbox-routing"]
-validity = ["netbox-validity"]
+validity = ["netbox-validity", "scrapli"]
 
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.15"
-content-hash = "7818a4583c36eab94a1bcc182d7f1e78a69bc7492825aeada648c2298be808b5"
+content-hash = "68220fa95ef651429bfbaf9d5c253acf31df261bad0945b154cbeae6980a6c18"
