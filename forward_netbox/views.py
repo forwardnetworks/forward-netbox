@@ -301,6 +301,33 @@ def _ingestion_log_export_payload(ingestion, *, active_stage):
 _SUPPORT_BUNDLE_ISSUE_LIMIT = 200
 
 
+def _ingestion_issue_summary(queryset, limit=5000):
+    """Issue counts by model, exception and matched rule, over all rows."""
+    from collections import Counter
+
+    by_model_exception = Counter()
+    by_rule = Counter()
+    rows = queryset.values_list("model", "exception", "raw_data")[:limit]
+    seen = 0
+    for model, exception, raw_data in rows:
+        seen += 1
+        by_model_exception[(model or "-", exception or "-")] += 1
+        rules = (raw_data or {}).get("validation_rules") if raw_data else None
+        for rule in rules or ():
+            by_rule[(model or "-", str(rule))] += 1
+    return {
+        "counted": seen,
+        "by_model_and_exception": [
+            {"model": model, "exception": exception, "count": count}
+            for (model, exception), count in by_model_exception.most_common(40)
+        ],
+        "by_validation_rule": [
+            {"model": model, "rule": rule, "count": count}
+            for (model, rule), count in by_rule.most_common(40)
+        ],
+    }
+
+
 def _ingestion_issue_bundle_payload(ingestion):
     """The issue rows behind a failed ingestion, for the support bundle.
 
@@ -363,6 +390,9 @@ def _ingestion_issue_bundle_payload(ingestion):
         "blocking_total": blocking_total,
         "returned": len(rows),
         "truncated": total > len(rows),
+        # Counts over EVERY issue, not just the rows returned above: a bundle
+        # of 147 issues was read by hand to find that 130 were one rule.
+        "summary": _ingestion_issue_summary(queryset),
         "issues": rows,
     }
 
@@ -399,9 +429,23 @@ def _scope_reconciliation_bundle_payload(sync):
     """
     job = _latest_scope_reconciliation_job(sync)
     payload, generated_at, report_error = _scope_reconciliation_payload(job)
+    from django.utils import timezone
+
+    # The stored report is whatever the last Refresh produced, which can be days
+    # older than the sync the rest of the bundle describes: a customer's bundle
+    # carried a three-day-old report beside a same-day sync, and its counts
+    # could not be matched to the figures they were quoting. Say so in the file.
+    age_hours = None
+    older_than_last_sync = None
+    if generated_at:
+        age_hours = round((timezone.now() - generated_at).total_seconds() / 3600, 1)
+        last_synced = getattr(sync, "last_synced", None)
+        older_than_last_sync = bool(last_synced and generated_at < last_synced)
     return {
         "job_pk": getattr(job, "pk", None),
         "generated_at": generated_at.isoformat() if generated_at else None,
+        "age_hours": age_hours,
+        "older_than_last_sync": older_than_last_sync,
         "error": report_error,
         "report": json_safe_value(_bundle_safe_report(payload)),
     }
@@ -430,12 +474,39 @@ def _primary_ip_bundle_payload(sync):
     total = devices.count()
     missing = devices.filter(primary_ip4__isnull=True, primary_ip6__isnull=True)
     by_role = Counter(missing.values_list("role__name", flat=True))
+    # Why the count is what it is. A customer quoted 1,435 devices with no
+    # primary IP and 177 of them uncovered; the bundle could say neither, so the
+    # split is counted here rather than asked for.
+    from django.db.models import Q
+
+    missing_ids = list(missing.values_list("pk", flat=True))
+    with_interface_ip = Device.objects.filter(
+        pk__in=missing_ids, interfaces__ip_addresses__isnull=False
+    ).distinct()
+    all_missing = Device.objects.filter(
+        primary_ip4__isnull=True, primary_ip6__isnull=True
+    )
     return {
         "enabled": enabled,
         "management_ip_fallback_enabled": primary_ip_from_management_ip_enabled(sync),
         "sync_devices": total,
         "without_primary_ip": missing.count(),
         "without_primary_ip_by_role": dict(by_role.most_common(15)),
+        "without_primary_ip_split": {
+            "tagged_uncovered": missing.filter(tags__slug="forward-uncovered")
+            .distinct()
+            .count(),
+            "with_a_mgmt_tag": missing.filter(
+                Q(tags__name__istartswith="mgmt_") | Q(tags__slug__istartswith="mgmt_")
+            )
+            .distinct()
+            .count(),
+            "with_an_interface_ip": with_interface_ip.count(),
+            "with_no_ip_at_all": len(missing_ids) - with_interface_ip.count(),
+        },
+        # Every NetBox device, not just this sync's: the number an operator
+        # reads off the device list, so the two can be reconciled.
+        "netbox_devices_without_primary_ip": all_missing.count(),
     }
 
 
@@ -654,6 +725,14 @@ def _environment_bundle_payload():
             app: sorted(VALIDATED_OPTIONAL_DISTRIBUTIONS.get(distribution, ()))
             for app, distribution in sorted(OPTIONAL_PLUGIN_APP_DISTRIBUTIONS.items())
         },
+        # Packages the plugins import without declaring a ceiling for. A new
+        # release of one of these stopped NetBox starting on a customer upgrade
+        # (`ImportError ... 'AsyncDriver' from 'scrapli'`) and nothing in the
+        # bundle could say which version was installed.
+        "dependency_versions": {
+            name: _installed_distribution_version(name)
+            for name in _BUNDLE_DEPENDENCY_DISTRIBUTIONS
+        },
         "plugin_apps": sorted(plugin_apps),
         # An unlisted plugin disables COPY/SQL, set-based merge and the fast
         # baseline; a missing REQUIRED one does too. A validated optional
@@ -664,6 +743,30 @@ def _environment_bundle_payload():
             VALIDATED_PLUGIN_APPS - REQUIRED_PLUGIN_APPS - plugin_apps
         ),
     }
+
+
+_BUNDLE_DEPENDENCY_DISTRIBUTIONS = (
+    "scrapli",
+    "scrapli-netconf",
+    "forward-sdk",
+    "httpx",
+    "psycopg",
+    "django",
+    "pyzipper",
+    "cryptography",
+)
+
+
+def _installed_distribution_version(name):
+    from importlib.metadata import PackageNotFoundError
+    from importlib.metadata import version
+
+    try:
+        return version(name)
+    except PackageNotFoundError:
+        return None
+    except Exception:  # noqa: BLE001 - a bundle must not fail on metadata
+        return "unreadable"
 
 
 def _stuck_verdict_bundle_payload(sync):

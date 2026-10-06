@@ -62,3 +62,25 @@ device's site.
   Forward's own answer for that interface at that site is "no VLAN".
 - **Named the OSPF unique-name rule** so a recurrence reads as a rule in a support
   bundle rather than as an unrecognised validation message.
+
+## Also in this change: the support bundle answers this cycle's questions
+
+A customer's report could not be matched to its bundle in five ways, each now
+closed with counts and versions only (no names):
+
+- `environment.dependency_versions`: `scrapli`, `scrapli-netconf`, `forward-sdk`,
+  `httpx`, `psycopg`, `django`, `pyzipper`, `cryptography`. A new `scrapli` release
+  stopped NetBox starting and the bundle could not say which version was installed.
+- `scope_reconciliation.age_hours` and `older_than_last_sync`: the stored report
+  was three days older than the sync it sat beside.
+- `primary_ip.without_primary_ip_split` (uncovered, with a `Mgmt_` tag, with an
+  interface IP, with none) and `netbox_devices_without_primary_ip`, so the figure
+  on the device list can be reconciled with the sync's own.
+- `latest_ingestion_issues.summary`: counts by model, exception and matched rule
+  over every issue, not only the capped rows returned.
+- `diagnostics.routing_name_collisions`: OSPF instances sharing a (device, name),
+  the pair netbox-routing 0.5.0 refuses.
+
+Touched: `forward_netbox/views.py`,
+`forward_netbox/utilities/bundle_diagnostics.py`,
+`forward_netbox/tests/test_bundle_triage_diagnostics.py`.

@@ -50,6 +50,7 @@ SECTIONS = (
     "inventory_items",
     "duplicate_device_names",
     "site_relabel_pairs",
+    "routing_name_collisions",
 )
 
 
@@ -491,6 +492,33 @@ def _site_relabel_pairs(sync):
     }
 
 
+def _routing_name_collisions(sync):
+    """OSPF instances sharing a (device, name): what netbox-routing 0.5.0 refuses.
+
+    That release adds a unique constraint on the pair, and a customer's upgrade
+    migration failed on duplicates this plugin had created. Counts only; the
+    optional plugin may not be installed, which is its own answer.
+    """
+    from django.apps import apps
+
+    if not apps.is_installed("netbox_routing"):
+        return {"installed": False}
+    OSPFInstance = apps.get_model("netbox_routing", "OSPFInstance")
+    duplicates = (
+        OSPFInstance.objects.values("device_id", "name")
+        .annotate(n=Count("pk"))
+        .filter(n__gt=1)
+    )
+    groups = list(duplicates)
+    return {
+        "installed": True,
+        "instances": OSPFInstance.objects.count(),
+        "duplicate_name_groups": len(groups),
+        "instances_in_duplicate_groups": sum(group["n"] for group in groups),
+        "devices_affected": len({group["device_id"] for group in groups}),
+    }
+
+
 _BUILDERS = {
     "uncovered": _uncovered,
     "uncovered_tag_timeline": _uncovered_tag_timeline,
@@ -503,6 +531,7 @@ _BUILDERS = {
     "inventory_items": _inventory_items,
     "duplicate_device_names": _duplicate_device_names,
     "site_relabel_pairs": _site_relabel_pairs,
+    "routing_name_collisions": _routing_name_collisions,
 }
 
 
