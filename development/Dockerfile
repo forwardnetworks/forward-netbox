@@ -15,6 +15,18 @@ COPY . /source
 COPY development/launch-netbox.sh /opt/netbox/launch-netbox.sh
 RUN chmod +x /opt/netbox/launch-netbox.sh
 
+# Dev/test image only. On the Python 3.14.4 in the NetBox image the cyclic
+# collector crashes (`Fatal Python error: Segmentation fault`, "Garbage-collecting"
+# at the top of the traceback) or corrupts a migration (`'int' object has no
+# attribute 'state_forwards'`) while Django renders migration state for
+# `manage.py migrate` and the test runner's database setup. It failed release and
+# pre-push gates at random, so a retry was the only remedy. Reference counting
+# still frees almost everything; only cyclic garbage waits for the process to
+# exit. This is a `.pth` file because the image's own `sitecustomize` shadows one
+# in site-packages.
+COPY development/gc_off_for_migrate.pth /tmp/gc_off_for_migrate.pth
+RUN mv /tmp/gc_off_for_migrate.pth "$(/opt/netbox/venv/bin/python -c 'import site; print(site.getsitepackages()[0])')/gc_off_for_migrate.pth"
+
 RUN uv pip install --constraint ${CONSTRAINTS} ${PACKAGE}
 # Four of the five optional plugins run on NetBox 4.7, all from released
 # versions: netbox-dlm 0.10.0, netbox-validity 3.6.0, netbox-peering-manager
