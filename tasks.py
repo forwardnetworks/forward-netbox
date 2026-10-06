@@ -340,7 +340,65 @@ def _guard_shared_runtime_tests(context):
     )
 
 
-def _run_tests_in_isolated_runtime(
+# A NetBox process the OS killed (SIGSEGV, SIGABRT). The image's Python 3.14.4
+# has crashed at random during `manage.py migrate` and test database setup, on a
+# host whose kernel logs a general-protection fault inside that interpreter. It
+# says nothing about the code under test, and every release gate is over an hour
+# long, so a stage that dies this way is rerun from a clean database.
+INTERPRETER_CRASH_EXIT_STATUSES = frozenset({139, 134})
+INTERPRETER_CRASH_MARKERS = (
+    "exited (139)",
+    "exited (134)",
+    "Segmentation fault",
+    "Fatal Python error",
+)
+INTERPRETER_CRASH_RETRIES = 2
+
+
+def _interpreter_crash(exc):
+    result = getattr(exc, "result", None)
+    if getattr(result, "exited", None) in INTERPRETER_CRASH_EXIT_STATUSES:
+        return True
+    text = (
+        f"{getattr(result, 'stdout', '') or ''}\n{getattr(result, 'stderr', '') or ''}"
+    )
+    return any(marker in text for marker in INTERPRETER_CRASH_MARKERS)
+
+
+def _retry_after_interpreter_crash(action, *, label, reset=None):
+    """Run `action`, rerunning it after `reset` when a NetBox process was killed.
+
+    Only a killed process is retried. A failing test or a failed assertion exits
+    1 and fails immediately, and a crash on the last attempt still fails. `reset`
+    must leave no half-built database behind: `--keepdb` and a populated volume
+    would otherwise carry a crashed migration into the rerun.
+    """
+    from invoke.exceptions import UnexpectedExit
+
+    for attempt in range(INTERPRETER_CRASH_RETRIES + 1):
+        try:
+            return action()
+        except UnexpectedExit as exc:
+            if not _interpreter_crash(exc) or attempt == INTERPRETER_CRASH_RETRIES:
+                raise
+            print(
+                f"{label}: a NetBox process was killed; rerunning from a clean "
+                f"database (attempt {attempt + 2} of "
+                f"{INTERPRETER_CRASH_RETRIES + 1})."
+            )
+            if reset is not None:
+                reset()
+
+
+def _run_tests_in_isolated_runtime(context, **kwargs):
+    """Run the isolated tests, rerunning from a clean database after a crash."""
+    return _retry_after_interpreter_crash(
+        lambda: _run_tests_in_isolated_runtime_once(context, **kwargs),
+        label="tests",
+    )
+
+
+def _run_tests_in_isolated_runtime_once(
     context,
     *,
     test_label,
@@ -450,11 +508,26 @@ def _run_playwright_in_isolated_runtime(context, *, project_name=None, host_port
     isolated = _compose_project_context(context, project_name)
     compose_env = {"FORWARD_NETBOX_HOST_PORT": host_port}
     docker_compose(isolated, "down --remove-orphans -v", env=compose_env)
-    try:
-        docker_compose(
+
+    def boot():
+        # Captured so a container that exits 139 during startup is recognised;
+        # `up --wait` itself only exits 1 for it.
+        result = docker_compose(
             isolated,
             "up -d --build --wait --wait-timeout 600 netbox",
             env=compose_env,
+            hide=True,
+        )
+        output = getattr(result, "stderr", "") or getattr(result, "stdout", "")
+        print(str(output or "")[-4000:])
+
+    try:
+        _retry_after_interpreter_crash(
+            boot,
+            label="ui-test",
+            reset=lambda: docker_compose(
+                isolated, "down --remove-orphans -v", env=compose_env
+            ),
         )
         _run_playwright_ui(
             context,
@@ -1325,7 +1398,18 @@ def artifact_test(context):
 
     try:
         docker_compose(artifact_context, "up -d postgres redis")
-        context.run(run_command)
+        _retry_after_interpreter_crash(
+            lambda: context.run(run_command),
+            label="artifact-test",
+            reset=lambda: (
+                docker_compose(
+                    artifact_context,
+                    "down --volumes --remove-orphans",
+                    warn=True,
+                ),
+                docker_compose(artifact_context, "up -d postgres redis"),
+            ),
+        )
         context.run(sbom_command)
         context.run(
             f"{shlex.quote(sys.executable)} "
@@ -1451,23 +1535,38 @@ def artifact_upgrade_test(context, from_version=None, from_netbox_ver=None):
             image_tag=upgraded_image,
         )
         docker_compose(upgrade_context, "up -d postgres redis")
-        print(
-            f"artifact-upgrade-test: seeding under {from_version} "
-            f"on NetBox {from_netbox_version}"
-        )
-        context.run(
-            _artifact_run_command(
-                previous_image, seed_script, RELEASE_UPGRADE_PROJECT_NAME
+
+        def seed_and_upgrade():
+            print(
+                f"artifact-upgrade-test: seeding under {from_version} "
+                f"on NetBox {from_netbox_version}"
             )
-        )
-        print(
-            f"artifact-upgrade-test: upgrading {from_version} -> {version} "
-            f"(NetBox {from_netbox_version} -> {netbox_version})"
-        )
-        context.run(
-            _artifact_run_command(
-                upgraded_image, upgrade_script, RELEASE_UPGRADE_PROJECT_NAME
+            context.run(
+                _artifact_run_command(
+                    previous_image, seed_script, RELEASE_UPGRADE_PROJECT_NAME
+                )
             )
+            print(
+                f"artifact-upgrade-test: upgrading {from_version} -> {version} "
+                f"(NetBox {from_netbox_version} -> {netbox_version})"
+            )
+            context.run(
+                _artifact_run_command(
+                    upgraded_image, upgrade_script, RELEASE_UPGRADE_PROJECT_NAME
+                )
+            )
+
+        _retry_after_interpreter_crash(
+            seed_and_upgrade,
+            label="artifact-upgrade-test",
+            reset=lambda: (
+                docker_compose(
+                    upgrade_context,
+                    "down --volumes --remove-orphans",
+                    warn=True,
+                ),
+                docker_compose(upgrade_context, "up -d postgres redis"),
+            ),
         )
         print(
             f"artifact-upgrade-test passed: {from_version} on NetBox "

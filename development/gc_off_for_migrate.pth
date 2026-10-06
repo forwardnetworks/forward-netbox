@@ -1,1 +1,0 @@
-import gc, os, sys; len(sys.argv) > 1 and os.path.basename(sys.argv[0]) == "manage.py" and sys.argv[1] in ("migrate", "test") and gc.disable()

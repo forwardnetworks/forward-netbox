@@ -52,3 +52,11 @@ Revert this branch. No migration and no persisted state.
   accumulating over one test run is bounded and the host has ample memory.
 - **Fixed in the image, not by retrying.** A retry hides the crash and costs an
   hour per attempt; every remaining release gate would have had the same odds.
+
+## Reverted
+
+This mitigation made the crashes worse and was removed in
+`2026-10-06-crash-tolerant-gates.md`. Measured over fresh-database migrations in
+the same image: with the hook, 5 of 7 crashed; with the stock collector
+(`KEEP_GC=1`, hook skipped), 0 of 4. The earlier "four clean runs" that justified
+it were too few to mean anything.

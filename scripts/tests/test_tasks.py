@@ -1375,6 +1375,101 @@ class SharedRuntimeTestGuardTaskTest(unittest.TestCase):
         )
 
 
+class InterpreterCrashRetryTest(unittest.TestCase):
+    def _crash(self, status):
+        from invoke.exceptions import UnexpectedExit
+
+        return UnexpectedExit(SimpleNamespace(exited=status, command="docker compose"))
+
+    def test_a_killed_interpreter_is_rerun_and_the_rerun_result_stands(self):
+        with patch.object(
+            tasks,
+            "_run_tests_in_isolated_runtime_once",
+            side_effect=[self._crash(139), None],
+        ) as once:
+            tasks._run_tests_in_isolated_runtime(Mock(), test_label="x")
+
+        self.assertEqual(once.call_count, 2)
+
+    def test_a_failing_test_is_not_rerun(self):
+        with patch.object(
+            tasks,
+            "_run_tests_in_isolated_runtime_once",
+            side_effect=self._crash(1),
+        ) as once:
+            with self.assertRaises(Exception):
+                tasks._run_tests_in_isolated_runtime(Mock(), test_label="x")
+
+        self.assertEqual(once.call_count, 1)
+
+    def test_a_crash_on_every_attempt_still_fails_the_gate(self):
+        attempts = tasks.INTERPRETER_CRASH_RETRIES + 1
+        with patch.object(
+            tasks,
+            "_run_tests_in_isolated_runtime_once",
+            side_effect=[self._crash(139)] * attempts,
+        ) as once:
+            with self.assertRaises(Exception):
+                tasks._run_tests_in_isolated_runtime(Mock(), test_label="x")
+
+        self.assertEqual(once.call_count, attempts)
+
+    def test_only_a_killed_process_counts_as_a_crash(self):
+        self.assertEqual(tasks.INTERPRETER_CRASH_EXIT_STATUSES, {139, 134})
+
+    def test_a_container_that_exited_139_during_startup_counts_as_a_crash(self):
+        # `docker compose up --wait` only exits 1; the 139 is in its output.
+        from invoke.exceptions import UnexpectedExit
+
+        exc = UnexpectedExit(
+            SimpleNamespace(
+                exited=1,
+                stdout="",
+                stderr="dependency failed to start: container x-netbox-1 exited (139)",
+            )
+        )
+        self.assertTrue(tasks._interpreter_crash(exc))
+
+    def test_an_ordinary_failure_is_not_a_crash(self):
+        from invoke.exceptions import UnexpectedExit
+
+        exc = UnexpectedExit(
+            SimpleNamespace(exited=1, stdout="", stderr="FAILED (failures=1)")
+        )
+        self.assertFalse(tasks._interpreter_crash(exc))
+
+    def test_the_helper_resets_between_attempts_and_returns_the_result(self):
+        from invoke.exceptions import UnexpectedExit
+
+        reset = Mock()
+        action = Mock(
+            side_effect=[
+                UnexpectedExit(SimpleNamespace(exited=139, stdout="", stderr="")),
+                "done",
+            ]
+        )
+
+        result = tasks._retry_after_interpreter_crash(action, label="x", reset=reset)
+
+        self.assertEqual(result, "done")
+        reset.assert_called_once_with()
+
+    def test_the_helper_does_not_reset_for_an_ordinary_failure(self):
+        from invoke.exceptions import UnexpectedExit
+
+        reset = Mock()
+        action = Mock(
+            side_effect=UnexpectedExit(
+                SimpleNamespace(exited=1, stdout="", stderr="boom")
+            )
+        )
+
+        with self.assertRaises(UnexpectedExit):
+            tasks._retry_after_interpreter_crash(action, label="x", reset=reset)
+
+        reset.assert_not_called()
+
+
 class UpgradeFromConstraintsTests(unittest.TestCase):
     """The two constraint sets must differ only in the branching pin.
 
