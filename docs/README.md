@@ -8,13 +8,14 @@ Forward 26.6 is the baseline for async NQE.
 
 ## Release Compatibility
 
-The `2.9.13` release requires NetBox `4.6.x` (>= `4.6.5`, tested on `4.6.10`) and `netbox-branching` `1.1.x` (tested on `1.1.2`). Expand for the published release history and release notes.
+The `2.9.14` release candidate requires NetBox `4.6.x` (>= `4.6.5`, tested on `4.6.10`) and `netbox-branching` `1.1.x` (tested on `1.1.2`). Expand for the published release history and candidate notes.
 
 <details>
 <summary>Release compatibility history</summary>
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
+| `v2.9.14` | `4.6.x` (>= `4.6.5`) supported, tested on `4.6.10`; needs netbox-branching `1.1.x`, tested on `1.1.2` | Release candidate; Global-table static routes apply, 4.6-lane plugins updated, BGP address-family release, primary-IP fallback for unresolved tags, held duplicate names |
 | `v2.9.13` | `4.6.x` (>= `4.6.5`) supported, tested on `4.6.10`; needs netbox-branching `1.1.x`, tested on `1.1.2` | Current release; Site-relabel repair PeeringSession fix, endpoint IPv4 real netmask |
 | `v2.9.12` | `4.6.x` (>= `4.6.5`) supported, tested on `4.6.10`; needs netbox-branching `1.1.x`, tested on `1.1.2` | Superseded by `v2.9.13`; Stuck-sync close-out, duplicate-repair fix, primary-IP coverage (endpoints, duplicates, Forward management-IP fallback), BGP peer policy links, static routes, config-backup parsed-tree fallback |
 | `v2.9.11` | `4.6.x` (>= `4.6.5`) supported, tested on `4.6.10`; needs netbox-branching `1.1.x`, tested on `1.1.2` | Superseded by `v2.9.12`; Feature: Auto merge stops for review when a run is far larger than the sync has been - only with Auto merge on, only after the sync has finished a run before, and only for a model that stages at least 10,000 changes at 3x the table's size (or 10x the typical earlier run); a first load is never held, and a held run stays staged with the ingestion's Merge and Delete actions as Merge anyway and Discard. Feature: Health and the support bundle show Forward's row count next to NetBox's per model (split at the latest ingestion's start), the last three ingestions with job and merge status, statistics and merged changes by model and action over every change, and a BGP peer duplicate count; abnormal runs, a baseline that never completed and a NetBox table far smaller than Forward's are flagged in plain words. Feature: the config backup folder is configurable (nested folders allowed; Health shows the Validity device_config_path for it), and the last backup reports rows, written, unchanged, unmapped, managed devices with no collected configuration and files in the folder, so a gap between files and devices explains itself. Fix: the support bundle showed an empty merge job for an Auto merge, which runs inside the sync job; it now reports how the merge ran. Fix: the Include unmanaged configuration checkbox never persisted from the form. No migration; no query change. |

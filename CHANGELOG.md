@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v2.9.14
+
+Release candidate; Global-table static routes apply, 4.6-lane plugins updated, BGP address-family release, primary-IP fallback for unresolved tags, held duplicate names
+
 ## v2.9.13
 
 Site-relabel repair PeeringSession fix, endpoint IPv4 real netmask
