@@ -99,3 +99,11 @@ is still recorded for duplicated names only. Touched:
 `forward_netbox/utilities/scope_reconciliation.py` (`_site_mismatch_summary`),
 `forward_netbox/tests/test_scope_reconciliation_site_aware.py` (the test that pinned
 "no Forward call without duplicates" now pins the opposite, on purpose).
+
+## Also: primary addresses by mask
+
+A customer asked whether primary IPs "coming in as /32" were fixed. A /32 is correct
+for a loopback and was wrong for an SNMP endpoint's interface (fixed earlier); the
+bundle could not say which a deployment had. `primary_ip.primary_ip4_prefix_lengths`
+now counts the sync's primary IPv4 addresses by mask length and the /32 ones by
+device role (`forward_netbox/views.py`, `_primary_ip4_prefix_lengths`).

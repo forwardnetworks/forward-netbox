@@ -3598,22 +3598,22 @@ select {name: site.name, slug: site.name}
         )
 
     def _reject_untagged_vlan_on_existing_interface(self, device, name):
-        """Leave a cross-site untagged VLAN NetBox will refuse.
+        """Leave an untagged VLAN on an interface with no mode, which NetBox refuses.
 
-        Written with `queryset.update()` on purpose: `save()` and `full_clean()`
-        both refuse this pairing, and the point is that a real deployment gets
-        there anyway — a device whose Forward location changed is moved between
-        sites by `bulk_update`, which runs neither, and its interfaces keep the
-        VLAN of the site they were assigned in.
+        A rejection on a field the row never writes, which the apply does NOT
+        resolve: a VLAN from another site is cleared by the interface apply (see
+        `test_stale_untagged_vlan_cleared`), so it no longer stands in for "a
+        pre-existing rule the row cannot fix". Written with `queryset.update()` on
+        purpose: `save()` and `full_clean()` both refuse this pairing, and real
+        deployments reach it anyway through writers that bypass validation.
         """
-        other_site = Site.objects.create(name="site-2", slug="site-2")
-        other_vlan = VLAN.objects.create(
-            site=other_site, vid=30, name="elsewhere", status="active"
+        vlan = VLAN.objects.create(
+            site=device.site, vid=30, name="no-mode", status="active"
         )
         interface = Interface.objects.create(
-            device=device, name=name, type="1000base-t", mode="access"
+            device=device, name=name, type="1000base-t"
         )
-        Interface.objects.filter(pk=interface.pk).update(untagged_vlan=other_vlan)
+        Interface.objects.filter(pk=interface.pk).update(untagged_vlan=vlan)
         return interface
 
     def test_interface_rejected_on_untouched_field_is_skipped_not_failed(self):

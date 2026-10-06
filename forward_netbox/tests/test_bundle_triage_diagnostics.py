@@ -76,6 +76,25 @@ class BundleTriageDiagnosticsTest(TestCase):
         # The figure on the device list covers devices this sync does not own.
         self.assertEqual(payload["netbox_devices_without_primary_ip"], 4)
 
+    def test_primary_addresses_are_counted_by_mask_and_host_masks_by_role(self):
+        from ipam.models import IPAddress
+
+        loopback = self._device("fw-loopback")
+        subnet = self._device("fw-subnet")
+        for device, address in ((loopback, "10.0.0.1/32"), (subnet, "10.0.1.1/24")):
+            ip = IPAddress.objects.create(address=address)
+            Device.objects.filter(pk=device.pk).update(primary_ip4=ip)
+
+        masks = _primary_ip_bundle_payload(self.sync)["primary_ip4_prefix_lengths"]
+
+        self.assertEqual(
+            {row["prefix_length"]: row["devices"] for row in masks["by_prefix_length"]},
+            {32: 1, 24: 1},
+        )
+        self.assertEqual(
+            masks["host_mask_by_role"], [{"role": "firewall", "devices": 1}]
+        )
+
     def test_issues_are_tallied_by_model_exception_and_rule_over_every_row(self):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
         for _ in range(3):

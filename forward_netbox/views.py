@@ -507,6 +507,38 @@ def _primary_ip_bundle_payload(sync):
         # Every NetBox device, not just this sync's: the number an operator
         # reads off the device list, so the two can be reconciled.
         "netbox_devices_without_primary_ip": all_missing.count(),
+        # What mask the primary addresses carry. A customer asked whether primary
+        # IPs "coming in as /32" were fixed; a /32 is correct for a loopback and
+        # wrong for an SNMP endpoint's interface, and only the split says which.
+        "primary_ip4_prefix_lengths": _primary_ip4_prefix_lengths(devices),
+    }
+
+
+def _primary_ip4_prefix_lengths(devices, limit=12):
+    """Primary IPv4 addresses by mask length, and the /32 ones by device role."""
+    from collections import Counter
+
+    by_length = Counter()
+    host_by_role = Counter()
+    rows = devices.filter(primary_ip4__isnull=False).values_list(
+        "primary_ip4__address", "role__name"
+    )
+    for address, role in rows:
+        length = getattr(address, "prefixlen", None)
+        if length is None:
+            continue
+        by_length[length] += 1
+        if length == 32:
+            host_by_role[role or "-"] += 1
+    return {
+        "by_prefix_length": [
+            {"prefix_length": length, "devices": count}
+            for length, count in by_length.most_common(limit)
+        ],
+        "host_mask_by_role": [
+            {"role": role, "devices": count}
+            for role, count in host_by_role.most_common(limit)
+        ],
     }
 
 
