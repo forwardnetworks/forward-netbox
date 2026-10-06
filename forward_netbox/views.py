@@ -2034,13 +2034,36 @@ def _site_relabel_pairs_payload(sync):
         raise
     except Exception:  # noqa: BLE001 - a page render must never 500 on this
         return {"pair_count": 0, "held_count": 0, "available": False}
+    held_by_reason = site_relabel_held_by_reason(report)
+    # Names belong on this page only: an operator cannot act on "5 held" without
+    # knowing which five, but the support bundle shares the same counts and must
+    # stay free of customer names, so they are attached here and not there.
+    names_by_reason = _held_device_names(report)
+    for entry in held_by_reason:
+        names = names_by_reason.get(entry["reason"], [])
+        entry["names"] = names[:10]
+        entry["more_names"] = max(0, len(names) - 10)
     return {
         "pair_count": len(report["pairs"]),
         "held_count": len(report["held"]),
-        "held_by_reason": site_relabel_held_by_reason(report),
+        "held_by_reason": held_by_reason,
         "last_repair": _last_site_relabel_repair(sync),
         "available": True,
     }
+
+
+def _held_device_names(report):
+    """``{reason: [device name, ...]}`` for the held duplicate groups."""
+    from dcim.models import Device
+
+    pks = {entry["older_pk"] for entry in report.get("held") or ()}
+    names = dict(Device.objects.filter(pk__in=pks).values_list("pk", "name"))
+    by_reason = {}
+    for entry in report.get("held") or ():
+        name = names.get(entry["older_pk"])
+        if name:
+            by_reason.setdefault(entry["reason"], []).append(name)
+    return {reason: sorted(set(values)) for reason, values in by_reason.items()}
 
 
 def _last_site_relabel_repair(sync):

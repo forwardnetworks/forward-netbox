@@ -23,6 +23,10 @@ class OptionalPluginIntegration:
     command_inventory: tuple[dict, ...] = ()
     package_name: str = ""
     adapter_module: str = ""
+    # Sibling modules that hold part of this integration's apply/delete
+    # functions; the readiness check looks here too, so a function that lives
+    # beside the adapter module is not reported missing.
+    adapter_submodules: tuple = ()
     # Keep the original scalar for API and support-bundle compatibility.  An
     # integration can opt into an explicit allowlist without changing the
     # exact-version behavior of integrations that leave this empty.
@@ -199,6 +203,10 @@ ROUTING_INTEGRATION = OptionalPluginIntegration(
     ),
     package_name="netbox-routing",
     adapter_module="forward_netbox.utilities.sync_routing_impl",
+    adapter_submodules=(
+        "forward_netbox.utilities.sync_routing_policy",
+        "forward_netbox.utilities.sync_routing_static",
+    ),
     # 0.5.0 is the first released netbox-routing that boots on NetBox 4.7;
     # 0.4.3 caps at 4.6.99, and the 0.4.4 this lane used to run was upstream
     # main, never published.
@@ -463,14 +471,26 @@ def _integration_adapter_contract_summary(integration: OptionalPluginIntegration
                 }
             ],
         }
+    candidates = [module]
+    for submodule_name in integration.adapter_submodules:
+        try:
+            candidates.append(import_module(submodule_name))
+        except JobTimeoutException:
+            raise
+        except Exception:
+            continue
     entries = []
     gaps = []
     for model_string in models:
         function_suffix = model_string.replace(".", "_")
         apply_name = f"apply_{function_suffix}"
         delete_name = f"delete_{function_suffix}"
-        has_apply = callable(getattr(module, apply_name, None))
-        has_delete = callable(getattr(module, delete_name, None))
+        has_apply = any(
+            callable(getattr(candidate, apply_name, None)) for candidate in candidates
+        )
+        has_delete = any(
+            callable(getattr(candidate, delete_name, None)) for candidate in candidates
+        )
         entry = {
             "model": model_string,
             "adapter_module": integration.adapter_module,
