@@ -120,7 +120,17 @@ class OptionalPluginIntegrationRegistryTest(TestCase):
         self.assertEqual(summary["lifecycle.netbox_dlm"]["required_version"], "0.10.1")
         self.assertEqual(
             summary["lifecycle.netbox_dlm"]["supported_versions"],
-            ["0.4.1", "0.5.0", "0.6.0", "0.7.0", "0.8.0", "0.9.1", "0.10.0", "0.10.1", "0.10.2"],
+            [
+                "0.4.1",
+                "0.5.0",
+                "0.6.0",
+                "0.7.0",
+                "0.8.0",
+                "0.9.1",
+                "0.10.0",
+                "0.10.1",
+                "0.10.2",
+            ],
         )
 
     def test_dlm_supported_versions_are_available_and_not_dropped(self):
