@@ -5,6 +5,7 @@
 # primary_ip4 / primary_ip6. Kept ORM-free so it is exhaustively unit-testable;
 # the executor wires the inputs from Forward NQE + the branch ORM and applies the
 # result.
+import re
 from ipaddress import ip_address
 from ipaddress import ip_interface
 
@@ -154,6 +155,51 @@ def primary_ip_from_mgmt_tag_enabled(sync):
 
 def primary_ip_from_management_ip_enabled(sync):
     return bool((sync.parameters or {}).get(PRIMARY_IP_FROM_MANAGEMENT_IP_PARAMETER))
+
+
+_FALLBACK_SUMMARY = (
+    "primary_ip-from-tag: {total} device(s) left without a primary IP "
+    "from the management address: "
+    "{shared} share it with another device "
+    "(NetBox allows one primary-IP owner per address), "
+    "{no_interface} have it on no synced "
+    "interface, {multiple} have "
+    "several management addresses, "
+    "{several} have it on several "
+    "interfaces."
+)
+_FALLBACK_SUMMARY_PATTERN = re.compile(
+    r"primary_ip-from-tag: (\d+) device\(s\) left without a primary IP from the "
+    r"management address: (\d+) share it with another device .*?, "
+    r"(\d+) have it on no synced interface, (\d+) have several management "
+    r"addresses, (\d+) have it on several interfaces\."
+)
+
+
+def format_fallback_summary(total, counts):
+    """The job-log sentence that says why devices got no management-address IP."""
+    return _FALLBACK_SUMMARY.format(
+        total=total,
+        shared=counts.get("shared", 0),
+        no_interface=counts.get("no-interface", 0),
+        multiple=counts.get("multiple-addresses", 0),
+        several=counts.get("several-interfaces", 0),
+    )
+
+
+def parse_fallback_summary(message):
+    """Counts from `format_fallback_summary`'s sentence, or None for any other line."""
+    match = _FALLBACK_SUMMARY_PATTERN.search(str(message or ""))
+    if match is None:
+        return None
+    total, shared, no_interface, multiple, several = (int(v) for v in match.groups())
+    return {
+        "left_without_primary_ip": total,
+        "shared_with_another_device": shared,
+        "address_on_no_synced_interface": no_interface,
+        "several_management_addresses": multiple,
+        "address_on_several_interfaces": several,
+    }
 
 
 def primary_ip_step_enabled(sync):
@@ -423,18 +469,7 @@ def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
                 for name, reason in self_unresolved.items():
                     key = "shared" if name in shared else reason
                     counts[key] = counts.get(key, 0) + 1
-                logger.log_info(
-                    "primary_ip-from-tag: "
-                    f"{len(self_unresolved)} device(s) left without a primary IP "
-                    "from the management address: "
-                    f"{counts.get('shared', 0)} share it with another device "
-                    "(NetBox allows one primary-IP owner per address), "
-                    f"{counts.get('no-interface', 0)} have it on no synced "
-                    f"interface, {counts.get('multiple-addresses', 0)} have "
-                    "several management addresses, "
-                    f"{counts.get('several-interfaces', 0)} have it on several "
-                    "interfaces."
-                )
+                logger.log_info(format_fallback_summary(len(self_unresolved), counts))
             return len(updated)
         finally:
             active_branch.set(None)

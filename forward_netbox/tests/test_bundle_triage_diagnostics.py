@@ -95,6 +95,41 @@ class BundleTriageDiagnosticsTest(TestCase):
             masks["host_mask_by_role"], [{"role": "firewall", "devices": 1}]
         )
 
+    def test_interface_addresses_are_counted_by_mask_and_the_default_site_is_listed(
+        self,
+    ):
+        from dcim.models import Interface
+        from ipam.models import IPAddress
+
+        default = Site.objects.create(name="Default", slug="default")
+        endpoint = self._device("endpoint-1")
+        Device.objects.filter(pk=endpoint.pk).update(site=default)
+        switch = self._device("switch-1")
+        for device, address in ((endpoint, "10.0.0.9/32"), (switch, "10.0.1.1/24")):
+            interface = Interface.objects.create(
+                device=device, name="Gi0/1", type="1000base-t"
+            )
+            IPAddress.objects.create(address=address, assigned_object=interface)
+
+        payload = _primary_ip_bundle_payload(self.sync)
+
+        masks = payload["interface_ip4_prefix_lengths"]
+        self.assertEqual(
+            {
+                row["prefix_length"]: row["addresses"]
+                for row in masks["by_prefix_length"]
+            },
+            {32: 1, 24: 1},
+        )
+        self.assertEqual(
+            masks["host_mask_by_role"], [{"role": "firewall", "addresses": 1}]
+        )
+        placement = payload["site_placement"]
+        self.assertEqual(placement["at_default_site"], 1)
+        self.assertEqual(placement["at_default_site_by_role"], {"firewall": 1})
+        self.assertEqual(placement["at_default_site_without_primary_ip"], 1)
+        self.assertNotIn("endpoint-1", json.dumps(payload))
+
     def test_issues_are_tallied_by_model_exception_and_rule_over_every_row(self):
         ingestion = ForwardIngestion.objects.create(sync=self.sync)
         for _ in range(3):
