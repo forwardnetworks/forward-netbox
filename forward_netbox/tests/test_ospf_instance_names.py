@@ -117,3 +117,72 @@ class OtherOspfInstanceNamesTest(TestCase):
             ]
         )
         self.assertEqual(_other_ospf_instance_names(model, "d", None, 9), {"a"})
+
+
+class EnsureOspfInstanceClashTest(TestCase):
+    """The name lookup runs only after netbox-routing rejects a clash."""
+
+    def setUp(self):
+        from types import SimpleNamespace
+
+        self.device = SimpleNamespace(name="sw-a")
+
+    def _run(self, upsert_side_effect, taken=()):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from unittest.mock import patch
+
+        from forward_netbox.utilities import sync_routing_impl
+
+        model = SimpleNamespace(objects=_Rows(list(taken)))
+        runner = Mock()
+        runner._optional_model.return_value = model
+        runner._model_field_values.side_effect = lambda _model, values: values
+        runner._upsert_values_from_defaults.side_effect = upsert_side_effect
+        row = {"device": "sw-a", "process_id": "1", "router_id": "10.0.0.1"}
+        with (
+            patch.object(
+                sync_routing_impl, "lookup_device_for_routing", return_value=self.device
+            ),
+            patch.object(sync_routing_impl, "routing_vrf", return_value=None),
+        ):
+            result = sync_routing_impl.ensure_ospf_instance(runner, row)
+        return runner, result
+
+    def test_a_row_that_clashes_with_nothing_costs_no_lookup(self):
+        runner, result = self._run(lambda *a, **k: ("inst", True))
+
+        self.assertEqual(result, "inst")
+        self.assertEqual(runner._upsert_values_from_defaults.call_count, 1)
+
+    def test_a_name_clash_is_retried_under_a_free_name(self):
+        from django.core.exceptions import ValidationError
+
+        names = []
+
+        def upsert(label, model, *, values, coalesce_sets):
+            names.append(values["name"])
+            if len(names) == 1:
+                raise ValidationError("Name must be unique per device")
+            return ("inst", True)
+
+        holder = {
+            "pk": 9,
+            "device": self.device,
+            "vrf": None,
+            "process_id": 99,
+            "name": "sw-a OSPF 1",
+        }
+        _, result = self._run(upsert, taken=[holder])
+
+        self.assertEqual(result, "inst")
+        self.assertEqual(names, ["sw-a OSPF 1", "sw-a OSPF 1 #1"])
+
+    def test_any_other_validation_error_is_not_swallowed(self):
+        from django.core.exceptions import ValidationError
+
+        def upsert(*args, **kwargs):
+            raise ValidationError("Router ID is not valid")
+
+        with self.assertRaises(ValidationError):
+            self._run(upsert)

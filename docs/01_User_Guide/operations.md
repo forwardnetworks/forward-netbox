@@ -76,6 +76,15 @@ DeviceType rows are not deleted automatically because DeviceType is global
 metadata. After the corrected sync moves all devices to stable types, manually
 delete only unused DeviceType rows whose device count is zero.
 
+Infoblox and Palo Alto Panorama endpoints are named by their vendor's
+enterprise OID (or profile name) instead of the first word of the system
+description. An Infoblox appliance reports `Linux <hostname> ...`, which used to
+make its manufacturer and DeviceType "Linux"; it now reads **Infoblox**, and a
+Panorama reads **Palo Alto Networks**. Endpoints already imported move to the new
+manufacturer and DeviceType on the next sync, and the old `Linux` DeviceType rows
+can be deleted once their device count is zero. Run **Publish Bundled Queries** so
+a pinned org query picks the change up.
+
 ### What scope prune removes
 
 The tag scope is **device-derived**: a Forward row is treated as out-of-scope

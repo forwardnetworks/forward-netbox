@@ -50,3 +50,14 @@ Ships in 3.0.4. No migration, no query change.
 ## Rollback
 
 Revert the commit; names written as `... #<process_id>` stay valid.
+
+## Decision Log
+
+- **Resolve the clash, do not diagnose it.** The issue names neither device nor
+  instance and the bundle showed no remaining duplicate, so the row is kept under a
+  stable variant instead of waiting for the exact collision to be identified.
+- **Counts and ids only in the bundle.** The new figures name no devices; site
+  ids stand in for site names.
+- **Stub-pinned lookup.** `netbox_routing` cannot be installed on the 4.7 test
+  runtime, so the instance-name lookup is tested against a stub queryset and the
+  4.6 lane exercises the real model.

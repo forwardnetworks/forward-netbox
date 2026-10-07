@@ -270,7 +270,7 @@ DLM_INTEGRATION = OptionalPluginIntegration(
     ),
     package_name="netbox-dlm",
     adapter_module="forward_netbox.utilities.sync_dlm",
-    required_package_version="0.10.0",
+    required_package_version="0.10.1",
     supported_package_versions=(
         "0.4.1",
         "0.5.0",
@@ -284,6 +284,11 @@ DLM_INTEGRATION = OptionalPluginIntegration(
         # `max_version` 4.6.99 -> 4.7.99. It is the only release that installs
         # on NetBox 4.7.
         "0.10.0",
+        # 0.10.1 changes only the software-version page (one extra related
+        # query in its view and a template layout); no models or migrations.
+        "0.10.1",
+        # 0.10.2 only sets the plugin author shown on NetBox's plugin page.
+        "0.10.2",
     ),
     enabled_by_default=False,
     status="supported",

@@ -421,6 +421,32 @@ class EndpointBranchIncludeScopeTest(SimpleTestCase):
             params = _default_query_parameters(filename)
             self.assertIs(params["sync_generic_endpoints"], False, filename)
 
+    def test_vendor_overlays_name_the_manufacturer_before_the_sysdescr_token(self):
+        # An Infoblox box reports `Linux <host> <kernel>` and a Panorama reports
+        # `Palo Alto Networks ...`, so reading the first sysDescr token first
+        # made them "Linux" and "Palo". The enterprise OID and the profile name
+        # come before that token.
+        for filename in (
+            "forward_devices.nqe",
+            "forward_devices_with_netbox_aliases.nqe",
+        ):
+            endpoint_branch = _read_query(filename).split("network.endpoints", 1)[1]
+            self.assertIn('matches(sysObjId, "1.3.6.1.4.1.7779.*")', endpoint_branch)
+            self.assertIn('matches(sysObjId, "1.3.6.1.4.1.25461.*")', endpoint_branch)
+            chain = endpoint_branch.split("let ep_manuf_raw", 1)[1].split(
+                "let ep_manuf =", 1
+            )[0]
+            self.assertLess(
+                chain.index('then "Infoblox"'),
+                chain.index("else if hasDescr"),
+                filename,
+            )
+            self.assertLess(
+                chain.index('then "Palo Alto Networks"'),
+                chain.index("else if hasDescr"),
+                filename,
+            )
+
     def test_device_query_declares_toggle_default_off(self):
         for filename in (
             "forward_devices.nqe",

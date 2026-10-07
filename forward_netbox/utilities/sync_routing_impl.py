@@ -1,6 +1,7 @@
 import hashlib
 
 from django.core.exceptions import ObjectDoesNotExist
+from django.core.exceptions import ValidationError
 from django.db.models.deletion import ProtectedError
 
 from ..exceptions import ForwardDependencySkipError
@@ -765,6 +766,11 @@ def free_ospf_instance_name(desired, taken, process_id):
     return desired
 
 
+def _is_ospf_name_clash(exc):
+    """Whether ``exc`` is netbox-routing's unique (device, name) rejection."""
+    return "must be unique per device" in str(exc).lower()
+
+
 def _other_ospf_instance_names(OSPFInstance, device, vrf, process_id):
     """Names held on ``device`` by instances other than this row's own."""
     own = OSPFInstance.objects.filter(device=device, process_id=process_id)
@@ -834,30 +840,45 @@ def ensure_ospf_instance(runner, row, *, preview=False):
             context={"device": row.get("device"), "process_id": process_label},
             data=row,
         )
-    name = free_ospf_instance_name(
-        row.get("name")
-        or ospf_instance_name(device.name, process_label, row.get("vrf")),
-        _other_ospf_instance_names(OSPFInstance, device, vrf, process_id),
-        process_id,
+    desired_name = row.get("name") or ospf_instance_name(
+        device.name, process_label, row.get("vrf")
     )
-    values = runner._model_field_values(
-        OSPFInstance,
-        {
-            "name": name,
-            "router_id": router_id,
-            "process_id": process_id,
-            "device": device,
-            "vrf": vrf,
-            "comments": row.get("comments")
-            or ospf_instance_comments(row, process_label),
-        },
-    )
-    instance, _ = runner._upsert_values_from_defaults(
-        "netbox_routing.ospfinstance",
-        OSPFInstance,
-        values=values,
-        coalesce_sets=[("device", "vrf", "process_id")],
-    )
+
+    def upsert(name):
+        values = runner._model_field_values(
+            OSPFInstance,
+            {
+                "name": name,
+                "router_id": router_id,
+                "process_id": process_id,
+                "device": device,
+                "vrf": vrf,
+                "comments": row.get("comments")
+                or ospf_instance_comments(row, process_label),
+            },
+        )
+        return runner._upsert_values_from_defaults(
+            "netbox_routing.ospfinstance",
+            OSPFInstance,
+            values=values,
+            coalesce_sets=[("device", "vrf", "process_id")],
+        )
+
+    try:
+        instance, _ = upsert(desired_name)
+    except ValidationError as exc:
+        # The name lookup runs only after a clash, so a row that clashes with
+        # nothing - nearly all of them - pays no extra query.
+        if not _is_ospf_name_clash(exc):
+            raise
+        free_name = free_ospf_instance_name(
+            desired_name,
+            _other_ospf_instance_names(OSPFInstance, device, vrf, process_id),
+            process_id,
+        )
+        if free_name == desired_name:
+            raise
+        instance, _ = upsert(free_name)
     return instance
 
 

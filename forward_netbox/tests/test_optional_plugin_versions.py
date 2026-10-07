@@ -71,7 +71,7 @@ class OptionalDistributionVersionSetTest(SimpleTestCase):
         self.assertEqual(
             dict(COPY_SQL_SUPPORTED_OPTIONAL_DISTRIBUTIONS),
             {
-                "netbox-dlm": frozenset({"0.10.0"}),
+                "netbox-dlm": frozenset({"0.10.0", "0.10.1", "0.10.2"}),
                 "netbox-peering-manager": frozenset({"0.3.1"}),
                 "netbox-routing": frozenset({"0.5.0"}),
                 "netbox-validity": frozenset({"3.6.0"}),
@@ -225,7 +225,7 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
         self.assertEqual(
             detail["expected"]["optional_plugins"],
             {
-                "netbox-dlm": ["0.10.0"],
+                "netbox-dlm": ["0.10.0", "0.10.1", "0.10.2"],
                 "netbox-peering-manager": ["0.3.1"],
                 "netbox-routing": ["0.5.0"],
                 "netbox-validity": ["3.6.0"],
