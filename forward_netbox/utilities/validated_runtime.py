@@ -77,7 +77,7 @@ VALIDATED_PLUGIN_APPS = frozenset(
 # `docs/03_Plans/active/2026-09-02-netbox-4.7-runtime.md` so regaining it is a
 # lookup rather than an archaeology exercise.
 VALIDATED_OPTIONAL_DISTRIBUTIONS: dict[str, frozenset[str]] = {
-    "netbox-dlm": frozenset({"0.10.0"}),
+    "netbox-dlm": frozenset({"0.10.0", "0.10.1", "0.10.2"}),
     "netbox-peering-manager": frozenset({"0.3.1"}),
     "netbox-routing": frozenset({"0.5.0"}),
     "netbox-validity": frozenset({"3.6.0"}),

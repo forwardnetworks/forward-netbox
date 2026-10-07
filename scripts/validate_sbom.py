@@ -15,7 +15,7 @@ REQUIRED_COMPONENTS = {
     # netbox-dlm 0.10.0 is the one optional plugin that runs on 4.7. The other
     # four each declare a max_version in the 4.6 series, so the artifact cannot
     # contain them.
-    "netbox-dlm": "0.10.0",
+    "netbox-dlm": "0.10.1",
     "netboxlabs-netbox-branching": "1.2.1",
     "pyzipper": "0.4.0",
 }
