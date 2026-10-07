@@ -745,6 +745,37 @@ def ospf_instance_name(device_name, process_label, vrf_name=None):
     return base[: max(0, 100 - len(suffix))] + suffix
 
 
+def free_ospf_instance_name(desired, taken, process_id):
+    """``desired``, or the nearest variant no other instance on the device holds.
+
+    netbox-routing's unique (device, name) rule rejects a row whose name is
+    already another instance's, and the instance that holds it is not always
+    one this row would update (an older name, a hand-made instance). The row
+    still describes a real process, so it is kept under a name that carries its
+    process id rather than skipped. The result depends only on the inputs, so
+    it is the same on every sync. Truncation cuts the base, never the suffix.
+    """
+    if desired not in taken:
+        return desired
+    for attempt in range(1, 100):
+        suffix = f" #{process_id}" if attempt == 1 else f" #{process_id}-{attempt}"
+        candidate = desired[: 100 - len(suffix)] + suffix
+        if candidate not in taken:
+            return candidate
+    return desired
+
+
+def _other_ospf_instance_names(OSPFInstance, device, vrf, process_id):
+    """Names held on ``device`` by instances other than this row's own."""
+    own = OSPFInstance.objects.filter(device=device, process_id=process_id)
+    own = own.filter(vrf=vrf) if vrf is not None else own.filter(vrf__isnull=True)
+    own_pk = next(iter(own.values_list("pk", flat=True)), None)
+    others = OSPFInstance.objects.filter(device=device)
+    if own_pk is not None:
+        others = others.exclude(pk=own_pk)
+    return set(others.values_list("name", flat=True))
+
+
 def ospf_instance_comments(row, process_label):
     lines = ["Observed by Forward from structured OSPF state."]
     for label, value in (
@@ -803,11 +834,16 @@ def ensure_ospf_instance(runner, row, *, preview=False):
             context={"device": row.get("device"), "process_id": process_label},
             data=row,
         )
+    name = free_ospf_instance_name(
+        row.get("name")
+        or ospf_instance_name(device.name, process_label, row.get("vrf")),
+        _other_ospf_instance_names(OSPFInstance, device, vrf, process_id),
+        process_id,
+    )
     values = runner._model_field_values(
         OSPFInstance,
         {
-            "name": row.get("name")
-            or ospf_instance_name(device.name, process_label, row.get("vrf")),
+            "name": name,
             "router_id": router_id,
             "process_id": process_id,
             "device": device,

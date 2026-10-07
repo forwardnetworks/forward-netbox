@@ -193,3 +193,33 @@ class ResolveManagementIpAssignmentsTest(SimpleTestCase):
         )
 
         self.assertEqual(result, {})
+
+
+class FallbackSummaryTest(SimpleTestCase):
+    def test_the_job_log_sentence_reads_back_as_counts(self):
+        from forward_netbox.utilities.primary_ip import format_fallback_summary
+        from forward_netbox.utilities.primary_ip import parse_fallback_summary
+
+        counts = {
+            "shared": 587,
+            "no-interface": 55,
+            "multiple-addresses": 12,
+            "several-interfaces": 25,
+        }
+        parsed = parse_fallback_summary(format_fallback_summary(679, counts))
+        self.assertEqual(
+            parsed,
+            {
+                "left_without_primary_ip": 679,
+                "shared_with_another_device": 587,
+                "address_on_no_synced_interface": 55,
+                "several_management_addresses": 12,
+                "address_on_several_interfaces": 25,
+            },
+        )
+
+    def test_any_other_line_is_not_a_summary(self):
+        from forward_netbox.utilities.primary_ip import parse_fallback_summary
+
+        self.assertIsNone(parse_fallback_summary("primary_ip-from-tag: set primary IP"))
+        self.assertIsNone(parse_fallback_summary(None))

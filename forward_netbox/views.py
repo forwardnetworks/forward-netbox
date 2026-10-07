@@ -511,6 +511,83 @@ def _primary_ip_bundle_payload(sync):
         # IPs "coming in as /32" were fixed; a /32 is correct for a loopback and
         # wrong for an SNMP endpoint's interface, and only the split says which.
         "primary_ip4_prefix_lengths": _primary_ip4_prefix_lengths(devices),
+        # The primary address is one per device. A customer saw endpoint
+        # addresses "still /32" while every primary looked right, so the masks
+        # of ALL interface addresses are counted too, by the device's role.
+        "interface_ip4_prefix_lengths": _interface_ip4_prefix_lengths(devices),
+        # Where the sync's devices sit, by site id: a customer found 320 devices
+        # at a site named `default` and the bundle could not say which they were.
+        "site_placement": _site_placement(devices),
+        # Why the management-address fallback left devices bare, read back from
+        # the ingestion's own job log so no one has to find the line.
+        "fallback_reasons": _primary_ip_fallback_reasons(sync),
+    }
+
+
+def _primary_ip_fallback_reasons(sync):
+    from .utilities.primary_ip import parse_fallback_summary
+
+    job = getattr(getattr(sync, "last_ingestion", None), "job", None)
+    for entry in reversed(list(getattr(job, "log_entries", None) or [])):
+        message = entry.get("message") if isinstance(entry, dict) else None
+        parsed = parse_fallback_summary(message)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _interface_ip4_prefix_lengths(devices, limit=12):
+    """IPv4 addresses on the devices' interfaces by mask, /32s by device role."""
+    from collections import Counter
+
+    from ipam.models import IPAddress
+
+    by_length = Counter()
+    host_by_role = Counter()
+    rows = IPAddress.objects.filter(
+        interface__device__in=devices, address__family=4
+    ).values_list("address", "interface__device__role__name")
+    for address, role in rows.iterator():
+        length = getattr(address, "prefixlen", None)
+        if length is None:
+            continue
+        by_length[length] += 1
+        if length == 32:
+            host_by_role[role or "-"] += 1
+    return {
+        "by_prefix_length": [
+            {"prefix_length": length, "addresses": count}
+            for length, count in by_length.most_common(limit)
+        ],
+        "host_mask_by_role": [
+            {"role": role, "addresses": count}
+            for role, count in host_by_role.most_common(limit)
+        ],
+    }
+
+
+def _site_placement(devices, limit=8):
+    """The sync's devices by site id, and what sits at the `default` site."""
+    from collections import Counter
+
+    from dcim.models import Site
+
+    by_site = Counter(devices.values_list("site_id", flat=True))
+    default_ids = list(Site.objects.filter(slug="default").values_list("pk", flat=True))
+    at_default = devices.filter(site_id__in=default_ids)
+    return {
+        "largest_sites": [
+            {"site_pk": site_pk, "devices": count}
+            for site_pk, count in by_site.most_common(limit)
+        ],
+        "default_site_pks": default_ids,
+        "at_default_site": at_default.count(),
+        "at_default_site_by_role": dict(
+            Counter(at_default.values_list("role__name", flat=True)).most_common(limit)
+        ),
+        "at_default_site_without_primary_ip": at_default.filter(
+            primary_ip4__isnull=True, primary_ip6__isnull=True
+        ).count(),
     }
 
 
