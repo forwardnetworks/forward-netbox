@@ -20,8 +20,11 @@ services:
       timeout: 3s
       interval: 5s
       # Fresh environments can take longer than 180s.
-      # Reason: full NetBox/plugin migrations on first boot.
-      retries: 120
+      # Reason: full NetBox/plugin migrations on first boot, which a busy host
+      # stretches past ten minutes. Docker marks the container unhealthy after
+      # `retries` consecutive failures (360 x 5s = 30 minutes), so this, not the
+      # `--wait-timeout` the gate passes, is the real ceiling on a cold boot.
+      retries: 360
       test: "curl -f http://localhost:8000/login/ || exit 1"
     volumes:
       - ./configuration:/etc/netbox/config:ro
