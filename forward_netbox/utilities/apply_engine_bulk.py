@@ -140,6 +140,8 @@ def _one_search_cache_update(rows):
                 with transaction.atomic(using=alias or DEFAULT_DB_ALIAS):
                     for sender, instance, created, using in saved:
                         real(sender, instance, created=created, using=using)
+            except JobTimeoutException:
+                raise
             except Exception:  # noqa: BLE001 - indexing must not fail the apply
                 logger.exception("Search cache: indexing a rescued shard failed")
 
