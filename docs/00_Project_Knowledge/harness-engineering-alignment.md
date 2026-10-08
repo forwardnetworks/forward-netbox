@@ -14,9 +14,9 @@ internal systems.
 | Principle | Repository evidence | Status |
 | --- | --- | --- |
 | Repository knowledge | `AGENTS.md` routes to `ARCHITECTURE.md`, the boundary map, validation matrix, release playbook, and plans. | Aligned |
-| Application legibility | Isolated Compose runtimes, seeded Playwright paths, native health/drift views, ingestion issues, and sanitized support bundles expose product state. | Aligned |
+| Application legibility | Isolated Compose runtimes, seeded UI harness paths, native health/drift views, ingestion issues, and sanitized support bundles expose product state. | Aligned |
 | Architecture enforcement | Harness checks, model/query contracts, migration tests, single-branch tests, strict merge tests, and ownership audits constrain high-risk changes. | Aligned |
-| Feedback loops | Focused Django tests, scenario tests, full tests, Playwright, exact-version startup, package installation, and CI form an executable release ladder. | Aligned |
+| Feedback loops | Focused Django tests, scenario tests, full tests, the UI harness, exact-version startup, package installation, and CI form an executable release ladder. | Aligned |
 | Entropy control | Freshness gates, plan structure checks, sensitive-content scanning, and scheduled gardening expose drift. | Aligned with manual triage |
 | Human steering | Humans set release scope and acceptance; automation prepares and verifies changes but does not silently publish a release. | Aligned |
 
@@ -35,7 +35,7 @@ internal systems.
 - Ownership tests enforce main-schema-only, per-sync generation claims and
   stale-overlay rejection.
 - Sensitive-content checks cover both the working tree and repository history.
-- UI behavior changes include Playwright validation; release/package changes
+- UI behavior changes include UI harness validation; release/package changes
   include fresh installation evidence.
 
 ## Application Legibility
@@ -86,7 +86,7 @@ resolve before release; neither is accepted as intent by itself.
 4. Confirm drift, health, support bundles, and ownership audit all derive their
    conclusions from persisted current facts.
 5. Confirm UI-changing paths remain directly drivable in the isolated
-   Playwright runtime.
+   UI harness runtime.
 6. Confirm active plans have current decisions and evidence; do not infer plan
    health from a stale count.
 7. Update review dates only after the document review and checks complete.

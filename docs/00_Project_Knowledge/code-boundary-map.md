@@ -176,7 +176,7 @@ This map assigns production behavior to the modules that implement it in 2.6.
   actions, drift and health views, issue visibility, and sanitized support
   bundles.
 - Required tests: forms, API actions, permissions, support payloads, health and
-  drift rendering, ownership-incomplete presentation, and Playwright coverage
+  drift rendering, ownership-incomplete presentation, and UI harness coverage
   for changed workflows.
 
 ## Health Diagnostics Boundary

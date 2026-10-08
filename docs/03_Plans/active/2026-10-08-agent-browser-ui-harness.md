@@ -8,9 +8,9 @@ canonical UI command; only its engine changes.
 
 ## Constraints
 
-- Staged for the build after `3.0.4`. Do not land it inside the `3.0.4` release:
-  that plan promises a version-bump-only commit, and the release authorization
-  binds the UI evidence entry to the `playwright-test` command.
+- Ships in `3.0.4`, as its own production PR on `main` ahead of the release PR
+  (the release lineage needs the production content as a separate reviewed
+  commit). The `3.0.4` release commit stays a version bump.
 - `agent-browser` is a command-line browser driver, not a test runner. It has
   no `expect`; every assertion in `scripts/playwright_forward_ui.mjs` (about 120
   `expectVisible`/`assert` sites, the overflow checks, screenshots) must be
@@ -42,8 +42,7 @@ canonical UI command; only its engine changes.
 
 ## Approach
 
-1. Decide the task name. Recommended: `invoke ui-test`, with `playwright-test`
-   removed rather than aliased, so no gate can still name the old engine.
+1. Task name: `invoke ui-test`, with `playwright-test` removed rather than aliased, so no gate can still name the old engine.
 2. Port the checks in order: login, sync list, sync detail panels, the
    drift-policy and workload pages, support-bundle export, then the mobile and
    overflow checks. Prefer `agent-browser`'s text/accessibility snapshot for
@@ -72,9 +71,10 @@ script and task names come back together. No migration or runtime state.
 
 ## Decision Log
 
-- **Separate change, not part of 3.0.4.** The in-flight release gate and its
-  authorization evidence name `playwright-test`.
+- **Lands in 3.0.4 as a production PR.** The Playwright UI stage could not start
+  under host load, and the owner chose to move the gate rather than wait.
 - **Rename, do not alias.** An alias would let docs and authorization keep
   naming an engine that no longer runs.
-- **Open:** whether `agent-browser` can run headless in the release workflow
-  runner without a system Chrome install step.
+- **Open:** the release workflow runs `npx agent-browser install --with-deps`
+  (downloads Chrome for Testing); local runs use a system Chromium through
+  `AGENT_BROWSER_EXECUTABLE_PATH`. Both are unproven until the first gate run.

@@ -21,7 +21,7 @@ INIT_FILE = "forward_netbox/__init__.py"
 ALLOW_SHARED_RUNTIME_TESTS_ENV = "FORWARD_NETBOX_ALLOW_SHARED_RUNTIME_TESTS"
 ACTIVE_SYNC_STATUSES = ("queued", "syncing", "merging")
 ISOLATED_TEST_PROJECT_NAME = "forward-netbox-test"
-ISOLATED_PLAYWRIGHT_PROJECT_NAME = "forward-netbox-ui-test"
+ISOLATED_UI_PROJECT_NAME = "forward-netbox-ui-test"
 RELEASE_ARTIFACT_PROJECT_NAME = "forward-netbox-artifact-test"
 RELEASE_UPGRADE_PROJECT_NAME = "forward-netbox-artifact-upgrade"
 
@@ -469,19 +469,19 @@ def _run_ci_tests_in_isolated_runtime(context, *, test_label):
     )
 
 
-def _run_playwright_ui(context, *, env=None):
-    playwright_env = {**(env or {})}
-    playwright_env.setdefault(
-        "PLAYWRIGHT_DOCKER_PROJECT_NAME",
+def _run_ui_harness(context, *, env=None):
+    ui_env = {**(env or {})}
+    ui_env.setdefault(
+        "FORWARD_UI_DOCKER_PROJECT_NAME",
         context.forward_netbox.project_name,
     )
-    playwright_env.setdefault(
-        "PLAYWRIGHT_DOCKER_PROJECT_DIRECTORY",
+    ui_env.setdefault(
+        "FORWARD_UI_DOCKER_PROJECT_DIRECTORY",
         context.forward_netbox.compose_dir,
     )
     if not (
-        playwright_env.get("PLAYWRIGHT_EXECUTABLE_PATH")
-        or os.environ.get("PLAYWRIGHT_EXECUTABLE_PATH")
+        ui_env.get("AGENT_BROWSER_EXECUTABLE_PATH")
+        or os.environ.get("AGENT_BROWSER_EXECUTABLE_PATH")
     ):
         for candidate in (
             "/usr/bin/chromium",
@@ -489,9 +489,9 @@ def _run_playwright_ui(context, *, env=None):
             "/usr/bin/google-chrome",
         ):
             if Path(candidate).is_file():
-                playwright_env["PLAYWRIGHT_EXECUTABLE_PATH"] = candidate
+                ui_env["AGENT_BROWSER_EXECUTABLE_PATH"] = candidate
                 break
-    context.run("npm run test:ui", env=playwright_env)
+    context.run("npm run test:ui", env=ui_env)
 
 
 def _available_loopback_port():
@@ -500,9 +500,9 @@ def _available_loopback_port():
         return str(listener.getsockname()[1])
 
 
-def _run_playwright_in_isolated_runtime(context, *, project_name=None, host_port=None):
-    project_name = str(project_name or ISOLATED_PLAYWRIGHT_PROJECT_NAME)
-    host_port = str(host_port or os.environ.get("FORWARD_NETBOX_PLAYWRIGHT_HOST_PORT"))
+def _run_ui_in_isolated_runtime(context, *, project_name=None, host_port=None):
+    project_name = str(project_name or ISOLATED_UI_PROJECT_NAME)
+    host_port = str(host_port or os.environ.get("FORWARD_NETBOX_UI_HOST_PORT"))
     if not host_port or host_port.lower() == "none":
         host_port = _available_loopback_port()
     isolated = _compose_project_context(context, project_name)
@@ -529,14 +529,14 @@ def _run_playwright_in_isolated_runtime(context, *, project_name=None, host_port
                 isolated, "down --remove-orphans -v", env=compose_env
             ),
         )
-        _run_playwright_ui(
+        _run_ui_harness(
             context,
             env={
                 "NETBOX_URL": f"http://127.0.0.1:{host_port}",
                 "FORWARD_UI_HARNESS_ISOLATED": "true",
-                "PLAYWRIGHT_DOCKER_PROJECT_NAME": project_name,
-                "PLAYWRIGHT_DOCKER_PROJECT_DIRECTORY": context.forward_netbox.compose_dir,
-                "PLAYWRIGHT_ARTIFACT_DIR": f".playwright-artifacts/{project_name}",
+                "FORWARD_UI_DOCKER_PROJECT_NAME": project_name,
+                "FORWARD_UI_DOCKER_PROJECT_DIRECTORY": context.forward_netbox.compose_dir,
+                "FORWARD_UI_ARTIFACT_DIR": f".ui-artifacts/{project_name}",
             },
         )
     finally:
@@ -1070,9 +1070,9 @@ def _runtime_capacity_source_parameters(context, source_name):
     }
 
 
-@task(name="playwright-test")
-def playwright_test(context):
-    _run_playwright_in_isolated_runtime(context)
+@task(name="ui-test")
+def ui_test(context):
+    _run_ui_in_isolated_runtime(context)
 
 
 @task
@@ -2207,7 +2207,7 @@ def sync_release_gate(
         test_ci,
         bulk_merge_retry_scale_test,
         validation_org_query_audit_ci,
-        playwright_test,
+        ui_test,
         docs,
         package,
         # The upgrade gate used to live only in `.github/workflows/ci.yml`. When

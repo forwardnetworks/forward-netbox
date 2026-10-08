@@ -8,11 +8,11 @@ before publishing.
 | Documentation only | `invoke harness-check`, `invoke harness-test`, `invoke docs` |
 | Query map or NQE helper | Harness, lint, full Django tests, built-in NQE reference, and validation-org publication audit |
 | Forward API client | Lint, Django check, full tests, retry/rate/pagination coverage, and stored API-budget evidence |
-| Planning, branch, merge, or recovery | Lint, check, scenario tests, full tests, exact-version smoke, and Playwright for changed UI/API paths |
-| Validation, scope, drift, or ownership | Lint, check, scenarios, full tests, Playwright, ownership audit, and customer-equivalent sync evidence |
+| Planning, branch, merge, or recovery | Lint, check, scenario tests, full tests, exact-version smoke, and the UI harness for changed UI/API paths |
+| Validation, scope, drift, or ownership | Lint, check, scenarios, full tests, the UI harness, ownership audit, and customer-equivalent sync evidence |
 | NetBox model adapter | Lint, check, scenarios, full tests, repeat-sync no-op coverage, and targeted exact-version sync |
 | Optional plugin integration | Harness, lint, check, full tests, architecture audit, no-plugin startup, exact installed-plugin migration, live row shape, and repeat-sync idempotence |
-| UI/API workflow | Lint, check, full tests, Playwright, and browser verification |
+| UI/API workflow | Lint, check, full tests, the UI harness, and browser verification |
 | Release | Every core command below, fresh migration/install, customer-equivalent acceptance, and GitHub CI on the release commit and tag |
 
 ## Core Commands
@@ -24,13 +24,13 @@ invoke lint
 invoke check
 invoke scenario-test
 invoke test
-invoke playwright-test
+invoke ui-test
 invoke docs
 invoke package
 invoke ci
 ```
 
-Do not run Django or Playwright tests against the shared local runtime while a
+Do not run Django or UI harness tests against the shared local runtime while a
 Forward sync is queued, syncing, or merging. The test tasks inspect current
 `ForwardSync` state and use an isolated Compose project when the shared runtime
 is active or cannot be inspected.

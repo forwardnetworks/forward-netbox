@@ -9,8 +9,8 @@ Use this workflow before changing the repository.
 | Small docs update | Update docs, run `invoke harness-check` and docs build |
 | Query or NQE map change | Update query, tests, built-in NQE reference, and validation matrix if needed |
 | Sync behavior change | Create active plan, update tests first, run NetBox checks and tests |
-| UI/API behavior change | Create active plan, update tests, run `invoke playwright-test`, and update screenshots/docs when visible behavior changes |
-| Release | Follow the release playbook, verify GitHub CI on branch and tag, and keep Playwright proof in the local release gate |
+| UI/API behavior change | Create active plan, update tests, run `invoke ui-test`, and update screenshots/docs when visible behavior changes |
+| Release | Follow the release playbook, verify GitHub CI on branch and tag, and keep UI harness proof in the local release gate |
 
 ## Before Editing
 
@@ -35,7 +35,7 @@ invoke lint
 invoke check
 invoke scenario-test
 invoke test
-invoke playwright-test
+invoke ui-test
 ```
 
 For docs or release work, also run:

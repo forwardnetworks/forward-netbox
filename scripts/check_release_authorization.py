@@ -121,7 +121,7 @@ def _safe_environment_assignment(assignment: str) -> bool:
             "forward-netbox-release-gate",
             "forward-netbox-upgrade26",
         }
-    if name in ("FORWARD_NETBOX_HOST_PORT", PLAYWRIGHT_PORT_VARIABLE):
+    if name in ("FORWARD_NETBOX_HOST_PORT", UI_PORT_VARIABLE):
         return value.isdigit() and 1 <= int(value) <= 65535
     if name == "NETBOX_URL":
         match = re.fullmatch(r"http://127\.0\.0\.1:(?P<port>[1-9]\d{0,4})", value)
@@ -189,14 +189,14 @@ UPGRADE_FROM_VARIABLE = "FORWARD_NETBOX_UPGRADE_FROM_VERSION"
 # tag. Recorded in the evidence rather than hidden, exactly like the offline
 # upgrade discovery above.
 PATTERN_PARITY_VARIABLE = "FORWARD_NETBOX_PATTERN_PARITY_UNVERIFIED"
-# The one variable `invoke playwright-test` actually reads for where to
+# The one variable `invoke ui-test` actually reads for where to
 # connect. It is optional there too - the task picks a free loopback port when
 # it is unset - so it is optional here, value-bounded like the host port.
-PLAYWRIGHT_PORT_VARIABLE = "FORWARD_NETBOX_PLAYWRIGHT_HOST_PORT"
+UI_PORT_VARIABLE = "FORWARD_NETBOX_UI_HOST_PORT"
 OPTIONAL_ENVIRONMENT_VARIABLES = URL_VARIABLES | {
     UPGRADE_FROM_VARIABLE,
     PATTERN_PARITY_VARIABLE,
-    PLAYWRIGHT_PORT_VARIABLE,
+    UI_PORT_VARIABLE,
 }
 
 
@@ -219,14 +219,14 @@ def _environment_matches(
     `FORWARD_NETBOX_HOST_PORT`.
 
     `require_url` used to *demand* the pair for `ui-validation`, on the stated
-    grounds that the Playwright run must be told where to connect. That
-    justification did not survive inspection: `invoke playwright-test` takes no
-    port, and `_run_playwright_in_isolated_runtime` reads
-    `FORWARD_NETBOX_PLAYWRIGHT_HOST_PORT` - falling back to an auto-picked free
+    grounds that the UI run must be told where to connect. That
+    justification did not survive inspection: `invoke ui-test` takes no
+    port, and `_run_ui_in_isolated_runtime` reads
+    `FORWARD_NETBOX_UI_HOST_PORT` - falling back to an auto-picked free
     loopback port - then sets `NETBOX_URL` itself. So the rule required naming
     two variables that task never reads, and a truthful evidence line could not
     satisfy it. `ui-validation` now requires what the task actually reads and
-    nothing it does not: the release environment, with the Playwright port
+    nothing it does not: the release environment, with the UI port
     optional. `require_url` is kept for any evidence id that genuinely needs
     the pair; none does today.
     """
@@ -407,7 +407,7 @@ def _commands_satisfy(evidence_id: str, commands: list[list[str]]) -> bool:
     if evidence_id == "final-tree-full-gate":
         # No require_url: the host port pair is optional here, since `invoke ci`
         # runs wherever the operator's own stack leaves a port free. It stays
-        # mandatory for `ui-validation`, whose Playwright run must be told where
+        # mandatory for `ui-validation`, whose UI run must be told where
         # to connect. See `_environment_matches`.
         return _has_exact_invoke_task(
             commands,
@@ -435,12 +435,12 @@ def _commands_satisfy(evidence_id: str, commands: list[list[str]]) -> bool:
             )
         )
     if evidence_id == "ui-validation":
-        # The Playwright task reads FORWARD_NETBOX_PLAYWRIGHT_HOST_PORT, not the
+        # The UI task reads FORWARD_NETBOX_UI_HOST_PORT, not the
         # host-port pair, and picks its own port when that is unset - so the
         # pair is neither required nor forbidden. See `_environment_matches`.
         return _has_exact_invoke_task(
             commands,
-            "playwright-test",
+            "ui-test",
             environment=RELEASE_RUNTIME_ENVIRONMENT,
         )
     if evidence_id == "customer-equivalent-acceptance":

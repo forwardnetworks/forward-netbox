@@ -191,7 +191,7 @@ class ReleaseArtifactTaskTest(unittest.TestCase):
         self.assertNotIn("echo httpx", workflow)
 
         self.assertIn("npm ci", workflow)
-        self.assertIn("playwright install --with-deps chromium", workflow)
+        self.assertIn("agent-browser install --with-deps", workflow)
         self.assertNotIn("pip install --upgrade", workflow)
 
     def test_package_requires_reproducible_distribution_builder(self):
@@ -1236,36 +1236,36 @@ class SharedRuntimeTestGuardTaskTest(unittest.TestCase):
         )
         isolated_run.assert_not_called()
 
-    def test_playwright_test_always_uses_isolated_runtime(self):
+    def test_ui_test_always_uses_isolated_runtime(self):
         context = self._context()
         with (
-            patch.object(tasks, "_run_playwright_ui") as playwright_run,
-            patch.object(tasks, "_run_playwright_in_isolated_runtime") as isolated_run,
+            patch.object(tasks, "_run_ui_harness") as ui_run,
+            patch.object(tasks, "_run_ui_in_isolated_runtime") as isolated_run,
             patch.dict(os.environ, {}, clear=False),
         ):
-            tasks.playwright_test.body(context)
+            tasks.ui_test.body(context)
 
-        playwright_run.assert_not_called()
+        ui_run.assert_not_called()
         isolated_run.assert_called_once_with(context)
 
-    def test_playwright_ui_targets_selected_compose_runtime(self):
+    def test_ui_harness_targets_selected_compose_runtime(self):
         context = self._context()
 
-        tasks._run_playwright_ui(context)
+        tasks._run_ui_harness(context)
 
         context.run.assert_called_once()
         self.assertEqual(context.run.call_args.args[0], "npm run test:ui")
-        playwright_env = context.run.call_args.kwargs["env"]
+        ui_env = context.run.call_args.kwargs["env"]
         self.assertEqual(
-            playwright_env["PLAYWRIGHT_DOCKER_PROJECT_NAME"],
+            ui_env["FORWARD_UI_DOCKER_PROJECT_NAME"],
             "forward-netbox",
         )
         self.assertEqual(
-            playwright_env["PLAYWRIGHT_DOCKER_PROJECT_DIRECTORY"],
+            ui_env["FORWARD_UI_DOCKER_PROJECT_DIRECTORY"],
             "/tmp/forward-netbox",
         )
 
-    def test_playwright_isolated_runtime_uses_separate_project_and_port(self):
+    def test_ui_isolated_runtime_uses_separate_project_and_port(self):
         context = self._context()
         compose_calls = []
 
@@ -1281,9 +1281,9 @@ class SharedRuntimeTestGuardTaskTest(unittest.TestCase):
 
         with (
             patch.object(tasks, "docker_compose", side_effect=fake_docker_compose),
-            patch.object(tasks, "_run_playwright_ui") as playwright_run,
+            patch.object(tasks, "_run_ui_harness") as ui_run,
         ):
-            tasks._run_playwright_in_isolated_runtime(
+            tasks._run_ui_in_isolated_runtime(
                 context,
                 project_name="forward-netbox-ui-test",
                 host_port="18081",
@@ -1306,16 +1306,16 @@ class SharedRuntimeTestGuardTaskTest(unittest.TestCase):
             ),
         )
         self.assertEqual(compose_calls[-1][0], "forward-netbox-ui-test")
-        playwright_run.assert_called_once()
-        playwright_env = playwright_run.call_args.kwargs["env"]
-        self.assertEqual(playwright_env["NETBOX_URL"], "http://127.0.0.1:18081")
-        self.assertEqual(playwright_env["FORWARD_UI_HARNESS_ISOLATED"], "true")
+        ui_run.assert_called_once()
+        ui_env = ui_run.call_args.kwargs["env"]
+        self.assertEqual(ui_env["NETBOX_URL"], "http://127.0.0.1:18081")
+        self.assertEqual(ui_env["FORWARD_UI_HARNESS_ISOLATED"], "true")
         self.assertEqual(
-            playwright_env["PLAYWRIGHT_DOCKER_PROJECT_NAME"],
+            ui_env["FORWARD_UI_DOCKER_PROJECT_NAME"],
             "forward-netbox-ui-test",
         )
         self.assertEqual(
-            playwright_env["PLAYWRIGHT_DOCKER_PROJECT_DIRECTORY"],
+            ui_env["FORWARD_UI_DOCKER_PROJECT_DIRECTORY"],
             "/tmp/forward-netbox",
         )
 

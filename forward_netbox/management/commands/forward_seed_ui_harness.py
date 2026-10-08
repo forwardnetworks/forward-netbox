@@ -27,7 +27,7 @@ from forward_netbox.utilities.ownership import required_ownership_domains
 
 
 class Command(BaseCommand):
-    help = "Seed synthetic Forward NetBox records for the Playwright UI harness."
+    help = "Seed synthetic Forward NetBox records for the agent-browser UI harness."
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -59,7 +59,7 @@ class Command(BaseCommand):
         if os.getenv("FORWARD_UI_HARNESS_ISOLATED", "").lower() != "true":
             raise CommandError(
                 "Synthetic UI fixtures may only be seeded in the isolated "
-                "`invoke playwright-test` runtime."
+                "`invoke ui-test` runtime."
             )
         user = self._ensure_superuser(
             username=options["username"],

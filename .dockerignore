@@ -23,7 +23,7 @@ dist
 build
 *.egg-info
 
-.playwright-artifacts
+.ui-artifacts
 .forward-netbox-reports
 output
 /scratchpad/
