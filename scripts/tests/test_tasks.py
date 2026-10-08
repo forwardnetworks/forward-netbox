@@ -1301,7 +1301,7 @@ class SharedRuntimeTestGuardTaskTest(unittest.TestCase):
             compose_calls[1],
             (
                 "forward-netbox-ui-test",
-                "up -d --build --wait --wait-timeout 600 netbox",
+                "up -d --build --wait --wait-timeout 1800 netbox",
                 {"FORWARD_NETBOX_HOST_PORT": "18081"},
             ),
         )

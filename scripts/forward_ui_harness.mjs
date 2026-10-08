@@ -128,7 +128,21 @@ async function waitFor(expression, description) {
     }
     await sleep(250);
   }
-  throw new Error(`timed out waiting for ${description} (last: ${last})`);
+  // A timeout with no picture of the page is hard to act on: say where the
+  // browser was and what it was showing, and keep a screenshot.
+  let where = "page state unavailable";
+  try {
+    const state = evaluate(
+      `({url: location.href, title: document.title, text: document.body.innerText.slice(0, 600)})`,
+    );
+    where = `url=${state.url} title=${js(state.title)} text=${js(state.text)}`;
+    browser(["screenshot", path.join(artifactDir, "failure.jpg")]);
+  } catch (error) {
+    where = `page state unavailable: ${error.message}`;
+  }
+  throw new Error(
+    `timed out waiting for ${description} (last: ${last}); ${where}`,
+  );
 }
 
 const js = (value) => JSON.stringify(value);
@@ -165,16 +179,20 @@ function open(url) {
   browser(["open", url]);
 }
 
-// Click a visible link by its accessible name (substring unless exact).
+// Click the first visible link whose text matches (substring unless exact). The
+// click happens in the page, on the element itself, so it never lands on a
+// different link that happens to share part of the name.
 async function clickLink(name, { exact = false } = {}) {
+  const matches = `(a) => { const t = a.textContent.trim(); ` +
+    `return ${exact ? `t === ${js(name)}` : `t.includes(${js(name)})`} ` +
+    `&& a.getClientRects().length > 0; }`;
   await waitFor(
-    `Array.from(document.querySelectorAll("a")).some((a) => {` +
-      `const t = a.textContent.trim();` +
-      `return ${exact ? `t === ${js(name)}` : `t.includes(${js(name)})`} && a.getClientRects().length > 0;` +
-      `})`,
+    `Array.from(document.querySelectorAll("a")).some(${matches})`,
     `link ${js(name)}`,
   );
-  browser(["find", "role", "link", "click", "--name", name, ...(exact ? ["--exact"] : [])]);
+  evaluate(
+    `Array.from(document.querySelectorAll("a")).find(${matches}).click(), true`,
+  );
 }
 
 async function clickLinkMatching(pattern) {
@@ -260,10 +278,11 @@ async function main() {
       redirect: "manual",
     });
     const location = anonymous.headers.get("location") ?? "";
+    const redirect = new URL(location, baseURL);
     const bouncedToLogin =
       [301, 302, 303, 307, 308].includes(anonymous.status) &&
-      location.includes("/login/") &&
-      location.includes("next=%2Fplugins%2Fforward%2Fsync%2F");
+      redirect.pathname === "/login/" &&
+      redirect.searchParams.get("next") === "/plugins/forward/sync/";
     assert(
       bouncedToLogin || anonymous.status === 401,
       `unauthenticated sync list did not require authentication ` +

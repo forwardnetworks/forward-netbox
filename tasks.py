@@ -514,7 +514,7 @@ def _run_ui_in_isolated_runtime(context, *, project_name=None, host_port=None):
         # `up --wait` itself only exits 1 for it.
         result = docker_compose(
             isolated,
-            "up -d --build --wait --wait-timeout 600 netbox",
+            "up -d --build --wait --wait-timeout 1800 netbox",
             env=compose_env,
             hide=True,
         )
