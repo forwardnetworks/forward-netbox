@@ -40,6 +40,17 @@ canonical UI command; only its engine changes.
   `agent-workflow.md`, `code-boundary-map.md`, `quality-score.md`,
   `harness-engineering-alignment.md`.
 
+## Also in this change: one search-cache job per rescued shard
+
+NetBox 4.7.0 queues one "Search cache update" job per commit scope
+(netbox-community/netbox#23259). `_isolate_bulk_objects` saves each row in its
+own savepoint, so a shard that fell back after a bulk-write failure queued one
+job per row. The rows that save are now indexed together in one transaction when
+the fallback ends; a row that fails is never indexed. Touches
+`forward_netbox/utilities/apply_engine_bulk.py` and `test_apply_engine.py`. The
+per-row adapter paths (`sync_ipam.py`, `sync_cable.py`, `ownership.py`) are
+unchanged and not yet measured.
+
 ## Approach
 
 1. Task name: `invoke ui-test`, with `playwright-test` removed rather than aliased, so no gate can still name the old engine.
