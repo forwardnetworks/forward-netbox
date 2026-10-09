@@ -24,7 +24,7 @@ not replace the final release gate or customer-equivalent acceptance run.
 - Drift, health, audit, and support exports treat ownership finalization as a
   separate required condition after merge.
 - CI and local gates cover sensitive-content scanning, pre-commit, docs, Django
-  checks, migrations, focused scenarios, the full plugin suite, Playwright, and
+  checks, migrations, focused scenarios, the full plugin suite, the UI harness, and
   packaging.
 - Shipped NQE maps and model contracts are versioned with the plugin.
 
@@ -56,7 +56,7 @@ the same commit and exact runtime matrix:
   regressions pass
 - `invoke harness-check`, `invoke harness-test`, `invoke lint`, `invoke check`,
   `invoke scenario-test`, `invoke test`, `invoke docs`, and `invoke ci` pass
-- Playwright and package installation tests pass against NetBox `4.6.5` with
+- The UI harness and package installation tests pass against NetBox `4.6.5` with
   Branching `1.1.1`
 - `forward_ownership_audit --fail-on-inconsistent` passes after upgraded syncs
   establish current ownership generations

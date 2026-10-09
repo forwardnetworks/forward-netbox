@@ -1,4 +1,6 @@
+import logging
 from collections import defaultdict
+from contextlib import contextmanager
 from typing import Any
 
 from netbox_branching.contextvars import active_branch
@@ -86,6 +88,64 @@ def _interfaces_by_device_and_name(pairs, *, devices_by_name):
     return found
 
 
+logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _one_search_cache_update(rows):
+    """Index the rows saved inside this block with one search-cache update.
+
+    NetBox queues a search-cache update per commit scope. ``_isolate_bulk_objects``
+    saves every row in its own savepoint, which is a scope of its own, so a shard
+    that fell back queued one "Search cache update" job per row. Inside this
+    block the per-save indexing is held back, and the rows that actually saved
+    are indexed together in one transaction when it ends: one job for the shard.
+
+    ``rows`` is filled by the caller with the saved objects' signal arguments,
+    after each row's savepoint has committed, so a row that failed and rolled
+    back is never indexed. If NetBox does not expose the search backend this way
+    the block does nothing and each save indexes itself, as before.
+    """
+    try:
+        from netbox.search.backends import search_backend
+    except ImportError:
+        yield None
+        return
+    real = getattr(search_backend, "caching_handler", None)
+    if real is None:
+        yield None
+        return
+
+    held = []
+
+    def hold(sender, instance, created=False, using=None, **kwargs):
+        held.append((sender, instance, created, using))
+
+    had_own_attribute = "caching_handler" in vars(search_backend)
+    search_backend.caching_handler = hold
+    try:
+        yield held
+    finally:
+        if had_own_attribute:
+            search_backend.caching_handler = real
+        else:
+            del search_backend.caching_handler
+        saved = list(rows)
+        if saved:
+            try:
+                alias = saved[0][3]
+                from django.db import DEFAULT_DB_ALIAS
+                from django.db import transaction
+
+                with transaction.atomic(using=alias or DEFAULT_DB_ALIAS):
+                    for sender, instance, created, using in saved:
+                        real(sender, instance, created=created, using=using)
+            except JobTimeoutException:
+                raise
+            except Exception:  # noqa: BLE001 - indexing must not fail the apply
+                logger.exception("Search cache: indexing a rescued shard failed")
+
+
 def _isolate_bulk_objects(
     model, objects, operation, runner, model_string, *, fields=None
 ):
@@ -95,6 +155,9 @@ def _isolate_bulk_objects(
     bad row would otherwise fail the entire shard. This saves each object in its
     own savepoint — good rows apply, the offending row(s) are recorded as
     ingestion issues — restoring the per-row resilience the adapter path has.
+
+    The rows that saved are indexed for search together, once, rather than once
+    each.
     """
     from django.db import DEFAULT_DB_ALIAS
     from django.db import transaction
@@ -102,22 +165,32 @@ def _isolate_bulk_objects(
     branch = active_branch.get()
     using = branch.connection_name if branch is not None else DEFAULT_DB_ALIAS
 
-    for obj in objects:
-        try:
-            with transaction.atomic(using=using):
-                if operation == "create":
-                    obj.save(force_insert=True)
-                else:
-                    obj.save(update_fields=list(fields) if fields else None)
-        except JobTimeoutException:
-            raise
-        except Exception as exc:  # noqa: BLE001 - isolate one row, keep the shard
-            runner._record_issue(
-                model_string,
-                f"Bulk {operation} row failed; isolated so the shard continues: {exc}",
-                {"name": getattr(obj, "name", None), "pk": getattr(obj, "pk", None)},
-                exception=exc,
-            )
+    saved_rows = []
+    with _one_search_cache_update(saved_rows) as held:
+        for obj in objects:
+            if held is not None:
+                del held[:]
+            try:
+                with transaction.atomic(using=using):
+                    if operation == "create":
+                        obj.save(force_insert=True)
+                    else:
+                        obj.save(update_fields=list(fields) if fields else None)
+            except JobTimeoutException:
+                raise
+            except Exception as exc:  # noqa: BLE001 - isolate one row, keep the shard
+                runner._record_issue(
+                    model_string,
+                    f"Bulk {operation} row failed; isolated so the shard continues: {exc}",
+                    {
+                        "name": getattr(obj, "name", None),
+                        "pk": getattr(obj, "pk", None),
+                    },
+                    exception=exc,
+                )
+            else:
+                if held is not None:
+                    saved_rows.extend(held)
 
 
 def _branch_is_active():

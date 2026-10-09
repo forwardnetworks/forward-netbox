@@ -49,7 +49,7 @@ class ReleaseAuthorizationTest(unittest.TestCase):
             "FORWARD_NETBOX_POSTGRES_DATA_PATH=netbox-postgres-data "
             "FORWARD_NETBOX_WORKER_AUTORELOAD=0 NETBOX_VER=v4.7.2 "
             "FORWARD_NETBOX_HOST_PORT=18081 NETBOX_URL=http://127.0.0.1:18081 "
-            "invoke playwright-test` passed 14 desktop and mobile checks, 0 failures."
+            "invoke ui-test` passed 14 desktop and mobile checks, 0 failures."
         ),
         "ownership-audit": (
             "`rtk docker compose exec netbox python manage.py "
@@ -319,7 +319,7 @@ class ReleaseAuthorizationTest(unittest.TestCase):
             )
 
     def test_ui_validation_no_longer_demands_the_url_pair(self):
-        # The rule required naming two variables `invoke playwright-test` never
+        # The rule required naming two variables `invoke ui-test` never
         # reads - it picks its own loopback port and sets NETBOX_URL itself -
         # so a truthful evidence line could not satisfy it.
         evidence = self.VALID_EVIDENCE["ui-validation"].replace(
@@ -335,17 +335,17 @@ class ReleaseAuthorizationTest(unittest.TestCase):
     def test_ui_validation_accepts_the_port_the_task_actually_reads(self):
         evidence = self.VALID_EVIDENCE["ui-validation"].replace(
             "FORWARD_NETBOX_HOST_PORT=18081 NETBOX_URL=http://127.0.0.1:18081 ",
-            "FORWARD_NETBOX_PLAYWRIGHT_HOST_PORT=18081 ",
+            "FORWARD_NETBOX_UI_HOST_PORT=18081 ",
         )
         result = release_authorization.check_release_authorization(
             self._plan(evidence_overrides={"ui-validation": evidence})
         )
         self.assertTrue(result["authorized_evidence_ids"])
 
-    def test_ui_validation_still_bounds_the_playwright_port(self):
+    def test_ui_validation_still_bounds_the_ui_port(self):
         evidence = self.VALID_EVIDENCE["ui-validation"].replace(
             "FORWARD_NETBOX_HOST_PORT=18081 NETBOX_URL=http://127.0.0.1:18081 ",
-            "FORWARD_NETBOX_PLAYWRIGHT_HOST_PORT=99999 ",
+            "FORWARD_NETBOX_UI_HOST_PORT=99999 ",
         )
         with self.assertRaisesRegex(ValueError, "placeholder_evidence"):
             release_authorization.check_release_authorization(

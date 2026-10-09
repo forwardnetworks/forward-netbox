@@ -71,7 +71,9 @@ class UiHarnessDependencyTest(unittest.TestCase):
             ]:
                 (installed / name).mkdir(parents=True)
             with mock.patch.object(preflight, "NODE_MODULES", installed):
-                self.assertIn("playwright", preflight.check_ui_harness_dependencies())
+                self.assertIn(
+                    "agent-browser", preflight.check_ui_harness_dependencies()
+                )
 
     def test_rejects_missing_dependencies(self):
         with mock.patch.object(preflight, "NODE_MODULES", Path("/nonexistent")):

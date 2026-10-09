@@ -174,6 +174,66 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         self.assertEqual(Site.objects.filter(name="Bad").count(), 0)
         runner._record_issue.assert_called_once()
 
+    def test_isolate_bulk_objects_indexes_a_rescued_shard_once(self):
+        # A shard that fell back to row-by-row saves must cost the search cache
+        # one update, not one per row: every "Search cache update" is a queued
+        # job, and a large shard used to queue thousands.
+        from netbox.search import deferred
+
+        from forward_netbox.utilities.apply_engine_bulk import _isolate_bulk_objects
+
+        flushed = []
+        sites = [Site(name=f"Rescued {i}", slug=f"rescued-{i}") for i in range(25)]
+
+        with patch.object(
+            deferred, "_flush", lambda batch, using: flushed.append(dict(batch))
+        ):
+            with self.captureOnCommitCallbacks(execute=True):
+                _isolate_bulk_objects(
+                    Site, sites, "create", self._runner(), "dcim.site"
+                )
+
+        self.assertEqual(Site.objects.filter(slug__startswith="rescued-").count(), 25)
+        self.assertEqual(len(flushed), 1)
+        self.assertEqual(len(flushed[0]), 25)
+
+    def test_isolate_bulk_objects_does_not_index_a_row_that_failed(self):
+        from netbox.search import deferred
+
+        from forward_netbox.utilities.apply_engine_bulk import _isolate_bulk_objects
+
+        Site.objects.create(name="Taken", slug="taken")
+        flushed = []
+        good = Site(name="Good", slug="good")
+        bad = Site(name="Bad", slug="taken")  # duplicate slug -> IntegrityError
+
+        with patch.object(
+            deferred, "_flush", lambda batch, using: flushed.append(dict(batch))
+        ):
+            with self.captureOnCommitCallbacks(execute=True):
+                _isolate_bulk_objects(
+                    Site, [good, bad], "create", self._runner(), "dcim.site"
+                )
+
+        indexed_pks = {pk for batch in flushed for (_type, pk) in batch}
+        self.assertEqual(indexed_pks, {good.pk})
+
+    def test_isolate_bulk_objects_restores_the_search_handler(self):
+        from netbox.search.backends import search_backend
+
+        from forward_netbox.utilities.apply_engine_bulk import _isolate_bulk_objects
+
+        before = search_backend.caching_handler
+        _isolate_bulk_objects(
+            Site,
+            [Site(name="Restore", slug="restore")],
+            "create",
+            self._runner(),
+            "dcim.site",
+        )
+        self.assertEqual(search_backend.caching_handler, before)
+        self.assertNotIn("caching_handler", vars(search_backend))
+
     def test_bulk_orm_creates_and_updates_manufacturers(self):
         self.sync.parameters["enable_bulk_orm"] = True
         self.sync.save(update_fields=["parameters"])

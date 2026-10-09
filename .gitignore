@@ -146,9 +146,8 @@ dmypy.json
 
 # Browser harness artifacts
 node_modules/
-playwright-report/
 test-results/
-.playwright-artifacts/
+.ui-artifacts/
 
 # Local generated operator reports
 .forward-netbox-reports/

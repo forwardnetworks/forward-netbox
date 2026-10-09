@@ -77,7 +77,7 @@ invoke lint
 invoke check
 invoke scenario-test
 invoke test
-invoke playwright-test
+invoke ui-test
 invoke docs
 invoke package
 python -m twine check dist/*

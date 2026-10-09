@@ -152,7 +152,7 @@ REQUIRED_TEXT = {
     "docs/00_Project_Knowledge/validation-matrix.md": [
         "invoke harness-check",
         "invoke harness-test",
-        "invoke playwright-test",
+        "invoke ui-test",
         "invoke lint",
         "invoke check",
         "invoke scenario-test",
@@ -169,7 +169,7 @@ REQUIRED_TEXT = {
         "Before Editing",
         "Before Commit",
         "invoke harness-test",
-        "invoke playwright-test",
+        "invoke ui-test",
     ],
     "docs/00_Project_Knowledge/code-boundary-map.md": [
         "Forward API Boundary",
@@ -187,7 +187,7 @@ REQUIRED_TEXT = {
         "PyPI",
         "twine",
         "invoke harness-test",
-        "invoke playwright-test",
+        "invoke ui-test",
     ],
     "docs/03_Plans/plan-template.md": [
         "Goal",

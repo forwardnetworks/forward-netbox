@@ -2,14 +2,14 @@
 
 Every check here is sub-second and fails closed. The point is ordering: the
 gate's expensive stages (docker bring-up, the ~13-minute Django suite, the
-Playwright run) sit behind these, so a one-line version mismatch or a missing
+UI harness run) sit behind these, so a one-line version mismatch or a missing
 npm dependency is reported in seconds instead of after half an hour.
 
 Releasing 2.6.3 cost six ~35-minute gate runs, and every failure was
 detectable statically:
 
 * a hardcoded plugin version left at the previous release
-* the Playwright package never installed, surfaced ~30 minutes in
+* the UI harness package never installed, surfaced ~30 minutes in
 
 Both are covered below.
 """
@@ -135,7 +135,7 @@ def check_version_surfaces() -> str:
 
 
 def check_ui_harness_dependencies() -> str:
-    """The Playwright package must be installed before the gate starts.
+    """The UI harness package must be installed before the gate starts.
 
     `invoke ci` runs the UI suite last, so a missing `npm install` was only
     reported after the full Django suite had already passed.

@@ -77,7 +77,7 @@ from workers in the shared runtime even when no production sync is active. All
 alternate test, UI, and artifact projects force a project-scoped named Postgres
 volume; a configured `FORWARD_NETBOX_POSTGRES_DATA_PATH` host bind is never
 inherited. The explicit `FORWARD_NETBOX_ALLOW_SHARED_RUNTIME_TESTS=1` override
-is reserved for intentional operator use. `invoke playwright-test` always uses
+is reserved for intentional operator use. `invoke ui-test` always uses
 an isolated compose project because its deterministic UI fixtures intentionally
 create sources, syncs, ingestions, issues, and jobs.
 
@@ -106,7 +106,7 @@ branch-heavy regression suite.
 
 The Docker build context is intentionally pruned by `.dockerignore`. Keep large
 local artifacts such as `development/logs/`, virtualenvs, `site/`, `dist/`,
-`node_modules/`, and Playwright output out of the image context; otherwise the
+`node_modules/`, and UI harness output out of the image context; otherwise the
 first isolated test run spends most of its time uploading irrelevant files to
 the Docker builder.
 
@@ -180,21 +180,21 @@ invoke smoke-sync
 invoke sync-release-gate --sync-ids '<sync id>'
 ```
 
-Use `invoke playwright-test` for the deterministic UI harness. It applies pending
+Use `invoke ui-test` for the deterministic UI harness. It applies pending
 Django migrations, seeds synthetic Forward records in the Docker NetBox container,
 logs in through the browser, visits the sync and ingestion workflow pages, and
-writes local screenshots plus a JSON summary under `.playwright-artifacts/`.
-Set `PLAYWRIGHT_SKIP_MIGRATE=true` only when the target database has already been
+writes local screenshots plus a JSON summary under `.ui-artifacts/`.
+Set `FORWARD_UI_SKIP_MIGRATE=true` only when the target database has already been
 migrated by the caller, as in GitHub CI.
 The task brings up the temporary `forward-netbox-ui-test` compose project on an
-available loopback port; set `FORWARD_NETBOX_PLAYWRIGHT_HOST_PORT` when a fixed
+available loopback port; set `FORWARD_NETBOX_UI_HOST_PORT` when a fixed
 port is required. The fixture command refuses to run outside this isolated
 runtime.
 
 ```bash
-npm ci
-npx playwright install chromium
-invoke playwright-test
+npm ci                          # installs the pinned agent-browser
+npx agent-browser install       # or point AGENT_BROWSER_EXECUTABLE_PATH at a system Chromium
+invoke ui-test
 ```
 
 ## Reset Guidance

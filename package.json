@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:ui": "node scripts/playwright_forward_ui.mjs"
+    "test:ui": "node scripts/forward_ui_harness.mjs"
   },
   "devDependencies": {
-    "playwright": "1.59.1"
+    "agent-browser": "0.38.2"
   }
 }
