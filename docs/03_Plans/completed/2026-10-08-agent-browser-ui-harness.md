@@ -89,3 +89,8 @@ script and task names come back together. No migration or runtime state.
 - **Open:** the release workflow runs `npx agent-browser install --with-deps`
   (downloads Chrome for Testing); local runs use a system Chromium through
   `AGENT_BROWSER_EXECUTABLE_PATH`. Both are unproven until the first gate run.
+
+## Completion
+
+Merged as #540 (the pre-push `invoke ci` gate passed on the branch) and shipped in
+`3.0.4`.
