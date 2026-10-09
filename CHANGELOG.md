@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v3.0.4
+
+Release candidate; OSPF instance name clashes keep a stable per-process name instead of being skipped; Infoblox and Palo Alto endpoints are named by vendor; netbox-dlm 0.10.1 and 0.10.2 accepted; the UI gate runs on agent-browser; support bundle gains endpoint mask, site placement and fallback-reason figures; tested on NetBox 4.7.2 and netbox-branching 1.2.1
+
 ## v3.0.3
 
 Static routes in the global table import; site-relabel repair releases BGP address families; primary IP falls back to the management address when a tag cannot resolve; interfaces holding a VLAN from a previous site are cleared instead of refused on every sync; scrapli capped so NetBox starts with netbox-validity; OSPF instances named per VRF for netbox-routing 0.5.0; support bundle gains dependency versions, scope-report age, site mismatch, a primary-IP split and mask breakdown, and per-rule issue counts; tested on NetBox 4.7.2 and netbox-branching 1.2.1
