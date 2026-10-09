@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v3.0.4
 
-Release candidate; OSPF instance name clashes keep a stable per-process name instead of being skipped; Infoblox and Palo Alto endpoints are named by vendor; netbox-dlm 0.10.1 and 0.10.2 accepted; the UI gate runs on agent-browser; support bundle gains endpoint mask, site placement and fallback-reason figures; tested on NetBox 4.7.2 and netbox-branching 1.2.1
+OSPF instance name clashes keep a stable per-process name instead of being skipped; Infoblox and Palo Alto endpoints are named by vendor; netbox-dlm 0.10.1 and 0.10.2 accepted; the UI gate runs on agent-browser; support bundle gains endpoint mask, site placement and fallback-reason figures; tested on NetBox 4.7.2 and netbox-branching 1.2.1
 
 ## v3.0.3
 
