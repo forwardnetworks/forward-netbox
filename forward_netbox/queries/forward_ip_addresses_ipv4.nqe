@@ -18,6 +18,7 @@ subinterface_ipv4(forward_netbox_shard_keys: List<String>) =
   where address.prefixLength >= 31 || address.ip != broadcastAddress(subnet)
   select {
     device: device.name,
+    virtual_rank: if isPresent(device.system.physicalName) && device.system.physicalName != device.name then 1 else 0,
     interface: interface.name,
     vrf: if isPresent(subinterface.networkInstanceName)
       then if subinterface.networkInstanceName != "default" then subinterface.networkInstanceName else null : String
@@ -41,6 +42,7 @@ bridge_ipv4(forward_netbox_shard_keys: List<String>) =
   where address.prefixLength >= 31 || address.ip != broadcastAddress(subnet)
   select {
     device: device.name,
+    virtual_rank: if isPresent(device.system.physicalName) && device.system.physicalName != device.name then 1 else 0,
     interface: interface.name,
     vrf: if isPresent(interface.bridge.networkInstanceName)
       then if interface.bridge.networkInstanceName != "default" then interface.bridge.networkInstanceName else null : String
@@ -64,6 +66,7 @@ tunnel_ipv4(forward_netbox_shard_keys: List<String>) =
   where address.prefixLength >= 31 || address.ip != broadcastAddress(subnet)
   select {
     device: device.name,
+    virtual_rank: if isPresent(device.system.physicalName) && device.system.physicalName != device.name then 1 else 0,
     interface: interface.name,
     vrf: if isPresent(interface.tunnel.networkInstanceName)
       then if interface.tunnel.networkInstanceName != "default" then interface.tunnel.networkInstanceName else null : String
@@ -87,6 +90,7 @@ routed_vlan_ipv4(forward_netbox_shard_keys: List<String>) =
   where address.prefixLength >= 31 || address.ip != broadcastAddress(subnet)
   select {
     device: device.name,
+    virtual_rank: if isPresent(device.system.physicalName) && device.system.physicalName != device.name then 1 else 0,
     interface: interface.name,
     vrf: if isPresent(interface.routedVlan.networkInstanceName)
       then if interface.routedVlan.networkInstanceName != "default" then interface.routedVlan.networkInstanceName else null : String
@@ -114,8 +118,12 @@ global_rows(forward_netbox_shard_keys: List<String>) =
   group row as grouped_rows by row.host_ip as host_ip
   let chosen_prefix_length = max(foreach candidate in grouped_rows
     select candidate.prefix_length)
+  let chosen_rank = min(foreach candidate in grouped_rows
+    where candidate.prefix_length == chosen_prefix_length
+    select candidate.virtual_rank)
   let chosen_device = min(foreach candidate in grouped_rows
     where candidate.prefix_length == chosen_prefix_length
+      && candidate.virtual_rank == chosen_rank
     select candidate.device)
   let chosen_interface = min(foreach candidate in grouped_rows
     where candidate.prefix_length == chosen_prefix_length
@@ -137,7 +145,10 @@ vrf_candidate_rows(forward_netbox_shard_keys: List<String>) =
 vrf_rows(forward_netbox_shard_keys: List<String>) =
   foreach row in vrf_candidate_rows(forward_netbox_shard_keys)
   group row as grouped_rows by {address: row.address, vrf: row.vrf} as key
+  let chosen_rank = min(foreach candidate in grouped_rows
+    select candidate.virtual_rank)
   let chosen_device = min(foreach candidate in grouped_rows
+    where candidate.virtual_rank == chosen_rank
     select candidate.device)
   let chosen_interface = min(foreach candidate in grouped_rows
     where candidate.device == chosen_device

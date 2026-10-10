@@ -24,3 +24,28 @@ class IpAddressDedupQueryTest(SimpleTestCase):
 
     def test_ipv6_dedup_pins_interface_to_device(self):
         self._assert_interface_pinned_to_device("forward_ip_addresses_ipv6.nqe")
+
+    # A virtual system or vdom reports its chassis's management address, and the
+    # dedup hands each address to one device. The physical device must win even
+    # when a virtual one sorts first by name; only a group with no physical
+    # holder falls back to the lowest name.
+    def _assert_physical_device_preferred(self, filename):
+        source = read_builtin_query_source(filename)
+        self.assertEqual(
+            source.count("virtual_rank: if isPresent(device.system.physicalName)"),
+            4,
+            f"{filename}: every candidate source must rank a virtual device "
+            "(physicalName differs from its name) after a physical one.",
+        )
+        self.assertEqual(
+            source.count("candidate.virtual_rank == chosen_rank"),
+            2,
+            f"{filename}: both global and VRF dedup must pick the device "
+            "among the lowest-ranked (physical) candidates.",
+        )
+
+    def test_ipv4_dedup_prefers_the_physical_device(self):
+        self._assert_physical_device_preferred("forward_ip_addresses_ipv4.nqe")
+
+    def test_ipv6_dedup_prefers_the_physical_device(self):
+        self._assert_physical_device_preferred("forward_ip_addresses_ipv6.nqe")
