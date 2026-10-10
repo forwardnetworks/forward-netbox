@@ -62,7 +62,7 @@ netbox-validity = {version = "3.6.0", optional = true, python = ">=3.12,<3.15"}
 # requires only `scrapli>=2022.07.30`. scrapli 2026.10.3 removed `AsyncDriver`,
 # so an unconstrained install stops NetBox starting. 2026.2.20 is the version
 # this plugin is validated with.
-scrapli = {version = ">=2022.7.30,<2026.10", optional = true, python = ">=3.12,<3.15"}
+scrapli = {version = ">=2022.7.30,<2026.11", optional = true, python = ">=3.12,<3.15"}
 
 [tool.poetry.extras]
 dlm = ["netbox-dlm"]
