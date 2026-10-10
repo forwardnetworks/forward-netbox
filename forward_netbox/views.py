@@ -486,6 +486,7 @@ def _primary_ip_bundle_payload(sync):
     all_missing = Device.objects.filter(
         primary_ip4__isnull=True, primary_ip6__isnull=True
     )
+    fallback_reasons = _primary_ip_fallback_reasons(sync)
     return {
         "enabled": enabled,
         "management_ip_fallback_enabled": primary_ip_from_management_ip_enabled(sync),
@@ -520,7 +521,15 @@ def _primary_ip_bundle_payload(sync):
         "site_placement": _site_placement(devices),
         # Why the management-address fallback left devices bare, read back from
         # the ingestion's own job log so no one has to find the line.
-        "fallback_reasons": _primary_ip_fallback_reasons(sync),
+        "fallback_reasons": fallback_reasons,
+        # The part of the bare count the fallback summary does not explain.
+        # Shared, unplaced and ambiguous management addresses are accounted
+        # for there; what remains is what to look at. None without a summary.
+        "without_primary_ip_not_in_fallback_summary": (
+            max(missing.count() - fallback_reasons["left_without_primary_ip"], 0)
+            if fallback_reasons
+            else None
+        ),
     }
 
 

@@ -519,6 +519,38 @@ Cause and remediation:
   by one summary issue, so one parent mismatch cannot create thousands of issue
   records.
 
+## Devices Have No Primary IP
+
+Symptoms:
+
+- The support bundle's `primary_ip.without_primary_ip` is large.
+- The sync log says `N device(s) left without a primary IP from the management
+  address`.
+
+Read the bundle's `primary_ip.fallback_reasons` first; each bucket has a
+different answer:
+
+- **`shared_with_another_device`** - expected. A Palo Alto virtual system or a
+  Fortinet vdom reports its chassis's management address, and NetBox allows one
+  primary-IP owner per address. The physical device owns the address; a virtual
+  one owns it only when no physical device holds it (then the lowest name wins,
+  for example `vsys1`). The others stay bare on purpose.
+- **`address_on_no_synced_interface`** - Forward reports a management address
+  that no interface of the device (or of any device sharing it) carries, so
+  NetBox has nothing to attach a primary IP to. The fix is in the Forward
+  collection, not the sync.
+- **`several_management_addresses` / `address_on_several_interfaces`** -
+  ambiguous, skipped by design rather than guessed. Tag the intended interface
+  `Mgmt_<interface>` in Forward to choose.
+
+`primary_ip.without_primary_ip_not_in_fallback_summary` is the part of the bare
+count none of those buckets explain; that is the figure to investigate.
+
+For the `scope_reconciliation` split of uncovered devices: **unclaimed** devices
+were not created by this sync (another source or an operator did), so adopt or
+tag them deliberately; **owned quarantine** devices are held for the required
+runs and hours before pruning and need no action unless you want them kept.
+
 ## APIC CIMC Inventory Is Empty
 
 Symptoms:

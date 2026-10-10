@@ -76,6 +76,26 @@ class BundleTriageDiagnosticsTest(TestCase):
         # The figure on the device list covers devices this sync does not own.
         self.assertEqual(payload["netbox_devices_without_primary_ip"], 4)
 
+    def test_the_bare_count_less_the_fallback_summary_is_the_unexplained_part(self):
+        from unittest import mock
+
+        self._device("fw-shared-1")
+        self._device("fw-shared-2")
+        self._device("fw-other")
+        summary = {"left_without_primary_ip": 2}
+        with mock.patch(
+            "forward_netbox.views._primary_ip_fallback_reasons", return_value=summary
+        ):
+            payload = _primary_ip_bundle_payload(self.sync)
+        self.assertEqual(payload["without_primary_ip"], 3)
+        self.assertEqual(payload["without_primary_ip_not_in_fallback_summary"], 1)
+
+    def test_without_a_fallback_summary_the_unexplained_part_is_unknown(self):
+        self._device("fw-plain")
+        payload = _primary_ip_bundle_payload(self.sync)
+        self.assertIsNone(payload["fallback_reasons"])
+        self.assertIsNone(payload["without_primary_ip_not_in_fallback_summary"])
+
     def test_primary_addresses_are_counted_by_mask_and_host_masks_by_role(self):
         from ipam.models import IPAddress
 
