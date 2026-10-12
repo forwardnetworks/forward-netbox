@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v3.0.5
 
-Release candidate; A shared management IP is owned by the physical device, and the support bundle accounts for the bare primary-IP count
+A shared management IP is owned by the physical device, and the support bundle accounts for the bare primary-IP count
 
 ## v3.0.4
 
