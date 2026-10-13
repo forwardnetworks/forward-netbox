@@ -64,7 +64,8 @@ foreach interface in device.interfaces
       if isPresent(interface.description) && interface.description != ""
         then interface.description
       else null : String,
-    speed: if isPresent(speed_mbps) then speed_mbps * 1000 else null : Integer
+    speed: if isPresent(speed_mbps) then speed_mbps * 1000 else null : Integer,
+    parent: null : String
   };
 
 // SNMP endpoints (opt-in): one row per ifTable ifIndex, for the same endpoints
@@ -159,13 +160,56 @@ endpoint_interfaces(forward_netbox_shard_keys: List<String>, sync_endpoints: Boo
     device: endpoint.name,
     name: ifName,
     type: "other",
-    enabled: operStatusOpt == "1"
+    lag: null : String,
+    mode: null : String,
+    untagged_vlan: null : Integer,
+    mtu: null : Integer,
+    description: null : String,
+    speed: null : Integer,
+    enabled: operStatusOpt == "1",
+    parent: null : String
   };
 
+// Subinterfaces: Forward lists a subinterface under its parent, not in
+// device.interfaces, so NetBox has no interface for an address on `eth1/52.100`
+// to attach to and every such address lands on the parent. Each subinterface
+// that carries an address becomes a virtual interface linked to its parent, and
+// the IP queries report the subinterface's own name. Subinterfaces without an
+// address are not emitted: the address is what has to attach somewhere, and most
+// subinterfaces carry none (over a million on one network, 21,343 with an IP).
+subinterface_interfaces(forward_netbox_shard_keys: List<String>) =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(forward_netbox_shard_keys) || device.name in forward_netbox_shard_keys
+  foreach interface in device.interfaces
+  foreach subinterface in interface.subinterfaces
+  where subinterface.name != interface.name
+  let has_ipv4 = isPresent(subinterface.ipv4) && length(subinterface.ipv4.addresses) > 0
+  let has_ipv6 = isPresent(subinterface.ipv6) && length(subinterface.ipv6.addresses) > 0
+  where has_ipv4 || has_ipv6
+  select {
+    device: device.name,
+    name: subinterface.name,
+    type: "virtual",
+    lag: null : String,
+    mode: null : String,
+    untagged_vlan: null : Integer,
+    mtu: null : Integer,
+    description: null : String,
+    speed: null : Integer,
+    parent: interface.name,
+    enabled: subinterface.operStatus == OperStatus.UP
+  };
+
+// Every branch below selects the same columns. NQE keeps only the columns all
+// members of a `+` union share, so a branch with fewer fields strips the rest
+// (lag, mode, untagged_vlan, mtu, speed, description) from every row.
 @query
 f(forward_netbox_shard_keys: List<String>, sync_endpoints: Bool, sync_generic_endpoints: Bool, scope_endpoints_by_include_tags: Bool, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
 foreach row in (
   device_interfaces(forward_netbox_shard_keys)
+  + subinterface_interfaces(forward_netbox_shard_keys)
   + endpoint_interfaces(forward_netbox_shard_keys, sync_endpoints, sync_generic_endpoints, scope_endpoints_by_include_tags, device_tag_include_tags, device_tag_include_match, device_tag_exclude_tags)
 )
 select row;

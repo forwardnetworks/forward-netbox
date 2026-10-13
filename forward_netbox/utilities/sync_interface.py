@@ -366,6 +366,31 @@ def apply_dcim_interface(runner, row):
             ),
         )
         defaults["lag"] = lag
+    if row.get("parent"):
+        # A subinterface row. `(device, name)` is the identity, so a row named
+        # like a top-level interface would rewrite it: skip, never overwrite.
+        # A missing parent is not synthesised (unlike a LAG): the subinterface
+        # is skipped and its IPs skip with it. Mirrors the bulk path.
+        if existing_interface is not None and existing_interface.parent_id is None:
+            raise ForwardDependencySkipError(
+                f"Skipping subinterface `{row['name']}` on device `{device.name}` "
+                "because a top-level interface already has that name.",
+                model_string="dcim.interface",
+                dependency="dcim.interface",
+                context={"device": device.name, "name": row["name"]},
+                data=row,
+            )
+        parent = runner._lookup_interface(device, row["parent"])
+        if parent is None or parent.pk == getattr(existing_interface, "pk", None):
+            raise ForwardDependencySkipError(
+                f"Skipping subinterface `{row['name']}` on device `{device.name}` "
+                f"because its parent interface `{row['parent']}` was not found.",
+                model_string="dcim.interface",
+                dependency="dcim.interface",
+                context={"device": device.name, "name": row["name"]},
+                data=row,
+            )
+        defaults["parent"] = parent
     runner._upsert_values_from_defaults(
         "dcim.interface",
         Interface,

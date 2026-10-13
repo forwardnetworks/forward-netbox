@@ -551,6 +551,29 @@ were not created by this sync (another source or an operator did), so adopt or
 tag them deliberately; **owned quarantine** devices are held for the required
 runs and hours before pruning and need no action unless you want them kept.
 
+## Addresses Sit On The Parent Interface, Not The Subinterface
+
+Before 3.0.6, every address on a subinterface (a VLAN or VRF unit such as
+`eth1/52.100`) was attached to its parent interface, so a routed port with ten
+VRF subinterfaces showed ten addresses on the parent. Forward does not list
+subinterfaces as interfaces, so NetBox had no interface to attach them to.
+
+From 3.0.6 each subinterface that carries an address is created as a virtual
+interface linked to its parent, and its addresses attach to it. Subinterfaces
+without an address are not created.
+
+This is a query change as well as a plugin change. A map pinned to a direct query
+ID keeps running the old text after an upgrade. Run **Export Live Query Drift** on
+the sync page, then **Publish Bundled Queries**, then re-run the sync. After the
+sync, addresses that were on a parent move to the subinterface, and the
+subinterfaces appear under their parents.
+
+The same interfaces query now returns `lag`, `mode`, `untagged_vlan`, `mtu`,
+`speed` and `description`, which an earlier version of its SNMP endpoint branch
+had stripped from every row. The first sync after publishing writes them, so
+expect LAG membership, VLAN modes, speeds, MTUs and descriptions to appear on
+interfaces that never had them.
+
 ## APIC CIMC Inventory Is Empty
 
 Symptoms:

@@ -1629,6 +1629,7 @@ def bulk_orm_apply_interface(
         "mode",
         "untagged_vlan",
         "lag",
+        "parent",
     ]
 
     def _validate_interface(interface, row, device, written_fields):
@@ -1715,6 +1716,20 @@ def bulk_orm_apply_interface(
     # LAG memberships are collected and resolved in a second bulk phase.
     cabled_lag_rows = []
     lag_links = []
+    # Subinterface rows (`parent` names another interface on the device). The
+    # link is written after the create, because bulk_create needs the parent's
+    # pk and row order is query order, so a child can precede its parent.
+    parent_links = []
+    subinterface_objects = set()
+    # Names claimed by a top-level row in this batch, in either spelling. A
+    # subinterface row never takes one, whichever row arrives first.
+    top_level_names = set()
+    for top_row in rows:
+        if not top_row.get("parent"):
+            top_level_names.add((top_row.get("device"), top_row.get("name")))
+            canon = canonical_interface_key(top_row.get("name") or "")
+            if canon is not None:
+                top_level_names.add((top_row.get("device"), canon))
     row_outcomes = []
     snapshotted_pks = set()
 
@@ -1855,6 +1870,29 @@ def bulk_orm_apply_interface(
 
         existing = runner._lookup_interface(device, row["name"])
 
+        # `(device, name)` is the identity, so a subinterface row named like a
+        # top-level interface would rewrite that interface (type, enabled,
+        # parent). Never overwrite one: skip the row and say so.
+        if row.get("parent") and (
+            (existing is not None and existing.parent_id is None)
+            or (device_name, row["name"]) in top_level_names
+            or (device_name, canonical_interface_key(row["name"])) in top_level_names
+        ):
+            runner._mark_dependency_failed("dcim.interface", row)
+            runner.logger.increment_statistics("dcim.interface", outcome="skipped")
+            runner._record_issue(
+                "dcim.interface",
+                f"Skipping subinterface `{row['name']}` on device `{device.name}`"
+                " because a top-level interface already has that name.",
+                row,
+                exception=ForwardDependencySkipError(
+                    "subinterface name collides with a top-level interface",
+                    model_string="dcim.interface",
+                    dependency="dcim.interface",
+                ),
+            )
+            continue
+
         # Reject raw or canonically equivalent self-parenting before the member
         # enters any create/update collection. Otherwise `Po1` with
         # `lag=Port-channel1` is reported failed but still written.
@@ -1953,6 +1991,9 @@ def bulk_orm_apply_interface(
             row_outcomes.append(outcome)
             if row.get("lag"):
                 lag_links.append((row, device, interface, outcome))
+            if row.get("parent"):
+                subinterface_objects.add(id(interface))
+                parent_links.append((row, device, interface, outcome))
             continue
 
         # An untagged VLAN left behind by a device that moved sites makes NetBox
@@ -2006,6 +2047,110 @@ def bulk_orm_apply_interface(
             outcome[0] = "applied"
         if row.get("lag"):
             lag_links.append((row, device, existing, outcome))
+        if row.get("parent"):
+            subinterface_objects.add(id(existing))
+            parent_links.append((row, device, existing, outcome))
+
+    # Resolve every subinterface parent against this shard's pending creates and
+    # the existing DB rows. A parent that is nowhere is not synthesised (unlike a
+    # LAG): the subinterface is skipped and its IPs skip with it.
+    # Links written after the create, because the parent has no pk until then.
+    # A new child with an existing parent is given it before the create.
+    created_child_links = []
+    for row, device, child, outcome in parent_links:
+        parent_name = row["parent"]
+        parent = create_objects.get((device.pk, parent_name))
+        if parent is None:
+            canon = canonical_interface_key(parent_name)
+            if canon is not None:
+                parent = pending_canonical.get((device.pk, canon))
+        if parent is None:
+            parent = runner._lookup_interface(device, parent_name)
+        if parent is None or parent is child or id(parent) in subinterface_objects:
+            if getattr(child, "pk", None) is None:
+                create_objects.pop((device.pk, row["name"]), None)
+                canon = canonical_interface_key(row["name"])
+                if canon is not None:
+                    pending_canonical.pop((device.pk, canon), None)
+            else:
+                # Skipped means not written, even if another field changed.
+                update_objects.pop(child.pk, None)
+                forget_lookup_object(runner, child)
+            runner._mark_dependency_failed("dcim.interface", row)
+            runner._record_issue(
+                "dcim.interface",
+                f"Skipping subinterface `{row['name']}` on device `{device.name}`"
+                f" because its parent interface `{parent_name}` was not found.",
+                row,
+                exception=ForwardDependencySkipError(
+                    "subinterface parent not found",
+                    model_string="dcim.interface",
+                    dependency="dcim.interface",
+                ),
+            )
+            outcome[0] = "skipped"
+            # A rejected child must not come back through the LAG pass, which
+            # would write an existing one or bulk_update an unsaved new one.
+            lag_links[:] = [link for link in lag_links if link[3] is not outcome]
+            continue
+        if child.pk is None:
+            if parent.pk is None:
+                created_child_links.append((child, parent, row, outcome))
+            else:
+                child.parent = parent
+            continue
+        if child.parent_id == parent.pk and parent.pk is not None:
+            continue
+        # An existing child whose parent changed (or whose parent is itself
+        # still to be created) is an update, so it is snapshotted, written with
+        # the other updates and reported to the branch.
+        if not preview:
+            _snapshot_once(child)
+            if parent.pk is not None:
+                child.parent = parent
+            else:
+                created_child_links.append((child, parent, row, outcome))
+        update_objects[child.pk] = child
+        outcome[0] = "applied"
+
+    def child_was_created(child):
+        return any(child is created for created in create_objects.values())
+
+    def _link_created_children():
+        """Write the parent of every child whose parent had no pk at resolve time."""
+        pairs = []
+        for child, parent, row, outcome in created_child_links:
+            if child.pk is None:
+                continue
+            if parent.pk is None:
+                # The parent's own save failed. Left in place with no parent, the
+                # next sync would take the child for a top-level interface and
+                # skip it for good, so remove it and report it.
+                if outcome[0] != "applied" or not child_was_created(child):
+                    continue
+                Interface.objects.filter(pk=child.pk).delete()
+                runner._mark_dependency_failed("dcim.interface", row)
+                runner._record_issue(
+                    "dcim.interface",
+                    f"Subinterface `{row['name']}` on device `{child.device.name}`"
+                    f" was not kept because its parent `{row['parent']}` could "
+                    "not be saved.",
+                    row,
+                    exception=ForwardDependencySkipError(
+                        "subinterface parent could not be saved",
+                        model_string="dcim.interface",
+                        dependency="dcim.interface",
+                    ),
+                )
+                outcome[0] = "failed"
+                continue
+            pairs.append((child, parent))
+        for child, parent in pairs:
+            child.parent = parent
+        if pairs:
+            Interface.objects.bulk_update(
+                [child for child, _ in pairs], fields=["parent"], batch_size=1000
+            )
 
     # Resolve every LAG relationship against the existing DB rows and this
     # shard's pending creates. The adapter creates a missing parent as a minimal
@@ -2134,6 +2279,7 @@ def bulk_orm_apply_interface(
                         fields=["lag"],
                         batch_size=1000,
                     )
+                _link_created_children()
         except IntegrityError as exc:
             # Name the row before re-raising. Inside a branch this is all the
             # operator ever gets: the isolate path below cannot run, and the
@@ -2167,6 +2313,9 @@ def bulk_orm_apply_interface(
                 "dcim.interface",
                 fields=update_field_names,
             )
+            # The isolate path saves rows one at a time, so a child whose parent
+            # was created in the same shard still needs its link written.
+            _link_created_children()
         else:
             if branch_active:
                 emit_branch_object_changes(

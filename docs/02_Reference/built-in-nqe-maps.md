@@ -580,6 +580,25 @@ The rules-aware query keeps matching on Forward structured protocol state while 
 - Expected fields: `device`, `name`, `type`, `lag`, `mode`, `untagged_vlan`, `enabled`, `mtu`, `description`, `speed`
 - Query file: [`forward_interfaces.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_interfaces.nqe)
 
+Subinterfaces: Forward lists a subinterface (for example `eth1/52.100`) under its
+parent interface, not as an interface of its own. Each subinterface that carries
+an IPv4 or IPv6 address is emitted as a `virtual` interface with a `parent`
+column naming its parent, and the IP maps attach the address to it. A subinterface
+without an address is not emitted; on one measured network that was over a million
+subinterfaces against 21,343 with an address, so the interface count grows by a few
+percent and not by multiples. A subinterface named like its own parent (a
+firewall's base unit) is the parent itself and is not emitted again. The apply
+links `parent` after the interfaces are created, whichever order the rows arrive
+in, skips a subinterface whose parent is missing, and never rewrites a top-level
+interface that has the same name.
+
+Every branch of the query's union selects the same columns (`device`, `name`,
+`type`, `lag`, `mode`, `untagged_vlan`, `enabled`, `mtu`, `description`, `speed`,
+`parent`), null where a branch has no value. NQE keeps only the columns all members
+of a `+` union share, so a branch with fewer columns strips the rest from every
+row. The SNMP endpoint branch used to select only four, which dropped `lag`,
+`mode`, `untagged_vlan`, `mtu`, `speed` and `description` from every interface row.
+
 ```nqe
 /**
  * @intent Device interfaces collected by Forward
@@ -877,6 +896,7 @@ prefixes from devices outside the selected Forward tag scope.
 
 - `NetBox Model`: `ipam.ipaddress`
 - Expected fields: `device`, `interface`, `vrf`, `address`, `status`
+- A subinterface's address reports the subinterface's own name as `interface`, not its parent's. See Forward Interfaces for the matching interface rows.
 - Query files: [`forward_ip_addresses_ipv4.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_ip_addresses_ipv4.nqe), [`forward_ip_addresses_ipv6.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_ip_addresses_ipv6.nqe)
 
 IP addresses ship as two independent built-in maps — one for IPv4 and one for
