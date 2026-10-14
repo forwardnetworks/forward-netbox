@@ -19,7 +19,9 @@ subinterface_ipv4(forward_netbox_shard_keys: List<String>) =
   select {
     device: device.name,
     virtual_rank: if isPresent(device.system.physicalName) && device.system.physicalName != device.name then 1 else 0,
-    interface: interface.name,
+    // A subinterface's address attaches to the subinterface itself (the
+    // interfaces query emits a virtual interface for each addressed one).
+    interface: subinterface.name,
     vrf: if isPresent(subinterface.networkInstanceName)
       then if subinterface.networkInstanceName != "default" then subinterface.networkInstanceName else null : String
       else null : String,

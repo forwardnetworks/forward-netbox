@@ -163,3 +163,14 @@ invoke scale-soak --runs 3 --max-changes-per-staging-item 10000
    pair to PyPI, and creates the GitHub release from the same workflow artifacts.
 8. The release command waits for the release workflow to finish. Independently
    verify the tag, `main`, PyPI hashes, GitHub asset hashes, and attached SBOM.
+9. If the release changed any file in `forward_netbox/queries/`, tell customers
+   to republish the queries. Upgrading the plugin does not change the NQE saved
+   in a Forward org, and a map pinned to a direct query ID keeps running the old
+   text until the org copy is replaced. Query-only fixes (3.0.4's Infoblox naming,
+   3.0.5's shared-IP owner ranking) do nothing until then, and a support bundle
+   from such a customer looks like the fix did not work. State this in the
+   release notes and in the customer reply: run **Export Live Query Drift** on the
+   sync page, then **Publish Bundled Queries**, then re-run the sync. Confirm with
+   a fresh support bundle. A bundle with maps in `direct_query_id_unverified`
+   and an empty `live_query_drift` has not been checked, so do not read its
+   numbers as a result of the new release.
