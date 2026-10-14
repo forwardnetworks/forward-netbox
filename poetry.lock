@@ -1643,15 +1643,15 @@ django-polymorphic = "*"
 
 [[package]]
 name = "netbox-validity"
-version = "3.6.0"
+version = "3.6.1"
 description = "NetBox plugin for network devices validation"
 optional = true
 python-versions = ">=3.10"
 groups = ["main"]
 markers = "python_version >= \"3.12\" and (extra == \"validity\" or extra == \"integrations\")"
 files = [
-    {file = "netbox_validity-3.6.0-py3-none-any.whl", hash = "sha256:087218db0d494e85e2b116a5d707a5340b89d0b09b55117f8b5361e064cc4eb4"},
-    {file = "netbox_validity-3.6.0.tar.gz", hash = "sha256:acd18803083f16dbaeec892b972a6f41df80298fa7dcc2cbbd76382b9fae92e3"},
+    {file = "netbox_validity-3.6.1-py3-none-any.whl", hash = "sha256:c80a86e8486a5e856db168caa1e45132c5265ffc0ab23eeab465699e972b5e28"},
+    {file = "netbox_validity-3.6.1.tar.gz", hash = "sha256:cc3ad3ad02f8fadfa8b2006359aa4250d1dd9ee03373163390a5f6ddf3533075"},
 ]
 
 [package.dependencies]
@@ -1663,6 +1663,7 @@ dulwich = ">=1.1.0,<2"
 jq = ">=1.4.0,<2"
 netmiko = ">=4.0.0,<5"
 pydantic = ">=2.0.0,<3"
+scrapli = "2026.2.20"
 scrapli_netconf = "2026.1.12"
 simpleeval = "1.0.7"
 textfsm = ">=1.1.3,<2"
@@ -2838,4 +2839,4 @@ validity = ["netbox-validity", "scrapli"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.15"
-content-hash = "68220fa95ef651429bfbaf9d5c253acf31df261bad0945b154cbeae6980a6c18"
+content-hash = "f3cafd684e113732580b83bb4ef4569eeffee97e4e37cd0f3b8d45d661674356"

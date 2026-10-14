@@ -4,7 +4,7 @@
 # See https://github.com/netbox-community/netbox-docker/wiki/Using-Netbox-Plugins
 # The development and CI runtime enables every optional integration that can
 # boot on this NetBox, so adapter regressions cannot hide behind skipped tests.
-# On 4.7 that is four of the five: netbox-dlm 0.10.0, netbox-validity 3.6.0,
+# On 4.7 that is four of the five: netbox-dlm 0.10.0, netbox-validity 3.6.1,
 # netbox-peering-manager 0.3.1 and netbox-routing 0.5.0. netbox-cisco-aci still declares
 # `max_version = "4.6.99"` and NetBox refuses to start with a plugin outside
 # its range, so its tests skip on this runtime rather than fail - a real loss

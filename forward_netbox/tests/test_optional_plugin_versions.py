@@ -74,7 +74,7 @@ class OptionalDistributionVersionSetTest(SimpleTestCase):
                 "netbox-dlm": frozenset({"0.10.0", "0.10.1", "0.10.2"}),
                 "netbox-peering-manager": frozenset({"0.3.1"}),
                 "netbox-routing": frozenset({"0.5.0"}),
-                "netbox-validity": frozenset({"3.6.0"}),
+                "netbox-validity": frozenset({"3.6.0", "3.6.1"}),
             },
             "netbox-cisco-aci cannot be installed on NetBox 4.7, so a "
             "validated version for it is a claim about an unbuildable "
@@ -143,7 +143,7 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
                     "netbox-dlm": "0.10.0",
                     "netbox-peering-manager": "0.3.1",
                     "netbox-routing": "0.5.0",
-                    "netbox-validity": "3.6.0",
+                    "netbox-validity": "3.6.1",
                 }
                 if optional_plugins is None
                 else optional_plugins
@@ -228,7 +228,7 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
                 "netbox-dlm": ["0.10.0", "0.10.1", "0.10.2"],
                 "netbox-peering-manager": ["0.3.1"],
                 "netbox-routing": ["0.5.0"],
-                "netbox-validity": ["3.6.0"],
+                "netbox-validity": ["3.6.0", "3.6.1"],
             },
         )
 

@@ -74,7 +74,7 @@ class OptionalPluginIntegrationRegistryTest(TestCase):
                 "netbox-peering-manager": "0.3.1",
                 "netbox-cisco-aci": "0.3.9",
                 "netbox-dlm": "0.10.1",
-                "netbox-validity": "3.6.0",
+                "netbox-validity": "3.6.1",
             }
             return versions[package_name]
 

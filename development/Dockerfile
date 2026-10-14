@@ -17,7 +17,7 @@ RUN chmod +x /opt/netbox/launch-netbox.sh
 
 RUN uv pip install --constraint ${CONSTRAINTS} ${PACKAGE}
 # Four of the five optional plugins run on NetBox 4.7, all from released
-# versions: netbox-dlm 0.10.0, netbox-validity 3.6.0, netbox-peering-manager
+# versions: netbox-dlm 0.10.0, netbox-validity 3.6.1, netbox-peering-manager
 # 0.3.1 and netbox-routing 0.5.0.
 # netbox-cisco-aci 0.4.0 still declares `max_version = "4.6.99"`, and NetBox
 # refuses to start with a plugin outside its declared range, so the image would
