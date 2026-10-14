@@ -80,7 +80,7 @@ VALIDATED_OPTIONAL_DISTRIBUTIONS: dict[str, frozenset[str]] = {
     "netbox-dlm": frozenset({"0.10.0", "0.10.1", "0.10.2"}),
     "netbox-peering-manager": frozenset({"0.3.1"}),
     "netbox-routing": frozenset({"0.5.0"}),
-    "netbox-validity": frozenset({"3.6.0"}),
+    "netbox-validity": frozenset({"3.6.0", "3.6.1"}),
 }
 
 # The distributions whose versions a runtime probe reports. Derived rather than
