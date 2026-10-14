@@ -86,13 +86,14 @@ migrations, e.g. netbox-dlm `0.2.0+`; older builds need
 
 ## Release Compatibility
 
-The `3.0.5` release requires NetBox `4.7.x` (tested on `4.7.1`) and `netbox-branching` `1.2.x` (tested on `1.2.0`). Expand for the published release history and release notes.
+The `3.0.6` release candidate requires NetBox `4.7.x` (tested on `4.7.1`) and `netbox-branching` `1.2.x` (tested on `1.2.0`). Expand for the published release history and candidate notes.
 
 <details>
 <summary>Release compatibility history</summary>
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
+| `v3.0.6` | NetBox `4.7.x` supported, tested on `4.7.1`; needs netbox-branching `1.2.x`, tested on `1.2.0` | Release candidate; An address on a subinterface attaches to the subinterface, not its parent; the interfaces query returns every column the apply reads; netbox-validity 3.6.1 accepted |
 | `v3.0.5` | NetBox `4.7.x` supported, tested on `4.7.1`; needs netbox-branching `1.2.x`, tested on `1.2.0` | Current release; A shared management IP is owned by the physical device, and the support bundle accounts for the bare primary-IP count |
 | `v3.0.4` | NetBox `4.7.x` supported, tested on `4.7.1`; needs netbox-branching `1.2.x`, tested on `1.2.0` | Superseded by `v3.0.5`; OSPF instance name clashes keep a stable per-process name instead of being skipped; Infoblox and Palo Alto endpoints are named by vendor; netbox-dlm 0.10.1 and 0.10.2 accepted; the UI gate runs on agent-browser; support bundle gains endpoint mask, site placement and fallback-reason figures; tested on NetBox 4.7.2 and netbox-branching 1.2.1 |
 | `v3.0.3` | NetBox `4.7.x` supported, tested on `4.7.1`; needs netbox-branching `1.2.x`, tested on `1.2.0` | Superseded by `v3.0.4`; Static routes in the global table import; site-relabel repair releases BGP address families; primary IP falls back to the management address when a tag cannot resolve; interfaces holding a VLAN from a previous site are cleared instead of refused on every sync; scrapli capped so NetBox starts with netbox-validity; OSPF instances named per VRF for netbox-routing 0.5.0; support bundle gains dependency versions, scope-report age, site mismatch, a primary-IP split and mask breakdown, and per-rule issue counts; tested on NetBox 4.7.2 and netbox-branching 1.2.1 |

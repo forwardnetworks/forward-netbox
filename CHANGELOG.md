@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v3.0.6
+
+Release candidate; An address on a subinterface attaches to the subinterface, not its parent; the interfaces query returns every column the apply reads; netbox-validity 3.6.1 accepted
+
 ## v3.0.5
 
 A shared management IP is owned by the physical device, and the support bundle accounts for the bare primary-IP count
