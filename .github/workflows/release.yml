@@ -222,7 +222,7 @@ jobs:
     steps:
       - name: Download distribution artifacts
         # actions/download-artifact v4
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: dist
           path: dist/
@@ -240,13 +240,13 @@ jobs:
     steps:
       - name: Download tested distribution artifacts
         # actions/download-artifact v4
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: dist
           path: dist/
       - name: Download installed-runtime SBOM
         # actions/download-artifact v4
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
         with:
           name: sbom
           path: sbom/
