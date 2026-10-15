@@ -326,6 +326,10 @@ def _issue_references(sync):
                 pass
         if (model or "") == "ipam.vrf":
             vrf_pks |= pks
+        elif (model or "") == "dcim.interface":
+            # An interface pk is not a device pk. The two ranges overlap on a
+            # long-lived NetBox, so listing it here named unrelated devices.
+            pass
         elif (model or "").startswith(("dcim.", "ipam.ipaddress")):
             device_pks |= pks
     identities = {}

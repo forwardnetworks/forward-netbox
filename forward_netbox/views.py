@@ -308,10 +308,22 @@ def _ingestion_issue_summary(queryset, limit=5000):
 
     by_model_exception = Counter()
     by_rule = Counter()
-    rows = queryset.values_list("model", "exception", "raw_data")[:limit]
+    by_reason = Counter()
+    rows = queryset.values_list("model", "exception", "raw_data", "coalesce_fields")[
+        :limit
+    ]
     seen = 0
-    for model, exception, raw_data in rows:
+    for model, exception, raw_data, coalesce_fields in rows:
         seen += 1
+        reason = (coalesce_fields or {}).get("skip_reason")
+        if reason:
+            by_reason[(model or "-", str(reason))] += 1
+        # Rows past the per-model detail cap have no issue of their own; the
+        # rollup issue carries how many of each reason were suppressed.
+        for suppressed, count in (
+            (coalesce_fields or {}).get("beyond_cap_reasons") or {}
+        ).items():
+            by_reason[(model or "-", str(suppressed))] += int(count)
         by_model_exception[(model or "-", exception or "-")] += 1
         rules = (raw_data or {}).get("validation_rules") if raw_data else None
         for rule in rules or ():
@@ -325,6 +337,12 @@ def _ingestion_issue_summary(queryset, limit=5000):
         "by_validation_rule": [
             {"model": model, "rule": rule, "count": count}
             for (model, rule), count in by_rule.most_common(40)
+        ],
+        # WHY rows were skipped, which the exception class and the dependency
+        # model cannot say: every subinterface skip waited on `dcim.interface`.
+        "by_skip_reason": [
+            {"model": model, "reason": reason, "count": count}
+            for (model, reason), count in by_reason.most_common(40)
         ],
     }
 
@@ -381,6 +399,7 @@ def _ingestion_issue_bundle_payload(ingestion):
                 "disposition": issue_blocking_disposition(issue),
                 "row_disposition": row_disposition(issue),
                 "diagnosis": json_safe_value(issue.raw_data or {}),
+                "skip_reason": (issue.coalesce_fields or {}).get("skip_reason", ""),
             }
         )
     # A truncated export that looks complete is worse than one that says so:
@@ -449,6 +468,110 @@ def _scope_reconciliation_bundle_payload(sync):
         "older_than_last_sync": older_than_last_sync,
         "error": report_error,
         "report": json_safe_value(_bundle_safe_report(payload)),
+    }
+
+
+def _guarded_bundle_section(builder):
+    """One section failing must not take the whole bundle down with it.
+
+    The bundle is what an operator sends when something is already wrong, so a
+    section that cannot be built says so instead of returning a 500.
+    """
+    try:
+        return builder()
+    except Exception as exc:  # noqa: BLE001
+        return {"error": exc.__class__.__name__}
+
+
+def _interface_state_bundle_payload():
+    """NetBox-side interface and address state that decides subinterface skips.
+
+    Counts and pks only, never names. An operator opens the pk in NetBox; the
+    bundle must not carry what the issue list deliberately redacts.
+    """
+    from dcim.models import Interface
+    from django.contrib.contenttypes.models import ContentType
+    from django.db.models import Count
+    from ipam.models import IPAddress
+
+    from .models import ForwardDeviceAbsence
+    from .models import ForwardDeviceIdentity
+
+    from django.db.models import Q
+
+    dotted = Interface.objects.filter(name__contains=".").order_by()
+    virtual_dotted = dotted.filter(type="virtual")
+    parentless = virtual_dotted.filter(parent__isnull=True)
+    non_virtual = dotted.exclude(type="virtual")
+    # One scan of the dotted rows for every count, not one per count.
+    counts = dotted.aggregate(
+        with_parent=Count("pk", filter=Q(type="virtual", parent__isnull=False)),
+        without_parent=Count("pk", filter=Q(type="virtual", parent__isnull=True)),
+        non_virtual=Count("pk", filter=~Q(type="virtual")),
+    )
+    by_type = {
+        row["type"]: row["n"]
+        for row in non_virtual.values("type")
+        .annotate(n=Count("pk"))
+        .order_by("-n")[:10]
+    }
+
+    ct = ContentType.objects.get_for_model(Interface)
+    crowded_rows = list(
+        IPAddress.objects.filter(assigned_object_type=ct)
+        .values("assigned_object_id")
+        .annotate(addresses=Count("pk"), vrfs=Count("vrf", distinct=True))
+        .filter(addresses__gte=5, vrfs__gte=3)
+        .order_by("-addresses")[:25]
+    )
+    interfaces = {
+        pk: device_id
+        for pk, device_id in Interface.objects.filter(
+            pk__in=[row["assigned_object_id"] for row in crowded_rows]
+        ).values_list("pk", "device_id")
+    }
+    device_ids = set(interfaces.values())
+    owned = set(
+        ForwardDeviceIdentity.objects.filter(device_id__in=device_ids).values_list(
+            "device_id", flat=True
+        )
+    )
+    absent = set(
+        ForwardDeviceAbsence.objects.filter(device_id__in=device_ids).values_list(
+            "device_id", flat=True
+        )
+    )
+    unassigned = IPAddress.objects.filter(assigned_object_id__isnull=True)
+    return {
+        "virtual_dotted_with_parent": counts["with_parent"],
+        "virtual_dotted_without_parent": counts["without_parent"],
+        "parentless_interfaces": [
+            {"interface_pk": pk, "device_pk": device_id}
+            for pk, device_id in parentless.values_list("pk", "device_id")[:10]
+        ],
+        "non_virtual_dotted": {
+            "total": counts["non_virtual"],
+            "by_type": by_type,
+        },
+        # Interfaces carrying several addresses across several VRFs: the shape
+        # a subinterface address attached to its parent takes.
+        "crowded_interfaces": [
+            {
+                "interface_pk": row["assigned_object_id"],
+                "device_pk": interfaces.get(row["assigned_object_id"]),
+                "addresses": row["addresses"],
+                "vrfs": row["vrfs"],
+                "device_bound_to_a_sync": interfaces.get(row["assigned_object_id"])
+                in owned,
+                "device_marked_absent": interfaces.get(row["assigned_object_id"])
+                in absent,
+            }
+            for row in crowded_rows
+        ],
+        "unassigned_ip_addresses": {
+            "total": unassigned.count(),
+            "in_a_vrf": unassigned.filter(vrf__isnull=False).count(),
+        },
     }
 
 
@@ -1033,6 +1156,7 @@ def _sync_support_bundle_payload(sync):
         "delete_blockers": _delete_blocker_survey_bundle_payload(sync),
         "stuck_sync": _stuck_verdict_bundle_payload(sync),
         "primary_ip": _primary_ip_bundle_payload(sync),
+        "interface_state": _guarded_bundle_section(_interface_state_bundle_payload),
         "latest_ingestion": (
             {
                 "pk": latest_ingestion.pk,

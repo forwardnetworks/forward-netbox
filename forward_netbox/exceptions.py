@@ -112,6 +112,7 @@ class ForwardDataError(ForwardSyncError):
         dependency: str | None = None,
         dependency_is_protecting: bool = False,
         netbox_pk=None,
+        reason: str | None = None,
     ):
         super().__init__(message)
         self.model_string = model_string
@@ -126,6 +127,10 @@ class ForwardDataError(ForwardSyncError):
         # row records only the exception class, and a customer reading six
         # identical rows has no way to learn which parent was missing.
         self.dependency = dependency or ""
+        # A slug the raiser defines for WHY it skipped, when the dependency model
+        # alone cannot say: four different subinterface conditions all waited on
+        # `dcim.interface`. Never a value, so it can be persisted.
+        self.reason = reason or ""
         # Which DIRECTION the dependency points. Almost every skip is waiting on
         # something absent, but the delete path is the inverse: the row is still
         # REFERENCED and the database refuses to prune it. Both used to persist

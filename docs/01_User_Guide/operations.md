@@ -646,6 +646,21 @@ a handful of relationship-heavy models stay on the adapter. See
 
 ## Auditing Mgmt_ primary-IP resolution
 
+## Why rows were skipped, and the interface state around them
+
+A support bundle names why each row was skipped, not only the model it waited on.
+`latest_ingestion_issues.summary.by_skip_reason` counts skips by reason across the whole
+ingestion, including the rows past the per-model detail cap, and each issue carries its
+`skip_reason`. Subinterface skips use `subinterface-parent-not-found`,
+`subinterface-parent-is-itself`, `subinterface-parent-is-a-subinterface`,
+`subinterface-parent-not-saved`, `subinterface-name-taken-by-parentless-interface` and
+`subinterface-name-taken-by-top-level-row`.
+
+`interface_state` records what NetBox holds that decides those skips, as counts and pks
+only: dotted virtual interfaces with and without a parent, dotted interfaces that are not
+virtual (by type), interfaces carrying several addresses across several VRFs, and IP
+addresses assigned to nothing.
+
 When `set_primary_ip_from_mgmt_tag` is on, a device's `Mgmt_<iface>` tag sets its
 primary IP from the IP on that interface. If few devices get a primary IP, this
 read-only audit shows why, per device — it reuses the resolver's own matching, so
