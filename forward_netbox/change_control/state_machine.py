@@ -235,6 +235,17 @@ def _closed(change) -> TransitionResult:
     )
 
 
+def closure_check(change) -> TransitionResult:
+    """What must hold before the change's branch may merge.
+
+    The branch merges at CLOSE, so this is the CLOSED entry check, exposed
+    without the edge test: a change that is still STAGED has no edge to CLOSED,
+    and answering "this does not lead to closed" would not tell anyone what is
+    actually missing.
+    """
+    return _closed(change)
+
+
 _ENTRY_CHECKS = {
     State.SCOPED: _scoped,
     State.BASELINED: _baselined,

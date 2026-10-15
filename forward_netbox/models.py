@@ -1962,6 +1962,25 @@ class ForwardDeviceAnalysis(ForwardPluginModelDocsMixin, ChangeLoggedModel):
         return url or None
 
 
+class ForwardChangeQuerySet(RestrictedQuerySet):
+    """A change cannot be deleted while its branch could still merge.
+
+    Checked here, and in `ForwardChange.delete`, before the delete starts: raising
+    from a `pre_delete` signal would happen inside Django's delete transaction and
+    poison any transaction around it.
+    """
+
+    def delete(self):
+        from .change_control.branch_gate import ensure_change_may_be_deleted
+
+        for change in self.exclude(branch__isnull=True):
+            ensure_change_may_be_deleted(change)
+        return super().delete()
+
+    delete.alters_data = True
+    delete.queryset_only = True
+
+
 class ForwardChange(ForwardPluginModelDocsMixin, PrimaryModel):
     """A network change, gated on what Forward saw before and after it.
 
@@ -2046,6 +2065,14 @@ class ForwardChange(ForwardPluginModelDocsMixin, PrimaryModel):
         # `run_forwardsync` precedent. Anyone who can change a record should
         # not thereby be able to sign it off.
         permissions = (("approve_forwardchange", "Can approve Forward change"),)
+
+    objects = ForwardChangeQuerySet.as_manager()
+
+    def delete(self, *args, **kwargs):
+        from .change_control.branch_gate import ensure_change_may_be_deleted
+
+        ensure_change_may_be_deleted(self)
+        return super().delete(*args, **kwargs)
 
     def __str__(self):
         return self.ref and f"{self.ref} {self.title}" or self.title

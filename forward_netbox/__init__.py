@@ -13,8 +13,10 @@ class NetboxForwardConfig(PluginConfig):
     def ready(self):
         super().ready()
         from . import signals  # noqa: F401
+        from .change_control.branch_gate import register_branch_gate
 
         _check_runtime_dependencies()
+        register_branch_gate()
 
 
 def _check_runtime_dependencies():
