@@ -87,6 +87,26 @@ def distinct_approvers(change, phase: str) -> set:
     }
 
 
+def active_approvers(change, phase: str) -> set:
+    """`distinct_approvers` minus deactivated accounts.
+
+    A deactivated account cannot approve anything today, and its old approval must
+    not keep a change moving. Excluded rather than required active, so an id with no
+    user row at all is left to the other checks.
+    """
+    ids = distinct_approvers(change, phase)
+    if not ids:
+        return ids
+    from django.contrib.auth import get_user_model
+
+    inactive = set(
+        get_user_model()
+        .objects.filter(pk__in=ids, is_active=False)
+        .values_list("pk", flat=True)
+    )
+    return ids - inactive
+
+
 def stale_approvals(change, phase: str) -> list:
     """Approvals whose anchors no longer match the change.
 
@@ -113,3 +133,31 @@ def stale_approvals(change, phase: str) -> list:
         if moved:
             stale.append(review)
     return stale
+
+
+def fresh_approver_ids(change, phase: str) -> set:
+    """Reviewers whose approval of this gate still counts.
+
+    Not the requester, and not stale: an approval that survives an edit to the thing
+    it approved is not an approval.
+    """
+    stale_reviewers = {review.reviewer_id for review in stale_approvals(change, phase)}
+    return active_approvers(change, phase) - stale_reviewers
+
+
+def rule_blockers(change, phase: str) -> list:
+    """What the reviewer rules of every applicable policy still need, as sentences."""
+    approvers = fresh_approver_ids(change, phase)
+    blockers = []
+    for policy in applicable_policies(change):
+        for rule in policy.approval_rules.prefetch_related("groups", "reviewers"):
+            eligible = rule.eligible_user_ids()
+            counted = approvers if eligible is None else approvers & eligible
+            if len(counted) < rule.min_reviews:
+                blockers.append(
+                    f"Rule {rule.name!r} of policy {policy.name!r} needs "
+                    f"{rule.min_reviews - len(counted)} more approval(s) from "
+                    f"{rule.describe_eligible()} ({len(counted)} of "
+                    f"{rule.min_reviews})."
+                )
+    return blockers

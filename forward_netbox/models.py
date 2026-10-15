@@ -2100,6 +2100,10 @@ class ForwardChange(ForwardPluginModelDocsMixin, PrimaryModel):
     def get_absolute_url(self):
         return reverse("plugins:forward_netbox:forwardchange", args=[self.pk])
 
+    @property
+    def comment_count(self):
+        return self.change_comments.count()
+
     def get_state_color(self):
         return ForwardChangeStateChoices.colors.get(self.state)
 
@@ -2292,6 +2296,81 @@ class ForwardChangeReview(ForwardPluginModelDocsMixin, ChangeLoggedModel):
         return f"{self.change} {verdict} by {self.reviewer}"
 
 
+class ForwardChangeComment(ChangeLoggedModel):
+    """A reviewer's comment on a change; it can be replied to and resolved.
+
+    Resolving settles a conversation, so it needs the `change` permission on
+    comments rather than the right to comment. Only the author edits or deletes
+    their own words.
+    """
+
+    change = models.ForeignKey(
+        ForwardChange,
+        on_delete=models.CASCADE,
+        # Not "comments": NetBox's own comments field on the change is called that.
+        related_name="change_comments",
+    )
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="+",
+    )
+    body = models.TextField()
+    resolved = models.BooleanField(default=False)
+    resolved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="+",
+    )
+    resolved_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ("created",)
+        verbose_name = _("Forward Change Comment")
+        verbose_name_plural = _("Forward Change Comments")
+        db_table = "forward_netbox_change_comment"
+
+    def __str__(self):
+        return f"{self.change}: {self.body[:40]}"
+
+    def get_absolute_url(self):
+        return self.change.get_absolute_url()
+
+
+class ForwardChangeCommentReply(ChangeLoggedModel):
+    """A reply to a comment."""
+
+    comment = models.ForeignKey(
+        ForwardChangeComment,
+        on_delete=models.CASCADE,
+        related_name="replies",
+    )
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="+",
+    )
+    body = models.TextField()
+
+    class Meta:
+        ordering = ("created",)
+        verbose_name = _("Forward Change Comment Reply")
+        verbose_name_plural = _("Forward Change Comment Replies")
+        db_table = "forward_netbox_change_comment_reply"
+
+    def __str__(self):
+        return f"{self.comment}: {self.body[:40]}"
+
+    def get_absolute_url(self):
+        return self.comment.get_absolute_url()
+
+
 class ForwardChangePolicy(ForwardPluginModelDocsMixin, PrimaryModel):
     """Who must approve, scoped by the properties a NETWORK change has.
 
@@ -2359,3 +2438,86 @@ class ForwardChangePolicyRule(ChangeLoggedModel):
             str(x) for x in (self.device_role, self.site, self.tag_slug or None) if x
         ]
         return f"{self.policy}: {' / '.join(parts) or 'any'}"
+
+
+class ForwardChangeApprovalRule(ChangeLoggedModel):
+    """Who must approve a change, and how many of them.
+
+    A policy decides WHEN it applies (the scope rules above); this decides WHO.
+    A rule is met when at least `min_reviews` distinct, non-stale approvers who are
+    eligible have approved. Eligible means a member of one of its groups or one of
+    its named reviewers. A rule is open to any reviewer only when `any_reviewer` is
+    set: a rule whose groups and users have all been deleted must BLOCK, not quietly
+    become open. The requester is never eligible, whatever the rule says. A rule on
+    a policy asks for an approval at both gates, whatever the policy's own minimums.
+    """
+
+    policy = models.ForeignKey(
+        ForwardChangePolicy,
+        on_delete=models.CASCADE,
+        related_name="approval_rules",
+    )
+    name = models.CharField(max_length=100)
+    min_reviews = models.PositiveSmallIntegerField(
+        default=1,
+        validators=[MinValueValidator(1)],
+    )
+    any_reviewer = models.BooleanField(
+        default=False,
+        help_text=_(
+            "Any reviewer counts. Leave off to require the groups and users below."
+        ),
+    )
+    groups = models.ManyToManyField("users.Group", blank=True, related_name="+")
+    reviewers = models.ManyToManyField(
+        settings.AUTH_USER_MODEL, blank=True, related_name="+"
+    )
+
+    class Meta:
+        ordering = ("policy", "name")
+        verbose_name = _("Forward Change Approval Rule")
+        verbose_name_plural = _("Forward Change Approval Rules")
+        db_table = "forward_netbox_change_approval_rule"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["policy", "name"],
+                name="forward_change_approval_rule_unique_name",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.policy}: {self.name}"
+
+    def get_absolute_url(self):
+        return self.policy.get_absolute_url()
+
+    def eligible_user_ids(self):
+        """Ids of the users who count toward this rule, or None for "any reviewer".
+
+        None, not an empty set: an empty set means nobody is eligible, which is what
+        a rule becomes when the groups and users it named have been deleted.
+        """
+        if self.any_reviewer:
+            return None
+        groups = list(self.groups.all())
+        named = set(self.reviewers.values_list("pk", flat=True))
+        if not groups and not named:
+            return set()
+        from django.contrib.auth import get_user_model
+
+        # Through the user model: NetBox's custom Group does not use Django's
+        # default `user_set` accessor, and this does not depend on its name.
+        members = set(
+            get_user_model()
+            .objects.filter(groups__in=groups)
+            .values_list("pk", flat=True)
+        )
+        return members | named
+
+    def describe_eligible(self):
+        """Who may review, in words, for a blocker message."""
+        parts = [group.name for group in self.groups.all()]
+        parts += [user.get_username() for user in self.reviewers.all()]
+        if self.any_reviewer:
+            return "any reviewer"
+        return ", ".join(parts) if parts else "nobody (no group or reviewer is set)"

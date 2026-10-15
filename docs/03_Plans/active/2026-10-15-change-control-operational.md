@@ -90,3 +90,5 @@ Phase 1a is the only phase that changes shipped behaviour (the exemption and the
 - The change request and validation ship together, split into reviewable parts (1a to 1d).
 - Predict gates but never decides silently.
 - Open: whether Predict and change sets run in a workspace (Phase 0), and the retention default.
+- Reviewer rules are a separate model from policy scope: scope says when a policy applies, a rule says who must approve and how many. Eligible reviewers come from groups and named users; a rule naming neither lets any reviewer count. A stale approval and the requester's own approval never count, at either gate.
+- Comments and replies are change-logged models named `ForwardChangeComment*`, so the branching exemption by name prefix already covers them. Only the author edits or deletes their own words; resolving needs the `change` permission on comments.

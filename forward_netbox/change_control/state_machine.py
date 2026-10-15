@@ -141,13 +141,14 @@ def _approval_gate(change, phase, what) -> TransitionResult:
     `what` names the evidence the reviewer signed off on, so the blocker reads
     as an instruction rather than a code.
     """
-    from .policy import distinct_approvers
+    from .policy import active_approvers
     from .policy import required_approvals
+    from .policy import rule_blockers
     from .policy import stale_approvals
 
     blockers = []
     needed = required_approvals(change, phase)
-    approvers = distinct_approvers(change, phase)
+    approvers = active_approvers(change, phase)
     stale = stale_approvals(change, phase)
 
     if len(approvers) < needed:
@@ -162,6 +163,7 @@ def _approval_gate(change, phase, what) -> TransitionResult:
             f"{len(stale)} approval(s) are stale: {what} moved after they were "
             f"given, so they approved a different change."
         )
+    blockers.extend(rule_blockers(change, phase))
     return TransitionResult(not blockers, tuple(blockers))
 
 
