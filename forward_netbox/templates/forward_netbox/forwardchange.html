@@ -202,6 +202,7 @@
         {% if perms.forward_netbox.approve_forwardchange %}
           <form method="post" action="{% url 'plugins:forward_netbox:forwardchange_review' pk=object.pk %}">
             {% csrf_token %}
+            <input type="hidden" name="anchor" value="{{ review_anchor }}">
             <input type="text" name="comment" class="form-control mb-2"
                    placeholder="{% trans 'Comment (optional)' %}">
             <button type="submit" name="decision" value="approve"

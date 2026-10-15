@@ -15,6 +15,8 @@ from django.db.models import ProtectedError
 from netbox_branching.utilities import BranchActionIndicator
 
 from .choices import ForwardChangeStateChoices as State
+from .actions import BRANCH_UNREADABLE
+from .actions import sync_branch_state
 from .state_machine import closure_check
 
 # Change records live on main. They are change-logged, so Branching would treat
@@ -50,12 +52,23 @@ def merge_gate(branch):
     if change is None:
         return BranchActionIndicator(True)
     if change.state == State.CLOSED:
-        return BranchActionIndicator(True)
+        # Closing merges the branch (or finds nothing to merge), so a READY branch
+        # under a CLOSED change was reverted, or never held anything. Passing it
+        # would let it be edited and merged with no approval at all.
+        return BranchActionIndicator(
+            False,
+            f"The change {change} is closed. Its branch cannot be merged "
+            "without raising a new change.",
+        )
     if change.state == State.ABANDONED:
         return BranchActionIndicator(
             False,
             f"The change {change} was abandoned, so its branch must not be merged.",
         )
+    # The anchor first, but only where it matters: an edit made after the closure
+    # approval must be seen, and a branch that cannot be read must not be passed.
+    if change.state == State.VERIFIED_PROCEED and not sync_branch_state(change):
+        return BranchActionIndicator(False, BRANCH_UNREADABLE)
     result = closure_check(change)
     if result.allowed:
         return BranchActionIndicator(True)
@@ -70,13 +83,31 @@ def ensure_change_may_be_deleted(change):
     """Refuse to delete a change whose branch could still merge.
 
     With the change gone the gate finds nothing to refuse, and the branch would
-    merge with no verification and no approval. Deleting is allowed once the
-    change is closed or abandoned, or has no branch.
+    merge with no verification and no approval. That holds for an abandoned change
+    as much as a live one (abandoning needs no approval), and for a closed change
+    whose branch was reverted. Deleting is allowed once the branch can no longer
+    merge: it is merged or archived, or it is gone.
     """
-    if change.branch_id and change.state not in State.TERMINAL:
+    from netbox_branching.choices import BranchStatusChoices
+    from netbox_branching.models import Branch
+
+    if not change.branch_id:
+        return
+    # Read fresh: a cached related object can be a stale view of the branch.
+    status = (
+        Branch.objects.filter(pk=change.branch_id).values_list("status", flat=True).first()
+    )
+    if status is not None and status not in (
+        BranchStatusChoices.MERGED,
+        BranchStatusChoices.ARCHIVED,
+    ):
+        advice = (
+            "Archive or delete the branch first."
+            if change.state in State.TERMINAL
+            else "Merge, archive or delete the branch first."
+        )
         raise ProtectedError(
-            f"The change {change} still holds a branch that could merge. "
-            "Abandon the change first.",
+            f"The change {change} still holds a branch that could merge. {advice}",
             {change},
         )
 
@@ -85,13 +116,22 @@ _registered = False
 
 
 def register_branch_gate():
-    """Register the resolver and the merge check. Idempotent."""
+    """Register the resolver, the merge check and the close hook. Idempotent."""
     global _registered
     if _registered:
         return
     from netbox_branching.models import Branch
     from netbox_branching.utilities import register_branching_resolver
 
+    from netbox_branching.signals import post_merge
+
+    from .actions import close_when_the_branch_merges
+
     register_branching_resolver(change_control_branching_resolver)
     Branch.register_preaction_check(merge_gate, "merge")
+    post_merge.connect(
+        close_when_the_branch_merges,
+        dispatch_uid="forward_change_close_when_branch_merges",
+        weak=False,
+    )
     _registered = True

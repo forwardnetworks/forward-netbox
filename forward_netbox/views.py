@@ -4699,6 +4699,12 @@ class ForwardChangeView(generic.ObjectView):
         from .change_control.state_machine import available_transitions
         from .change_control.state_machine import check_transition
 
+        from .change_control.actions import review_anchor
+        from .change_control.actions import sync_branch_state
+
+        # Refresh the branch anchor so the token below describes what the reviewer
+        # is looking at right now.
+        sync_branch_state(instance)
         outcomes = criterion_outcomes(instance)
         transitions = []
         for target in available_transitions(instance.state):
@@ -4721,6 +4727,7 @@ class ForwardChangeView(generic.ObjectView):
                     pre_verdict=instance.predict_pre_verdict,
                 )
             ),
+            "review_anchor": review_anchor(instance),
             "scoped_devices": instance.devices.select_related("device"),
             "reviews": instance.reviews.select_related("reviewer"),
         }
@@ -4775,7 +4782,8 @@ class ForwardChangePolicyBulkDeleteView(generic.BulkDeleteView):
 class ForwardChangeReviewView(BaseObjectView):
     """Record an approval or a rejection at whichever gate is open.
 
-    The first and only writer of `ForwardChangeReview`. Until this existed the
+    Records through `change_control.actions.record_review`, the one writer of
+    `ForwardChangeReview`. Until this existed the
     approval gate was unreachable: reviews had no form, view or API, so no
     change could leave STAGED at all.
 
@@ -4797,48 +4805,24 @@ class ForwardChangeReviewView(BaseObjectView):
         return redirect(change.get_absolute_url())
 
     def post(self, request, pk):
-        from .change_control.choices import ForwardChangeStateChoices
-        from .change_control.choices import ForwardReviewPhaseChoices
+        from .change_control.actions import record_review
 
         change = get_object_or_404(self.queryset, pk=pk)
-        approved = request.POST.get("decision") == "approve"
-
-        # The gate is derived from the change's state, not chosen by the
-        # reviewer: a POST approval recorded while the change is still STAGED
-        # would sign off on evidence that does not exist yet.
-        phase = (
-            ForwardReviewPhaseChoices.POST
-            if change.state == ForwardChangeStateChoices.VERIFIED_PROCEED
-            else ForwardReviewPhaseChoices.PRE
+        outcome = record_review(
+            change,
+            request.user,
+            approved=request.POST.get("decision") == "approve",
+            comment=request.POST.get("comment"),
+            anchor=request.POST.get("anchor"),
         )
-
-        if change.requester_id and change.requester_id == request.user.pk:
-            messages.error(
+        if outcome.ok:
+            messages.success(
                 request,
-                _(
-                    "You raised this change, so your own approval does not "
-                    "count towards it."
-                ),
+                _("Recorded your %(phase)s-change decision.")
+                % {"phase": outcome.phase},
             )
-            return redirect(change.get_absolute_url())
-
-        ForwardChangeReview.objects.update_or_create(
-            change=change,
-            reviewer=request.user,
-            phase=phase,
-            defaults={
-                "approved": approved,
-                "comment": (request.POST.get("comment") or "").strip(),
-                "branch_change_time": change.branch_last_change_time,
-                "baseline_snapshot_id": change.before_snapshot_id,
-                "after_snapshot_id": change.after_snapshot_id,
-                "verdict": change.verdict,
-            },
-        )
-        messages.success(
-            request,
-            _("Recorded your %(phase)s-change decision.") % {"phase": phase},
-        )
+        else:
+            messages.error(request, outcome.message)
         return redirect(change.get_absolute_url())
 
 

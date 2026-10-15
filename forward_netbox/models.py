@@ -1973,8 +1973,20 @@ class ForwardChangeQuerySet(RestrictedQuerySet):
     def delete(self):
         from .change_control.branch_gate import ensure_change_may_be_deleted
 
-        for change in self.exclude(branch__isnull=True):
-            ensure_change_may_be_deleted(change)
+        from netbox_branching.choices import BranchStatusChoices
+
+        blocking = (
+            self.exclude(branch__isnull=True)
+            .exclude(
+                branch__status__in=(
+                    BranchStatusChoices.MERGED,
+                    BranchStatusChoices.ARCHIVED,
+                )
+            )
+            .first()
+        )
+        if blocking is not None:
+            ensure_change_may_be_deleted(blocking)
         return super().delete()
 
     delete.alters_data = True
@@ -2034,6 +2046,14 @@ class ForwardChange(ForwardPluginModelDocsMixin, PrimaryModel):
 
     window_start = models.DateTimeField(blank=True, null=True)
     window_end = models.DateTimeField(blank=True, null=True)
+
+    # 1 (low) to 5 (high), medium by default: the same scale NetBox's own change
+    # management uses, so a script or event rule written against it keeps working.
+    priority = models.PositiveSmallIntegerField(
+        default=3,
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+    )
+    summary = models.TextField(blank=True, default="")
 
     # Attested, not measured. Nothing here can observe a network being changed.
     applied_at = models.DateTimeField(blank=True, null=True)

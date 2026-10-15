@@ -1,4 +1,7 @@
+from unittest.mock import patch
 from uuid import uuid4
+
+from django.db import ProgrammingError
 
 from django.apps import apps
 from django.contrib.auth import get_user_model
@@ -8,6 +11,7 @@ from netbox_branching.choices import BranchStatusChoices
 from netbox_branching.models import Branch
 from netbox_branching.utilities import supports_branching
 
+from forward_netbox.change_control.actions import BRANCH_UNREADABLE
 from forward_netbox.change_control.branch_gate import change_control_branching_resolver
 from forward_netbox.change_control.branch_gate import merge_gate
 from forward_netbox.change_control.choices import ForwardChangeStateChoices as State
@@ -21,6 +25,7 @@ from forward_netbox.models import ForwardChangePolicy
 from forward_netbox.models import ForwardChangePolicyRule
 from forward_netbox.models import ForwardChangeReview
 from forward_netbox.models import ForwardSource
+from forward_netbox.tests.test_change_control_actions import ChangesAt
 
 User = get_user_model()
 
@@ -36,6 +41,9 @@ class MergeGateTest(TestCase):
     """
 
     def setUp(self):
+        patcher = patch.object(Branch, "get_changes", return_value=ChangesAt())
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.source = ForwardSource.objects.create(
             name=f"gate-{uuid4().hex[:8]}",
             type="saas",
@@ -161,10 +169,49 @@ class MergeGateTest(TestCase):
         self.assertFalse(verdict)
         self.assertIn("abandoned", verdict.message.lower())
 
-    def test_a_closed_change_is_not_blocked(self):
+    def test_a_branch_that_cannot_be_read_is_not_passed(self):
+        change = self._change(State.VERIFIED_PROCEED)
+        self._approve_closure(change)
+
+        with patch.object(Branch, "get_changes", side_effect=ProgrammingError("x")):
+            verdict = merge_gate(self.branch)
+
+        self.assertFalse(verdict)
+        self.assertEqual(verdict.message, BRANCH_UNREADABLE)
+
+    def test_one_blocked_change_blocks_a_bulk_delete_of_several(self):
+        free = self._change(State.DRAFT, branch=None)
+        blocked = self._change(State.STAGED)
+
+        with self.assertRaises(ProtectedError):
+            ForwardChange.objects.filter(pk__in=[free.pk, blocked.pk]).delete()
+
+        self.assertEqual(ForwardChange.objects.count(), 2)
+
+    def test_a_closed_changes_reverted_branch_cannot_merge_again(self):
+        # Reverting a merged branch makes it READY again, still linked to a CLOSED
+        # change. Passing CLOSED unconditionally would let it be edited and
+        # re-merged with no approval at all.
         self._change(State.CLOSED)
 
-        self.assertTrue(merge_gate(self.branch))
+        verdict = merge_gate(self.branch)
+
+        self.assertFalse(verdict)
+        self.assertIn("closed", verdict.message.lower())
+
+    def test_a_branch_edited_after_the_closure_approval_cannot_merge(self):
+        change = self._change(State.VERIFIED_PROCEED)
+        with patch.object(Branch, "get_changes", return_value=ChangesAt(None)):
+            self._approve_closure(change)
+        from django.utils import timezone
+
+        with patch.object(
+            Branch, "get_changes", return_value=ChangesAt(timezone.now())
+        ):
+            verdict = merge_gate(self.branch)
+
+        self.assertFalse(verdict)
+        self.assertIn("stale", verdict.message.lower())
 
     def test_the_gate_is_what_a_real_merge_asks(self):
         # `Branch.merge()` raises unless `can_merge` passes, and `can_merge` runs
@@ -198,11 +245,20 @@ class MergeGateTest(TestCase):
         with self.assertRaises(ProtectedError):
             ForwardChange.objects.filter(pk=change.pk).delete()
 
-    def test_a_finished_or_branchless_change_may_be_deleted(self):
-        closed = self._change(State.CLOSED)
-        closed.delete()
-        abandoned = self._change(State.ABANDONED)
-        abandoned.delete()
+    def test_an_abandoned_change_cannot_free_a_branch_that_could_still_merge(self):
+        # Abandoning needs no approval, so abandon-then-delete would otherwise
+        # leave the gate nothing to refuse.
+        change = self._change(State.ABANDONED)
+
+        with self.assertRaises(ProtectedError):
+            change.delete()
+
+    def test_a_change_whose_branch_cannot_merge_may_be_deleted(self):
+        Branch.objects.filter(pk=self.branch.pk).update(
+            status=BranchStatusChoices.MERGED
+        )
+        merged = self._change(State.CLOSED)
+        merged.delete()
         no_branch = self._change(State.DRAFT, branch=None)
         no_branch.delete()
 

@@ -102,9 +102,13 @@ def stale_approvals(change, phase: str) -> list:
                 or review.baseline_snapshot_id != change.before_snapshot_id
             )
         else:
+            # The branch too: edits made after the plan was approved, during apply
+            # or verification, would otherwise merge without anyone having
+            # reviewed them.
             moved = (
                 review.after_snapshot_id != change.after_snapshot_id
                 or review.verdict != change.verdict
+                or review.branch_change_time != change.branch_last_change_time
             )
         if moved:
             stale.append(review)

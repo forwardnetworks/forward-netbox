@@ -231,7 +231,7 @@ def _closed(change) -> TransitionResult:
     return _approval_gate(
         change,
         ForwardReviewPhaseChoices.POST,
-        "the post-change snapshot or the verdict",
+        "the post-change snapshot, the verdict or the branch",
     )
 
 
@@ -244,6 +244,15 @@ def closure_check(change) -> TransitionResult:
     actually missing.
     """
     return _closed(change)
+
+
+def plan_approval_check(change) -> TransitionResult:
+    """Whether the plan has the approvals its policy needs, whatever the state.
+
+    The APPROVED entry check without the edge test, so a change that is still
+    STAGED can be asked whether it already has enough.
+    """
+    return _approved(change)
 
 
 _ENTRY_CHECKS = {
