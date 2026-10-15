@@ -659,7 +659,10 @@ ingestion, including the rows past the per-model detail cap, and each issue carr
 `interface_state` records what NetBox holds that decides those skips, as counts and pks
 only: dotted virtual interfaces with and without a parent, dotted interfaces that are not
 virtual (by type), interfaces carrying several addresses across several VRFs, and IP
-addresses assigned to nothing.
+addresses assigned to nothing, and LAG membership. `change_log_writers` counts who changes devices,
+interfaces and addresses, by user pk, with whether that login runs a sync, so "was this the sync or a
+person" needs no shell. `primary_ip` also splits the devices with no primary IP by status and by whether
+they have a management-looking interface.
 
 When `set_primary_ip_from_mgmt_tag` is on, a device's `Mgmt_<iface>` tag sets its
 primary IP from the IP on that interface. If few devices get a primary IP, this

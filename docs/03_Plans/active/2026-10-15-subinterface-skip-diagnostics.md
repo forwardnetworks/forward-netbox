@@ -23,6 +23,7 @@ A support bundle says why each subinterface row was skipped and what NetBox hold
 
 1. Reasons: `subinterface-parent-not-found`, `subinterface-name-taken-by-parentless-interface`, `subinterface-name-taken-by-top-level-row`, `subinterface-parent-not-saved`.
 2. The rollup issue records `beyond_cap_reasons`, so rows that never got an issue of their own are still counted.
+4. `change_log_writers` (who changes devices, interfaces and addresses, by user pk, flagged when that login runs a sync), `interface_state.lag_membership`, and in `primary_ip` the no-primary-IP split by status and by management-looking interface.
 3. `interface_state`: dotted virtual interfaces with and without a parent (with a pk sample), dotted non-virtual interfaces by type, interfaces carrying many addresses across several VRFs (by pk, with whether the device is bound to a sync or marked absent), and IP addresses assigned to nothing.
 
 ## Validation

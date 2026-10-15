@@ -264,3 +264,69 @@ class InterfacePkIsNotADevicePkTest(SubinterfaceFixture):
         )
 
         self.assertEqual(_issue_references(self.sync)["devices"], [])
+
+
+class ChangeLogWritersTest(SubinterfaceFixture):
+    """Who writes to NetBox, so "was this the sync or a person?" needs no shell.
+
+    Users are reported by pk with a flag for the sync's own login, never by name.
+    """
+
+    def test_writers_are_counted_by_user_pk_and_flagged_when_they_run_the_sync(self):
+        from django.contrib.auth import get_user_model
+        from django.contrib.contenttypes.models import ContentType
+        from core.models import ObjectChange
+
+        from forward_netbox.views import _change_log_writers_bundle_payload
+
+        User = get_user_model()
+        sync_user = User.objects.create(username="sync-login")
+        person = User.objects.create(username="a-person")
+        self.sync.user = sync_user
+        self.sync.save()
+        ct = ContentType.objects.get_for_model(Interface)
+        for user, count in ((sync_user, 3), (person, 1)):
+            for index in range(count):
+                ObjectChange.objects.create(
+                    user=user,
+                    user_name=user.username,
+                    request_id="00000000-0000-0000-0000-000000000001",
+                    action="create",
+                    changed_object_type=ct,
+                    changed_object_id=index,
+                    object_repr="x",
+                )
+
+        payload = _change_log_writers_bundle_payload()
+
+        rows = {row["user_pk"]: row for row in payload["dcim.interface"]}
+        self.assertEqual(rows[sync_user.pk]["changes"], 3)
+        self.assertTrue(rows[sync_user.pk]["runs_a_sync"])
+        self.assertFalse(rows[person.pk]["runs_a_sync"])
+        self.assertNotIn("sync-login", str(payload))
+        self.assertNotIn("a-person", str(payload))
+
+
+class LagAndManagementStateTest(SubinterfaceFixture):
+    def test_lag_membership_and_no_primary_ip_by_status_are_counted(self):
+        from forward_netbox.views import _interface_state_bundle_payload
+
+        lag = Interface.objects.create(device=self.device, name="Po1", type="lag")
+        Interface.objects.create(
+            device=self.device, name="Eth1", type="1000base-t", lag=lag
+        )
+        Interface.objects.create(
+            device=self.device, name="Eth2", type="1000base-t", lag=lag
+        )
+        # A LAG parent that is not typed as a LAG is how a member's row can wait.
+        not_a_lag = Interface.objects.create(
+            device=self.device, name="Bond1", type="1000base-t"
+        )
+        Interface.objects.create(
+            device=self.device, name="Eth3", type="1000base-t", lag=not_a_lag
+        )
+
+        payload = _interface_state_bundle_payload()
+
+        self.assertEqual(payload["lag_membership"]["members"], 3)
+        self.assertEqual(payload["lag_membership"]["parents_not_typed_lag"], 1)

@@ -471,6 +471,56 @@ def _scope_reconciliation_bundle_payload(sync):
     }
 
 
+def _change_log_writers_bundle_payload():
+    """Who changes devices, interfaces and addresses in NetBox, by user pk.
+
+    "Was this the sync or a person?" decided a customer's investigation and took
+    a shell to answer. Users are never named: a pk, a change count, the first and
+    last change, and whether that login runs a sync.
+    """
+    from core.models import Job
+    from core.models import ObjectChange
+    from django.contrib.contenttypes.models import ContentType
+    from django.db.models import Count
+    from django.db.models import Max
+    from django.db.models import Min
+
+    from .models import ForwardSync
+
+    sync_logins = set(
+        ForwardSync.objects.exclude(user__isnull=True).values_list("user_id", flat=True)
+    )
+    sync_logins |= set(
+        Job.objects.filter(object_type__app_label="forward_netbox")
+        .exclude(user__isnull=True)
+        .values_list("user_id", flat=True)
+        .distinct()
+    )
+    payload = {}
+    for label in ("dcim.device", "dcim.interface", "ipam.ipaddress"):
+        app_label, model = label.split(".")
+        ct = ContentType.objects.filter(app_label=app_label, model=model).first()
+        if ct is None:
+            continue
+        rows = (
+            ObjectChange.objects.filter(changed_object_type=ct)
+            .values("user_id")
+            .annotate(changes=Count("pk"), first=Min("time"), last=Max("time"))
+            .order_by("-changes")[:8]
+        )
+        payload[label] = [
+            {
+                "user_pk": row["user_id"],
+                "changes": row["changes"],
+                "first": row["first"].isoformat() if row["first"] else None,
+                "last": row["last"].isoformat() if row["last"] else None,
+                "runs_a_sync": row["user_id"] in sync_logins,
+            }
+            for row in rows
+        ]
+    return payload
+
+
 def _guarded_bundle_section(builder):
     """One section failing must not take the whole bundle down with it.
 
@@ -568,6 +618,14 @@ def _interface_state_bundle_payload():
             }
             for row in crowded_rows
         ],
+        "lag_membership": {
+            "members": Interface.objects.filter(lag__isnull=False).count(),
+            "parents_not_typed_lag": Interface.objects.filter(lag__isnull=False)
+            .exclude(lag__type="lag")
+            .values("lag")
+            .distinct()
+            .count(),
+        },
         "unassigned_ip_addresses": {
             "total": unassigned.count(),
             "in_a_vrf": unassigned.filter(vrf__isnull=False).count(),
@@ -629,6 +687,18 @@ def _primary_ip_bundle_payload(sync):
             "with_an_interface_ip": with_interface_ip.count(),
             "with_no_ip_at_all": len(missing_ids) - with_interface_ip.count(),
         },
+        "without_primary_ip_by_status": dict(
+            Counter(missing.values_list("status", flat=True))
+        ),
+        # Devices with no address anywhere that DO have a management-looking
+        # interface: the ones the management-IP step could be expected to reach.
+        "no_ip_at_all_with_a_management_interface": Device.objects.filter(
+            pk__in=set(missing_ids)
+            - set(with_interface_ip.values_list("pk", flat=True)),
+            interfaces__name__iregex=r"(mgmt|management|^ma|^gi0$|^eth0$)",
+        )
+        .distinct()
+        .count(),
         # Every NetBox device, not just this sync's: the number an operator
         # reads off the device list, so the two can be reconciled.
         "netbox_devices_without_primary_ip": all_missing.count(),
@@ -1157,6 +1227,9 @@ def _sync_support_bundle_payload(sync):
         "stuck_sync": _stuck_verdict_bundle_payload(sync),
         "primary_ip": _primary_ip_bundle_payload(sync),
         "interface_state": _guarded_bundle_section(_interface_state_bundle_payload),
+        "change_log_writers": _guarded_bundle_section(
+            _change_log_writers_bundle_payload
+        ),
         "latest_ingestion": (
             {
                 "pk": latest_ingestion.pk,
