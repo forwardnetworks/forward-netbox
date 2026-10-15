@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v3.0.6
 
-Release candidate; An address on a subinterface attaches to the subinterface, not its parent; the interfaces query returns every column the apply reads; netbox-validity 3.6.1 accepted
+An address on a subinterface attaches to the subinterface, not its parent; the interfaces query returns every column the apply reads; netbox-validity 3.6.1 accepted
 
 ## v3.0.5
 
