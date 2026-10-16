@@ -61,6 +61,30 @@ def predict_change(
     capability the customer has not bought is not a fault. `ForwardLicenseTierError`
     is already documented that way, and the caller must not have to know.
     """
+    capabilities = _known_capabilities(source)
+    if capabilities is not None and capabilities["predict"]["available"] is False:
+        who = (
+            "the Forward account lacks the permission"
+            if str(capabilities["predict"]["reason"]).startswith("rbac")
+            else "Forward refused Predict for this organisation"
+        )
+        return PredictOutcome(
+            status=PredictOutcome.UNAVAILABLE,
+            reason=(
+                f"{who} ({capabilities['predict']['reason']}). The change can still be "
+                "approved and verified: the verdict is computed from the "
+                "post-change snapshot, which does not depend on predict."
+            ),
+        )
+    if capabilities is not None and capabilities["predict"]["available"]:
+        return PredictOutcome(
+            status=PredictOutcome.UNSUPPORTED,
+            reason=(
+                "Predict is available to this organisation, but a proposal cannot "
+                "be authored from NetBox yet, so nothing was predicted. The "
+                "verdict does not depend on it."
+            ),
+        )
     if not predict_enabled(source):
         return PredictOutcome(
             status=PredictOutcome.UNAVAILABLE,
@@ -85,6 +109,16 @@ def predict_change(
             "the change, and the verdict does not depend on predict."
         ),
     )
+
+
+def _known_capabilities(source):
+    """What the last capability probe found for the source, if anyone asked."""
+    from .capabilities import cached_capabilities
+
+    try:
+        return cached_capabilities(source)
+    except Exception:  # noqa: BLE001 - a cache problem must not hide the panel
+        return None
 
 
 def predict_enabled(source) -> bool:

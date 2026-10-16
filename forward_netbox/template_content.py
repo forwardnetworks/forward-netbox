@@ -306,4 +306,47 @@ class ForwardDeviceOwnershipPanel(PluginTemplateExtension):
         )
 
 
-template_extensions = [ForwardDeviceAnalysisPanel, ForwardDeviceOwnershipPanel]
+class ForwardChangeBranchPanel(PluginTemplateExtension):
+    """On a branch's page: the change it backs and whether it may merge.
+
+    Shown only for a branch a change is tied to. The gate itself is enforced where
+    the merge happens; this is the answer to "why can't I merge this?" without
+    leaving the branch.
+    """
+
+    models = ["netbox_branching.branch"]
+
+    def right_page(self):
+        branch = self.context["object"]
+        from forward_netbox.change_control.branch_gate import merge_gate
+        from forward_netbox.models import ForwardChange
+
+        change = (
+            ForwardChange.objects.restrict(self.context["request"].user, "view")
+            .filter(branch_id=branch.pk)
+            .select_related("requester")
+            .first()
+        )
+        if change is None:
+            return ""
+        try:
+            gate = merge_gate(branch)
+        except Exception:  # noqa: BLE001 - the branch page must still render
+            from netbox_branching.utilities import BranchActionIndicator
+
+            gate = BranchActionIndicator(False, "The gate could not be read.")
+        return self.render(
+            "forward_netbox/inc/change_branch_panel.html",
+            extra_context={
+                "change": change,
+                "can_merge": bool(gate),
+                "gate_message": getattr(gate, "message", "") or "",
+            },
+        )
+
+
+template_extensions = [
+    ForwardDeviceAnalysisPanel,
+    ForwardDeviceOwnershipPanel,
+    ForwardChangeBranchPanel,
+]

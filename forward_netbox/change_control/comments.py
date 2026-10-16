@@ -39,8 +39,19 @@ def add_comment(change, author, body):
         return _refuse("A comment cannot be empty.")
     if change.state in State.TERMINAL:
         return _refuse("This change is finished, so it takes no more comments.")
+    earlier = set(change.change_comments.values_list("author_id", flat=True))
     comment = ForwardChangeComment.objects.create(
         change=change, author=author, body=body
+    )
+    from .events import COMMENT_ADDED
+    from .events import announce
+
+    announce(
+        change,
+        COMMENT_ADDED,
+        author,
+        extra_users=[pk for pk in earlier if pk],
+        comment_id=comment.pk,
     )
     return CommentOutcome(True, comment=comment)
 

@@ -259,6 +259,29 @@
     </div>
 
     <div class="card">
+      <h5 class="card-header">{% trans "What Forward allows here" %}</h5>
+      <div class="card-body">
+        <p class="text-muted small">
+          {% trans "Found by asking Forward with read-only calls, never from a licence table." %}
+        </p>
+        {% if capabilities %}
+          <table class="table table-hover attr-table">
+            {% for label, text, available in capabilities %}
+              <tr>
+                <th scope="row">{{ label }}</th>
+                <td>{{ text }}</td>
+              </tr>
+            {% endfor %}
+          </table>
+        {% endif %}
+        <form method="post" action="{% url 'plugins:forward_netbox:forwardchange_capabilities' pk=object.pk %}">
+          {% csrf_token %}
+          <button type="submit" class="btn btn-outline-secondary">{% trans "Ask Forward" %}</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="card">
       <h5 class="card-header">{{ predict_panel.heading }}</h5>
       <div class="card-body">
         {# Advisory, and separated from Evidence above on purpose. An #}

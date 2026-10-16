@@ -97,6 +97,16 @@ class ForwardWorkspaceApi:
             fetch_all=True,
         )
 
+    def capabilities(self, network_id):
+        """Predict and Forward AI availability, from two read-only SDK calls."""
+        from .capabilities import _probe
+
+        sdk = self.client._sdk_client
+        return {
+            "predict": _probe(lambda: self._sdk(sdk.change_sets.list, network_id)),
+            "ai": _probe(lambda: self._sdk(sdk.ai.list)),
+        }
+
     def resolve_query(self, query_path, commit_id=None):
         """``(query_id, commit_id)`` an org query path resolves to, via the SDK."""
         from ..utilities.forward_api import resolve_nqe_query_reference

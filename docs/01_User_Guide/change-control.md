@@ -143,14 +143,41 @@ The support bundle has a `change_control` section of counts only: changes by
 state, workspaces, criteria and evidence, reviews, and validation runs and results
 by status. It holds no titles, device names, query paths, snapshot ids or messages.
 
+## Notifications, events and the branch page
+
+Reviewers named in a policy's reviewer rules are notified (NetBox notifications)
+when a change is submitted and when it verifies PROCEED; the requester is told
+when it is approved, closed, abandoned, or has changes requested; commenters hear
+about new comments; whoever started a validation run hears it finished. Nobody is
+told about their own action, inactive users are skipped, and only people who may
+view the change are notified. A rule open to any reviewer notifies no one.
+
+The same moments are NetBox event types you can attach event rules to (webhooks,
+scripts, notification groups): `forward_change_submitted`, `_approved`,
+`_changes_requested`, `_verified`, `_closed`, `_abandoned`, `_comment_added` and
+`_validation_completed`, on the Forward Change object type. The payload carries the
+change's id, reference, title, state, status, verdict, priority, branch and
+requester, and never evidence. Events and notifications go out after the change is
+saved, and a failure in either never undoes the change.
+
+A branch tied to a change shows a **Forward change** panel on its own page: the
+change, its state and verdict, and why the branch cannot merge yet.
+
+## What Forward allows here
+
+**Ask Forward** on a change page runs two read-only checks through the SDK: whether
+the organisation may use Predict, and whether Forward AI is on. The answer, with
+Forward's own reason (for example a missing licence or a switched-off setting), is
+shown on the page and used wherever Predict is mentioned. No licence table is
+consulted. Where Forward does not allow something, the page says so and the rest
+of change control works unchanged.
+
 ## What is not connected yet
 
-- **Forward Predict** does not run: a change set is created in Forward and the
-  organisation must be licensed for it. Where it is not, a Predict rule reports
-  unavailable.
-- **Forward AI** is not used. It is optional and only offered where the
-  organisation has it on; its text would never feed a verdict or a score.
-- **Notifications, events and the branch-page panel** are not built.
+- **Forward Predict** does not run: authoring a proposal for a Forward change set
+  is not built, so where Predict is available the panel says a proposal cannot be
+  authored from NetBox yet, and where it is not, it says why.
+- **Forward AI** is not used, only detected.
 - **Scheduled validation runs** are not built: runs start on demand, through the
   API, when a change is staged, or when a gate asks for a current one.
 - **GraphQL** types for changes and validation are not built.

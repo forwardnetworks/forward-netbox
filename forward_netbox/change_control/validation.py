@@ -444,6 +444,19 @@ def execute_run(run, *, api=None):
         run.error = f"{type(exc).__name__}: {str(exc)[:500]}"
     run.completed_at = timezone.now()
     run.save(update_fields=["status", "score", "summary", "error", "completed_at"])
+    from .events import VALIDATION_COMPLETED
+    from .events import announce
+
+    announce(
+        run.change,
+        VALIDATION_COMPLETED,
+        run.started_by,
+        # Whoever started it in the background wants to hear it finished.
+        notify_actor=True,
+        run_id=run.pk,
+        run_status=run.status,
+        score=run.score,
+    )
     return run
 
 

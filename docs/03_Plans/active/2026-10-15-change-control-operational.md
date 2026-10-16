@@ -51,15 +51,15 @@ Built from the public NetBox Labs change-management and validation documentation
 | Change request | comments, replies, resolve | built |
 | Change request | merge gate on the branch, closure by merge | built |
 | Change request | add devices with Forward names, criteria edit and bind, state buttons, attest applied | built |
-| Change request | notifications to reviewers and requester | to build |
-| Change request | panel on the branch page | to build |
+| Change request | notifications to reviewers and requester | built |
+| Change request | panel on the branch page | built |
 | Change request | REST API parity | built |
-| Change request | event types through `process_event_rules` | to build |
+| Change request | event types through `process_event_rules` | built |
 | Validation | policies scoped by site, region, site group, role, platform, tag | built |
 | Validation | rules with engine, category, check name, severity, parameters | built |
 | Validation | runs (manual, API, on submission, gate-required), per-device results, score | built; findings are the failing results; not planned: scheduled runs (on demand, on submission and gate-required cover the need) |
 | Validation | engines: `nqe` (a bound org query), `check` (Forward intent checks on a snapshot) | built |
-| Validation | engine `predict` and Forward AI | availability-gated: shown only where Forward answers; on the production org Predict is unlicensed and AI is off, so both report unavailable |
+| Validation | engine `predict` and Forward AI | availability probed read-only (change_sets.list, ai.list) and reported with Forward's reason; proposal authoring and AI text not built: on the production org Predict is unlicensed and AI is off |
 | Validation | REST API parity, retrigger, policy export/import, ready-made packs | built |
 | Both | verify and validation runs as background jobs | built |
 | Both | GraphQL | last, if time allows |
@@ -126,3 +126,6 @@ Phase 1a is the only phase that changes shipped behaviour (the exemption and the
 - Validation gates are judged per policy, on a run that ran that policy's rules: a run of a lenient policy cannot stand in for a strict one. An unanswered (error) result blocks a gate whatever the score.
 - Validation findings are the failing and erroring results; there is no separate findings table.
 - Scheduled validation runs are not planned: runs start on demand, through the API, on submission, or when a gate asks for a current one.
+- Notifications and event rules are delivered after the change commits, in their own guarded step: a failed query, a deleted user or a broken webhook can neither abort the surrounding transaction nor undo the transition it reports. Only people who may view a change are notified, and a rule open to any reviewer notifies no one.
+- Capability probing (Predict, Forward AI) asks Forward with read-only SDK list calls and classifies a refusal by the SDK's `denial` rather than by a licence table; a failure it cannot classify is "unknown", never "available" or "unavailable".
+- Live read-only check of the workspace code against the production organisation (2026-10-16): the estate's device names come back in one query (about 10,900 devices); of 119 operator-made workspaces only 17 had a processed baseline, the baseline is an IMPORT snapshot (never FORK), and the one sampled had no copied checks, so the check engine reports a skip with the count rather than a pass.

@@ -166,6 +166,9 @@ def _apply(change, target, user, note=""):
         user,
         f"State changed from {previous} to {target}.{' ' + note if note else ''}",
     )
+    from .events import announce_transition
+
+    announce_transition(change, target, user)
     return TransitionOutcome(True, target)
 
 
@@ -277,6 +280,11 @@ def record_review(change, reviewer, approved, comment="", anchor=None):
                 "verdict": locked.verdict,
             },
         )
+        if not approved:
+            from .events import CHANGES_REQUESTED
+            from .events import announce
+
+            announce(locked, CHANGES_REQUESTED, reviewer, phase=phase)
     return ReviewOutcome(True, phase)
 
 
@@ -363,5 +371,8 @@ def close_when_the_branch_merges(sender, branch, user, **kwargs):
                 f"State changed from {previous} to {State.CLOSED}: "
                 f"branch {branch.name} merged.",
             )
+            from .events import announce_transition
+
+            announce_transition(change, State.CLOSED, user)
     except Exception:  # noqa: BLE001 - see the docstring
         logger.exception("Could not close the change for merged branch %s", branch)

@@ -4970,6 +4970,31 @@ if django_apps.is_installed("netbox_dlm"):
             }
 
 
+def _capabilities_panel(source):
+    """Rows for the page: what Forward lets this organisation do, as last asked."""
+    from .change_control.capabilities import cached_capabilities
+
+    found = cached_capabilities(source)
+    if not found:
+        return None
+
+    def describe(entry):
+        if entry["available"] is True:
+            return _("available")
+        if entry["available"] is False:
+            return _("not available: %(why)s") % {"why": entry["reason"]}
+        return _("unknown: %(why)s") % {"why": entry["reason"]}
+
+    return [
+        (
+            _("Forward Predict"),
+            describe(found["predict"]),
+            found["predict"]["available"],
+        ),
+        (_("Forward AI"), describe(found["ai"]), found["ai"]["available"]),
+    ]
+
+
 @register_model_view(ForwardChange, "list", path="", detail=False)
 class ForwardChangeListView(generic.ObjectListView):
     queryset = ForwardChange.objects.all()
@@ -5040,6 +5065,7 @@ class ForwardChangeView(generic.ObjectView):
             "can_validate": request.user.has_perm(
                 "forward_netbox.change_forwardchange"
             ),
+            "capabilities": _capabilities_panel(instance.source),
             "reviews": instance.reviews.select_related("reviewer"),
             "comments": instance.change_comments.select_related(
                 "author", "resolved_by"
@@ -5511,6 +5537,21 @@ class _TransitionSaid:
 class ForwardChangeCriterionEditView(generic.ObjectEditView):
     queryset = ForwardChangeCriterion.objects.all()
     form = ForwardChangeCriterionForm
+
+
+@register_model_view(ForwardChange, "capabilities", path="capabilities")
+class ForwardChangeCapabilitiesView(_ForwardChangeForwardActionView):
+    """Ask Forward what this organisation can do (Predict, Forward AI), read-only."""
+
+    show_outcome_message = True
+    restrict_action = "view"
+    action_permission = "forward_netbox.view_forwardchange"
+
+    def run(self, request, change):
+        from .change_control.capabilities import probe_capabilities
+
+        probe_capabilities(change.source, use_cache=False)
+        return _Said(True, _("Asked Forward what this organisation can do."))
 
 
 @register_model_view(ForwardChange, "validate", path="validate")
