@@ -681,6 +681,14 @@ not on the device in NetBox), and `interface_present_no_ip` (the interface exist
 but no IP is assigned to it in NetBox — an import/assignment gap, since the
 resolver reads NetBox assignments, not Forward). Never writes.
 
+A tag can agree with more than one interface on a device: `Mgmt_Ma1` matches both
+`Management1` (often an interface NetBox created from the device type, which never
+carries an address) and `ma1` (the interface Forward reports, which does). The
+resolver tries every matching interface, the one whose name equals the tag first,
+and uses the first that has an address, so a device-type interface with no address
+no longer hides the real management interface. `interface_present_no_ip` now means
+that every interface the tag matches has no address.
+
 Both devices and SNMP endpoints are read, so an endpoint carrying a
 `Mgmt_<iface>` tag (for example `Mgmt_eth0` on a console server) gets its
 primary IP from the matching interface. When two NetBox devices share a name, the

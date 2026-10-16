@@ -86,6 +86,68 @@ class ResolvePrimaryIpAssignmentsTest(SimpleTestCase):
         self.assertEqual(set(result.keys()), {"r1", "r2"})
 
 
+class AmbiguousManagementInterfaceTest(SimpleTestCase):
+    """A tag can agree with several interfaces; the one that has an address wins.
+
+    From a customer's data: `Mgmt_Ma1` agreed with `Management1` (a device-type
+    template interface with no address) and `ma1` (the interface Forward reports,
+    which carries the management address). Taking the first match left about three
+    hundred devices without a primary IP.
+    """
+
+    def test_the_interface_with_an_address_wins_over_one_without(self):
+        result = resolve_primary_ip_assignments(
+            {"sw1": ["Mgmt_Ma1"]},
+            {"sw1": {"Management1": [], "ma1": ["192.0.2.10/24"]}},
+        )
+
+        self.assertEqual(result["sw1"]["interface"], "ma1")
+        self.assertEqual(result["sw1"]["v4"], "192.0.2.10/24")
+
+    def test_it_does_not_matter_which_is_listed_first(self):
+        for order in (("Management1", "ma1"), ("ma1", "Management1")):
+            names = {name: [] for name in order}
+            names["ma1"] = ["10.0.0.1/24"]
+
+            result = resolve_primary_ip_assignments(
+                {"sw1": ["Mgmt_Ma1"]}, {"sw1": names}
+            )
+
+            self.assertEqual(result["sw1"]["interface"], "ma1", order)
+
+    def test_the_literal_name_wins_when_both_have_addresses(self):
+        result = resolve_primary_ip_assignments(
+            {"sw1": ["Mgmt_Ma1"]},
+            {"sw1": {"Management1": ["10.0.0.9/24"], "ma1": ["10.0.0.1/24"]}},
+        )
+
+        self.assertEqual(result["sw1"]["interface"], "ma1")
+
+    def test_a_gigabit_template_interface_without_an_address_is_skipped(self):
+        result = resolve_primary_ip_assignments(
+            {"r1": ["Mgmt_Gi0"]},
+            {"r1": {"GigabitEthernet0": [], "gi0": ["192.0.2.20/24"]}},
+        )
+
+        self.assertEqual(result["r1"]["interface"], "gi0")
+
+    def test_every_match_without_an_address_is_still_unresolved(self):
+        result = resolve_primary_ip_assignments(
+            {"sw1": ["Mgmt_Ma1"]},
+            {"sw1": {"Management1": [], "ma1": []}},
+        )
+
+        self.assertNotIn("sw1", result)
+
+    def test_an_unrelated_interface_with_an_address_is_never_used(self):
+        result = resolve_primary_ip_assignments(
+            {"sw1": ["Mgmt_Ma1"]},
+            {"sw1": {"Management1": [], "Ethernet1": ["10.9.9.9/24"]}},
+        )
+
+        self.assertNotIn("sw1", result)
+
+
 class ResolveManagementIpAssignmentsTest(SimpleTestCase):
     """The fallback for devices with no Mgmt_ tag: narrow on purpose."""
 
