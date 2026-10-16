@@ -45,6 +45,11 @@ A change goes from creation to close without leaving the page:
 8. **Close** merges the branch, once the verdict is PROCEED and the closing
    approvals are in.
 
+Changes, policies, reviewer rules, criteria, reviews, comments and the validation
+policies, rules, runs and results are also GraphQL types (`forward_change_list`,
+`forward_change_validation_run_list` and so on), filterable and limited by the same
+view permissions. Evidence rows are not exposed.
+
 Everything on the page is also in the REST API under `/api/plugins/forward/`
 (`changes/`, `change-criterion/`, `change-review/`, `change-comment/`,
 `change-validation-policy/`, `change-validation-rule/`,
@@ -180,6 +185,5 @@ of change control works unchanged.
 - **Forward AI** is not used, only detected.
 - **Scheduled validation runs** are not built: runs start on demand, through the
   API, when a change is staged, or when a gate asks for a current one.
-- **GraphQL** types for changes and validation are not built.
 - A workspace's retention is fixed at creation (14 days). A change that outlives
   it loses its workspace.

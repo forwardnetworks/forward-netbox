@@ -14,8 +14,8 @@ import forward_netbox.models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("dcim", "0251_fix_ltree_cascade_triggers"),
-        ("extras", "0144_customfield_status"),
+        ("dcim", "0001_initial"),
+        ("extras", "0001_initial"),
         ("forward_netbox", "0065_change_workspace"),
         ("users", "0016_default_ordering_indexes"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),

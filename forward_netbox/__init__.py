@@ -9,6 +9,7 @@ class NetboxForwardConfig(PluginConfig):
     base_url = "forward"
     min_version = "4.7.0"
     max_version = "4.7.99"
+    graphql_schema = "graphql.schema.schema"
 
     def ready(self):
         super().ready()

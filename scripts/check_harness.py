@@ -125,6 +125,7 @@ HIGH_RISK_PATHS = [
     "forward_netbox/forms.py",
     "forward_netbox/views.py",
     "forward_netbox/api/",
+    "forward_netbox/graphql/",
     "forward_netbox/jobs.py",
     "forward_netbox/queries/",
     "forward_netbox/utilities/",

@@ -62,7 +62,7 @@ Built from the public NetBox Labs change-management and validation documentation
 | Validation | engine `predict` and Forward AI | availability probed read-only (change_sets.list, ai.list) and reported with Forward's reason; proposal authoring and AI text not built: on the production org Predict is unlicensed and AI is off |
 | Validation | REST API parity, retrigger, policy export/import, ready-made packs | built |
 | Both | verify and validation runs as background jobs | built |
-| Both | GraphQL | last, if time allows |
+| Both | GraphQL | built (types, filters and queries for changes, policies, rules, criteria, reviews, comments, validation policies, rules, runs, results) |
 
 Availability found by probing a real org (read-only), 2026-10-16: Forward intent checks are listable on a snapshot (NQE, existential, predefined, reachability and isolation types); change sets are refused with `Unlicensed operation`; Forward AI is refused with `AI_ALLOWED is off`.
 
@@ -129,3 +129,4 @@ Phase 1a is the only phase that changes shipped behaviour (the exemption and the
 - Notifications and event rules are delivered after the change commits, in their own guarded step: a failed query, a deleted user or a broken webhook can neither abort the surrounding transaction nor undo the transition it reports. Only people who may view a change are notified, and a rule open to any reviewer notifies no one.
 - Capability probing (Predict, Forward AI) asks Forward with read-only SDK list calls and classifies a refusal by the SDK's `denial` rather than by a licence table; a failure it cannot classify is "unknown", never "available" or "unavailable".
 - Live read-only check of the workspace code against the production organisation (2026-10-16): the estate's device names come back in one query (about 10,900 devices); of 119 operator-made workspaces only 17 had a processed baseline, the baseline is an IMPORT snapshot (never FORK), and the one sampled had no copied checks, so the check engine reports a skip with the count rather than a pass.
+- Migration 0066 depends on `dcim.0001_initial`, not the newest dcim migration `makemigrations` wrote: a plugin migration naming a version-specific core migration pins the plugin to that NetBox release (the migration-dependency test caught it in the full suite).
