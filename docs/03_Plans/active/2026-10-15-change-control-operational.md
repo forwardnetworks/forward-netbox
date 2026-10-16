@@ -92,3 +92,4 @@ Phase 1a is the only phase that changes shipped behaviour (the exemption and the
 - Open: whether Predict and change sets run in a workspace (Phase 0), and the retention default.
 - Reviewer rules are a separate model from policy scope: scope says when a policy applies, a rule says who must approve and how many. Eligible reviewers come from groups and named users; a rule naming neither lets any reviewer count. A stale approval and the requester's own approval never count, at either gate.
 - Comments and replies are change-logged models named `ForwardChangeComment*`, so the branching exemption by name prefix already covers them. Only the author edits or deletes their own words; resolving needs the `change` permission on comments.
+- Reviewer rules are read live, not snapshotted when a change is staged: editing or deleting a rule affects changes already under review. Every edit is change-logged; snapshotting rules at staging is a follow-up if that proves too loose.

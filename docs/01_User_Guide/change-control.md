@@ -31,6 +31,23 @@ thereby sign it off. A reviewer's decision is recorded against the gate the
 change is currently at (before apply, or before close), and an approval from the
 person who raised the change does not count.
 
+## Who must approve, and comments
+
+A policy decides when it applies. **Reviewer rules** on the policy decide who must
+approve: each rule names groups and/or users and a minimum count, and every
+enabled policy that applies to a change must have all of its rules met, at the plan
+approval and again at the closure approval. Only fresh approvals count. The
+requester's own approval, an approval given before the evidence moved, and an
+approval from a deactivated account do not. A rule that names nobody blocks every
+change it covers, unless it is marked open to any reviewer, so deleting the only
+group or user a rule names cannot quietly open it.
+
+Reviewers discuss a change in **Comments** on its page. Anyone with permission can
+comment and reply. Only the author edits or deletes their own words, a comment with
+replies cannot be deleted, and resolving a comment needs the change permission on
+comments. Rules are read live: editing or deleting one affects changes already under
+review, and every edit is in the change log.
+
 ## The lifecycle
 
 ```text

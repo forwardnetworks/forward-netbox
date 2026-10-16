@@ -45,6 +45,7 @@ from .filtersets import ForwardNQEMapFilterSet
 from .filtersets import ForwardSourceFilterSet
 from .filtersets import ForwardSyncFilterSet
 from .filtersets import ForwardValidationRunFilterSet
+from .forms import ForwardChangeApprovalRuleForm
 from .forms import ForwardChangeForm
 from .forms import ForwardChangePolicyForm
 from .forms import ForwardChangePolicyRuleForm
@@ -60,6 +61,7 @@ from .forms import ForwardSyncBulkEditForm
 from .forms import ForwardSyncForm
 from .forms import ForwardValidationRunForceAllowForm
 from .models import ForwardChange
+from .models import ForwardChangeApprovalRule
 from .models import ForwardChangePolicy
 from .models import ForwardChangePolicyRule
 from .models import ForwardChangeReview
@@ -4730,6 +4732,18 @@ class ForwardChangeView(generic.ObjectView):
             "review_anchor": review_anchor(instance),
             "scoped_devices": instance.devices.select_related("device"),
             "reviews": instance.reviews.select_related("reviewer"),
+            "comments": instance.change_comments.select_related(
+                "author", "resolved_by"
+            ).prefetch_related("replies__author"),
+            "can_comment": request.user.has_perm(
+                "forward_netbox.add_forwardchangecomment"
+            ),
+            "can_reply": request.user.has_perm(
+                "forward_netbox.add_forwardchangecommentreply"
+            ),
+            "can_resolve": request.user.has_perm(
+                "forward_netbox.change_forwardchangecomment"
+            ),
         }
 
 
@@ -4764,7 +4778,12 @@ class ForwardChangePolicyView(generic.ObjectView):
     template_name = "forward_netbox/forwardchangepolicy.html"
 
     def get_extra_context(self, request, instance):
-        return {"rules": instance.rules.select_related("device_role", "site")}
+        return {
+            "rules": instance.rules.select_related("device_role", "site"),
+            "approval_rules": instance.approval_rules.prefetch_related(
+                "groups", "reviewers"
+            ),
+        }
 
 
 @register_model_view(ForwardChangePolicy, "delete")
@@ -4824,6 +4843,118 @@ class ForwardChangeReviewView(BaseObjectView):
         else:
             messages.error(request, outcome.message)
         return redirect(change.get_absolute_url())
+
+
+@register_model_view(ForwardChangeApprovalRule, "add", detail=False)
+@register_model_view(ForwardChangeApprovalRule, "edit")
+class ForwardChangeApprovalRuleEditView(generic.ObjectEditView):
+    queryset = ForwardChangeApprovalRule.objects.all()
+    form = ForwardChangeApprovalRuleForm
+
+
+@register_model_view(ForwardChangeApprovalRule, "delete")
+class ForwardChangeApprovalRuleDeleteView(generic.ObjectDeleteView):
+    queryset = ForwardChangeApprovalRule.objects.all()
+
+
+class _ForwardChangeCommentView(BaseObjectView):
+    """Base for the comment endpoints: POST only, back to the change page.
+
+    Every rule about who may do what lives in `change_control.comments`; these views
+    only collect the request, call it and report its answer.
+
+    The view permission is the one NetBox checks on the change itself. Adding a
+    comment needs a permission on a DIFFERENT model, so it is checked here: handing
+    that permission to NetBox would restrict the change queryset by it and answer
+    404 to a user who is allowed to comment.
+    """
+
+    queryset = ForwardChange.objects.all()
+    action_permission = None
+
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardchange"
+
+    def get(self, request, pk, **kwargs):
+        return redirect(get_object_or_404(self.queryset, pk=pk).get_absolute_url())
+
+    def post(self, request, pk, **kwargs):
+        if self.action_permission and not request.user.has_perm(self.action_permission):
+            raise PermissionDenied
+        change = get_object_or_404(self.queryset, pk=pk)
+        outcome = self.act(request, change, **kwargs)
+        if outcome.ok:
+            messages.success(request, self.success_message)
+        else:
+            messages.error(request, outcome.message)
+        return redirect(change.get_absolute_url())
+
+
+@register_model_view(ForwardChange, "comment", path="comment")
+class ForwardChangeCommentAddView(_ForwardChangeCommentView):
+    action_permission = "forward_netbox.add_forwardchangecomment"
+    success_message = _("Comment added.")
+
+    def act(self, request, change):
+        from .change_control.comments import add_comment
+
+        return add_comment(change, request.user, request.POST.get("body"))
+
+
+@register_model_view(
+    ForwardChange, "comment_reply", path="comments/<int:comment_pk>/reply"
+)
+class ForwardChangeCommentReplyView(_ForwardChangeCommentView):
+    action_permission = "forward_netbox.add_forwardchangecommentreply"
+    success_message = _("Reply added.")
+
+    def act(self, request, change, comment_pk):
+        from .change_control.comments import reply_to_comment
+
+        comment = get_object_or_404(change.change_comments, pk=comment_pk)
+        return reply_to_comment(comment, request.user, request.POST.get("body"))
+
+
+@register_model_view(
+    ForwardChange, "comment_resolve", path="comments/<int:comment_pk>/resolve"
+)
+class ForwardChangeCommentResolveView(_ForwardChangeCommentView):
+    success_message = _("Comment updated.")
+
+    def act(self, request, change, comment_pk):
+        from .change_control.comments import set_resolved
+
+        comment = get_object_or_404(change.change_comments, pk=comment_pk)
+        return set_resolved(comment, request.user, request.POST.get("resolved") == "1")
+
+
+@register_model_view(
+    ForwardChange, "comment_delete", path="comments/<int:comment_pk>/delete"
+)
+class ForwardChangeCommentDeleteView(_ForwardChangeCommentView):
+    success_message = _("Comment deleted.")
+
+    def act(self, request, change, comment_pk):
+        from .change_control.comments import delete_comment
+
+        comment = get_object_or_404(change.change_comments, pk=comment_pk)
+        return delete_comment(comment, request.user)
+
+
+@register_model_view(
+    ForwardChange, "reply_delete", path="replies/<int:reply_pk>/delete"
+)
+class ForwardChangeReplyDeleteView(_ForwardChangeCommentView):
+    success_message = _("Reply deleted.")
+
+    def act(self, request, change, reply_pk):
+        from .change_control.comments import delete_reply
+        from .models import ForwardChangeCommentReply
+
+        reply = get_object_or_404(
+            ForwardChangeCommentReply, pk=reply_pk, comment__change=change
+        )
+        return delete_reply(reply, request.user)
 
 
 @register_model_view(ForwardChangePolicyRule, "add", detail=False)

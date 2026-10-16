@@ -215,6 +215,65 @@
     </div>
 
     <div class="card">
+      <h5 class="card-header">{% trans "Comments" %}</h5>
+      <div class="card-body">
+        {% for comment in comments %}
+          <div class="border-bottom pb-2 mb-2">
+            <div class="small text-muted">
+              {{ comment.author|placeholder }} · {{ comment.created|date:"Y-m-d H:i" }}
+              {% if comment.resolved %}
+                <span class="badge text-bg-green">{% trans "resolved" %}</span>
+              {% endif %}
+            </div>
+            <div>{{ comment.body|linebreaksbr }}</div>
+            {% for reply in comment.replies.all %}
+              <div class="ms-4 mt-1 small">
+                <span class="text-muted">{{ reply.author|placeholder }}:</span> {{ reply.body|linebreaksbr }}
+                <form method="post" class="d-inline" action="{% url 'plugins:forward_netbox:forwardchange_reply_delete' pk=object.pk reply_pk=reply.pk %}">
+                  {% csrf_token %}
+                  {% if request.user.is_authenticated and reply.author_id == request.user.pk %}
+                    <button type="submit" class="btn btn-link btn-sm text-danger p-0">{% trans "delete" %}</button>
+                  {% endif %}
+                </form>
+              </div>
+            {% endfor %}
+            {% if can_reply %}
+              <form method="post" class="mt-1 d-flex gap-2" action="{% url 'plugins:forward_netbox:forwardchange_comment_reply' pk=object.pk comment_pk=comment.pk %}">
+                {% csrf_token %}
+                <input type="text" name="body" class="form-control form-control-sm" placeholder="{% trans 'Reply' %}">
+                <button type="submit" class="btn btn-sm btn-outline-primary">{% trans "Reply" %}</button>
+              </form>
+            {% endif %}
+            <div class="mt-1">
+              {% if can_resolve %}
+                <form method="post" class="d-inline" action="{% url 'plugins:forward_netbox:forwardchange_comment_resolve' pk=object.pk comment_pk=comment.pk %}">
+                  {% csrf_token %}
+                  <input type="hidden" name="resolved" value="{% if comment.resolved %}0{% else %}1{% endif %}">
+                  <button type="submit" class="btn btn-link btn-sm p-0">{% if comment.resolved %}{% trans "reopen" %}{% else %}{% trans "resolve" %}{% endif %}</button>
+                </form>
+              {% endif %}
+              {% if request.user.is_authenticated and comment.author_id == request.user.pk and not comment.replies.all %}
+                <form method="post" class="d-inline" action="{% url 'plugins:forward_netbox:forwardchange_comment_delete' pk=object.pk comment_pk=comment.pk %}">
+                  {% csrf_token %}
+                  <button type="submit" class="btn btn-link btn-sm text-danger p-0">{% trans "delete" %}</button>
+                </form>
+              {% endif %}
+            </div>
+          </div>
+        {% empty %}
+          <p class="text-muted">{% trans "No comments yet." %}</p>
+        {% endfor %}
+        {% if can_comment %}
+          <form method="post" action="{% url 'plugins:forward_netbox:forwardchange_comment' pk=object.pk %}">
+            {% csrf_token %}
+            <textarea name="body" rows="2" class="form-control mb-2" placeholder="{% trans 'Add a comment' %}"></textarea>
+            <button type="submit" class="btn btn-primary">{% trans "Comment" %}</button>
+          </form>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card">
       <h5 class="card-header">{% trans "Next steps" %}</h5>
       <div class="card-body">
         {% if transitions %}

@@ -1,6 +1,7 @@
 from core.choices import JobIntervalChoices
 from django import forms
 from django.contrib.contenttypes.models import ContentType
+from django.utils.translation import gettext_lazy as _
 from netbox.forms import NetBoxModelBulkEditForm
 from netbox.forms import NetBoxModelForm
 from utilities.datetime import local_now
@@ -26,6 +27,7 @@ from .choices import ForwardSyncStatusChoices
 from .exceptions import ForwardConnectivityError
 from .exceptions import ForwardSyncError
 from .models import ForwardChange
+from .models import ForwardChangeApprovalRule
 from .models import ForwardChangePolicy
 from .models import ForwardChangePolicyRule
 from .models import ForwardDriftPolicy
@@ -2236,6 +2238,47 @@ class ForwardChangePolicyRuleForm(NetBoxModelForm):
         FieldSet("policy", name="Policy"),
         FieldSet("device_role", "site", "tag_slug", name="Scope"),
     )
+
+
+class ForwardChangeApprovalRuleForm(NetBoxModelForm):
+    """Say who must approve a change under a policy, and how many of them.
+
+    A rule open to nobody blocks every change the policy covers, so the form
+    refuses to save one that names no group and no user unless it is explicitly
+    open to any reviewer.
+    """
+
+    class Meta:
+        model = ForwardChangeApprovalRule
+        fields = (
+            "policy",
+            "name",
+            "min_reviews",
+            "any_reviewer",
+            "groups",
+            "reviewers",
+        )
+
+    fieldsets = (
+        FieldSet("policy", "name", "min_reviews", name="Rule"),
+        FieldSet("any_reviewer", "groups", "reviewers", name="Who may approve"),
+    )
+
+    def clean(self):
+        super().clean()
+        cleaned = self.cleaned_data
+        if (
+            not cleaned.get("any_reviewer")
+            and not cleaned.get("groups")
+            and not cleaned.get("reviewers")
+        ):
+            raise forms.ValidationError(
+                _(
+                    "Name at least one group or reviewer, or mark the rule open to "
+                    "any reviewer. A rule that names nobody would block every change."
+                )
+            )
+        return cleaned
 
 
 class ForwardIngestionIssueFilterForm(FilterForm):

@@ -79,6 +79,16 @@ urlpatterns = (
         include(get_model_urls("forward_netbox", "forwardchangepolicyrule")),
     ),
     path(
+        "change-approval-rule/",
+        include(
+            get_model_urls("forward_netbox", "forwardchangeapprovalrule", detail=False)
+        ),
+    ),
+    path(
+        "change-approval-rule/<int:pk>/",
+        include(get_model_urls("forward_netbox", "forwardchangeapprovalrule")),
+    ),
+    path(
         "drift-policy/",
         include(get_model_urls("forward_netbox", "forwarddriftpolicy", detail=False)),
     ),
