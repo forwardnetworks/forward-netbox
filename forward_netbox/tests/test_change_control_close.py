@@ -1,7 +1,6 @@
 from unittest.mock import patch
 
 from django.db import ProgrammingError
-
 from extras.models import JournalEntry
 from netbox_branching.choices import BranchStatusChoices
 from netbox_branching.jobs import MergeBranchJob
@@ -16,7 +15,6 @@ from forward_netbox.change_control.choices import ForwardChangeVerdictChoices
 from forward_netbox.change_control.choices import ForwardReviewPhaseChoices
 from forward_netbox.models import ForwardChangeReview
 from forward_netbox.tests.test_change_control_actions import ChangeFixture
-from forward_netbox.tests.test_change_control_actions import ChangesAt
 
 
 class _Something:

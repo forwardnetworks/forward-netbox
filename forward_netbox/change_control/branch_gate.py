@@ -14,9 +14,9 @@
 from django.db.models import ProtectedError
 from netbox_branching.utilities import BranchActionIndicator
 
-from .choices import ForwardChangeStateChoices as State
 from .actions import BRANCH_UNREADABLE
 from .actions import sync_branch_state
+from .choices import ForwardChangeStateChoices as State
 from .state_machine import closure_check
 
 # Change records live on main. They are change-logged, so Branching would treat
@@ -95,7 +95,9 @@ def ensure_change_may_be_deleted(change):
         return
     # Read fresh: a cached related object can be a stale view of the branch.
     status = (
-        Branch.objects.filter(pk=change.branch_id).values_list("status", flat=True).first()
+        Branch.objects.filter(pk=change.branch_id)
+        .values_list("status", flat=True)
+        .first()
     )
     if status is not None and status not in (
         BranchStatusChoices.MERGED,

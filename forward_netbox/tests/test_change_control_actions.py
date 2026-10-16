@@ -19,9 +19,9 @@ from netbox_branching.models import Branch
 
 from forward_netbox.change_control.actions import attest_applied
 from forward_netbox.change_control.actions import BRANCH_UNREADABLE
-from forward_netbox.change_control.actions import review_anchor
 from forward_netbox.change_control.actions import close_change
 from forward_netbox.change_control.actions import record_review
+from forward_netbox.change_control.actions import review_anchor
 from forward_netbox.change_control.actions import sync_branch_state
 from forward_netbox.change_control.actions import transition
 from forward_netbox.change_control.choices import ForwardChangeStateChoices as State
@@ -143,10 +143,12 @@ class TransitionTest(ChangeFixture):
         self.assertTrue(outcome.blockers)
         change.refresh_from_db()
         self.assertEqual(change.state, State.DRAFT)
-        self.assertFalse(JournalEntry.objects.filter(
-            assigned_object_type=ContentType.objects.get_for_model(ForwardChange),
-            assigned_object_id=change.pk,
-        ))
+        self.assertFalse(
+            JournalEntry.objects.filter(
+                assigned_object_type=ContentType.objects.get_for_model(ForwardChange),
+                assigned_object_id=change.pk,
+            )
+        )
 
     def test_an_edge_the_graph_does_not_have_is_refused(self):
         change = self.change(State.DRAFT)
@@ -251,9 +253,7 @@ class BranchStateTest(ChangeFixture):
             branch_change_time=approved_at,
             baseline_snapshot_id="base",
         )
-        with patch.object(
-            Branch, "get_changes", return_value=ChangesAt(approved_at)
-        ):
+        with patch.object(Branch, "get_changes", return_value=ChangesAt(approved_at)):
             first = transition(change, State.APPROVED, self.requester)
         self.assertTrue(first.ok, first.blockers)
         ForwardChange.objects.filter(pk=change.pk).update(state=State.STAGED)

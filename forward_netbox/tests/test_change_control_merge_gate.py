@@ -1,10 +1,9 @@
 from unittest.mock import patch
 from uuid import uuid4
 
-from django.db import ProgrammingError
-
 from django.apps import apps
 from django.contrib.auth import get_user_model
+from django.db import ProgrammingError
 from django.db.models import ProtectedError
 from django.test import TestCase
 from netbox_branching.choices import BranchStatusChoices
