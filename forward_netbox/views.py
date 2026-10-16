@@ -64,7 +64,6 @@ from .models import ForwardChange
 from .models import ForwardChangeApprovalRule
 from .models import ForwardChangePolicy
 from .models import ForwardChangePolicyRule
-from .models import ForwardChangeReview
 from .models import ForwardDeviceAnalysis
 from .models import ForwardDriftPolicy
 from .models import ForwardIngestion
@@ -4884,7 +4883,8 @@ class _ForwardChangeCommentView(BaseObjectView):
         change = get_object_or_404(self.queryset, pk=pk)
         outcome = self.act(request, change, **kwargs)
         if outcome.ok:
-            messages.success(request, self.success_message)
+            text = getattr(outcome, "message", "") or self.success_message
+            getattr(messages, getattr(outcome, "level", "success"))(request, text)
         else:
             messages.error(request, outcome.message)
         return redirect(change.get_absolute_url())
@@ -4955,6 +4955,99 @@ class ForwardChangeReplyDeleteView(_ForwardChangeCommentView):
             ForwardChangeCommentReply, pk=reply_pk, comment__change=change
         )
         return delete_reply(reply, request.user)
+
+
+class _Said:
+    """An outcome reduced to what the view needs: did it work, and what to say."""
+
+    def __init__(self, ok, message, level="success"):
+        self.ok = ok
+        self.message = message
+        self.level = level
+
+
+class _ForwardChangeForwardActionView(_ForwardChangeCommentView):
+    """An action on a change that talks to Forward: POST only, edit permission.
+
+    These write to Forward (a workspace) or read it (snapshots, queries), so they
+    are user actions on a change, never background work. Each runs inline for now;
+    the criteria run on the few devices a workspace holds, so they are short.
+    """
+
+    action_permission = "forward_netbox.change_forwardchange"
+    show_outcome_message = False
+
+    def act(self, request, change):
+        outcome = self.run(request, change)
+        if outcome.ok:
+            verdict = getattr(outcome, "verdict", "")
+            if verdict:
+                held = verdict != "proceed"
+                reasons = " ".join(getattr(outcome, "reasons", ()) or ())
+                return _Said(
+                    True,
+                    _("Verified: %(verdict)s. %(reasons)s")
+                    % {"verdict": verdict, "reasons": reasons},
+                    "warning" if held else "success",
+                )
+            # Only some actions have a report worth showing (which criteria were
+            # not measured); for the others the message is an internal id.
+            return _Said(True, outcome.message if self.show_outcome_message else "")
+        reasons = " ".join(getattr(outcome, "reasons", ()) or ())
+        message = getattr(outcome, "message", "") or reasons
+        return _Said(False, message or _("The action was refused."))
+
+
+@register_model_view(ForwardChange, "workspace_create", path="workspace/create")
+class ForwardChangeWorkspaceCreateView(_ForwardChangeForwardActionView):
+    success_message = _("Forward workspace created.")
+
+    def run(self, request, change):
+        from .change_control.workspace import create_workspace
+
+        return create_workspace(change, request.user)
+
+
+@register_model_view(ForwardChange, "workspace_adopt", path="workspace/adopt")
+class ForwardChangeWorkspaceAdoptView(_ForwardChangeForwardActionView):
+    success_message = _("Forward workspace adopted.")
+
+    def run(self, request, change):
+        from .change_control.workspace import adopt_workspace
+
+        return adopt_workspace(change, request.POST.get("network_id"), request.user)
+
+
+@register_model_view(ForwardChange, "workspace_refresh", path="workspace/refresh")
+class ForwardChangeWorkspaceRefreshView(_ForwardChangeForwardActionView):
+    success_message = _("Snapshots refreshed from Forward.")
+
+    def run(self, request, change):
+        from .change_control.workspace import refresh_snapshots
+
+        return refresh_snapshots(change)
+
+
+@register_model_view(ForwardChange, "evidence_baseline", path="evidence/baseline")
+class ForwardChangeBaselineEvidenceView(_ForwardChangeForwardActionView):
+    success_message = _("Baseline evidence recorded.")
+    show_outcome_message = True
+
+    def run(self, request, change):
+        from .change_control.choices import ForwardEvidencePhaseChoices
+        from .change_control.runner import record_evidence
+
+        return record_evidence(change, ForwardEvidencePhaseChoices.BEFORE)
+
+
+@register_model_view(ForwardChange, "verify", path="verify")
+class ForwardChangeVerifyView(_ForwardChangeForwardActionView):
+    success_message = _("Verified.")
+
+    def run(self, request, change):
+        from .change_control.runner import verify_change
+
+        return verify_change(change, request.user)
 
 
 @register_model_view(ForwardChangePolicyRule, "add", detail=False)

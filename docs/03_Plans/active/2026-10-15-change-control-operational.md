@@ -89,7 +89,8 @@ Phase 1a is the only phase that changes shipped behaviour (the exemption and the
 - Validation tables are new and named apart from the existing sync validation.
 - The change request and validation ship together, split into reviewable parts (1a to 1d).
 - Predict gates but never decides silently.
-- Open: whether Predict and change sets run in a workspace (Phase 0), and the retention default.
+- Phase 0 spike (2026-10-15, one throwaway workspace on the production organisation, created and deleted): `create_workspace(devices=[2 classic device names], retention_days=1)` succeeds; its single baseline snapshot is processed in about a minute; NQE run on that snapshot sees exactly the 2 scoped devices (so queries run on the change's devices only, against the workspace's own baseline). Creating a change set in the workspace was refused with HTTP 403 `Unlicensed operation: NetworkOperation.MANAGE_CHANGE_SETS`, so on this organisation Predict is not available at all and the gate must report "unavailable" (never a pass). Whether Predict works in a licensed organisation remains unverified.
+- Open: the retention default, and what an expired workspace does mid-change.
 - Reviewer rules are a separate model from policy scope: scope says when a policy applies, a rule says who must approve and how many. Eligible reviewers come from groups and named users; a rule naming neither lets any reviewer count. A stale approval and the requester's own approval never count, at either gate.
 - Comments and replies are change-logged models named `ForwardChangeComment*`, so the branching exemption by name prefix already covers them. Only the author edits or deletes their own words; resolving needs the `change` permission on comments.
 - Reviewer rules are read live, not snapshotted when a change is staged: editing or deleting a rule affects changes already under review. Every edit is change-logged; snapshotting rules at staging is a follow-up if that proves too loose.

@@ -2043,6 +2043,12 @@ class ForwardChange(ForwardPluginModelDocsMixin, PrimaryModel):
     # it was baselined and approved against.
     before_snapshot_id = models.CharField(max_length=100, blank=True, default="")
     after_snapshot_id = models.CharField(max_length=100, blank=True, default="")
+    # The Forward workspace network that scopes this change to its devices. Queries
+    # run on the few devices the change touches, against the workspace's own
+    # baseline. `origin` is "created" when the plugin forked it (and may clean it
+    # up) or "adopted" when an operator made it (which the plugin never deletes).
+    workspace_network_id = models.CharField(max_length=100, blank=True, default="")
+    workspace_origin = models.CharField(max_length=16, blank=True, default="")
 
     window_start = models.DateTimeField(blank=True, null=True)
     window_end = models.DateTimeField(blank=True, null=True)

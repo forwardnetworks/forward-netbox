@@ -100,7 +100,19 @@ def criterion_outcomes(change) -> list[CriterionOutcome]:
 
     rows = ForwardChangeEvidence.objects.filter(criterion__change=change)
     by_criterion: dict[int, dict[str, bool]] = {}
+    pinned = {
+        Phase.BEFORE: change.before_snapshot_id,
+        Phase.AFTER: change.after_snapshot_id,
+    }
+    commits = {criterion.pk: criterion.commit_id for criterion in criteria}
     for row in rows:
+        # Only evidence taken at the snapshot the change pins for that phase, by
+        # the query version the criterion is bound to now. Anything else answered
+        # a different question and must read as not measured, not as a result.
+        if row.snapshot_id != pinned.get(row.phase):
+            continue
+        if commits.get(row.criterion_id) and row.commit_id != commits[row.criterion_id]:
+            continue
         by_criterion.setdefault(row.criterion_id, {})[row.phase] = row.passed
 
     outcomes = []

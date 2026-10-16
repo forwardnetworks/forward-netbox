@@ -173,6 +173,61 @@
     </div>
 
     <div class="card">
+      <h5 class="card-header">{% trans "Forward workspace and verification" %}</h5>
+      <div class="card-body">
+        {# The workspace holds only this change's devices; queries run on it, at #}
+        {# the baseline it was forked with and a collection made after the apply. #}
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Workspace" %}</th>
+            <td>
+              {% if object.workspace_network_id %}
+                <code>{{ object.workspace_network_id }}</code>
+                <span class="text-muted small">({{ object.workspace_origin }})</span>
+              {% else %}
+                <span class="text-muted">{% trans "none yet" %}</span>
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Baseline snapshot" %}</th>
+            <td>{{ object.before_snapshot_id|placeholder }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "After snapshot" %}</th>
+            <td>{{ object.after_snapshot_id|placeholder }}</td>
+          </tr>
+        </table>
+        {% if perms.forward_netbox.change_forwardchange %}
+          {% if not object.workspace_network_id %}
+            <form method="post" class="mb-2" action="{% url 'plugins:forward_netbox:forwardchange_workspace_create' pk=object.pk %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-primary">{% trans "Create Forward workspace for these devices" %}</button>
+            </form>
+            <form method="post" class="d-flex gap-2 mb-2" action="{% url 'plugins:forward_netbox:forwardchange_workspace_adopt' pk=object.pk %}">
+              {% csrf_token %}
+              <input type="text" name="network_id" class="form-control" placeholder="{% trans 'Or adopt an existing workspace by network id' %}">
+              <button type="submit" class="btn btn-outline-primary">{% trans "Adopt" %}</button>
+            </form>
+          {% else %}
+            <form method="post" class="d-inline" action="{% url 'plugins:forward_netbox:forwardchange_workspace_refresh' pk=object.pk %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-outline-secondary">{% trans "Refresh snapshots" %}</button>
+            </form>
+            <form method="post" class="d-inline" action="{% url 'plugins:forward_netbox:forwardchange_evidence_baseline' pk=object.pk %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-outline-secondary">{% trans "Record baseline evidence" %}</button>
+            </form>
+            <form method="post" class="d-inline" action="{% url 'plugins:forward_netbox:forwardchange_verify' pk=object.pk %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-primary">{% trans "Verify against Forward" %}</button>
+            </form>
+          {% endif %}
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card">
       <h5 class="card-header">{% trans "Reviews" %}</h5>
       <div class="card-body">
         {# Two gates. The pre gate approves the PLAN; the post gate approves #}

@@ -197,3 +197,72 @@ class RuleFormTest(ChangeFixture):
 
     def test_a_rule_open_to_any_reviewer_is_accepted(self):
         self.assertTrue(self._form(any_reviewer=True).is_valid())
+
+
+class ForwardActionViewsTest(ChangeFixture):
+    """The buttons only collect the request; Forward calls are patched out."""
+
+    def setUp(self):
+        super().setUp()
+        self.change_ = self.change(State.DRAFT, branch=None)
+        grant(self.reviewer, type(self.change_), "view")
+        self.client.force_login(self.reviewer)
+
+    def _url(self, name):
+        return reverse(
+            f"plugins:forward_netbox:forwardchange_{name}", args=[self.change_.pk]
+        )
+
+    def test_creating_a_workspace_needs_the_edit_permission(self):
+        from unittest.mock import patch
+
+        with patch(
+            "forward_netbox.change_control.workspace.create_workspace"
+        ) as create:
+            response = self.client.post(self._url("workspace_create"))
+
+        self.assertEqual(response.status_code, 403)
+        create.assert_not_called()
+
+    def test_a_user_with_the_permission_reaches_the_workspace_action(self):
+        from unittest.mock import patch
+
+        from forward_netbox.change_control.workspace import WorkspaceOutcome
+
+        grant(self.reviewer, type(self.change_), "change")
+        with patch(
+            "forward_netbox.change_control.workspace.create_workspace",
+            return_value=WorkspaceOutcome(True, "ws-1"),
+        ) as create:
+            response = self.client.post(self._url("workspace_create"))
+
+        self.assertEqual(response.status_code, 302)
+        create.assert_called_once()
+
+    def test_a_refusal_is_shown_not_raised(self):
+        from unittest.mock import patch
+
+        from forward_netbox.change_control.workspace import WorkspaceOutcome
+
+        grant(self.reviewer, type(self.change_), "change")
+        with patch(
+            "forward_netbox.change_control.workspace.create_workspace",
+            return_value=WorkspaceOutcome(False, "Add a device first."),
+        ):
+            response = self.client.post(self._url("workspace_create"), follow=True)
+
+        self.assertContains(response, "Add a device first.")
+
+    def test_verify_reports_the_reasons_of_a_refusal(self):
+        from unittest.mock import patch
+
+        from forward_netbox.change_control.runner import VerifyOutcome
+
+        grant(self.reviewer, type(self.change_), "change")
+        with patch(
+            "forward_netbox.change_control.runner.verify_change",
+            return_value=VerifyOutcome(False, reasons=("Not collected yet.",)),
+        ):
+            response = self.client.post(self._url("verify"), follow=True)
+
+        self.assertContains(response, "Not collected yet.")
