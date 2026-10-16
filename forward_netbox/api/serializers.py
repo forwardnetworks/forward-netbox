@@ -418,4 +418,8 @@ from forward_netbox.api.change_serializers import (  # noqa: E402,F401
     ForwardChangePolicySerializer,
     ForwardChangeReviewSerializer,
     ForwardChangeSerializer,
+    ForwardChangeValidationPolicySerializer,
+    ForwardChangeValidationResultSerializer,
+    ForwardChangeValidationRuleSerializer,
+    ForwardChangeValidationRunSerializer,
 )

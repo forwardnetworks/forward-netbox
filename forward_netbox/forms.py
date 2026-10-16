@@ -31,6 +31,8 @@ from .models import ForwardChangeApprovalRule
 from .models import ForwardChangeCriterion
 from .models import ForwardChangePolicy
 from .models import ForwardChangePolicyRule
+from .models import ForwardChangeValidationPolicy
+from .models import ForwardChangeValidationRule
 from .models import ForwardDriftPolicy
 from .models import ForwardIngestionIssue
 from .models import ForwardNQEMap
@@ -2414,3 +2416,87 @@ class ForwardIngestionIssueFilterForm(FilterForm):
     # the model being filtered, and a form field of that name shadows it. The
     # search box already matches `model` (see the filterset's `search`).
     exception = forms.CharField(required=False, label="Exception")
+
+
+class ForwardChangeValidationPolicyForm(NetBoxModelForm):
+    """Which checks changes are held to, and the score the gates want."""
+
+    class Meta:
+        model = ForwardChangeValidationPolicy
+        fields = (
+            "name",
+            "enabled",
+            "min_score",
+            "require_passed_run",
+            "run_on_submission",
+            "sites",
+            "regions",
+            "site_groups",
+            "device_roles",
+            "platforms",
+            "scope_tags",
+            "description",
+            "comments",
+            "tags",
+        )
+
+    fieldsets = (
+        FieldSet(
+            "name",
+            "enabled",
+            "min_score",
+            "require_passed_run",
+            "run_on_submission",
+            name="Policy",
+        ),
+        FieldSet(
+            "sites",
+            "regions",
+            "site_groups",
+            "device_roles",
+            "platforms",
+            "scope_tags",
+            name="Scope (empty applies to every change)",
+        ),
+        FieldSet("description", "comments", "tags", name="Notes"),
+    )
+
+
+class ForwardChangeValidationRuleForm(NetBoxModelForm):
+    """One check. The parameters depend on the engine (see the help text)."""
+
+    class Meta:
+        model = ForwardChangeValidationRule
+        fields = (
+            "policy",
+            "name",
+            "engine",
+            "category",
+            "severity",
+            "enabled",
+            "parameters",
+        )
+        help_texts = {
+            "parameters": (
+                'nqe: {"query_path": "/org/query", "expectation": '
+                '"no-rows"}. check: {"check_types": ["isolation"]} (optional '
+                "`check_names`). predict: {}."
+            )
+        }
+
+    fieldsets = (
+        FieldSet(
+            "policy", "name", "engine", "category", "severity", "enabled", name="Rule"
+        ),
+        FieldSet("parameters", name="Parameters"),
+    )
+
+    def clean(self):
+        from .change_control.validation import rule_parameter_problems
+
+        super().clean()
+        engine = self.cleaned_data.get("engine")
+        if engine and "parameters" in self.cleaned_data:
+            problems = rule_parameter_problems(engine, self.cleaned_data["parameters"])
+            if problems:
+                raise forms.ValidationError(problems)

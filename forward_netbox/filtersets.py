@@ -23,6 +23,10 @@ from .models import ForwardChangeEvidence
 from .models import ForwardChangePolicy
 from .models import ForwardChangePolicyRule
 from .models import ForwardChangeReview
+from .models import ForwardChangeValidationPolicy
+from .models import ForwardChangeValidationResult
+from .models import ForwardChangeValidationRule
+from .models import ForwardChangeValidationRun
 from .models import ForwardDeviceAnalysis
 from .models import ForwardDriftPolicy
 from .models import ForwardIngestion
@@ -348,3 +352,51 @@ class ForwardChangeEvidenceFilterSet(BaseFilterSet):
     class Meta:
         model = ForwardChangeEvidence
         fields = ("id", "criterion_id", "phase", "passed", "snapshot_id")
+
+
+class ForwardChangeValidationPolicyFilterSet(NetBoxModelFilterSet):
+    q = django_filters.CharFilter(method="search")
+
+    class Meta:
+        model = ForwardChangeValidationPolicy
+        fields = ("id", "name", "enabled", "require_passed_run", "run_on_submission")
+
+    def search(self, queryset, name, value):
+        if not value.strip():
+            return queryset
+        return queryset.filter(Q(name__icontains=value))
+
+
+class ForwardChangeValidationRuleFilterSet(ChangeLoggedModelFilterSet):
+    class Meta:
+        model = ForwardChangeValidationRule
+        fields = (
+            "id",
+            "policy_id",
+            "name",
+            "engine",
+            "category",
+            "severity",
+            "enabled",
+        )
+
+
+class ForwardChangeValidationRunFilterSet(ChangeLoggedModelFilterSet):
+    class Meta:
+        model = ForwardChangeValidationRun
+        fields = ("id", "change_id", "policy_id", "trigger", "status", "snapshot_id")
+
+
+class ForwardChangeValidationResultFilterSet(BaseFilterSet):
+    class Meta:
+        model = ForwardChangeValidationResult
+        fields = (
+            "id",
+            "run_id",
+            "rule_id",
+            "engine",
+            "category",
+            "status",
+            "severity",
+            "device_name",
+        )

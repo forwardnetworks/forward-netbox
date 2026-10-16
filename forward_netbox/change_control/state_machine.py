@@ -191,6 +191,9 @@ def _approval_gate(change, phase, what) -> TransitionResult:
             f"given, so they approved a different change."
         )
     blockers.extend(rule_blockers(change, phase))
+    from .validation import validation_blockers
+
+    blockers.extend(validation_blockers(change))
     return TransitionResult(not blockers, tuple(blockers))
 
 

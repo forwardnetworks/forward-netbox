@@ -15,15 +15,42 @@ listed, so nobody plans around a step that does not happen.
 
 | Page | What it holds |
 | --- | --- |
-| **Changes** | One record per change: reference, title, source, requester, window, description, comments and tags. |
-| **Change Policies** | How many approvals a change needs before it is applied and before it is closed, and the scope rules that decide which policy applies. |
+| **Changes** | One record per change: reference, title, source, requester, priority, summary, branch, window, devices, criteria, reviews, comments and its validation runs. |
+| **Change Policies** | How many approvals a change needs before it is applied and before it is closed, the scope rules that decide which policy applies, and the reviewer rules. |
+| **Validation Policies** | Which checks a change is held to, which changes they apply to, and the score the approval and closing gates want. |
+| **Validation Runs** | Every run of those checks, with its score and per-check results. |
 
-A change's detail page shows seven sections: **Change** (reference, source,
-state, verdict, requester), **Snapshots** (baseline before, post-change after,
-branch), **Applied** (when, who attested, reference), **Evidence**, **Scope**
-(the devices), **Reviews**, and **Next steps** (each available transition and
-what is still missing for it). A policy page shows the **Policy** settings and
-its **Scope rules**.
+A change goes from creation to close without leaving the page:
+
+1. **Create it** with a source, a title, a priority and (optionally) a NetBox
+   branch. A branch a Forward sync owns is refused.
+2. **Add devices** by NetBox name, then **Resolve Forward names**. One query asks
+   the source's latest processed snapshot for its device names; only an exact,
+   unique match is accepted, and a device Forward does not know stays unresolved
+   and blocks the workspace. The device list is fixed once a workspace exists.
+3. **Add criteria**: an NQE query path and what to expect of it. **Bind** each one
+   to a committed query version. A criterion cannot change once the change is
+   baselined or any evidence exists, and editing a bound criterion's path drops
+   its binding.
+4. **Create a Forward workspace** holding only the change's devices (or adopt one
+   an operator made), **Refresh snapshots** to pin the baseline, and **Record
+   baseline evidence**.
+5. **Move it on** with the state buttons. Only moves a person may make by hand are
+   offered: applying is attested, verification sets the verdict, and closing
+   merges the branch.
+6. **Review**: reviewers approve or reject at each gate, and comment.
+7. **Attest it was applied**, wait for Forward to collect the devices, then
+   **Verify against Forward**. Verification and validation run as background
+   jobs.
+8. **Close** merges the branch, once the verdict is PROCEED and the closing
+   approvals are in.
+
+Everything on the page is also in the REST API under `/api/plugins/forward/`
+(`changes/`, `change-criterion/`, `change-review/`, `change-comment/`,
+`change-validation-policy/`, `change-validation-rule/`,
+`change-validation-run/`, `change-validation-result/`). Actions such as
+`transition`, `review`, `validate`, `verify` and `close` are POST endpoints on a
+change and call the same code as the page, so they refuse the same things.
 
 Approving is its own permission, `Can approve Forward change`
 (`forward_netbox.approve_forwardchange`). Someone who may edit a change cannot
@@ -83,22 +110,49 @@ missing:
 | Menu | **Changes** and **Change Policies** appear in the Forward menu, shown only to users who can view them. |
 | Forward | Criteria are NQE queries bound to a query id and commit id; baseline and after snapshots are pinned as literal ids, never as selectors that could resolve to a different snapshot later. |
 
+## Validation
+
+A validation policy holds **rules** and says which changes it applies to (by
+site, region, site group, device role, platform or tag; no scope applies to every
+change). Each rule uses one engine, all of them Forward's:
+
+| Engine | What it does |
+| --- | --- |
+| **NQE query** | Runs an org query in the change's workspace and applies an expectation (`no-rows` or `some-rows`). Rows naming a device become one result per device. |
+| **Forward intent checks** | Reads Forward's own checks (isolation, reachability, existential, predefined, NQE) on the snapshot, optionally narrowed by name or type. A named check Forward does not have is an error. |
+| **Forward Predict** | Reports unavailable until Forward answers. An organisation without the change-set licence never gets a pass from it. |
+
+A run validates the change's after snapshot once there is one, otherwise its
+baseline, and records every result as a shape and a count, never a row. A result
+Forward could not answer is an **error**, and one nothing measured is a **skip**:
+neither is ever a pass. The **score** is 100 minus a penalty per failing or
+erroring result (info 0, warning 3, error 10, critical 25); a run that measured
+nothing has no score.
+
+A policy can require a current completed run, a minimum score, and a run when the
+change is staged. When it does, approving and closing are blocked until the run
+exists, is current (the change's snapshots have not moved since), answered every
+rule and reached the score. A run counts only for the policies whose rules it ran.
+
+**Install a pack** on the Validation Policies page for a ready-made policy built on
+the network's own intent checks, then edit it. Any policy exports to JSON and
+imports back (`change-validation-policy/<id>/export/` and `.../import/`), naming
+every problem and creating nothing if there is one.
+
+The support bundle has a `change_control` section of counts only: changes by
+state, workspaces, criteria and evidence, reviews, and validation runs and results
+by status. It holds no titles, device names, query paths, snapshot ids or messages.
+
 ## What is not connected yet
 
-- **Nothing advances a change's state.** The state and verdict are not editable
-  on the form, and no view or job moves a change between states. The detail page
-  shows what each transition would need; it does not perform it.
-- **Nothing runs the checks against Forward.** The code that binds a criterion to
-  a query version, evaluates it against a snapshot and computes the verdict
-  exists and is tested, but no page or job calls it, and the evidence rows it
-  reads are not written by the plugin.
-- **No branch is created or linked, and none is merged.** Staging needs a branch
-  on the change, but the form does not expose it and no code sets it. The design
-  says the branch merges at CLOSED; the plugin does not do that merge.
-- **No REST API, GraphQL type or list filters** for changes.
-- **Predict is a stub.** It is an optional advisory step kept apart from the
-  verdict, and it is not live.
-
-Treat a change today as a structured record with approvals and a checklist of
-what would be required, not as an automated workflow. If you need a step from
-the lists above, say which, so it is built on a real need.
+- **Forward Predict** does not run: a change set is created in Forward and the
+  organisation must be licensed for it. Where it is not, a Predict rule reports
+  unavailable.
+- **Forward AI** is not used. It is optional and only offered where the
+  organisation has it on; its text would never feed a verdict or a score.
+- **Notifications, events and the branch-page panel** are not built.
+- **Scheduled validation runs** are not built: runs start on demand, through the
+  API, when a change is staged, or when a gate asks for a current one.
+- **GraphQL** types for changes and validation are not built.
+- A workspace's retention is fixed at creation (14 days). A change that outlives
+  it loses its workspace.

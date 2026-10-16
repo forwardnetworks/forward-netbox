@@ -115,13 +115,39 @@ change_policy = PluginMenuItem(
     permissions=["forward_netbox.view_forwardchangepolicy"],
 )
 
+validation_policy = PluginMenuItem(
+    link="plugins:forward_netbox:forwardchangevalidationpolicy_list",
+    link_text=_("Validation Policies"),
+    buttons=[
+        PluginMenuButton(
+            link="plugins:forward_netbox:forwardchangevalidationpolicy_add",
+            title=_("Add"),
+            icon_class="mdi mdi-plus-thick",
+            permissions=["forward_netbox.add_forwardchangevalidationpolicy"],
+        ),
+        PluginMenuButton(
+            link="plugins:forward_netbox:forwardchangevalidationpolicy_packs",
+            title=_("Install a pack"),
+            icon_class="mdi mdi-package-variant",
+            permissions=["forward_netbox.add_forwardchangevalidationpolicy"],
+        ),
+    ],
+    permissions=["forward_netbox.view_forwardchangevalidationpolicy"],
+)
+
+validation_run_menu = PluginMenuItem(
+    link="plugins:forward_netbox:forwardchangevalidationrun_list",
+    link_text=_("Validation Runs"),
+    permissions=["forward_netbox.view_forwardchangevalidationrun"],
+)
+
 menu = PluginMenu(
     label="Forward",
     icon_class="mdi mdi-cloud-sync",
     groups=(
         ("Data Sync", (source, sync, ingestion, ingestion_issue, validation_run)),
-        ("Change Control", (change,)),
+        ("Change Control", (change, validation_run_menu)),
         ("Analysis", (device_analysis,)),
-        ("Configuration", (nqe_map, drift_policy, change_policy)),
+        ("Configuration", (nqe_map, drift_policy, change_policy, validation_policy)),
     ),
 )

@@ -8,7 +8,9 @@
 # user who may change but not add.
 from django.core.exceptions import PermissionDenied
 from django.shortcuts import get_object_or_404
+from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
+from drf_spectacular.utils import OpenApiResponse
 from netbox.api.authentication import TokenWritePermission
 from netbox.api.viewsets import NetBoxModelViewSet
 from netbox.api.viewsets import NetBoxReadOnlyModelViewSet
@@ -25,6 +27,10 @@ from .change_serializers import ForwardChangePolicyRuleSerializer
 from .change_serializers import ForwardChangePolicySerializer
 from .change_serializers import ForwardChangeReviewSerializer
 from .change_serializers import ForwardChangeSerializer
+from .change_serializers import ForwardChangeValidationPolicySerializer
+from .change_serializers import ForwardChangeValidationResultSerializer
+from .change_serializers import ForwardChangeValidationRuleSerializer
+from .change_serializers import ForwardChangeValidationRunSerializer
 from forward_netbox.filtersets import ForwardChangeApprovalRuleFilterSet
 from forward_netbox.filtersets import ForwardChangeCommentFilterSet
 from forward_netbox.filtersets import ForwardChangeCriterionFilterSet
@@ -33,6 +39,10 @@ from forward_netbox.filtersets import ForwardChangeFilterSet
 from forward_netbox.filtersets import ForwardChangePolicyFilterSet
 from forward_netbox.filtersets import ForwardChangePolicyRuleFilterSet
 from forward_netbox.filtersets import ForwardChangeReviewFilterSet
+from forward_netbox.filtersets import ForwardChangeValidationPolicyFilterSet
+from forward_netbox.filtersets import ForwardChangeValidationResultFilterSet
+from forward_netbox.filtersets import ForwardChangeValidationRuleFilterSet
+from forward_netbox.filtersets import ForwardChangeValidationRunFilterSet
 from forward_netbox.models import ForwardChange
 from forward_netbox.models import ForwardChangeApprovalRule
 from forward_netbox.models import ForwardChangeComment
@@ -41,6 +51,10 @@ from forward_netbox.models import ForwardChangeEvidence
 from forward_netbox.models import ForwardChangePolicy
 from forward_netbox.models import ForwardChangePolicyRule
 from forward_netbox.models import ForwardChangeReview
+from forward_netbox.models import ForwardChangeValidationPolicy
+from forward_netbox.models import ForwardChangeValidationResult
+from forward_netbox.models import ForwardChangeValidationRule
+from forward_netbox.models import ForwardChangeValidationRun
 
 
 class ActionResultSerializer(serializers.Serializer):
@@ -51,6 +65,14 @@ class ActionResultSerializer(serializers.Serializer):
 
 class _NoBody(serializers.Serializer):
     pass
+
+
+class _ValidateBody(serializers.Serializer):
+    policy_id = serializers.IntegerField(required=False)
+
+
+class _PackBody(serializers.Serializer):
+    pack = serializers.CharField()
 
 
 class _TransitionBody(serializers.Serializer):
@@ -378,13 +400,14 @@ class ForwardChangeViewSet(NetBoxModelViewSet):
         url_path="verify",
     )
     def verify(self, request, pk=None):
-        from forward_netbox.change_control.runner import verify_change
+        from forward_netbox.change_control.queueing import enqueue_verify
 
-        def call(change, data):
-            outcome = verify_change(change, request.user)
-            return _reply(outcome, verdict=getattr(outcome, "verdict", ""))
-
-        return self._act(request, pk, self.CHANGE, call)
+        return self._act(
+            request,
+            pk,
+            self.CHANGE,
+            lambda change, data: _reply(enqueue_verify(change, request.user)),
+        )
 
     @extend_schema(request=_CommentBody, responses={200: ActionResultSerializer})
     @action(
@@ -452,6 +475,30 @@ class ForwardChangeViewSet(NetBoxModelViewSet):
             _ResolveBody,
             restrict="view",
         )
+
+    @extend_schema(request=_ValidateBody, responses={200: ActionResultSerializer})
+    @action(
+        detail=True,
+        methods=["post"],
+        permission_classes=[TokenWritePermission],
+        url_path="validate",
+    )
+    def validate(self, request, pk=None):
+        from forward_netbox.change_control.queueing import enqueue_validation
+
+        def call(change, data):
+            policy = None
+            if data.get("policy_id"):
+                policy = get_object_or_404(
+                    ForwardChangeValidationPolicy.objects.restrict(
+                        request.user, "view"
+                    ),
+                    pk=data["policy_id"],
+                )
+            outcome = enqueue_validation(change, request.user, policy=policy)
+            return _reply(outcome, run_id=outcome.run_id)
+
+        return self._act(request, pk, self.CHANGE, call, _ValidateBody)
 
 
 class ForwardChangePolicyViewSet(NetBoxModelViewSet):
@@ -553,3 +600,101 @@ class ForwardChangeCommentViewSet(NetBoxReadOnlyModelViewSet):
     ).prefetch_related("replies__author")
     serializer_class = ForwardChangeCommentSerializer
     filterset_class = ForwardChangeCommentFilterSet
+
+
+class ForwardChangeValidationPolicyViewSet(NetBoxModelViewSet):
+    queryset = ForwardChangeValidationPolicy.objects.prefetch_related(
+        "sites", "regions", "site_groups", "device_roles", "platforms", "scope_tags"
+    )
+    serializer_class = ForwardChangeValidationPolicySerializer
+    filterset_class = ForwardChangeValidationPolicyFilterSet
+
+    @extend_schema(responses={200: OpenApiResponse(description="The policy as JSON")})
+    @action(detail=True, methods=["get"], url_path="export")
+    def export(self, request, pk=None):
+        from forward_netbox.change_control.packs import export_policy
+
+        return Response(export_policy(self.get_object()))
+
+    @extend_schema(
+        request=OpenApiTypes.OBJECT,
+        responses={201: ForwardChangeValidationPolicySerializer},
+    )
+    @action(detail=False, methods=["post"], url_path="import")
+    def import_policy(self, request):
+        from forward_netbox.change_control.packs import import_policy
+
+        if not request.user.has_perm("forward_netbox.add_forwardchangevalidationrule"):
+            raise PermissionDenied("Requires add_forwardchangevalidationrule.")
+        policy, problems = import_policy(request.data)
+        if problems:
+            return Response({"ok": False, "reasons": problems}, status=400)
+        return Response(
+            ForwardChangeValidationPolicySerializer(
+                policy, context={"request": request}
+            ).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+    @extend_schema(
+        request=_PackBody, responses={201: ForwardChangeValidationPolicySerializer}
+    )
+    @action(detail=False, methods=["post"], url_path="install-pack")
+    def install_pack(self, request):
+        from forward_netbox.change_control.packs import install_pack
+
+        if not request.user.has_perm("forward_netbox.add_forwardchangevalidationrule"):
+            raise PermissionDenied("Requires add_forwardchangevalidationrule.")
+        body = _PackBody(data=request.data)
+        body.is_valid(raise_exception=True)
+        policy, problems = install_pack(body.validated_data["pack"])
+        if problems:
+            return Response({"ok": False, "reasons": problems}, status=400)
+        return Response(
+            ForwardChangeValidationPolicySerializer(
+                policy, context={"request": request}
+            ).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class ForwardChangeValidationRuleViewSet(NetBoxModelViewSet):
+    queryset = ForwardChangeValidationRule.objects.select_related("policy")
+    serializer_class = ForwardChangeValidationRuleSerializer
+    filterset_class = ForwardChangeValidationRuleFilterSet
+
+
+class ForwardChangeValidationRunViewSet(NetBoxReadOnlyModelViewSet):
+    queryset = ForwardChangeValidationRun.objects.select_related(
+        "change", "policy", "started_by"
+    )
+    serializer_class = ForwardChangeValidationRunSerializer
+    filterset_class = ForwardChangeValidationRunFilterSet
+
+    @extend_schema(request=_NoBody, responses={200: ActionResultSerializer})
+    @action(
+        detail=True,
+        methods=["post"],
+        permission_classes=[TokenWritePermission],
+        url_path="retrigger",
+    )
+    def retrigger(self, request, pk=None):
+        from forward_netbox.change_control.queueing import enqueue_validation
+
+        if not request.user.has_perm("forward_netbox.change_forwardchange"):
+            raise PermissionDenied("Requires change_forwardchange.")
+        run = get_object_or_404(
+            ForwardChangeValidationRun.objects.restrict(request.user, "view"), pk=pk
+        )
+        # Only a change the caller may change can be re-validated.
+        change = get_object_or_404(
+            ForwardChange.objects.restrict(request.user, "change"), pk=run.change_id
+        )
+        outcome = enqueue_validation(change, request.user, policy=run.policy)
+        return _reply(outcome, run_id=outcome.run_id)
+
+
+class ForwardChangeValidationResultViewSet(NetBoxReadOnlyModelViewSet):
+    queryset = ForwardChangeValidationResult.objects.select_related("run", "rule")
+    serializer_class = ForwardChangeValidationResultSerializer
+    filterset_class = ForwardChangeValidationResultFilterSet

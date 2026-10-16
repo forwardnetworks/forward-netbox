@@ -225,6 +225,40 @@
     </div>
 
     <div class="card">
+      <h5 class="card-header">{% trans "Validation" %}</h5>
+      <div class="card-body">
+        <p class="text-muted small">
+          {% trans "Rules from the validation policies that apply to this change, run in its workspace. A run counts only against the snapshots the change is pinned to now." %}
+        </p>
+        {% if validation_gate %}
+          <div class="alert alert-warning py-1 small">
+            {% for blocker in validation_gate %}<div>{{ blocker }}</div>{% endfor %}
+          </div>
+        {% endif %}
+        {% if validation_runs %}
+          <table class="table table-hover">
+            {% for run in validation_runs %}
+              <tr>
+                <td><a href="{% url 'plugins:forward_netbox:forwardchangevalidationrun' pk=run.pk %}">#{{ run.pk }}</a></td>
+                <td>{% badge run.get_status_display bg_color=run.get_status_color %}</td>
+                <td>{% if run.score is None %}<span class="text-muted">{% trans "no score" %}</span>{% else %}{{ run.score }}{% endif %}</td>
+                <td class="text-muted small">{{ run.created|date:"Y-m-d H:i" }}</td>
+              </tr>
+            {% endfor %}
+          </table>
+        {% else %}
+          <p class="text-muted">{% trans "No validation runs yet." %}</p>
+        {% endif %}
+        {% if can_validate %}
+          <form method="post" action="{% url 'plugins:forward_netbox:forwardchange_validate' pk=object.pk %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-primary">{% trans "Run validation" %}</button>
+          </form>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="card">
       <h5 class="card-header">{{ predict_panel.heading }}</h5>
       <div class="card-body">
         {# Advisory, and separated from Evidence above on purpose. An #}

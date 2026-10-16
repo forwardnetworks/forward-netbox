@@ -1,0 +1,79 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+{% load i18n %}
+
+{% block control-buttons %}{% endblock control-buttons %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col col-md-5">
+    <div class="card">
+      <h5 class="card-header">{% trans "Run" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr><th scope="row">{% trans "Change" %}</th><td>{{ object.change|linkify }}</td></tr>
+          <tr><th scope="row">{% trans "Policy" %}</th><td>{{ object.policy|linkify|placeholder }}</td></tr>
+          <tr><th scope="row">{% trans "Status" %}</th><td>{% badge object.get_status_display bg_color=object.get_status_color %}</td></tr>
+          <tr><th scope="row">{% trans "Trigger" %}</th><td>{{ object.get_trigger_display }}</td></tr>
+          <tr>
+            <th scope="row">{% trans "Score" %}</th>
+            <td>
+              {% if object.score is None %}
+                <span class="text-muted">{% trans "none: nothing was measured" %}</span>
+              {% else %}
+                {{ object.score }}
+              {% endif %}
+            </td>
+          </tr>
+          <tr><th scope="row">{% trans "Snapshot" %}</th><td><code>{{ object.snapshot_id|placeholder }}</code></td></tr>
+          <tr><th scope="row">{% trans "Started" %}</th><td>{{ object.started_at|placeholder }} {% if object.started_by %}({{ object.started_by }}){% endif %}</td></tr>
+          <tr><th scope="row">{% trans "Completed" %}</th><td>{{ object.completed_at|placeholder }}</td></tr>
+        </table>
+        {% if object.error %}
+          <div class="alert alert-danger mb-2">{{ object.error }}</div>
+        {% endif %}
+        {% if can_retrigger %}
+          <form method="post" action="{% url 'plugins:forward_netbox:forwardchangevalidationrun_retrigger' pk=object.pk %}">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-outline-primary">{% trans "Run again" %}</button>
+          </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+  <div class="col col-md-7">
+    <div class="card">
+      <h5 class="card-header">{% trans "Results" %}</h5>
+      <div class="card-body">
+        <p class="text-muted small">
+          {% trans "A skipped result means nothing was measured. It is never a pass." %}
+        </p>
+        <table class="table table-hover">
+          <thead>
+            <tr>
+              <th>{% trans "Check" %}</th>
+              <th>{% trans "Device" %}</th>
+              <th>{% trans "Engine" %}</th>
+              <th>{% trans "Status" %}</th>
+              <th>{% trans "Severity" %}</th>
+              <th>{% trans "Detail" %}</th>
+            </tr>
+          </thead>
+          {% for result in results %}
+            <tr>
+              <td>{{ result.check_name }}</td>
+              <td>{{ result.device_name|placeholder }}</td>
+              <td>{{ result.get_engine_display }}</td>
+              <td>{% badge result.get_status_display bg_color=result.get_status_color %}</td>
+              <td>{{ result.get_severity_display }}</td>
+              <td class="small">{{ result.message }}</td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="6" class="text-muted">{% trans "No results." %}</td></tr>
+          {% endfor %}
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock content %}

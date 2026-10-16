@@ -256,12 +256,12 @@ class ForwardActionViewsTest(ChangeFixture):
     def test_verify_reports_the_reasons_of_a_refusal(self):
         from unittest.mock import patch
 
-        from forward_netbox.change_control.runner import VerifyOutcome
+        from forward_netbox.change_control.validation import ValidationOutcome
 
         grant(self.reviewer, type(self.change_), "change")
         with patch(
-            "forward_netbox.change_control.runner.verify_change",
-            return_value=VerifyOutcome(False, reasons=("Not collected yet.",)),
+            "forward_netbox.change_control.queueing.enqueue_verify",
+            return_value=ValidationOutcome(False, "Not collected yet."),
         ):
             response = self.client.post(self._url("verify"), follow=True)
 

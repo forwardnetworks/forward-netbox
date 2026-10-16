@@ -50,17 +50,18 @@ Built from the public NetBox Labs change-management and validation documentation
 | Change request | reviewer rules, independent review, stale-review detection | built |
 | Change request | comments, replies, resolve | built |
 | Change request | merge gate on the branch, closure by merge | built |
-| Change request | add devices with Forward names, criteria edit and bind, state buttons, attest applied | this slice |
+| Change request | add devices with Forward names, criteria edit and bind, state buttons, attest applied | built |
 | Change request | notifications to reviewers and requester | to build |
 | Change request | panel on the branch page | to build |
-| Change request | REST API `changes/` parity and event types through `process_event_rules` | to build |
-| Validation | policies scoped by site, region, site group, role, platform, tag | to build |
-| Validation | rules with engine, category, check name, severity, parameters | to build |
-| Validation | runs (manual, API, on submission, on merge, scheduled), per-device results, findings, score | to build |
-| Validation | engines: `nqe` (existing criteria), `check` (Forward intent checks on a snapshot) | to build |
+| Change request | REST API parity | built |
+| Change request | event types through `process_event_rules` | to build |
+| Validation | policies scoped by site, region, site group, role, platform, tag | built |
+| Validation | rules with engine, category, check name, severity, parameters | built |
+| Validation | runs (manual, API, on submission, gate-required), per-device results, score | built; findings are the failing results; not planned: scheduled runs (on demand, on submission and gate-required cover the need) |
+| Validation | engines: `nqe` (a bound org query), `check` (Forward intent checks on a snapshot) | built |
 | Validation | engine `predict` and Forward AI | availability-gated: shown only where Forward answers; on the production org Predict is unlicensed and AI is off, so both report unavailable |
-| Validation | REST API `validation/` parity, retrigger | to build |
-| Both | verify and validation runs as background jobs | to build |
+| Validation | REST API parity, retrigger, policy export/import, ready-made packs | built |
+| Both | verify and validation runs as background jobs | built |
 | Both | GraphQL | last, if time allows |
 
 Availability found by probing a real org (read-only), 2026-10-16: Forward intent checks are listable on a snapshot (NQE, existential, predefined, reachability and isolation types); change sets are refused with `Unlicensed operation`; Forward AI is refused with `AI_ALLOWED is off`.
@@ -119,3 +120,9 @@ Phase 1a is the only phase that changes shipped behaviour (the exemption and the
 - Reviewer rules are a separate model from policy scope: scope says when a policy applies, a rule says who must approve and how many. Eligible reviewers come from groups and named users; a rule naming neither lets any reviewer count. A stale approval and the requester's own approval never count, at either gate.
 - Comments and replies are change-logged models named `ForwardChangeComment*`, so the branching exemption by name prefix already covers them. Only the author edits or deletes their own words; resolving needs the `change` permission on comments.
 - Reviewer rules are read live, not snapshotted when a change is staged: editing or deleting a rule affects changes already under review. Every edit is change-logged; snapshotting rules at staging is a follow-up if that proves too loose.
+- A criterion is editable only while the change is draft or scoped: entering BASELINED required every criterion to be bound and STAGED has no way back, so a later edit would leave a criterion unbound forever.
+- State buttons offer only the moves a person may make by hand. Applied is attested, collected and the verdicts are set by verify, closed is reached by merging the branch.
+- NetBox 4.7 serializes every object deleted in a web request, so every change-logged change-control model has a REST serializer even where the API does not otherwise expose it.
+- Validation gates are judged per policy, on a run that ran that policy's rules: a run of a lenient policy cannot stand in for a strict one. An unanswered (error) result blocks a gate whatever the score.
+- Validation findings are the failing and erroring results; there is no separate findings table.
+- Scheduled validation runs are not planned: runs start on demand, through the API, on submission, or when a gate asks for a current one.

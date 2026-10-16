@@ -134,3 +134,80 @@ class ForwardReviewPhaseChoices(ChoiceSet):
         (PRE, _("Pre-change"), "blue"),
         (POST, _("Post-change"), "green"),
     ]
+
+
+class ForwardValidationEngineChoices(ChoiceSet):
+    """Where a validation rule's answer comes from. Every engine is Forward's."""
+
+    NQE = "nqe"
+    CHECK = "check"
+    PREDICT = "predict"
+
+    CHOICES = [
+        (NQE, _("NQE query"), "blue"),
+        (CHECK, _("Forward intent checks"), "purple"),
+        (PREDICT, _("Forward Predict"), "cyan"),
+    ]
+
+
+class ForwardValidationSeverityChoices(ChoiceSet):
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    CRITICAL = "critical"
+
+    CHOICES = [
+        (INFO, _("Info"), "gray"),
+        (WARNING, _("Warning"), "yellow"),
+        (ERROR, _("Error"), "orange"),
+        (CRITICAL, _("Critical"), "red"),
+    ]
+
+    # Points taken off the score for each failing result of the severity.
+    PENALTY = {INFO: 0, WARNING: 3, ERROR: 10, CRITICAL: 25}
+
+
+class ForwardValidationResultStatusChoices(ChoiceSet):
+    """One result of one rule. SKIP means nothing was measured, never a pass."""
+
+    PASS = "pass"
+    FAIL = "fail"
+    WARNING = "warning"
+    SKIP = "skip"
+    ERROR = "error"
+
+    CHOICES = [
+        (PASS, _("Pass"), "green"),
+        (FAIL, _("Fail"), "red"),
+        (WARNING, _("Warning"), "yellow"),
+        (SKIP, _("Skipped"), "gray"),
+        (ERROR, _("Error"), "orange"),
+    ]
+
+
+class ForwardValidationRunStatusChoices(ChoiceSet):
+    PENDING = "pending"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+    CHOICES = [
+        (PENDING, _("Pending"), "gray"),
+        (RUNNING, _("Running"), "blue"),
+        (COMPLETED, _("Completed"), "green"),
+        (FAILED, _("Failed"), "red"),
+    ]
+
+
+class ForwardValidationTriggerChoices(ChoiceSet):
+    MANUAL = "manual"
+    API = "api"
+    SUBMISSION = "submission"
+    MERGE = "merge"
+
+    CHOICES = [
+        (MANUAL, _("Manual")),
+        (API, _("API")),
+        (SUBMISSION, _("On submission")),
+        (MERGE, _("On merge")),
+    ]

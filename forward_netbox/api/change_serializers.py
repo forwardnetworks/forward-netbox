@@ -9,6 +9,12 @@
 # gate on reviews) do not go through these serializers: `state`, `verdict` and the
 # snapshot ids are read-only here and move only through the actions on the viewset,
 # which call the same service functions the web pages do.
+from dcim.models import DeviceRole
+from dcim.models import Platform
+from dcim.models import Region
+from dcim.models import Site
+from dcim.models import SiteGroup
+from extras.models import Tag
 from netbox.api.fields import ChoiceField
 from netbox.api.serializers import PrimaryModelSerializer
 from netbox.api.serializers import ValidatedModelSerializer
@@ -22,6 +28,11 @@ from forward_netbox.change_control.choices import ForwardCriterionExpectationCho
 from forward_netbox.change_control.choices import ForwardCriterionFamilyChoices
 from forward_netbox.change_control.choices import ForwardEvidencePhaseChoices
 from forward_netbox.change_control.choices import ForwardReviewPhaseChoices
+from forward_netbox.change_control.choices import ForwardValidationEngineChoices
+from forward_netbox.change_control.choices import ForwardValidationResultStatusChoices
+from forward_netbox.change_control.choices import ForwardValidationRunStatusChoices
+from forward_netbox.change_control.choices import ForwardValidationSeverityChoices
+from forward_netbox.change_control.choices import ForwardValidationTriggerChoices
 from forward_netbox.models import ForwardChange
 from forward_netbox.models import ForwardChangeApprovalRule
 from forward_netbox.models import ForwardChangeComment
@@ -32,6 +43,10 @@ from forward_netbox.models import ForwardChangeEvidence
 from forward_netbox.models import ForwardChangePolicy
 from forward_netbox.models import ForwardChangePolicyRule
 from forward_netbox.models import ForwardChangeReview
+from forward_netbox.models import ForwardChangeValidationPolicy
+from forward_netbox.models import ForwardChangeValidationResult
+from forward_netbox.models import ForwardChangeValidationRule
+from forward_netbox.models import ForwardChangeValidationRun
 from forward_netbox.models import ForwardSource
 
 
@@ -351,3 +366,136 @@ class ForwardChangeCommentSerializer(ValidatedModelSerializer):
         )
         read_only_fields = fields
         brief_fields = ("id", "display", "author", "resolved")
+
+
+class ForwardChangeValidationPolicySerializer(PrimaryModelSerializer):
+    sites = serializers.PrimaryKeyRelatedField(
+        many=True, required=False, queryset=Site.objects.all()
+    )
+    regions = serializers.PrimaryKeyRelatedField(
+        many=True, required=False, queryset=Region.objects.all()
+    )
+    site_groups = serializers.PrimaryKeyRelatedField(
+        many=True, required=False, queryset=SiteGroup.objects.all()
+    )
+    device_roles = serializers.PrimaryKeyRelatedField(
+        many=True, required=False, queryset=DeviceRole.objects.all()
+    )
+    platforms = serializers.PrimaryKeyRelatedField(
+        many=True, required=False, queryset=Platform.objects.all()
+    )
+    scope_tags = serializers.PrimaryKeyRelatedField(
+        many=True, required=False, queryset=Tag.objects.all()
+    )
+
+    class Meta:
+        model = ForwardChangeValidationPolicy
+        fields = (
+            "id",
+            "display",
+            "name",
+            "enabled",
+            "min_score",
+            "require_passed_run",
+            "run_on_submission",
+            "sites",
+            "regions",
+            "site_groups",
+            "device_roles",
+            "platforms",
+            "scope_tags",
+            "description",
+            "comments",
+            "created",
+            "last_updated",
+        )
+        brief_fields = ("id", "display", "name", "enabled")
+
+
+class ForwardChangeValidationRuleSerializer(ValidatedModelSerializer):
+    engine = ChoiceField(choices=ForwardValidationEngineChoices)
+    severity = ChoiceField(choices=ForwardValidationSeverityChoices, required=False)
+
+    class Meta:
+        model = ForwardChangeValidationRule
+        fields = (
+            "id",
+            "display",
+            "policy",
+            "name",
+            "engine",
+            "category",
+            "severity",
+            "enabled",
+            "parameters",
+            "created",
+            "last_updated",
+        )
+        brief_fields = ("id", "display", "name", "engine")
+
+    def validate(self, attrs):
+        from forward_netbox.change_control.validation import rule_parameter_problems
+
+        attrs = super().validate(attrs)
+        engine = attrs.get("engine", self.instance.engine if self.instance else None)
+        params = attrs.get(
+            "parameters", self.instance.parameters if self.instance else {}
+        )
+        problems = rule_parameter_problems(engine, params)
+        if problems:
+            raise serializers.ValidationError({"parameters": problems})
+        return attrs
+
+
+class ForwardChangeValidationResultSerializer(ValidatedModelSerializer):
+    engine = ChoiceField(choices=ForwardValidationEngineChoices, read_only=True)
+    status = ChoiceField(choices=ForwardValidationResultStatusChoices, read_only=True)
+    severity = ChoiceField(choices=ForwardValidationSeverityChoices, read_only=True)
+
+    class Meta:
+        model = ForwardChangeValidationResult
+        fields = (
+            "id",
+            "display",
+            "run",
+            "rule",
+            "engine",
+            "category",
+            "check_name",
+            "device_name",
+            "status",
+            "severity",
+            "message",
+            "row_count",
+        )
+        read_only_fields = fields
+        brief_fields = ("id", "display", "check_name", "status")
+
+
+class ForwardChangeValidationRunSerializer(ValidatedModelSerializer):
+    status = ChoiceField(choices=ForwardValidationRunStatusChoices, read_only=True)
+    trigger = ChoiceField(choices=ForwardValidationTriggerChoices, read_only=True)
+    started_by = UserSerializer(nested=True, read_only=True)
+
+    class Meta:
+        model = ForwardChangeValidationRun
+        fields = (
+            "id",
+            "display",
+            "change",
+            "policy",
+            "trigger",
+            "status",
+            "started_by",
+            "started_at",
+            "completed_at",
+            "snapshot_id",
+            "before_snapshot_id",
+            "after_snapshot_id",
+            "score",
+            "summary",
+            "error",
+            "created",
+        )
+        read_only_fields = fields
+        brief_fields = ("id", "display", "status", "score")

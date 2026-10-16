@@ -2335,6 +2335,47 @@ class ValidationJob(ForwardJobRunner):
         _validate_forwardsync_work(self.job)
 
 
+class ChangeValidationJob(JobRunner):
+    """Run one pending validation run of a change against Forward."""
+
+    class Meta:
+        name = "validate change"
+
+    def run(self, *args, run_id=None, **kwargs):
+        from .change_control.validation import execute_run
+        from .models import ForwardChangeValidationRun
+
+        run = ForwardChangeValidationRun.objects.select_related("change").get(pk=run_id)
+        execute_run(run)
+
+
+class ChangeVerifyJob(JobRunner):
+    """Verify a change against its post-change snapshot."""
+
+    class Meta:
+        name = "verify change"
+
+    def run(self, *args, **kwargs):
+        from .change_control.runner import verify_change
+        from .models import ForwardChange
+
+        from .change_control.actions import _journal
+
+        change = ForwardChange.objects.get(pk=self.job.object_id)
+        outcome = verify_change(change, self.job.user)
+        reasons = " ".join(outcome.reasons or ()) or outcome.message
+        if outcome.ok:
+            _journal(
+                change, self.job.user, f"Verified: {outcome.verdict}. {reasons}".strip()
+            )
+        else:
+            _journal(
+                change,
+                self.job.user,
+                f"Verification did not complete: {reasons or 'refused'}",
+            )
+
+
 class DeviceAnalysisRefreshJob(ForwardJobRunner):
     """Snapshot-guarded refresh of the auxiliary device-analysis read model."""
 

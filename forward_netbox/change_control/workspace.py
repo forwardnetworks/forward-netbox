@@ -97,6 +97,58 @@ class ForwardWorkspaceApi:
             fetch_all=True,
         )
 
+    def resolve_query(self, query_path, commit_id=None):
+        """``(query_id, commit_id)`` an org query path resolves to, via the SDK."""
+        from ..utilities.forward_api import resolve_nqe_query_reference
+
+        resolved = resolve_nqe_query_reference(
+            self.client,
+            repository="org",
+            query_path=query_path,
+            commit_id=commit_id or None,
+        )
+        query_id = str(resolved.get("queryId") or resolved.get("query_id") or "")
+        commit = str(resolved.get("commitId") or resolved.get("commit_id") or "")
+        return query_id, commit
+
+    def checks(self, snapshot_id):
+        """Forward's intent checks on a snapshot, as plain dicts, via the SDK."""
+        rows = []
+        for item in (
+            self._sdk(
+                self.client._sdk_client.checks.get_checks, snapshot_id=snapshot_id
+            )
+            or []
+        ):
+            definition = getattr(item, "definition", None)
+            rows.append(
+                {
+                    "name": str(getattr(item, "name", "") or ""),
+                    "type": str(
+                        getattr(
+                            getattr(definition, "check_type", None),
+                            "value",
+                            getattr(definition, "check_type", ""),
+                        )
+                        or ""
+                    ),
+                    "status": str(
+                        getattr(getattr(item, "status", None), "value", item.status)
+                        or ""
+                    ),
+                    "priority": str(
+                        getattr(
+                            getattr(item, "priority", None),
+                            "value",
+                            getattr(item, "priority", ""),
+                        )
+                        or ""
+                    ),
+                    "violations": int(getattr(item, "num_violations", 0) or 0),
+                }
+            )
+        return rows
+
     def estate_device_names(self, network_id):
         """Every device name on the network's latest processed snapshot, in one call."""
         from ..utilities.forward_api import get_latest_processed_snapshot_id

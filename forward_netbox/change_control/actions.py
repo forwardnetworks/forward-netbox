@@ -189,6 +189,13 @@ def transition(change, target, user):
             return TransitionOutcome(False, locked.state, (BRANCH_UNREADABLE,))
         outcome = _apply(locked, target, user)
     change.refresh_from_db()
+    if outcome.ok and target == State.STAGED:
+        from .queueing import validate_on_submission
+
+        try:
+            validate_on_submission(change, user)
+        except Exception:  # noqa: BLE001 - staging is not undone by a queueing problem
+            logger.exception("Could not queue validation for change %s", change.pk)
     return outcome
 
 
