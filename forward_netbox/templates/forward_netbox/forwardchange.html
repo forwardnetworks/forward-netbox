@@ -35,7 +35,39 @@
             <th scope="row">{% trans "Requester" %}</th>
             <td>{{ object.requester|placeholder }}</td>
           </tr>
+          <tr>
+            <th scope="row">{% trans "Priority" %}</th>
+            <td>{{ object.priority }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Summary" %}</th>
+            <td>{{ object.summary|placeholder }}</td>
+          </tr>
         </table>
+        {% if perms.forward_netbox.change_forwardchange %}
+          {% if transitions %}
+            <p class="text-muted small mb-1">{% trans "Move this change on:" %}</p>
+            {% for move in transitions %}
+              <form method="post" class="d-inline" action="{% url 'plugins:forward_netbox:forwardchange_transition' pk=object.pk %}">
+                {% csrf_token %}
+                <input type="hidden" name="target" value="{{ move.target }}">
+                <button type="submit" class="btn btn-sm {% if move.allowed %}btn-outline-primary{% else %}btn-outline-secondary{% endif %}"
+                        {% if not move.allowed %}title="{{ move.blockers|join:' ' }}"{% endif %}>{{ move.target }}</button>
+              </form>
+            {% endfor %}
+            {% for move in transitions %}
+              {% if not move.allowed and move.blockers %}
+                <div class="text-muted small mt-1"><strong>{{ move.target }}:</strong> {{ move.blockers|join:" " }}</div>
+              {% endif %}
+            {% endfor %}
+          {% endif %}
+          {% if object.state == 'verified-proceed' %}
+            <form method="post" class="mt-2" action="{% url 'plugins:forward_netbox:forwardchange_close' pk=object.pk %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm btn-success">{% trans "Close: merge the branch" %}</button>
+            </form>
+          {% endif %}
+        {% endif %}
       </div>
     </div>
 
@@ -82,11 +114,64 @@
             <td>{{ object.applied_ref|placeholder }}</td>
           </tr>
         </table>
+        {% if perms.forward_netbox.change_forwardchange and object.state == 'approved' %}
+          <form method="post" class="d-flex gap-2" action="{% url 'plugins:forward_netbox:forwardchange_attest_applied' pk=object.pk %}">
+            {% csrf_token %}
+            <input type="text" name="applied_ref" class="form-control" placeholder="{% trans 'Ticket or reference (optional)' %}">
+            <button type="submit" class="btn btn-outline-primary">{% trans "Attest it was applied" %}</button>
+          </form>
+        {% endif %}
       </div>
     </div>
   </div>
 
   <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Criteria" %}</h5>
+      <div class="card-body">
+        <p class="text-muted small">
+          {% trans "Each criterion is an NQE query and what to expect of it. It is bound to a committed query version before anything is measured, and cannot change once evidence exists." %}
+        </p>
+        {% if criteria %}
+          <table class="table table-hover">
+            {% for criterion in criteria %}
+              <tr>
+                <td>{{ criterion.name }}{% if not criterion.blocking %} <span class="badge text-bg-gray">{% trans "advisory" %}</span>{% endif %}</td>
+                <td class="small">{{ criterion.get_expectation_display }}</td>
+                <td>
+                  {% if criterion.is_bound %}
+                    <span class="badge text-bg-green">{% trans "bound" %}</span>
+                  {% else %}
+                    <span class="badge text-bg-orange">{% trans "not bound" %}</span>
+                  {% endif %}
+                </td>
+                <td class="text-end">
+                  {% if perms.forward_netbox.change_forwardchangecriterion %}
+                    <form method="post" class="d-inline" action="{% url 'plugins:forward_netbox:forwardchange_criterion_bind' pk=object.pk criterion_pk=criterion.pk %}">
+                      {% csrf_token %}
+                      <button type="submit" class="btn btn-sm btn-outline-primary">{% trans "Bind" %}</button>
+                    </form>
+                    <a class="btn btn-sm btn-outline-secondary" href="{% url 'plugins:forward_netbox:forwardchangecriterion_edit' pk=criterion.pk %}?return_url={{ object.get_absolute_url|urlencode }}">{% trans "Edit" %}</a>
+                  {% endif %}
+                  {% if perms.forward_netbox.delete_forwardchangecriterion %}
+                    <form method="post" class="d-inline" action="{% url 'plugins:forward_netbox:forwardchange_criterion_delete' pk=object.pk criterion_pk=criterion.pk %}">
+                      {% csrf_token %}
+                      <button type="submit" class="btn btn-sm btn-outline-danger">{% trans "Delete" %}</button>
+                    </form>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </table>
+        {% else %}
+          <p class="text-muted">{% trans "No criteria yet." %}</p>
+        {% endif %}
+        {% if perms.forward_netbox.add_forwardchangecriterion %}
+          <a class="btn btn-primary" href="{% url 'plugins:forward_netbox:forwardchangecriterion_add' %}?change={{ object.pk }}&return_url={{ object.get_absolute_url|urlencode }}">{% trans "Add criterion" %}</a>
+        {% endif %}
+      </div>
+    </div>
+
     <div class="card">
       <h5 class="card-header">{% trans "Evidence" %}</h5>
       <div class="card-body">
@@ -156,18 +241,39 @@
       <h5 class="card-header">{% trans "Scope" %}</h5>
       <div class="card-body">
         {% if scoped_devices %}
-          <ul class="list-unstyled mb-0">
+          <ul class="list-unstyled">
             {% for scoped in scoped_devices %}
               <li>
                 {{ scoped.device|linkify }}
-                {% if not scoped.forward_device_key %}
+                {% if scoped.forward_device_key %}
+                  <code class="small">{{ scoped.forward_device_key }}</code>
+                {% else %}
                   <span class="badge text-bg-orange">{% trans "no Forward identity" %}</span>
+                {% endif %}
+                {% if perms.forward_netbox.change_forwardchange and not object.workspace_network_id %}
+                  <form method="post" class="d-inline" action="{% url 'plugins:forward_netbox:forwardchange_devices_remove' pk=object.pk row_pk=scoped.pk %}">
+                    {% csrf_token %}
+                    <button type="submit" class="btn btn-link btn-sm text-danger p-0">{% trans "remove" %}</button>
+                  </form>
                 {% endif %}
               </li>
             {% endfor %}
           </ul>
         {% else %}
-          <p class="text-muted mb-0">{% trans "No devices in scope." %}</p>
+          <p class="text-muted">{% trans "No devices in scope." %}</p>
+        {% endif %}
+        {% if perms.forward_netbox.change_forwardchange and not object.workspace_network_id %}
+          <form method="post" class="mb-2" action="{% url 'plugins:forward_netbox:forwardchange_devices_add' pk=object.pk %}">
+            {% csrf_token %}
+            <textarea name="names" rows="2" class="form-control mb-2" placeholder="{% trans 'Device names, one per line or comma separated' %}"></textarea>
+            <button type="submit" class="btn btn-outline-primary">{% trans "Add devices" %}</button>
+          </form>
+          {% if scoped_devices %}
+            <form method="post" action="{% url 'plugins:forward_netbox:forwardchange_devices_resolve' pk=object.pk %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-outline-secondary">{% trans "Resolve Forward names" %}</button>
+            </form>
+          {% endif %}
         {% endif %}
       </div>
     </div>

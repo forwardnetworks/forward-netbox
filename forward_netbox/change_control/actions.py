@@ -122,9 +122,11 @@ def review_anchor(change) -> str:
 
     parts = (
         change.state,
-        change.branch_last_change_time.isoformat()
-        if change.branch_last_change_time
-        else "",
+        (
+            change.branch_last_change_time.isoformat()
+            if change.branch_last_change_time
+            else ""
+        ),
         change.before_snapshot_id,
         change.after_snapshot_id,
         change.verdict,
@@ -160,7 +162,9 @@ def _apply(change, target, user, note=""):
     change.state = target
     change.save(update_fields=["state", "last_updated"])
     _journal(
-        change, user, f"State changed from {previous} to {target}.{' ' + note if note else ''}"
+        change,
+        user,
+        f"State changed from {previous} to {target}.{' ' + note if note else ''}",
     )
     return TransitionOutcome(True, target)
 
@@ -170,7 +174,9 @@ def transition(change, target, user):
     with transaction.atomic():
         locked = _lock(change)
         if locked is None:
-            return TransitionOutcome(False, change.state, ("The change no longer exists.",))
+            return TransitionOutcome(
+                False, change.state, ("The change no longer exists.",)
+            )
         # The edge first: an illegal request is answered without touching the branch.
         if not legal_transition(locked.state, target):
             result = check_transition(locked, target)
@@ -196,7 +202,9 @@ def attest_applied(change, user, applied_at=None, ref=""):
     with transaction.atomic():
         locked = _lock(change)
         if locked is None:
-            return TransitionOutcome(False, change.state, ("The change no longer exists.",))
+            return TransitionOutcome(
+                False, change.state, ("The change no longer exists.",)
+            )
         locked.applied_at = applied_at or timezone.now()
         locked.applied_by = user
         locked.applied_ref = ref
@@ -231,6 +239,10 @@ def record_review(change, reviewer, approved, comment="", anchor=None):
         # The gate is derived from the state, not chosen by the reviewer: an
         # approval recorded while the change is still STAGED would sign off on
         # evidence that does not exist yet.
+        if locked.state in State.TERMINAL:
+            return ReviewOutcome(
+                False, message="This change is finished, so it takes no more reviews."
+            )
         phase = Phase.POST if locked.state == State.VERIFIED_PROCEED else Phase.PRE
         if not sync_branch_state(locked):
             return ReviewOutcome(False, message=BRANCH_UNREADABLE)
@@ -277,7 +289,9 @@ def close_change(change, user):
     with transaction.atomic():
         locked = _lock(change)
         if locked is None:
-            return TransitionOutcome(False, change.state, ("The change no longer exists.",))
+            return TransitionOutcome(
+                False, change.state, ("The change no longer exists.",)
+            )
         if not sync_branch_state(locked):
             return TransitionOutcome(False, locked.state, (BRANCH_UNREADABLE,))
         result = closure_check(locked)

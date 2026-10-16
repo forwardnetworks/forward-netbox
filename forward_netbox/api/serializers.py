@@ -405,3 +405,17 @@ class ForwardIngestionIssueSerializer(OrganizationalModelSerializer):
             "raw_data",
             "exception",
         )
+
+
+# The change-control serializers live in their own module but are looked up by NetBox
+# as attributes of this one (`get_serializer_for_model`), so they are re-exported.
+from forward_netbox.api.change_serializers import (  # noqa: E402,F401
+    ForwardChangeApprovalRuleSerializer,
+    ForwardChangeCommentReplySerializer,
+    ForwardChangeCommentSerializer,
+    ForwardChangeCriterionSerializer,
+    ForwardChangePolicyRuleSerializer,
+    ForwardChangePolicySerializer,
+    ForwardChangeReviewSerializer,
+    ForwardChangeSerializer,
+)

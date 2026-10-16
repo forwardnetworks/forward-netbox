@@ -97,6 +97,21 @@ class ForwardWorkspaceApi:
             fetch_all=True,
         )
 
+    def estate_device_names(self, network_id):
+        """Every device name on the network's latest processed snapshot, in one call."""
+        from ..utilities.forward_api import get_latest_processed_snapshot_id
+        from ..utilities.forward_api import run_nqe_query
+
+        snapshot_id = get_latest_processed_snapshot_id(self.client, network_id)
+        rows = run_nqe_query(
+            self.client,
+            query="foreach d in network.devices select {name: d.name}",
+            network_id=network_id,
+            snapshot_id=snapshot_id,
+            fetch_all=True,
+        )
+        return [row["name"] for row in rows or [] if row.get("name")]
+
     def device_collection(self, network_id, snapshot_id):
         """``{device name: collection time}`` for the devices the snapshot has."""
         from ..utilities.forward_api import run_nqe_query

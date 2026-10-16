@@ -2199,6 +2199,9 @@ class ForwardChangeCriterion(ForwardPluginModelDocsMixin, ChangeLoggedModel):
     def __str__(self):
         return self.name
 
+    def get_absolute_url(self):
+        return self.change.get_absolute_url()
+
     @property
     def is_bound(self) -> bool:
         return bool(self.query_id and self.commit_id)
@@ -2227,6 +2230,8 @@ class ForwardChangeEvidence(models.Model):
     executed_at = models.DateTimeField(default=timezone.now)
     duration_ms = models.PositiveIntegerField(default=0)
     shape = models.JSONField(blank=True, default=dict)
+
+    objects = RestrictedQuerySet.as_manager()
 
     class Meta:
         ordering = ("criterion", "phase")

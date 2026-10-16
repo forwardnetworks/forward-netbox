@@ -23,6 +23,8 @@ from django.urls import reverse  # noqa: E402
 
 from forward_netbox.choices import ForwardSyncStatusChoices  # noqa: E402
 from forward_netbox.models import ForwardChange  # noqa: E402
+from forward_netbox.models import ForwardChangeApprovalRule  # noqa: E402
+from forward_netbox.models import ForwardChangeCriterion  # noqa: E402
 from forward_netbox.models import ForwardChangePolicy  # noqa: E402
 from forward_netbox.models import ForwardChangePolicyRule  # noqa: E402
 from forward_netbox.models import ForwardDeviceAnalysis  # noqa: E402
@@ -153,6 +155,14 @@ def main():
         title="Artifact route smoke change",
     )
     change_policy_rule = ForwardChangePolicyRule.objects.create(policy=change_policy)
+    # Without their own fixtures the longest-prefix rule below binds these models'
+    # routes to the change's pk, and the probe reports a 404 for a route that works.
+    change_criterion = ForwardChangeCriterion.objects.create(
+        change=change, name="Artifact route smoke criterion", query_path="/smoke"
+    )
+    change_approval_rule = ForwardChangeApprovalRule.objects.create(
+        policy=change_policy, name="Artifact route smoke rule", any_reviewer=True
+    )
     validation_run = ForwardValidationRun.objects.create(
         sync=sync,
         policy=policy,
@@ -240,6 +250,8 @@ def main():
         "forwarddriftpolicy": policy.pk,
         "forwardchangepolicy": change_policy.pk,
         "forwardchangepolicyrule": change_policy_rule.pk,
+        "forwardchangeapprovalrule": change_approval_rule.pk,
+        "forwardchangecriterion": change_criterion.pk,
         "forwardchange": change.pk,
     }
     detail = []

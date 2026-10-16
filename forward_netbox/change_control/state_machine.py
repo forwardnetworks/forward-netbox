@@ -62,6 +62,33 @@ def available_transitions(current: str) -> tuple[str, ...]:
     return tuple(sorted(TRANSITIONS.get(current, frozenset())))
 
 
+# What a person may move a change to by hand. Everything else has its own door:
+# APPLIED is attested (`attest_applied`), COLLECTED and the two verdict states are
+# set by `verify_change` from evidence, and CLOSED is reached by merging the branch
+# (`close_change`). A button for those would let a click skip the check that gives
+# them their meaning. The one exception is the way back out of a HOLD.
+MANUAL_TARGETS = frozenset(
+    {
+        State.DRAFT,
+        State.SCOPED,
+        State.BASELINED,
+        State.STAGED,
+        State.PREDICTED,
+        State.APPROVED,
+        State.ABANDONED,
+    }
+)
+
+
+def manual_transitions(current: str) -> tuple[str, ...]:
+    allowed = set(TRANSITIONS.get(current, frozenset())) & MANUAL_TARGETS
+    if current == State.VERIFIED_HOLD and State.APPLIED in TRANSITIONS.get(
+        current, frozenset()
+    ):
+        allowed.add(State.APPLIED)
+    return tuple(sorted(allowed))
+
+
 def check_transition(change, target: str) -> TransitionResult:
     """Whether `change` may move to `target`, and what is missing if not."""
     current = change.state

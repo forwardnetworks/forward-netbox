@@ -40,6 +40,31 @@ From NetBox Labs' validation documentation: a policy scopes by site, region, sit
 
 Ours: **engines** are Forward's: `nqe` (a bound query at a committed version), `check` (a native Forward intent check on a snapshot: isolation, reachability, exists, NQE) and `predict` (the same checks on a predicted snapshot). Existing criteria and evidence are per change and pass or fail per phase, so validation policy, rule, run, result and finding are **new tables**, named `ForwardChangeValidation*` because `ForwardValidationRun`, its job, API route and menu entry already mean sync validation. REST sub-prefixes `changes/` and `validation/` keep the two products' `policies` and `rules` apart. Custom lifecycle event types fire event rules (theirs only notify and silently never fire), dispatched by this plugin. `context.last_branch_change` is not part of NetBox's standard webhook body, so it is a custom payload, not a parity claim.
 
+## Parity checklist (the definition of done for the next minor)
+
+Built from the public NetBox Labs change-management and validation documentation, as summarised above. "Done" means built, tested and reachable from the UI.
+
+| Area | Item | Status |
+|---|---|---|
+| Change request | name/ref, branch, owner, priority 1-5, summary, comment count, derived status | built (form fields added with the scope slice) |
+| Change request | reviewer rules, independent review, stale-review detection | built |
+| Change request | comments, replies, resolve | built |
+| Change request | merge gate on the branch, closure by merge | built |
+| Change request | add devices with Forward names, criteria edit and bind, state buttons, attest applied | this slice |
+| Change request | notifications to reviewers and requester | to build |
+| Change request | panel on the branch page | to build |
+| Change request | REST API `changes/` parity and event types through `process_event_rules` | to build |
+| Validation | policies scoped by site, region, site group, role, platform, tag | to build |
+| Validation | rules with engine, category, check name, severity, parameters | to build |
+| Validation | runs (manual, API, on submission, on merge, scheduled), per-device results, findings, score | to build |
+| Validation | engines: `nqe` (existing criteria), `check` (Forward intent checks on a snapshot) | to build |
+| Validation | engine `predict` and Forward AI | availability-gated: shown only where Forward answers; on the production org Predict is unlicensed and AI is off, so both report unavailable |
+| Validation | REST API `validation/` parity, retrigger | to build |
+| Both | verify and validation runs as background jobs | to build |
+| Both | GraphQL | last, if time allows |
+
+Availability found by probing a real org (read-only), 2026-10-16: Forward intent checks are listable on a snapshot (NQE, existential, predefined, reachability and isolation types); change sets are refused with `Unlicensed operation`; Forward AI is refused with `AI_ALLOWED is off`.
+
 ## Touched Surfaces
 
 - `forward_netbox/change_control/`: workspace adapter (create, adopt, retention), transition service, reviewer-rule evaluator, validation engines, the gate (the preaction check), event dispatch, notifications.

@@ -28,6 +28,7 @@ from .exceptions import ForwardConnectivityError
 from .exceptions import ForwardSyncError
 from .models import ForwardChange
 from .models import ForwardChangeApprovalRule
+from .models import ForwardChangeCriterion
 from .models import ForwardChangePolicy
 from .models import ForwardChangePolicyRule
 from .models import ForwardDriftPolicy
@@ -2183,6 +2184,9 @@ class ForwardChangeForm(NetBoxModelForm):
             "title",
             "source",
             "requester",
+            "priority",
+            "summary",
+            "branch",
             "window_start",
             "window_end",
             "description",
@@ -2191,10 +2195,104 @@ class ForwardChangeForm(NetBoxModelForm):
         )
 
     fieldsets = (
-        FieldSet("ref", "title", "source", "requester", name="Change"),
+        FieldSet("ref", "title", "source", "requester", "priority", name="Change"),
+        FieldSet("summary", "branch", name="Plan"),
         FieldSet("window_start", "window_end", name="Window"),
         FieldSet("description", "comments", "tags", name="Notes"),
     )
+
+    def clean_branch(self):
+        """Only a branch no sync owns, and only while the change is still planned.
+
+        A sync ingestion branch is merged by the sync, not by a change, so tying a
+        change to one would make the change's gate and the sync's merge fight over
+        it. Once a change is staged its branch is part of what reviewers approved.
+        """
+        from .change_control.branch_link import branch_blocker
+
+        branch = self.cleaned_data.get("branch")
+        reason = branch_blocker(self.instance, branch)
+        if reason:
+            raise forms.ValidationError(reason)
+        return branch
+
+
+class ForwardChangeCriterionForm(NetBoxModelForm):
+    """An assertion the change is judged against.
+
+    Refuses to save while evidence exists or the change is past planning, and drops
+    the pinned query version when the path changes (see `criteria_admin`).
+    """
+
+    class Meta:
+        model = ForwardChangeCriterion
+        fields = (
+            "change",
+            "name",
+            "family",
+            "expectation",
+            "blocking",
+            "query_path",
+        )
+
+    fieldsets = (
+        FieldSet(
+            "change", "name", "family", "expectation", "blocking", name="Criterion"
+        ),
+        FieldSet("query_path", name="Query"),
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._previous_path = self.instance.query_path if self.instance.pk else ""
+        if self.instance.pk:
+            self.fields["change"].disabled = True
+
+    def clean(self):
+        from .change_control.criteria_admin import criterion_blocker
+
+        super().clean()
+        change = self.cleaned_data.get("change")
+        if change is None:
+            return
+        probe = self.instance
+        if not probe.pk:
+            probe = ForwardChangeCriterion(change=change)
+        reason = criterion_blocker(probe)
+        if reason:
+            raise forms.ValidationError(reason)
+        path = (self.cleaned_data.get("query_path") or "").strip()
+        if not path:
+            self.add_error(
+                "query_path",
+                _("A criterion needs the path of an NQE query to run."),
+            )
+
+    def save(self, commit=True):
+        from .change_control.criteria_admin import clear_binding_if_path_changed
+
+        from django.db import transaction
+        from utilities.exceptions import AbortRequest
+
+        from .change_control.actions import _lock
+        from .change_control.criteria_admin import criterion_blocker
+
+        # The checks in `clean` ran without a lock, so a staging or an evidence
+        # write may have landed since. Look again with the change locked.
+        with transaction.atomic():
+            locked = _lock(self.instance.change)
+            if locked is None:
+                raise AbortRequest(_("The change no longer exists."))
+            probe = self.instance
+            if probe.pk:
+                probe = type(probe).objects.get(pk=probe.pk)
+            else:
+                probe = ForwardChangeCriterion(change=locked)
+            reason = criterion_blocker(probe)
+            if reason:
+                raise AbortRequest(reason)
+            clear_binding_if_path_changed(self.instance, self._previous_path)
+            return super().save(commit=commit)
 
 
 class ForwardChangePolicyForm(NetBoxModelForm):

@@ -46,6 +46,7 @@ from .filtersets import ForwardSourceFilterSet
 from .filtersets import ForwardSyncFilterSet
 from .filtersets import ForwardValidationRunFilterSet
 from .forms import ForwardChangeApprovalRuleForm
+from .forms import ForwardChangeCriterionForm
 from .forms import ForwardChangeForm
 from .forms import ForwardChangePolicyForm
 from .forms import ForwardChangePolicyRuleForm
@@ -62,6 +63,7 @@ from .forms import ForwardSyncForm
 from .forms import ForwardValidationRunForceAllowForm
 from .models import ForwardChange
 from .models import ForwardChangeApprovalRule
+from .models import ForwardChangeCriterion
 from .models import ForwardChangePolicy
 from .models import ForwardChangePolicyRule
 from .models import ForwardDeviceAnalysis
@@ -4894,8 +4896,8 @@ class ForwardChangeView(generic.ObjectView):
         from .change_control.evidence import criterion_outcomes
         from .change_control.predict import PredictOutcome
         from .change_control.predict import render_predict_panel
-        from .change_control.state_machine import available_transitions
         from .change_control.state_machine import check_transition
+        from .change_control.state_machine import manual_transitions
 
         from .change_control.actions import review_anchor
         from .change_control.actions import sync_branch_state
@@ -4905,7 +4907,7 @@ class ForwardChangeView(generic.ObjectView):
         sync_branch_state(instance)
         outcomes = criterion_outcomes(instance)
         transitions = []
-        for target in available_transitions(instance.state):
+        for target in manual_transitions(instance.state):
             result = check_transition(instance, target)
             transitions.append(
                 {
@@ -4927,6 +4929,7 @@ class ForwardChangeView(generic.ObjectView):
             ),
             "review_anchor": review_anchor(instance),
             "scoped_devices": instance.devices.select_related("device"),
+            "criteria": instance.criteria.all(),
             "reviews": instance.reviews.select_related("reviewer"),
             "comments": instance.change_comments.select_related(
                 "author", "resolved_by"
@@ -5174,8 +5177,8 @@ class _ForwardChangeForwardActionView(_ForwardChangeCommentView):
     action_permission = "forward_netbox.change_forwardchange"
     show_outcome_message = False
 
-    def act(self, request, change):
-        outcome = self.run(request, change)
+    def act(self, request, change, **kwargs):
+        outcome = self.run(request, change, **kwargs)
         if outcome.ok:
             verdict = getattr(outcome, "verdict", "")
             if verdict:
@@ -5189,9 +5192,15 @@ class _ForwardChangeForwardActionView(_ForwardChangeCommentView):
                 )
             # Only some actions have a report worth showing (which criteria were
             # not measured); for the others the message is an internal id.
-            return _Said(True, outcome.message if self.show_outcome_message else "")
+            text = outcome.message if self.show_outcome_message else ""
+            problems = getattr(outcome, "problems", ())
+            if problems:
+                text = f"{text} {' '.join(problems)}".strip()
+            return _Said(True, text, "warning" if problems else "success")
         reasons = " ".join(getattr(outcome, "reasons", ()) or ())
         message = getattr(outcome, "message", "") or reasons
+        problems = " ".join(getattr(outcome, "problems", ()) or ())
+        message = f"{message} {problems}".strip()
         return _Said(False, message or _("The action was refused."))
 
 
@@ -5257,3 +5266,130 @@ class ForwardChangePolicyRuleEditView(generic.ObjectEditView):
 @register_model_view(ForwardChangePolicyRule, "delete")
 class ForwardChangePolicyRuleDeleteView(generic.ObjectDeleteView):
     queryset = ForwardChangePolicyRule.objects.all()
+
+
+@register_model_view(ForwardChange, "devices_add", path="devices/add")
+class ForwardChangeDevicesAddView(_ForwardChangeForwardActionView):
+    show_outcome_message = True
+
+    def run(self, request, change):
+        from .change_control.scope import add_devices
+        from .change_control.scope import parse_device_names
+
+        return add_devices(
+            change, parse_device_names(request.POST.get("names")), request.user
+        )
+
+
+@register_model_view(
+    ForwardChange, "devices_remove", path="devices/<int:row_pk>/remove"
+)
+class ForwardChangeDevicesRemoveView(_ForwardChangeForwardActionView):
+    show_outcome_message = True
+
+    def run(self, request, change, row_pk):
+        from .change_control.scope import remove_device
+
+        return remove_device(change, row_pk, request.user)
+
+
+@register_model_view(ForwardChange, "devices_resolve", path="devices/resolve")
+class ForwardChangeDevicesResolveView(_ForwardChangeForwardActionView):
+    show_outcome_message = True
+
+    def run(self, request, change):
+        from .change_control.scope import resolve_forward_names
+
+        return resolve_forward_names(change, request.user)
+
+
+@register_model_view(
+    ForwardChange, "criterion_bind", path="criteria/<int:criterion_pk>/bind"
+)
+class ForwardChangeCriterionBindView(_ForwardChangeForwardActionView):
+    action_permission = "forward_netbox.change_forwardchangecriterion"
+    show_outcome_message = True
+
+    def run(self, request, change, criterion_pk):
+        from .change_control.criteria_admin import bind
+
+        return bind(change, criterion_pk, request.user)
+
+
+@register_model_view(
+    ForwardChange, "criterion_delete", path="criteria/<int:criterion_pk>/delete"
+)
+class ForwardChangeCriterionDeleteView(_ForwardChangeForwardActionView):
+    action_permission = "forward_netbox.delete_forwardchangecriterion"
+    show_outcome_message = True
+
+    def run(self, request, change, criterion_pk):
+        from .change_control.criteria_admin import delete
+
+        return delete(change, criterion_pk, request.user)
+
+
+@register_model_view(ForwardChange, "transition", path="transition")
+class ForwardChangeTransitionView(_ForwardChangeForwardActionView):
+    """Move the change along one edge of the state machine, or say why not."""
+
+    show_outcome_message = True
+
+    def run(self, request, change):
+        from .change_control.actions import transition
+        from .change_control.state_machine import manual_transitions
+
+        target = request.POST.get("target", "")
+        if target not in manual_transitions(change.state):
+            return _Said(False, _("That move is not one you can make by hand."))
+        return _TransitionSaid(transition(change, target, request.user))
+
+
+@register_model_view(ForwardChange, "close", path="close")
+class ForwardChangeCloseView(_ForwardChangeForwardActionView):
+    """Ask Branching to merge the change's branch, which closes it."""
+
+    show_outcome_message = True
+
+    def run(self, request, change):
+        from .change_control.actions import close_change
+
+        outcome = close_change(change, request.user)
+        if outcome.ok:
+            return _Said(
+                True, _("Merge requested; the change closes when it completes.")
+            )
+        return _TransitionSaid(outcome)
+
+
+@register_model_view(ForwardChange, "attest_applied", path="attest-applied")
+class ForwardChangeAttestAppliedView(_ForwardChangeForwardActionView):
+    """A person says the change was applied. Nothing here can observe it."""
+
+    show_outcome_message = True
+
+    def run(self, request, change):
+        from .change_control.actions import attest_applied
+
+        outcome = attest_applied(
+            change,
+            request.user,
+            ref=(request.POST.get("applied_ref") or "").strip()[:200],
+        )
+        return _TransitionSaid(outcome)
+
+
+class _TransitionSaid:
+    """A transition outcome in the shape the action views read."""
+
+    def __init__(self, outcome):
+        self.ok = outcome.ok
+        self.message = f"Moved to {outcome.state}." if outcome.ok else "Not allowed."
+        self.problems = () if outcome.ok else tuple(outcome.blockers)
+
+
+@register_model_view(ForwardChangeCriterion, "add", detail=False)
+@register_model_view(ForwardChangeCriterion, "edit")
+class ForwardChangeCriterionEditView(generic.ObjectEditView):
+    queryset = ForwardChangeCriterion.objects.all()
+    form = ForwardChangeCriterionForm
