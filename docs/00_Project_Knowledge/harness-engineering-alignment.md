@@ -1,6 +1,6 @@
 # Harness Engineering Alignment
 
-Last reviewed: 2026-07-18
+Last reviewed: 2026-10-17
 
 The repository is the system of record for architecture, behavior, and release
 evidence. The harness is designed so a maintainer or
@@ -27,8 +27,8 @@ internal systems.
   `scripts/check_harness.py`.
 - High-risk production, query, package, workflow, and migration changes include
   a versioned implementation plan.
-- The 2.6 runtime gate uses NetBox `4.6.5` and
-  `netbox-branching` `1.1.1`.
+- The runtime gate uses the NetBox and `netbox-branching` versions declared in
+  `scripts/tested_runtime.py` (NetBox `4.7.2`, Branching `1.2.1`).
 - Sync tests enforce one branch per sync and no direct-write bootstrap path.
 - Merge tests enforce that partial application cannot become a completed
   baseline and remains inspectable/retryable.
