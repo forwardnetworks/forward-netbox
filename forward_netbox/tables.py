@@ -11,6 +11,8 @@ from netbox_branching.models import ChangeDiff
 from .models import ForwardChange
 from .models import ForwardChangeCriterion
 from .models import ForwardChangePolicy
+from .models import ForwardChangeValidationPolicy
+from .models import ForwardChangeValidationRun
 from .models import ForwardDeviceAnalysis
 from .models import ForwardDriftPolicy
 from .models import ForwardIngestion
@@ -492,4 +494,56 @@ class ForwardChangePolicyTable(NetBoxTable):
             "enabled",
             "min_pre_approvals",
             "min_post_approvals",
+        )
+
+
+class ForwardChangeValidationPolicyTable(NetBoxTable):
+    name = tables.Column(linkify=True)
+    enabled = columns.BooleanColumn()
+    require_passed_run = columns.BooleanColumn()
+    run_on_submission = columns.BooleanColumn()
+
+    class Meta(NetBoxTable.Meta):
+        model = ForwardChangeValidationPolicy
+        fields = (
+            "pk",
+            "name",
+            "enabled",
+            "min_score",
+            "require_passed_run",
+            "run_on_submission",
+        )
+        default_columns = fields
+
+
+class ForwardChangeValidationRunTable(NetBoxTable):
+    id = tables.Column(linkify=True, verbose_name="Run")
+    change = tables.Column(linkify=True)
+    policy = tables.Column(linkify=True)
+    status = columns.ChoiceFieldColumn()
+    trigger = columns.ChoiceFieldColumn()
+    actions = columns.ActionsColumn(actions=())
+
+    class Meta(NetBoxTable.Meta):
+        model = ForwardChangeValidationRun
+        fields = (
+            "pk",
+            "id",
+            "change",
+            "policy",
+            "trigger",
+            "status",
+            "score",
+            "started_at",
+            "completed_at",
+            "created",
+        )
+        default_columns = (
+            "id",
+            "change",
+            "policy",
+            "trigger",
+            "status",
+            "score",
+            "completed_at",
         )

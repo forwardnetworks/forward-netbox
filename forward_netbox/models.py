@@ -28,6 +28,11 @@ from .change_control.choices import ForwardCriterionExpectationChoices
 from .change_control.choices import ForwardCriterionFamilyChoices
 from .change_control.choices import ForwardEvidencePhaseChoices
 from .change_control.choices import ForwardReviewPhaseChoices
+from .change_control.choices import ForwardValidationEngineChoices
+from .change_control.choices import ForwardValidationResultStatusChoices
+from .change_control.choices import ForwardValidationRunStatusChoices
+from .change_control.choices import ForwardValidationSeverityChoices
+from .change_control.choices import ForwardValidationTriggerChoices
 from .choices import forward_configured_models
 from .choices import FORWARD_OPTIONAL_MODELS
 from .choices import FORWARD_SUPPORTED_MODELS
@@ -1962,6 +1967,37 @@ class ForwardDeviceAnalysis(ForwardPluginModelDocsMixin, ChangeLoggedModel):
         return url or None
 
 
+class ForwardChangeQuerySet(RestrictedQuerySet):
+    """A change cannot be deleted while its branch could still merge.
+
+    Checked here, and in `ForwardChange.delete`, before the delete starts: raising
+    from a `pre_delete` signal would happen inside Django's delete transaction and
+    poison any transaction around it.
+    """
+
+    def delete(self):
+        from .change_control.branch_gate import ensure_change_may_be_deleted
+
+        from netbox_branching.choices import BranchStatusChoices
+
+        blocking = (
+            self.exclude(branch__isnull=True)
+            .exclude(
+                branch__status__in=(
+                    BranchStatusChoices.MERGED,
+                    BranchStatusChoices.ARCHIVED,
+                )
+            )
+            .first()
+        )
+        if blocking is not None:
+            ensure_change_may_be_deleted(blocking)
+        return super().delete()
+
+    delete.alters_data = True
+    delete.queryset_only = True
+
+
 class ForwardChange(ForwardPluginModelDocsMixin, PrimaryModel):
     """A network change, gated on what Forward saw before and after it.
 
@@ -2012,9 +2048,23 @@ class ForwardChange(ForwardPluginModelDocsMixin, PrimaryModel):
     # it was baselined and approved against.
     before_snapshot_id = models.CharField(max_length=100, blank=True, default="")
     after_snapshot_id = models.CharField(max_length=100, blank=True, default="")
+    # The Forward workspace network that scopes this change to its devices. Queries
+    # run on the few devices the change touches, against the workspace's own
+    # baseline. `origin` is "created" when the plugin forked it (and may clean it
+    # up) or "adopted" when an operator made it (which the plugin never deletes).
+    workspace_network_id = models.CharField(max_length=100, blank=True, default="")
+    workspace_origin = models.CharField(max_length=16, blank=True, default="")
 
     window_start = models.DateTimeField(blank=True, null=True)
     window_end = models.DateTimeField(blank=True, null=True)
+
+    # 1 (low) to 5 (high), medium by default: the same scale NetBox's own change
+    # management uses, so a script or event rule written against it keeps working.
+    priority = models.PositiveSmallIntegerField(
+        default=3,
+        validators=[MinValueValidator(1), MaxValueValidator(5)],
+    )
+    summary = models.TextField(blank=True, default="")
 
     # Attested, not measured. Nothing here can observe a network being changed.
     applied_at = models.DateTimeField(blank=True, null=True)
@@ -2047,11 +2097,23 @@ class ForwardChange(ForwardPluginModelDocsMixin, PrimaryModel):
         # not thereby be able to sign it off.
         permissions = (("approve_forwardchange", "Can approve Forward change"),)
 
+    objects = ForwardChangeQuerySet.as_manager()
+
+    def delete(self, *args, **kwargs):
+        from .change_control.branch_gate import ensure_change_may_be_deleted
+
+        ensure_change_may_be_deleted(self)
+        return super().delete(*args, **kwargs)
+
     def __str__(self):
         return self.ref and f"{self.ref} {self.title}" or self.title
 
     def get_absolute_url(self):
         return reverse("plugins:forward_netbox:forwardchange", args=[self.pk])
+
+    @property
+    def comment_count(self):
+        return self.change_comments.count()
 
     def get_state_color(self):
         return ForwardChangeStateChoices.colors.get(self.state)
@@ -2142,6 +2204,9 @@ class ForwardChangeCriterion(ForwardPluginModelDocsMixin, ChangeLoggedModel):
     def __str__(self):
         return self.name
 
+    def get_absolute_url(self):
+        return self.change.get_absolute_url()
+
     @property
     def is_bound(self) -> bool:
         return bool(self.query_id and self.commit_id)
@@ -2170,6 +2235,8 @@ class ForwardChangeEvidence(models.Model):
     executed_at = models.DateTimeField(default=timezone.now)
     duration_ms = models.PositiveIntegerField(default=0)
     shape = models.JSONField(blank=True, default=dict)
+
+    objects = RestrictedQuerySet.as_manager()
 
     class Meta:
         ordering = ("criterion", "phase")
@@ -2245,6 +2312,81 @@ class ForwardChangeReview(ForwardPluginModelDocsMixin, ChangeLoggedModel):
         return f"{self.change} {verdict} by {self.reviewer}"
 
 
+class ForwardChangeComment(ChangeLoggedModel):
+    """A reviewer's comment on a change; it can be replied to and resolved.
+
+    Resolving settles a conversation, so it needs the `change` permission on
+    comments rather than the right to comment. Only the author edits or deletes
+    their own words.
+    """
+
+    change = models.ForeignKey(
+        ForwardChange,
+        on_delete=models.CASCADE,
+        # Not "comments": NetBox's own comments field on the change is called that.
+        related_name="change_comments",
+    )
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="+",
+    )
+    body = models.TextField()
+    resolved = models.BooleanField(default=False)
+    resolved_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="+",
+    )
+    resolved_at = models.DateTimeField(blank=True, null=True)
+
+    class Meta:
+        ordering = ("created",)
+        verbose_name = _("Forward Change Comment")
+        verbose_name_plural = _("Forward Change Comments")
+        db_table = "forward_netbox_change_comment"
+
+    def __str__(self):
+        return f"{self.change}: {self.body[:40]}"
+
+    def get_absolute_url(self):
+        return self.change.get_absolute_url()
+
+
+class ForwardChangeCommentReply(ChangeLoggedModel):
+    """A reply to a comment."""
+
+    comment = models.ForeignKey(
+        ForwardChangeComment,
+        on_delete=models.CASCADE,
+        related_name="replies",
+    )
+    author = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="+",
+    )
+    body = models.TextField()
+
+    class Meta:
+        ordering = ("created",)
+        verbose_name = _("Forward Change Comment Reply")
+        verbose_name_plural = _("Forward Change Comment Replies")
+        db_table = "forward_netbox_change_comment_reply"
+
+    def __str__(self):
+        return f"{self.comment}: {self.body[:40]}"
+
+    def get_absolute_url(self):
+        return self.comment.get_absolute_url()
+
+
 class ForwardChangePolicy(ForwardPluginModelDocsMixin, PrimaryModel):
     """Who must approve, scoped by the properties a NETWORK change has.
 
@@ -2312,3 +2454,289 @@ class ForwardChangePolicyRule(ChangeLoggedModel):
             str(x) for x in (self.device_role, self.site, self.tag_slug or None) if x
         ]
         return f"{self.policy}: {' / '.join(parts) or 'any'}"
+
+
+class ForwardChangeApprovalRule(ChangeLoggedModel):
+    """Who must approve a change, and how many of them.
+
+    A policy decides WHEN it applies (the scope rules above); this decides WHO.
+    A rule is met when at least `min_reviews` distinct, non-stale approvers who are
+    eligible have approved. Eligible means a member of one of its groups or one of
+    its named reviewers. A rule is open to any reviewer only when `any_reviewer` is
+    set: a rule whose groups and users have all been deleted must BLOCK, not quietly
+    become open. The requester is never eligible, whatever the rule says. A rule on
+    a policy asks for an approval at both gates, whatever the policy's own minimums.
+    """
+
+    policy = models.ForeignKey(
+        ForwardChangePolicy,
+        on_delete=models.CASCADE,
+        related_name="approval_rules",
+    )
+    name = models.CharField(max_length=100)
+    min_reviews = models.PositiveSmallIntegerField(
+        default=1,
+        validators=[MinValueValidator(1)],
+    )
+    any_reviewer = models.BooleanField(
+        default=False,
+        help_text=_(
+            "Any reviewer counts. Leave off to require the groups and users below."
+        ),
+    )
+    groups = models.ManyToManyField("users.Group", blank=True, related_name="+")
+    reviewers = models.ManyToManyField(
+        settings.AUTH_USER_MODEL, blank=True, related_name="+"
+    )
+
+    class Meta:
+        ordering = ("policy", "name")
+        verbose_name = _("Forward Change Approval Rule")
+        verbose_name_plural = _("Forward Change Approval Rules")
+        db_table = "forward_netbox_change_approval_rule"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["policy", "name"],
+                name="forward_change_approval_rule_unique_name",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.policy}: {self.name}"
+
+    def get_absolute_url(self):
+        return self.policy.get_absolute_url()
+
+    def eligible_user_ids(self):
+        """Ids of the users who count toward this rule, or None for "any reviewer".
+
+        None, not an empty set: an empty set means nobody is eligible, which is what
+        a rule becomes when the groups and users it named have been deleted.
+        """
+        if self.any_reviewer:
+            return None
+        groups = list(self.groups.all())
+        named = set(self.reviewers.values_list("pk", flat=True))
+        if not groups and not named:
+            return set()
+        from django.contrib.auth import get_user_model
+
+        # Through the user model: NetBox's custom Group does not use Django's
+        # default `user_set` accessor, and this does not depend on its name.
+        members = set(
+            get_user_model()
+            .objects.filter(groups__in=groups)
+            .values_list("pk", flat=True)
+        )
+        return members | named
+
+    def describe_eligible(self):
+        """Who may review, in words, for a blocker message."""
+        parts = [group.name for group in self.groups.all()]
+        parts += [user.get_username() for user in self.reviewers.all()]
+        if self.any_reviewer:
+            return "any reviewer"
+        return ", ".join(parts) if parts else "nobody (no group or reviewer is set)"
+
+
+class ForwardChangeValidationPolicy(ForwardPluginModelDocsMixin, PrimaryModel):
+    """Which checks a change is held to, and how well it must do.
+
+    A policy with no scope applies to every change; one with a scope applies when
+    any device in the change matches any entry (within a kind, any; across kinds,
+    all). Rules say what to run; `min_score` and `require_passed_run` say what the
+    gate wants from the result.
+    """
+
+    name = models.CharField(max_length=100, unique=True)
+    enabled = models.BooleanField(default=True)
+    min_score = models.PositiveSmallIntegerField(
+        default=0,
+        validators=[MaxValueValidator(100)],
+        help_text=_("The lowest score a change may have to be approved or closed."),
+    )
+    require_passed_run = models.BooleanField(
+        default=False,
+        help_text=_(
+            "A current completed run is required before the change can be approved "
+            "or closed."
+        ),
+    )
+    run_on_submission = models.BooleanField(
+        default=False,
+        help_text=_(
+            "Run when the change is staged, so reviewers see the result first."
+        ),
+    )
+
+    sites = models.ManyToManyField("dcim.Site", blank=True, related_name="+")
+    regions = models.ManyToManyField("dcim.Region", blank=True, related_name="+")
+    site_groups = models.ManyToManyField("dcim.SiteGroup", blank=True, related_name="+")
+    device_roles = models.ManyToManyField(
+        "dcim.DeviceRole", blank=True, related_name="+"
+    )
+    platforms = models.ManyToManyField("dcim.Platform", blank=True, related_name="+")
+    scope_tags = models.ManyToManyField("extras.Tag", blank=True, related_name="+")
+
+    class Meta:
+        ordering = ("name",)
+        verbose_name = _("Forward Change Validation Policy")
+        verbose_name_plural = _("Forward Change Validation Policies")
+        db_table = "forward_netbox_change_validation_policy"
+
+    def __str__(self):
+        return self.name
+
+    def get_absolute_url(self):
+        return reverse(
+            "plugins:forward_netbox:forwardchangevalidationpolicy", args=[self.pk]
+        )
+
+
+class ForwardChangeValidationRule(ChangeLoggedModel):
+    """One thing to check. `parameters` depend on the engine:
+
+    - nqe: `query_path` (an org query), `expectation` (no-rows or some-rows).
+    - check: optional `check_names`, `check_types`; with neither, every check.
+    - predict: none (it reports unavailable where Forward does not answer).
+    """
+
+    policy = models.ForeignKey(
+        ForwardChangeValidationPolicy,
+        on_delete=models.CASCADE,
+        related_name="rules",
+    )
+    name = models.CharField(max_length=100)
+    engine = models.CharField(max_length=16, choices=ForwardValidationEngineChoices)
+    category = models.CharField(max_length=100, blank=True, default="")
+    severity = models.CharField(
+        max_length=16,
+        choices=ForwardValidationSeverityChoices,
+        default=ForwardValidationSeverityChoices.ERROR,
+    )
+    enabled = models.BooleanField(default=True)
+    parameters = models.JSONField(blank=True, default=dict)
+
+    class Meta:
+        ordering = ("policy", "name")
+        verbose_name = _("Forward Change Validation Rule")
+        verbose_name_plural = _("Forward Change Validation Rules")
+        db_table = "forward_netbox_change_validation_rule"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["policy", "name"],
+                name="forward_change_validation_rule_unique_name",
+            )
+        ]
+
+    def __str__(self):
+        return self.name
+
+    def get_absolute_url(self):
+        return self.policy.get_absolute_url()
+
+
+class ForwardChangeValidationRun(ChangeLoggedModel):
+    """One run of a change's policies against one pinned snapshot."""
+
+    change = models.ForeignKey(
+        ForwardChange,
+        on_delete=models.CASCADE,
+        related_name="validation_runs",
+    )
+    policy = models.ForeignKey(
+        ForwardChangeValidationPolicy,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="runs",
+    )
+    trigger = models.CharField(
+        max_length=16,
+        choices=ForwardValidationTriggerChoices,
+        default=ForwardValidationTriggerChoices.MANUAL,
+    )
+    status = models.CharField(
+        max_length=16,
+        choices=ForwardValidationRunStatusChoices,
+        default=ForwardValidationRunStatusChoices.PENDING,
+    )
+    started_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="+",
+    )
+    started_at = models.DateTimeField(blank=True, null=True)
+    completed_at = models.DateTimeField(blank=True, null=True)
+    # The snapshot the rules ran on, and the change's pinned ids at that moment, so
+    # a run goes stale the moment the change is re-baselined or re-collected.
+    snapshot_id = models.CharField(max_length=100, blank=True, default="")
+    before_snapshot_id = models.CharField(max_length=100, blank=True, default="")
+    after_snapshot_id = models.CharField(max_length=100, blank=True, default="")
+    score = models.PositiveSmallIntegerField(blank=True, null=True)
+    summary = models.JSONField(blank=True, default=dict)
+    error = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ("-created",)
+        verbose_name = _("Forward Change Validation Run")
+        verbose_name_plural = _("Forward Change Validation Runs")
+        db_table = "forward_netbox_change_validation_run"
+
+    def __str__(self):
+        return f"{self.change} validation {self.pk}"
+
+    def get_absolute_url(self):
+        return reverse(
+            "plugins:forward_netbox:forwardchangevalidationrun", args=[self.pk]
+        )
+
+    def get_status_color(self):
+        return ForwardValidationRunStatusChoices.colors.get(self.status)
+
+
+class ForwardChangeValidationResult(models.Model):
+    """One rule's answer for one device or check. Shapes and counts, never rows."""
+
+    run = models.ForeignKey(
+        ForwardChangeValidationRun,
+        on_delete=models.CASCADE,
+        related_name="results",
+    )
+    rule = models.ForeignKey(
+        ForwardChangeValidationRule,
+        on_delete=models.SET_NULL,
+        blank=True,
+        null=True,
+        related_name="+",
+    )
+    engine = models.CharField(max_length=16, choices=ForwardValidationEngineChoices)
+    category = models.CharField(max_length=100, blank=True, default="")
+    check_name = models.CharField(max_length=255)
+    device_name = models.CharField(max_length=255, blank=True, default="")
+    status = models.CharField(
+        max_length=16, choices=ForwardValidationResultStatusChoices
+    )
+    severity = models.CharField(
+        max_length=16,
+        choices=ForwardValidationSeverityChoices,
+        default=ForwardValidationSeverityChoices.ERROR,
+    )
+    message = models.TextField(blank=True, default="")
+    row_count = models.PositiveIntegerField(default=0)
+
+    objects = RestrictedQuerySet.as_manager()
+
+    class Meta:
+        ordering = ("run", "status", "check_name", "device_name")
+        verbose_name = _("Forward Change Validation Result")
+        verbose_name_plural = _("Forward Change Validation Results")
+        db_table = "forward_netbox_change_validation_result"
+
+    def __str__(self):
+        return f"{self.check_name}: {self.status}"
+
+    def get_status_color(self):
+        return ForwardValidationResultStatusChoices.colors.get(self.status)

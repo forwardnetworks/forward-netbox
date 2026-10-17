@@ -1873,8 +1873,9 @@ def bulk_orm_apply_interface(
         # `(device, name)` is the identity, so a subinterface row named like a
         # top-level interface would rewrite that interface (type, enabled,
         # parent). Never overwrite one: skip the row and say so.
+        parentless_existing = existing is not None and existing.parent_id is None
         if row.get("parent") and (
-            (existing is not None and existing.parent_id is None)
+            parentless_existing
             or (device_name, row["name"]) in top_level_names
             or (device_name, canonical_interface_key(row["name"])) in top_level_names
         ):
@@ -1889,6 +1890,12 @@ def bulk_orm_apply_interface(
                     "subinterface name collides with a top-level interface",
                     model_string="dcim.interface",
                     dependency="dcim.interface",
+                    reason=(
+                        "subinterface-name-taken-by-parentless-interface"
+                        if parentless_existing
+                        else "subinterface-name-taken-by-top-level-row"
+                    ),
+                    netbox_pk=existing.pk if parentless_existing else None,
                 ),
             )
             continue
@@ -2086,6 +2093,16 @@ def bulk_orm_apply_interface(
                     "subinterface parent not found",
                     model_string="dcim.interface",
                     dependency="dcim.interface",
+                    reason=(
+                        "subinterface-parent-is-itself"
+                        if parent is child
+                        else (
+                            "subinterface-parent-is-a-subinterface"
+                            if parent is not None
+                            else "subinterface-parent-not-found"
+                        )
+                    ),
+                    netbox_pk=getattr(child, "pk", None),
                 ),
             )
             outcome[0] = "skipped"
@@ -2140,6 +2157,7 @@ def bulk_orm_apply_interface(
                         "subinterface parent could not be saved",
                         model_string="dcim.interface",
                         dependency="dcim.interface",
+                        reason="subinterface-parent-not-saved",
                     ),
                 )
                 outcome[0] = "failed"

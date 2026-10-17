@@ -79,6 +79,60 @@ urlpatterns = (
         include(get_model_urls("forward_netbox", "forwardchangepolicyrule")),
     ),
     path(
+        "change-criterion/",
+        include(
+            get_model_urls("forward_netbox", "forwardchangecriterion", detail=False)
+        ),
+    ),
+    path(
+        "change-criterion/<int:pk>/",
+        include(get_model_urls("forward_netbox", "forwardchangecriterion")),
+    ),
+    path(
+        "change-validation-policy/",
+        include(
+            get_model_urls(
+                "forward_netbox", "forwardchangevalidationpolicy", detail=False
+            )
+        ),
+    ),
+    path(
+        "change-validation-policy/<int:pk>/",
+        include(get_model_urls("forward_netbox", "forwardchangevalidationpolicy")),
+    ),
+    path(
+        "change-validation-rule/",
+        include(
+            get_model_urls(
+                "forward_netbox", "forwardchangevalidationrule", detail=False
+            )
+        ),
+    ),
+    path(
+        "change-validation-rule/<int:pk>/",
+        include(get_model_urls("forward_netbox", "forwardchangevalidationrule")),
+    ),
+    path(
+        "change-validation-run/",
+        include(
+            get_model_urls("forward_netbox", "forwardchangevalidationrun", detail=False)
+        ),
+    ),
+    path(
+        "change-validation-run/<int:pk>/",
+        include(get_model_urls("forward_netbox", "forwardchangevalidationrun")),
+    ),
+    path(
+        "change-approval-rule/",
+        include(
+            get_model_urls("forward_netbox", "forwardchangeapprovalrule", detail=False)
+        ),
+    ),
+    path(
+        "change-approval-rule/<int:pk>/",
+        include(get_model_urls("forward_netbox", "forwardchangeapprovalrule")),
+    ),
+    path(
         "drift-policy/",
         include(get_model_urls("forward_netbox", "forwarddriftpolicy", detail=False)),
     ),

@@ -646,6 +646,24 @@ a handful of relationship-heavy models stay on the adapter. See
 
 ## Auditing Mgmt_ primary-IP resolution
 
+## Why rows were skipped, and the interface state around them
+
+A support bundle names why each row was skipped, not only the model it waited on.
+`latest_ingestion_issues.summary.by_skip_reason` counts skips by reason across the whole
+ingestion, including the rows past the per-model detail cap, and each issue carries its
+`skip_reason`. Subinterface skips use `subinterface-parent-not-found`,
+`subinterface-parent-is-itself`, `subinterface-parent-is-a-subinterface`,
+`subinterface-parent-not-saved`, `subinterface-name-taken-by-parentless-interface` and
+`subinterface-name-taken-by-top-level-row`.
+
+`interface_state` records what NetBox holds that decides those skips, as counts and pks
+only: dotted virtual interfaces with and without a parent, dotted interfaces that are not
+virtual (by type), interfaces carrying several addresses across several VRFs, and IP
+addresses assigned to nothing, and LAG membership. `change_log_writers` counts who changes devices,
+interfaces and addresses, by user pk, with whether that login runs a sync, so "was this the sync or a
+person" needs no shell. `primary_ip` also splits the devices with no primary IP by status and by whether
+they have a management-looking interface.
+
 When `set_primary_ip_from_mgmt_tag` is on, a device's `Mgmt_<iface>` tag sets its
 primary IP from the IP on that interface. If few devices get a primary IP, this
 read-only audit shows why, per device — it reuses the resolver's own matching, so
@@ -662,6 +680,14 @@ It reports `mgmt_tagged_devices`, `resolvable`, and the unresolved split:
 not on the device in NetBox), and `interface_present_no_ip` (the interface exists
 but no IP is assigned to it in NetBox — an import/assignment gap, since the
 resolver reads NetBox assignments, not Forward). Never writes.
+
+A tag can agree with more than one interface on a device: `Mgmt_Ma1` matches both
+`Management1` (often an interface NetBox created from the device type, which never
+carries an address) and `ma1` (the interface Forward reports, which does). The
+resolver tries every matching interface, the one whose name equals the tag first,
+and uses the first that has an address, so a device-type interface with no address
+no longer hides the real management interface. `interface_present_no_ip` now means
+that every interface the tag matches has no address.
 
 Both devices and SNMP endpoints are read, so an endpoint carrying a
 `Mgmt_<iface>` tag (for example `Mgmt_eth0` on a console server) gets its

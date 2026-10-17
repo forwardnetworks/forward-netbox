@@ -1,6 +1,7 @@
 from core.choices import JobIntervalChoices
 from django import forms
 from django.contrib.contenttypes.models import ContentType
+from django.utils.translation import gettext_lazy as _
 from netbox.forms import NetBoxModelBulkEditForm
 from netbox.forms import NetBoxModelForm
 from utilities.datetime import local_now
@@ -26,8 +27,12 @@ from .choices import ForwardSyncStatusChoices
 from .exceptions import ForwardConnectivityError
 from .exceptions import ForwardSyncError
 from .models import ForwardChange
+from .models import ForwardChangeApprovalRule
+from .models import ForwardChangeCriterion
 from .models import ForwardChangePolicy
 from .models import ForwardChangePolicyRule
+from .models import ForwardChangeValidationPolicy
+from .models import ForwardChangeValidationRule
 from .models import ForwardDriftPolicy
 from .models import ForwardIngestionIssue
 from .models import ForwardNQEMap
@@ -2181,6 +2186,9 @@ class ForwardChangeForm(NetBoxModelForm):
             "title",
             "source",
             "requester",
+            "priority",
+            "summary",
+            "branch",
             "window_start",
             "window_end",
             "description",
@@ -2189,10 +2197,104 @@ class ForwardChangeForm(NetBoxModelForm):
         )
 
     fieldsets = (
-        FieldSet("ref", "title", "source", "requester", name="Change"),
+        FieldSet("ref", "title", "source", "requester", "priority", name="Change"),
+        FieldSet("summary", "branch", name="Plan"),
         FieldSet("window_start", "window_end", name="Window"),
         FieldSet("description", "comments", "tags", name="Notes"),
     )
+
+    def clean_branch(self):
+        """Only a branch no sync owns, and only while the change is still planned.
+
+        A sync ingestion branch is merged by the sync, not by a change, so tying a
+        change to one would make the change's gate and the sync's merge fight over
+        it. Once a change is staged its branch is part of what reviewers approved.
+        """
+        from .change_control.branch_link import branch_blocker
+
+        branch = self.cleaned_data.get("branch")
+        reason = branch_blocker(self.instance, branch)
+        if reason:
+            raise forms.ValidationError(reason)
+        return branch
+
+
+class ForwardChangeCriterionForm(NetBoxModelForm):
+    """An assertion the change is judged against.
+
+    Refuses to save while evidence exists or the change is past planning, and drops
+    the pinned query version when the path changes (see `criteria_admin`).
+    """
+
+    class Meta:
+        model = ForwardChangeCriterion
+        fields = (
+            "change",
+            "name",
+            "family",
+            "expectation",
+            "blocking",
+            "query_path",
+        )
+
+    fieldsets = (
+        FieldSet(
+            "change", "name", "family", "expectation", "blocking", name="Criterion"
+        ),
+        FieldSet("query_path", name="Query"),
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._previous_path = self.instance.query_path if self.instance.pk else ""
+        if self.instance.pk:
+            self.fields["change"].disabled = True
+
+    def clean(self):
+        from .change_control.criteria_admin import criterion_blocker
+
+        super().clean()
+        change = self.cleaned_data.get("change")
+        if change is None:
+            return
+        probe = self.instance
+        if not probe.pk:
+            probe = ForwardChangeCriterion(change=change)
+        reason = criterion_blocker(probe)
+        if reason:
+            raise forms.ValidationError(reason)
+        path = (self.cleaned_data.get("query_path") or "").strip()
+        if not path:
+            self.add_error(
+                "query_path",
+                _("A criterion needs the path of an NQE query to run."),
+            )
+
+    def save(self, commit=True):
+        from .change_control.criteria_admin import clear_binding_if_path_changed
+
+        from django.db import transaction
+        from utilities.exceptions import AbortRequest
+
+        from .change_control.actions import _lock
+        from .change_control.criteria_admin import criterion_blocker
+
+        # The checks in `clean` ran without a lock, so a staging or an evidence
+        # write may have landed since. Look again with the change locked.
+        with transaction.atomic():
+            locked = _lock(self.instance.change)
+            if locked is None:
+                raise AbortRequest(_("The change no longer exists."))
+            probe = self.instance
+            if probe.pk:
+                probe = type(probe).objects.get(pk=probe.pk)
+            else:
+                probe = ForwardChangeCriterion(change=locked)
+            reason = criterion_blocker(probe)
+            if reason:
+                raise AbortRequest(reason)
+            clear_binding_if_path_changed(self.instance, self._previous_path)
+            return super().save(commit=commit)
 
 
 class ForwardChangePolicyForm(NetBoxModelForm):
@@ -2238,6 +2340,47 @@ class ForwardChangePolicyRuleForm(NetBoxModelForm):
     )
 
 
+class ForwardChangeApprovalRuleForm(NetBoxModelForm):
+    """Say who must approve a change under a policy, and how many of them.
+
+    A rule open to nobody blocks every change the policy covers, so the form
+    refuses to save one that names no group and no user unless it is explicitly
+    open to any reviewer.
+    """
+
+    class Meta:
+        model = ForwardChangeApprovalRule
+        fields = (
+            "policy",
+            "name",
+            "min_reviews",
+            "any_reviewer",
+            "groups",
+            "reviewers",
+        )
+
+    fieldsets = (
+        FieldSet("policy", "name", "min_reviews", name="Rule"),
+        FieldSet("any_reviewer", "groups", "reviewers", name="Who may approve"),
+    )
+
+    def clean(self):
+        super().clean()
+        cleaned = self.cleaned_data
+        if (
+            not cleaned.get("any_reviewer")
+            and not cleaned.get("groups")
+            and not cleaned.get("reviewers")
+        ):
+            raise forms.ValidationError(
+                _(
+                    "Name at least one group or reviewer, or mark the rule open to "
+                    "any reviewer. A rule that names nobody would block every change."
+                )
+            )
+        return cleaned
+
+
 class ForwardIngestionIssueFilterForm(FilterForm):
     """Filter tab for the ingestion-issue list.
 
@@ -2273,3 +2416,87 @@ class ForwardIngestionIssueFilterForm(FilterForm):
     # the model being filtered, and a form field of that name shadows it. The
     # search box already matches `model` (see the filterset's `search`).
     exception = forms.CharField(required=False, label="Exception")
+
+
+class ForwardChangeValidationPolicyForm(NetBoxModelForm):
+    """Which checks changes are held to, and the score the gates want."""
+
+    class Meta:
+        model = ForwardChangeValidationPolicy
+        fields = (
+            "name",
+            "enabled",
+            "min_score",
+            "require_passed_run",
+            "run_on_submission",
+            "sites",
+            "regions",
+            "site_groups",
+            "device_roles",
+            "platforms",
+            "scope_tags",
+            "description",
+            "comments",
+            "tags",
+        )
+
+    fieldsets = (
+        FieldSet(
+            "name",
+            "enabled",
+            "min_score",
+            "require_passed_run",
+            "run_on_submission",
+            name="Policy",
+        ),
+        FieldSet(
+            "sites",
+            "regions",
+            "site_groups",
+            "device_roles",
+            "platforms",
+            "scope_tags",
+            name="Scope (empty applies to every change)",
+        ),
+        FieldSet("description", "comments", "tags", name="Notes"),
+    )
+
+
+class ForwardChangeValidationRuleForm(NetBoxModelForm):
+    """One check. The parameters depend on the engine (see the help text)."""
+
+    class Meta:
+        model = ForwardChangeValidationRule
+        fields = (
+            "policy",
+            "name",
+            "engine",
+            "category",
+            "severity",
+            "enabled",
+            "parameters",
+        )
+        help_texts = {
+            "parameters": (
+                'nqe: {"query_path": "/org/query", "expectation": '
+                '"no-rows"}. check: {"check_types": ["isolation"]} (optional '
+                "`check_names`). predict: {}."
+            )
+        }
+
+    fieldsets = (
+        FieldSet(
+            "policy", "name", "engine", "category", "severity", "enabled", name="Rule"
+        ),
+        FieldSet("parameters", name="Parameters"),
+    )
+
+    def clean(self):
+        from .change_control.validation import rule_parameter_problems
+
+        super().clean()
+        engine = self.cleaned_data.get("engine")
+        if engine and "parameters" in self.cleaned_data:
+            problems = rule_parameter_problems(engine, self.cleaned_data["parameters"])
+            if problems:
+                raise forms.ValidationError(problems)

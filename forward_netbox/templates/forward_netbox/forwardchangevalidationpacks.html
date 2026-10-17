@@ -1,0 +1,30 @@
+{% extends 'base/layout.html' %}
+{% load i18n %}
+
+{% block title %}{% trans "Validation policy packs" %}{% endblock %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col">
+    <p class="text-muted">
+      {% trans "A pack installs a ready-made policy you can then edit. Packs use the Forward intent checks the network already has, so they need no query published to the organisation." %}
+    </p>
+    {% for pack in packs %}
+      <div class="card mb-3">
+        <h5 class="card-header">{{ pack.name }}</h5>
+        <div class="card-body">
+          <p>{{ pack.description }}</p>
+          <p class="small text-muted">
+            {{ pack.rule_count }} {% trans "rule(s). Lowest score" %} {{ pack.min_score }}{% if pack.require_passed_run %}, {% trans "a current run is required" %}{% endif %}{% if pack.run_on_submission %}, {% trans "runs when the change is staged" %}{% endif %}.
+          </p>
+          <form method="post">
+            {% csrf_token %}
+            <input type="hidden" name="pack" value="{{ pack.key }}">
+            <button type="submit" class="btn btn-primary">{% trans "Install" %}</button>
+          </form>
+        </div>
+      </div>
+    {% endfor %}
+  </div>
+</div>
+{% endblock content %}

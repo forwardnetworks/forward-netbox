@@ -1,0 +1,133 @@
+# Make change control operational
+
+## Goal
+
+Re-implement, inside this plugin, the change-request workflow and the pre-change validation that NetBox Labs documents for its Change Management and Validation products, built on `netbox_branching` and tied to Forward. The evidence is Forward's: NQE checks on snapshots, a Forward workspace network that scopes the change to its devices, Predict where the org has it, and optional Forward AI. It is the free option, and Forward is what makes it more than a copy. This plan supersedes the concept plan `2026-09-02-forward-change-control-concept.md` where they differ (it ruled out writing to Forward and priority-as-workflow); that plan stays as the design argument for the merge-at-close rule.
+
+## Constraints
+
+- **Built from the public documentation, not their code.** NetBox Labs' own plugins use a limited-use licence and are Enterprise and Cloud only. We match documented shapes (statuses, field names, event payloads) so event rules and scripts written against them are easy to port, and we use our own names for the products. Their REST paths start at `/api/plugins/changes/` and `/api/plugins/validation/`; ours sit under this plugin's base, so porting means a base-path change, not a rewrite.
+- **Merge at close stays.** The branch merges when the change reaches CLOSED, after verification against a post-change snapshot and a closure approval (existing design, tested). NetBox Labs' product merges on approval; we do not, because evidence from the network is the point.
+- **One lifecycle, not two.** The existing state machine stays the single source of truth. A Change-Management-compatible `status` (`draft`, `needs-review`, `changes-requested`, `approved`, `completed`, `rejected`) is derived from the state and the reviews, read-only. This keeps the existing state-machine tests valid and gives API parity.
+- **Add, do not rename.** The 3.0 change-control models and permissions are shipped (including the `approve_forwardchange` codename). Phase 1 adds fields and new models; it renames none and moves rows only through a reversible data migration.
+- Predict is released and works, with limited coverage. It gates where it answers and says so where it does not. It never blocks silently and never passes silently.
+- Evidence comes from snapshots and NQE. Predict output and AI text stay apart from it unless a policy explicitly promotes Predict's pre-verdict to a gate.
+- Availability is found by asking and reading the refusal (existing rule), using the SDK's typed errors.
+- The change-set and AI endpoints are unpublished; the SDK describes their shapes by hand. Every call sits behind one adapter with contract tests.
+- A step that writes to Forward (a workspace, a change set, an AI chat) is a user action on a change, never a background sync. Forward records the source's service account as the creator, not the NetBox user; the change records who asked.
+- No customer names, network ids or snapshot ids in the repo.
+
+## Verified facts this rests on
+
+- **The gate (built in Phase 1a).** netbox-branching offers `Branch.register_preaction_check(func, 'merge')`, which feeds `can_merge` and is checked only on a real merge, so the merge page and form show the refusal and a dry run still works. `pre_merge` is not used at all: `Branch.merge()` itself refuses on a failed `can_merge` whenever it commits, so the preaction check covers the UI, the REST API and the merge job, while `pre_merge` fires on dry runs too, so raising from it would block previews, and it surfaces only as a failed job after the user saw "merging". The concept plan already chose the preaction check. API callers see the job fail with branching's generic message; the gate's reason shows in the UI.
+- **Not every merge path goes through branching's gate.** This plugin's own sync-branch merge (`utilities/merge.py`) does not call `Branch.merge()`, and sync ingestion branches can be merged from the Branching UI. The gate passes every branch that has no change, and a change cannot be linked to a sync ingestion branch.
+- **Change records must not live in branches.** The change-control models are change-logged, so branching treats them as branch-aware; branching exempts only its own and NetBox Change Management's. An approval written while a branch is active would land in the branch schema, and the gate reading main would not see it. Phase 1 exempts these models from branching through branching's resolver hook.
+- **Workspaces (read-only, on one production Forward organisation).** A workspace is a network with a `parent_id`. Of 124 networks, 117 are workspaces, all forked from the one main network, many named for change tickets, about a third with a 7-day retention. They hold only the change's devices (3 to 628 in the week's sample, against about 10,900 in the parent). Each has exactly one `IMPORT` snapshot (the forked baseline) and 0 to 4 `COLLECTION` snapshots: operators recollect the scoped devices inside the workspace after the change. So the baseline is the workspace's import snapshot and the after snapshot is a later collection in the same workspace, which fits the existing verify gates (device set complete, collection after apply). No `PREDICT` snapshots appeared in that sample.
+- **Creating a workspace.** `create_workspace(devices=...)` takes the names of the source's classic devices (plus optional cloud accounts and vCenters), a `note` for the change window, a retention, and `omissions` to leave things out. Nothing in this repo creates or reads workspaces; the SDK (0.1.20) already has it and `Network.parent_id`. The plugin's network list drops `parent_id`, so adopting an existing workspace needs a direct `networks.get`.
+- **Events and notifications (NetBox 4.7.2).** `EventType(...).register()` exists, and `process_event_rules(event_rules, object_type, event)` lets a plugin fire event rules for a custom event type, as branching does. A plugin must dispatch them itself. NetBox's `Notification` and `NotificationGroup.notify` exist. Webhooks for created and updated events need REST serializers, which the change models do not have.
+
+## What does not exist yet (Phase 1 builds it)
+
+Nothing writes `ForwardChangeDevice`, `forward_device_key`, `ForwardChangeCriterion` or `ForwardChangeEvidence`; nothing moves `state`; nothing calls `bind_criterion`, `verify` or `compute_verdict`; nothing writes `branch_last_change_time`, which stale-review detection reads; the change form exposes no branch. Phase 1 therefore includes a device-key resolver (Forward classic device names), criterion and device editing, an evidence writer, a verify job and branch linking. The plan does not assume any of it exists.
+
+## What we mirror, and what is ours
+
+From NetBox Labs' change-request documentation: a request has a name (default the branch name), a branch, an owner, a priority (1 low to 5 high, default 3), a summary, `comment_count`, `last_updated` and the derived status. Policies hold rules for who reviews: minimum reviews, reviewer groups, named reviewers, and a per-policy independent-review option (the owner's reviews do not count). Reviews carry a status and comments; comments can be replied to and resolved (needs `change_comment`); reviews and comments are editable by their owner only. Reviews go stale and approval reverts when the branch changes; affected requests are re-evaluated when rules, reviewers or group membership change (an `m2m_changed` receiver on `User.groups`). Notifications go to the owner and the eligible reviewers.
+
+**Policies.** Today a policy sets approval counts and is matched by what a change touches (role, site, tag), strictest match wins. That stays: the effective policy is computed and shown read-only, and a "default" policy is one with no scope rules. We do not add a pinned `policy` field with default assignment, which would let a change dodge a stricter matching policy. The existing scope rule keeps its model; reviewer requirements are a new rule model. Tag matching is prefetched before policy packs multiply the rules.
+
+From NetBox Labs' validation documentation: a policy scopes by site, region, site group, device role, platform and tag and holds rules (`engine`, `category`, `check_name`, `severity`, `parameters`); runs trigger manually, by API, on request submission, on merge or on a schedule, can be narrowed to sites, devices, tags or a branch; results are per device and check (`pass`, `fail`, `skip`, `warning`, `error`, with `expected`, `actual`, `remediation`); findings aggregate failures under a stable key (`open`, `acknowledged`, `resolved`, `suppressed`); severities `critical` to `info`; run statuses `pending`, `running`, `passed`, `failed`, `error`; score per device and policy = passed over passed plus failed plus errored, times 100, skips excluded. Their docs do not say whether a failed run blocks a merge or how the threshold is set; ours is a policy setting.
+
+Ours: **engines** are Forward's: `nqe` (a bound query at a committed version), `check` (a native Forward intent check on a snapshot: isolation, reachability, exists, NQE) and `predict` (the same checks on a predicted snapshot). Existing criteria and evidence are per change and pass or fail per phase, so validation policy, rule, run, result and finding are **new tables**, named `ForwardChangeValidation*` because `ForwardValidationRun`, its job, API route and menu entry already mean sync validation. REST sub-prefixes `changes/` and `validation/` keep the two products' `policies` and `rules` apart. Custom lifecycle event types fire event rules (theirs only notify and silently never fire), dispatched by this plugin. `context.last_branch_change` is not part of NetBox's standard webhook body, so it is a custom payload, not a parity claim.
+
+## Parity checklist (the definition of done for the next minor)
+
+Built from the public NetBox Labs change-management and validation documentation, as summarised above. "Done" means built, tested and reachable from the UI.
+
+| Area | Item | Status |
+|---|---|---|
+| Change request | name/ref, branch, owner, priority 1-5, summary, comment count, derived status | built (form fields added with the scope slice) |
+| Change request | reviewer rules, independent review, stale-review detection | built |
+| Change request | comments, replies, resolve | built |
+| Change request | merge gate on the branch, closure by merge | built |
+| Change request | add devices with Forward names, criteria edit and bind, state buttons, attest applied | built |
+| Change request | notifications to reviewers and requester | built |
+| Change request | panel on the branch page | built |
+| Change request | REST API parity | built |
+| Change request | event types through `process_event_rules` | built |
+| Validation | policies scoped by site, region, site group, role, platform, tag | built |
+| Validation | rules with engine, category, check name, severity, parameters | built |
+| Validation | runs (manual, API, on submission, gate-required), per-device results, score | built; findings are the failing results; not planned: scheduled runs (on demand, on submission and gate-required cover the need) |
+| Validation | engines: `nqe` (a bound org query), `check` (Forward intent checks on a snapshot) | built |
+| Validation | engine `predict` and Forward AI | availability probed read-only (change_sets.list, ai.list) and reported with Forward's reason; proposal authoring and AI text not built: on the production org Predict is unlicensed and AI is off |
+| Validation | REST API parity, retrigger, policy export/import, ready-made packs | built |
+| Both | verify and validation runs as background jobs | built |
+| Both | GraphQL | built (types, filters and queries for changes, policies, rules, criteria, reviews, comments, validation policies, rules, runs, results) |
+
+Availability found by probing a real org (read-only), 2026-10-16: Forward intent checks are listable on a snapshot (NQE, existential, predefined, reachability and isolation types); change sets are refused with `Unlicensed operation`; Forward AI is refused with `AI_ALLOWED is off`.
+
+## Touched Surfaces
+
+- `forward_netbox/change_control/`: workspace adapter (create, adopt, retention), transition service, reviewer-rule evaluator, validation engines, the gate (the preaction check), event dispatch, notifications.
+- Models, migrations (after the current `0059` leaf, which has duplicate numbers in the graph), REST serializers and views (new GraphQL infrastructure last), forms, tables, templates, navigation, permissions (`change_comment`, bypass, approve), a `PluginTemplateExtension` panel on the branch page showing the request and gate status, registration in `apps.py`'s `ready()`.
+- Tests pinned to current shapes: the change-control state-machine, policy, gate, evidence and predict tests; `test_model_view_routes.py`; `scripts/validate_installed_routes.py`. `_rule_matches` has no test today, so one is added before its scope logic changes.
+- `pyproject.toml`: the forward-sdk 0.1.20 pin is enough for Phase 1; the bump to 0.1.21 is separate and touches a high-risk path.
+
+## Approach
+
+**Phase 0: spikes, before any model change.** (a) Whether a change set and Predict run inside a workspace network and what they produce. (b) What a workspace does when its retention expires mid-change, and a retention default that outlives the window. (c) Whether a workspace can be collected on demand from the plugin or only by the operator (the sample suggests operators do it). (d) How the gate refuses through the UI, the REST API and the merge job, with the preaction check. Each is read-only or on a throwaway workspace the user approves.
+
+**Phase 1a: the gate, the branching exemption and the review workflow, on the existing models.** First slice, built: the change-control models are exempt from branching (matched on the `forwardchange` name prefix), the preaction check is registered in `ready()`, and a change cannot be deleted while its branch could still merge (checked before the delete starts, in `ForwardChange.delete` and its queryset, because raising from a `pre_delete` signal poisons the delete transaction). Second slice, built: a transition service (`transition`, `attest_applied`, `record_review`, `close_change`) that checks the state machine, writes under a row lock and journals every move on main; the derived Change-Management-compatible `status`; a writer for the branch anchor that stale-review detection reads, refreshed before a review is recorded, before approval and before closure; the closure approval is anchored to the branch as well as the snapshot and verdict; closing asks Branching to merge, and the change is closed by the merge itself through a `post_merge` hook (a branch with no NetBox changes closes directly); a closed change's reverted branch cannot merge again; an abandoned change cannot be deleted while its branch could still merge; `priority` and `summary` fields. Still to build in 1a: the transition service with journal entries; derived `status`; stale detection with the `branch_last_change_time` writer; reviewer rules, comments and replies with their permissions; notifications; the branch-page panel. The gate passes any branch without a change.
+
+**Phase 1b: scope and evidence.** Device editing with a classic-device-name resolver, the workspace adapter (create from the device list or adopt an existing workspace, checked as a child of the source's network), criterion editing and binding, the evidence writer and a verify job running in the workspace (baseline = its import snapshot, after = a later collection), branch linking.
+
+**Phase 1c: Forward validation.** The `ForwardChangeValidation*` models, engines, runs and triggers (including on submission, so a reviewer sees the result first), findings, scores, policy import and export, and policy packs of ready-made rule sets (no device lost reachability, no new isolated subnet, interface and routing intent). The gate adds the score and passed-run requirement a policy sets.
+
+**Phase 1d: API and events.** REST parity under this plugin's base, `retrigger`, event types fired through `process_event_rules`, a custom webhook payload, GraphQL last. An optional `protect_main` equivalent with a bypass permission, only after the gate is proven.
+
+**Phase 2: Predict as a gate.** A proposal (CLI text per device, validated with `validate_commands`) feeds a Forward change set based on the workspace's baseline (`latest_processed` already excludes predictions). Commit, `predict_and_wait`, run the rules and the change set's native checks on the predicted snapshot, show the snapshot diffs (connectivity, loops, vulnerabilities, per-area counts). Three outcomes: unavailable (licence or permission), unsupported (cannot answer this question, for example a PAN-OS firewall, which needs its own path), answered. Policy chooses per change: require, prefer or ignore. An unanswered Predict is shown as "not predicted", never as a pass.
+
+**Phase 3: Forward AI, optional.** Grounded questions on the baseline or predicted snapshot (change summary, blast radius), stored as labelled advisory text. It needs the `AI_ALLOWED` org property; a 403 hides the panel. Forward answers one question at a time per user, so calls use `busy_timeout` and run in a job. AI text never feeds the verdict or the score.
+
+## Validation
+
+- Per phase: new tests for each transition and its side effect, stale detection, re-evaluation, independent review, the gate through each merge entry point and a dry run, ingestion branches passing, an unavailable and an unsupported Predict, and a 403 from AI. The existing state-machine tests keep passing because the lifecycle is unchanged.
+- API parity tests against the documented statuses, field names and event payload shape.
+- Contract tests for the unpublished Forward endpoints against recorded responses, plus a live read-only probe reporting which capabilities an org has.
+- A live check of the gate on a NetBox 4.7 instance with netbox-branching 1.2.2 (a NetBox Cloud instance is available), and of workspace validation on a real workspace.
+- `invoke harness-check`, `lint`, `check`, `test`, `ci`. Each commit that touches a high-risk path carries a plan file.
+
+## Upgrade notes for 3.0.x installs
+
+The change-control models shipped branch-aware in 3.0. Branching reads a stored flag for provisioning, change diffs and write checks, and that flag is only recomputed on `migrate`, so the release note for Phase 1a must say to run it. Existing branches may hold change-control rows that become invisible once queries go to main, and tags or journal entries on a change (both branch-aware) are still written into an active branch. A policy with `min_post_approvals` of 0 closes a change with no closure approval by design; that is an intentional escape hatch, not an oversight. A form that lets someone clear a change's branch link would bypass the gate, so the branch field must stay guarded when it is added.
+
+## Rollback
+
+Phase 1a is the only phase that changes shipped behaviour (the exemption and the gate), and the gate is one registration that policy can switch off. Later phases add models and views and change nothing about a normal sync. Reverting a phase leaves its tables in place.
+
+## Decision Log
+
+- Re-implemented from public documentation rather than integrating the Enterprise plugin: it is not available to customers without Enterprise or Cloud, and a free version tied to Forward is the point.
+- One lifecycle with a derived compatible status, not two parallel ones: approval already sits inside the verification graph and the tests pin it.
+- Merge at CLOSED, after verification and a closure approval, instead of on approval.
+- The gate is the preaction check, with `pre_merge` as a backstop only, after review found that `pre_merge` also fires on dry runs and fails late.
+- A change's device scope is a Forward workspace network, as operators already do by hand: queries run on the few devices the change touches, the baseline is the workspace's own import snapshot, and retention cleans up.
+- Validation tables are new and named apart from the existing sync validation.
+- The change request and validation ship together, split into reviewable parts (1a to 1d).
+- Predict gates but never decides silently.
+- Phase 0 spike (2026-10-15, one throwaway workspace on the production organisation, created and deleted): `create_workspace(devices=[2 classic device names], retention_days=1)` succeeds; its single baseline snapshot is processed in about a minute; NQE run on that snapshot sees exactly the 2 scoped devices (so queries run on the change's devices only, against the workspace's own baseline). Creating a change set in the workspace was refused with HTTP 403 `Unlicensed operation: NetworkOperation.MANAGE_CHANGE_SETS`, so on this organisation Predict is not available at all and the gate must report "unavailable" (never a pass). Whether Predict works in a licensed organisation remains unverified.
+- Open: the retention default, and what an expired workspace does mid-change.
+- Reviewer rules are a separate model from policy scope: scope says when a policy applies, a rule says who must approve and how many. Eligible reviewers come from groups and named users; a rule naming neither lets any reviewer count. A stale approval and the requester's own approval never count, at either gate.
+- Comments and replies are change-logged models named `ForwardChangeComment*`, so the branching exemption by name prefix already covers them. Only the author edits or deletes their own words; resolving needs the `change` permission on comments.
+- Reviewer rules are read live, not snapshotted when a change is staged: editing or deleting a rule affects changes already under review. Every edit is change-logged; snapshotting rules at staging is a follow-up if that proves too loose.
+- A criterion is editable only while the change is draft or scoped: entering BASELINED required every criterion to be bound and STAGED has no way back, so a later edit would leave a criterion unbound forever.
+- State buttons offer only the moves a person may make by hand. Applied is attested, collected and the verdicts are set by verify, closed is reached by merging the branch.
+- NetBox 4.7 serializes every object deleted in a web request, so every change-logged change-control model has a REST serializer even where the API does not otherwise expose it.
+- Validation gates are judged per policy, on a run that ran that policy's rules: a run of a lenient policy cannot stand in for a strict one. An unanswered (error) result blocks a gate whatever the score.
+- Validation findings are the failing and erroring results; there is no separate findings table.
+- Scheduled validation runs are not planned: runs start on demand, through the API, on submission, or when a gate asks for a current one.
+- Notifications and event rules are delivered after the change commits, in their own guarded step: a failed query, a deleted user or a broken webhook can neither abort the surrounding transaction nor undo the transition it reports. Only people who may view a change are notified, and a rule open to any reviewer notifies no one.
+- Capability probing (Predict, Forward AI) asks Forward with read-only SDK list calls and classifies a refusal by the SDK's `denial` rather than by a licence table; a failure it cannot classify is "unknown", never "available" or "unavailable".
+- Live read-only check of the workspace code against the production organisation (2026-10-16): the estate's device names come back in one query (about 10,900 devices); of 119 operator-made workspaces only 17 had a processed baseline, the baseline is an IMPORT snapshot (never FORK), and the one sampled had no copied checks, so the check engine reports a skip with the count rather than a pass.
+- Migration 0066 depends on `dcim.0001_initial`, not the newest dcim migration `makemigrations` wrote: a plugin migration naming a version-specific core migration pins the plugin to that NetBox release (the migration-dependency test caught it in the full suite).
+- Primary-IP resolution from a customer's data (2026-10-16): a `Mgmt_` tag that agrees with several interfaces (`Ma1` with `Management1` and `ma1`, `Gi0` with `GigabitEthernet0` and `gi0`) used the first match, so a device-type interface with no address hid the real management interface and about three hundred devices had no primary IP. The resolver now tries every matching interface, literal name first, and uses the first that carries an address. Not changed: tags that match no interface at all (`Mgmt_Ma0`, `Mgmt_eth0` on controllers and hosts), which need data Forward does not give us.

@@ -111,6 +111,23 @@ def parse_mgmt_tag(tag):
     return suffix or None
 
 
+def resolve_mgmt_interface_names(tag, interface_names):
+    """Every name in ``interface_names`` that a ``Mgmt_<iface>`` tag points at.
+
+    More than one can match: abbreviations make ``Ma1`` agree with both
+    ``Management1`` (often a device-type template interface that never carries an
+    address) and ``ma1`` (the interface Forward reports, which does). The name that
+    equals the tag's token ignoring case comes first, then the rest in the order
+    given, so the choice among them is deterministic.
+    """
+    token = parse_mgmt_tag(tag)
+    if token is None:
+        return []
+    matches = [name for name in interface_names if interface_names_match(token, name)]
+    literal = [name for name in matches if str(name).strip().lower() == token.lower()]
+    return literal + [name for name in matches if name not in literal]
+
+
 def resolve_mgmt_interface_name(tag, interface_names):
     """Given a ``Mgmt_<iface>`` tag, return the matching name from ``interface_names``.
 

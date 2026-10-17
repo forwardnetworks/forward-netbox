@@ -1,6 +1,6 @@
 # Forward change control: a concept for a second plugin
 
-Status: concept. Nothing here is committed to a release. This is the
+Status: concept, superseded in part by `2026-10-15-change-control-operational.md` (which builds change control inside this plugin, writes to Forward, and gates at the branch preaction check). Kept as the design argument for merge-at-close. Nothing here is committed to a release. This is the
 decision-complete argument for a sibling plugin, `forward-change-control`,
 so that the choice to build it or not can be made on the evidence rather
 than on enthusiasm.

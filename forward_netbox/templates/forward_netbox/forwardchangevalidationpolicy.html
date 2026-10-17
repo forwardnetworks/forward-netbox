@@ -1,0 +1,97 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+{% load i18n %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Policy" %}</h5>
+      <div class="card-body">
+        <table class="table table-hover attr-table">
+          <tr>
+            <th scope="row">{% trans "Enabled" %}</th>
+            <td>{{ object.enabled|yesno:"Yes,No" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Lowest score to approve or close" %}</th>
+            <td>{{ object.min_score }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "A current completed run is required" %}</th>
+            <td>{{ object.require_passed_run|yesno:"Yes,No" }}</td>
+          </tr>
+          <tr>
+            <th scope="row">{% trans "Run when the change is staged" %}</th>
+            <td>{{ object.run_on_submission|yesno:"Yes,No" }}</td>
+          </tr>
+        </table>
+      </div>
+    </div>
+  </div>
+  <div class="col col-md-6">
+    <div class="card">
+      <h5 class="card-header">{% trans "Scope" %}</h5>
+      <div class="card-body">
+        {# A policy with no scope applies to every change. Within a kind any #}
+        {# entry matches; across kinds every named kind must match. #}
+        {% for label, entries in scope %}
+          {% if entries %}
+            <p class="mb-1"><strong>{{ label }}:</strong>
+              {% for entry in entries %}{{ entry }}{% if not forloop.last %}, {% endif %}{% endfor %}
+            </p>
+          {% endif %}
+        {% endfor %}
+        <p class="text-muted small mb-0">
+          {% trans "Nothing listed means this policy applies to every change." %}
+        </p>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="row mb-3">
+  <div class="col">
+    <div class="card">
+      <h5 class="card-header">{% trans "Rules" %}</h5>
+      <div class="card-body">
+        {% if rules %}
+          <table class="table table-hover">
+            <thead>
+              <tr>
+                <th>{% trans "Name" %}</th>
+                <th>{% trans "Engine" %}</th>
+                <th>{% trans "Category" %}</th>
+                <th>{% trans "Severity" %}</th>
+                <th>{% trans "Enabled" %}</th>
+                <th></th>
+              </tr>
+            </thead>
+            {% for rule in rules %}
+              <tr>
+                <td>{{ rule.name }}</td>
+                <td>{{ rule.get_engine_display }}</td>
+                <td>{{ rule.category|placeholder }}</td>
+                <td>{{ rule.get_severity_display }}</td>
+                <td>{{ rule.enabled|yesno:"Yes,No" }}</td>
+                <td class="text-end">
+                  {% if perms.forward_netbox.change_forwardchangevalidationrule %}
+                    <a class="btn btn-sm btn-outline-secondary" href="{% url 'plugins:forward_netbox:forwardchangevalidationrule_edit' pk=rule.pk %}">{% trans "Edit" %}</a>
+                  {% endif %}
+                  {% if perms.forward_netbox.delete_forwardchangevalidationrule %}
+                    <a class="btn btn-sm btn-outline-danger" href="{% url 'plugins:forward_netbox:forwardchangevalidationrule_delete' pk=rule.pk %}">{% trans "Delete" %}</a>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </table>
+        {% else %}
+          <p class="text-muted">{% trans "No rules yet: a policy with no rules checks nothing." %}</p>
+        {% endif %}
+        {% if perms.forward_netbox.add_forwardchangevalidationrule %}
+          <a class="btn btn-primary" href="{% url 'plugins:forward_netbox:forwardchangevalidationrule_add' %}?policy={{ object.pk }}">{% trans "Add rule" %}</a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock content %}

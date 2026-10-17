@@ -45,9 +45,13 @@ from .filtersets import ForwardNQEMapFilterSet
 from .filtersets import ForwardSourceFilterSet
 from .filtersets import ForwardSyncFilterSet
 from .filtersets import ForwardValidationRunFilterSet
+from .forms import ForwardChangeApprovalRuleForm
+from .forms import ForwardChangeCriterionForm
 from .forms import ForwardChangeForm
 from .forms import ForwardChangePolicyForm
 from .forms import ForwardChangePolicyRuleForm
+from .forms import ForwardChangeValidationPolicyForm
+from .forms import ForwardChangeValidationRuleForm
 from .forms import ForwardDriftPolicyBulkEditForm
 from .forms import ForwardDriftPolicyForm
 from .forms import ForwardIngestionIssueFilterForm
@@ -60,9 +64,13 @@ from .forms import ForwardSyncBulkEditForm
 from .forms import ForwardSyncForm
 from .forms import ForwardValidationRunForceAllowForm
 from .models import ForwardChange
+from .models import ForwardChangeApprovalRule
+from .models import ForwardChangeCriterion
 from .models import ForwardChangePolicy
 from .models import ForwardChangePolicyRule
-from .models import ForwardChangeReview
+from .models import ForwardChangeValidationPolicy
+from .models import ForwardChangeValidationRule
+from .models import ForwardChangeValidationRun
 from .models import ForwardDeviceAnalysis
 from .models import ForwardDriftPolicy
 from .models import ForwardIngestion
@@ -73,6 +81,8 @@ from .models import ForwardSync
 from .models import ForwardValidationRun
 from .tables import ForwardChangePolicyTable
 from .tables import ForwardChangeTable
+from .tables import ForwardChangeValidationPolicyTable
+from .tables import ForwardChangeValidationRunTable
 from .tables import ForwardDeviceAnalysisTable
 from .tables import ForwardDriftPolicyTable
 from .tables import ForwardIngestionChangesTable
@@ -307,10 +317,22 @@ def _ingestion_issue_summary(queryset, limit=5000):
 
     by_model_exception = Counter()
     by_rule = Counter()
-    rows = queryset.values_list("model", "exception", "raw_data")[:limit]
+    by_reason = Counter()
+    rows = queryset.values_list("model", "exception", "raw_data", "coalesce_fields")[
+        :limit
+    ]
     seen = 0
-    for model, exception, raw_data in rows:
+    for model, exception, raw_data, coalesce_fields in rows:
         seen += 1
+        reason = (coalesce_fields or {}).get("skip_reason")
+        if reason:
+            by_reason[(model or "-", str(reason))] += 1
+        # Rows past the per-model detail cap have no issue of their own; the
+        # rollup issue carries how many of each reason were suppressed.
+        for suppressed, count in (
+            (coalesce_fields or {}).get("beyond_cap_reasons") or {}
+        ).items():
+            by_reason[(model or "-", str(suppressed))] += int(count)
         by_model_exception[(model or "-", exception or "-")] += 1
         rules = (raw_data or {}).get("validation_rules") if raw_data else None
         for rule in rules or ():
@@ -324,6 +346,12 @@ def _ingestion_issue_summary(queryset, limit=5000):
         "by_validation_rule": [
             {"model": model, "rule": rule, "count": count}
             for (model, rule), count in by_rule.most_common(40)
+        ],
+        # WHY rows were skipped, which the exception class and the dependency
+        # model cannot say: every subinterface skip waited on `dcim.interface`.
+        "by_skip_reason": [
+            {"model": model, "reason": reason, "count": count}
+            for (model, reason), count in by_reason.most_common(40)
         ],
     }
 
@@ -380,6 +408,7 @@ def _ingestion_issue_bundle_payload(ingestion):
                 "disposition": issue_blocking_disposition(issue),
                 "row_disposition": row_disposition(issue),
                 "diagnosis": json_safe_value(issue.raw_data or {}),
+                "skip_reason": (issue.coalesce_fields or {}).get("skip_reason", ""),
             }
         )
     # A truncated export that looks complete is worse than one that says so:
@@ -451,6 +480,264 @@ def _scope_reconciliation_bundle_payload(sync):
     }
 
 
+def _change_control_bundle_payload():
+    """Counts and pks for change control: enough to tell whether it is in use and
+    where changes and validation runs are stuck, and nothing a change contains.
+
+    No titles, refs, device names, network or snapshot ids, query paths or messages
+    appear here; those are the customer's.
+    """
+    from django.db.models import Count
+
+    from .models import ForwardChange
+    from .models import ForwardChangeApprovalRule
+    from .models import ForwardChangeComment
+    from .models import ForwardChangeCriterion
+    from .models import ForwardChangeDevice
+    from .models import ForwardChangeEvidence
+    from .models import ForwardChangePolicy
+    from .models import ForwardChangeReview
+    from .models import ForwardChangeValidationPolicy
+    from .models import ForwardChangeValidationResult
+    from .models import ForwardChangeValidationRule
+    from .models import ForwardChangeValidationRun
+
+    def tally(queryset, field):
+        return {
+            row[field] or "": row["n"]
+            for row in queryset.values(field).annotate(n=Count("pk"))
+        }
+
+    changes = ForwardChange.objects.all()
+    return {
+        "changes": {
+            "total": changes.count(),
+            "by_state": tally(changes, "state"),
+            "by_verdict": tally(changes, "verdict"),
+            "with_workspace": changes.exclude(workspace_network_id="").count(),
+            "workspace_origin": tally(
+                changes.exclude(workspace_network_id=""), "workspace_origin"
+            ),
+            "with_branch": changes.filter(branch__isnull=False).count(),
+            "with_after_snapshot": changes.exclude(after_snapshot_id="").count(),
+        },
+        "scope": {
+            "device_rows": ForwardChangeDevice.objects.count(),
+            "device_rows_without_forward_name": ForwardChangeDevice.objects.filter(
+                forward_device_key=""
+            ).count(),
+        },
+        "criteria": {
+            "total": ForwardChangeCriterion.objects.count(),
+            "bound": ForwardChangeCriterion.objects.exclude(query_id="")
+            .exclude(commit_id="")
+            .count(),
+            "evidence_by_phase": tally(ForwardChangeEvidence.objects.all(), "phase"),
+            "evidence_passed": ForwardChangeEvidence.objects.filter(
+                passed=True
+            ).count(),
+        },
+        "reviews": {
+            "total": ForwardChangeReview.objects.count(),
+            "by_phase": tally(ForwardChangeReview.objects.all(), "phase"),
+            "comments": ForwardChangeComment.objects.count(),
+        },
+        "approval_policies": {
+            "policies": ForwardChangePolicy.objects.count(),
+            "reviewer_rules": ForwardChangeApprovalRule.objects.count(),
+        },
+        "validation": {
+            "policies": ForwardChangeValidationPolicy.objects.count(),
+            "enabled_policies": ForwardChangeValidationPolicy.objects.filter(
+                enabled=True
+            ).count(),
+            "rules_by_engine": tally(
+                ForwardChangeValidationRule.objects.all(), "engine"
+            ),
+            "runs_by_status": tally(ForwardChangeValidationRun.objects.all(), "status"),
+            "runs_by_trigger": tally(
+                ForwardChangeValidationRun.objects.all(), "trigger"
+            ),
+            "failed_run_pks": list(
+                ForwardChangeValidationRun.objects.filter(status="failed")
+                .order_by("-pk")
+                .values_list("pk", flat=True)[:20]
+            ),
+            "results_by_status": tally(
+                ForwardChangeValidationResult.objects.all(), "status"
+            ),
+            "results_by_engine_and_status": [
+                {"engine": r["engine"], "status": r["status"], "n": r["n"]}
+                for r in ForwardChangeValidationResult.objects.values(
+                    "engine", "status"
+                ).annotate(n=Count("pk"))
+            ],
+        },
+    }
+
+
+def _change_log_writers_bundle_payload():
+    """Who changes devices, interfaces and addresses in NetBox, by user pk.
+
+    "Was this the sync or a person?" decided a customer's investigation and took
+    a shell to answer. Users are never named: a pk, a change count, the first and
+    last change, and whether that login runs a sync.
+    """
+    from core.models import Job
+    from core.models import ObjectChange
+    from django.contrib.contenttypes.models import ContentType
+    from django.db.models import Count
+    from django.db.models import Max
+    from django.db.models import Min
+
+    from .models import ForwardSync
+
+    sync_logins = set(
+        ForwardSync.objects.exclude(user__isnull=True).values_list("user_id", flat=True)
+    )
+    sync_logins |= set(
+        Job.objects.filter(object_type__app_label="forward_netbox")
+        .exclude(user__isnull=True)
+        .values_list("user_id", flat=True)
+        .distinct()
+    )
+    payload = {}
+    for label in ("dcim.device", "dcim.interface", "ipam.ipaddress"):
+        app_label, model = label.split(".")
+        ct = ContentType.objects.filter(app_label=app_label, model=model).first()
+        if ct is None:
+            continue
+        rows = (
+            ObjectChange.objects.filter(changed_object_type=ct)
+            .values("user_id")
+            .annotate(changes=Count("pk"), first=Min("time"), last=Max("time"))
+            .order_by("-changes")[:8]
+        )
+        payload[label] = [
+            {
+                "user_pk": row["user_id"],
+                "changes": row["changes"],
+                "first": row["first"].isoformat() if row["first"] else None,
+                "last": row["last"].isoformat() if row["last"] else None,
+                "runs_a_sync": row["user_id"] in sync_logins,
+            }
+            for row in rows
+        ]
+    return payload
+
+
+def _guarded_bundle_section(builder):
+    """One section failing must not take the whole bundle down with it.
+
+    The bundle is what an operator sends when something is already wrong, so a
+    section that cannot be built says so instead of returning a 500.
+    """
+    try:
+        return builder()
+    except Exception as exc:  # noqa: BLE001
+        return {"error": exc.__class__.__name__}
+
+
+def _interface_state_bundle_payload():
+    """NetBox-side interface and address state that decides subinterface skips.
+
+    Counts and pks only, never names. An operator opens the pk in NetBox; the
+    bundle must not carry what the issue list deliberately redacts.
+    """
+    from dcim.models import Interface
+    from django.contrib.contenttypes.models import ContentType
+    from django.db.models import Count
+    from ipam.models import IPAddress
+
+    from .models import ForwardDeviceAbsence
+    from .models import ForwardDeviceIdentity
+
+    from django.db.models import Q
+
+    dotted = Interface.objects.filter(name__contains=".").order_by()
+    virtual_dotted = dotted.filter(type="virtual")
+    parentless = virtual_dotted.filter(parent__isnull=True)
+    non_virtual = dotted.exclude(type="virtual")
+    # One scan of the dotted rows for every count, not one per count.
+    counts = dotted.aggregate(
+        with_parent=Count("pk", filter=Q(type="virtual", parent__isnull=False)),
+        without_parent=Count("pk", filter=Q(type="virtual", parent__isnull=True)),
+        non_virtual=Count("pk", filter=~Q(type="virtual")),
+    )
+    by_type = {
+        row["type"]: row["n"]
+        for row in non_virtual.values("type")
+        .annotate(n=Count("pk"))
+        .order_by("-n")[:10]
+    }
+
+    ct = ContentType.objects.get_for_model(Interface)
+    crowded_rows = list(
+        IPAddress.objects.filter(assigned_object_type=ct)
+        .values("assigned_object_id")
+        .annotate(addresses=Count("pk"), vrfs=Count("vrf", distinct=True))
+        .filter(addresses__gte=5, vrfs__gte=3)
+        .order_by("-addresses")[:25]
+    )
+    interfaces = {
+        pk: device_id
+        for pk, device_id in Interface.objects.filter(
+            pk__in=[row["assigned_object_id"] for row in crowded_rows]
+        ).values_list("pk", "device_id")
+    }
+    device_ids = set(interfaces.values())
+    owned = set(
+        ForwardDeviceIdentity.objects.filter(device_id__in=device_ids).values_list(
+            "device_id", flat=True
+        )
+    )
+    absent = set(
+        ForwardDeviceAbsence.objects.filter(device_id__in=device_ids).values_list(
+            "device_id", flat=True
+        )
+    )
+    unassigned = IPAddress.objects.filter(assigned_object_id__isnull=True)
+    return {
+        "virtual_dotted_with_parent": counts["with_parent"],
+        "virtual_dotted_without_parent": counts["without_parent"],
+        "parentless_interfaces": [
+            {"interface_pk": pk, "device_pk": device_id}
+            for pk, device_id in parentless.values_list("pk", "device_id")[:10]
+        ],
+        "non_virtual_dotted": {
+            "total": counts["non_virtual"],
+            "by_type": by_type,
+        },
+        # Interfaces carrying several addresses across several VRFs: the shape
+        # a subinterface address attached to its parent takes.
+        "crowded_interfaces": [
+            {
+                "interface_pk": row["assigned_object_id"],
+                "device_pk": interfaces.get(row["assigned_object_id"]),
+                "addresses": row["addresses"],
+                "vrfs": row["vrfs"],
+                "device_bound_to_a_sync": interfaces.get(row["assigned_object_id"])
+                in owned,
+                "device_marked_absent": interfaces.get(row["assigned_object_id"])
+                in absent,
+            }
+            for row in crowded_rows
+        ],
+        "lag_membership": {
+            "members": Interface.objects.filter(lag__isnull=False).count(),
+            "parents_not_typed_lag": Interface.objects.filter(lag__isnull=False)
+            .exclude(lag__type="lag")
+            .values("lag")
+            .distinct()
+            .count(),
+        },
+        "unassigned_ip_addresses": {
+            "total": unassigned.count(),
+            "in_a_vrf": unassigned.filter(vrf__isnull=False).count(),
+        },
+    }
+
+
 def _primary_ip_bundle_payload(sync):
     """Is the primary-IP-from-tag step on, and how many devices lack one.
 
@@ -505,6 +792,18 @@ def _primary_ip_bundle_payload(sync):
             "with_an_interface_ip": with_interface_ip.count(),
             "with_no_ip_at_all": len(missing_ids) - with_interface_ip.count(),
         },
+        "without_primary_ip_by_status": dict(
+            Counter(missing.values_list("status", flat=True))
+        ),
+        # Devices with no address anywhere that DO have a management-looking
+        # interface: the ones the management-IP step could be expected to reach.
+        "no_ip_at_all_with_a_management_interface": Device.objects.filter(
+            pk__in=set(missing_ids)
+            - set(with_interface_ip.values_list("pk", flat=True)),
+            interfaces__name__iregex=r"(mgmt|management|^ma|^gi0$|^eth0$)",
+        )
+        .distinct()
+        .count(),
         # Every NetBox device, not just this sync's: the number an operator
         # reads off the device list, so the two can be reconciled.
         "netbox_devices_without_primary_ip": all_missing.count(),
@@ -1032,6 +1331,11 @@ def _sync_support_bundle_payload(sync):
         "delete_blockers": _delete_blocker_survey_bundle_payload(sync),
         "stuck_sync": _stuck_verdict_bundle_payload(sync),
         "primary_ip": _primary_ip_bundle_payload(sync),
+        "interface_state": _guarded_bundle_section(_interface_state_bundle_payload),
+        "change_log_writers": _guarded_bundle_section(
+            _change_log_writers_bundle_payload
+        ),
+        "change_control": _guarded_bundle_section(_change_control_bundle_payload),
         "latest_ingestion": (
             {
                 "pk": latest_ingestion.pk,
@@ -4666,6 +4970,31 @@ if django_apps.is_installed("netbox_dlm"):
             }
 
 
+def _capabilities_panel(source):
+    """Rows for the page: what Forward lets this organisation do, as last asked."""
+    from .change_control.capabilities import cached_capabilities
+
+    found = cached_capabilities(source)
+    if not found:
+        return None
+
+    def describe(entry):
+        if entry["available"] is True:
+            return _("available")
+        if entry["available"] is False:
+            return _("not available: %(why)s") % {"why": entry["reason"]}
+        return _("unknown: %(why)s") % {"why": entry["reason"]}
+
+    return [
+        (
+            _("Forward Predict"),
+            describe(found["predict"]),
+            found["predict"]["available"],
+        ),
+        (_("Forward AI"), describe(found["ai"]), found["ai"]["available"]),
+    ]
+
+
 @register_model_view(ForwardChange, "list", path="", detail=False)
 class ForwardChangeListView(generic.ObjectListView):
     queryset = ForwardChange.objects.all()
@@ -4696,12 +5025,19 @@ class ForwardChangeView(generic.ObjectView):
         from .change_control.evidence import criterion_outcomes
         from .change_control.predict import PredictOutcome
         from .change_control.predict import render_predict_panel
-        from .change_control.state_machine import available_transitions
         from .change_control.state_machine import check_transition
+        from .change_control.state_machine import manual_transitions
+        from .change_control.validation import validation_blockers
 
+        from .change_control.actions import review_anchor
+        from .change_control.actions import sync_branch_state
+
+        # Refresh the branch anchor so the token below describes what the reviewer
+        # is looking at right now.
+        sync_branch_state(instance)
         outcomes = criterion_outcomes(instance)
         transitions = []
-        for target in available_transitions(instance.state):
+        for target in manual_transitions(instance.state):
             result = check_transition(instance, target)
             transitions.append(
                 {
@@ -4721,8 +5057,28 @@ class ForwardChangeView(generic.ObjectView):
                     pre_verdict=instance.predict_pre_verdict,
                 )
             ),
+            "review_anchor": review_anchor(instance),
             "scoped_devices": instance.devices.select_related("device"),
+            "criteria": instance.criteria.all(),
+            "validation_runs": instance.validation_runs.select_related("policy")[:5],
+            "validation_gate": validation_blockers(instance),
+            "can_validate": request.user.has_perm(
+                "forward_netbox.change_forwardchange"
+            ),
+            "capabilities": _capabilities_panel(instance.source),
             "reviews": instance.reviews.select_related("reviewer"),
+            "comments": instance.change_comments.select_related(
+                "author", "resolved_by"
+            ).prefetch_related("replies__author"),
+            "can_comment": request.user.has_perm(
+                "forward_netbox.add_forwardchangecomment"
+            ),
+            "can_reply": request.user.has_perm(
+                "forward_netbox.add_forwardchangecommentreply"
+            ),
+            "can_resolve": request.user.has_perm(
+                "forward_netbox.change_forwardchangecomment"
+            ),
         }
 
 
@@ -4757,7 +5113,12 @@ class ForwardChangePolicyView(generic.ObjectView):
     template_name = "forward_netbox/forwardchangepolicy.html"
 
     def get_extra_context(self, request, instance):
-        return {"rules": instance.rules.select_related("device_role", "site")}
+        return {
+            "rules": instance.rules.select_related("device_role", "site"),
+            "approval_rules": instance.approval_rules.prefetch_related(
+                "groups", "reviewers"
+            ),
+        }
 
 
 @register_model_view(ForwardChangePolicy, "delete")
@@ -4775,7 +5136,8 @@ class ForwardChangePolicyBulkDeleteView(generic.BulkDeleteView):
 class ForwardChangeReviewView(BaseObjectView):
     """Record an approval or a rejection at whichever gate is open.
 
-    The first and only writer of `ForwardChangeReview`. Until this existed the
+    Records through `change_control.actions.record_review`, the one writer of
+    `ForwardChangeReview`. Until this existed the
     approval gate was unreachable: reviews had no form, view or API, so no
     change could leave STAGED at all.
 
@@ -4797,49 +5159,245 @@ class ForwardChangeReviewView(BaseObjectView):
         return redirect(change.get_absolute_url())
 
     def post(self, request, pk):
-        from .change_control.choices import ForwardChangeStateChoices
-        from .change_control.choices import ForwardReviewPhaseChoices
+        from .change_control.actions import record_review
 
         change = get_object_or_404(self.queryset, pk=pk)
-        approved = request.POST.get("decision") == "approve"
-
-        # The gate is derived from the change's state, not chosen by the
-        # reviewer: a POST approval recorded while the change is still STAGED
-        # would sign off on evidence that does not exist yet.
-        phase = (
-            ForwardReviewPhaseChoices.POST
-            if change.state == ForwardChangeStateChoices.VERIFIED_PROCEED
-            else ForwardReviewPhaseChoices.PRE
+        outcome = record_review(
+            change,
+            request.user,
+            approved=request.POST.get("decision") == "approve",
+            comment=request.POST.get("comment"),
+            anchor=request.POST.get("anchor"),
         )
-
-        if change.requester_id and change.requester_id == request.user.pk:
-            messages.error(
+        if outcome.ok:
+            messages.success(
                 request,
-                _(
-                    "You raised this change, so your own approval does not "
-                    "count towards it."
-                ),
+                _("Recorded your %(phase)s-change decision.")
+                % {"phase": outcome.phase},
             )
-            return redirect(change.get_absolute_url())
-
-        ForwardChangeReview.objects.update_or_create(
-            change=change,
-            reviewer=request.user,
-            phase=phase,
-            defaults={
-                "approved": approved,
-                "comment": (request.POST.get("comment") or "").strip(),
-                "branch_change_time": change.branch_last_change_time,
-                "baseline_snapshot_id": change.before_snapshot_id,
-                "after_snapshot_id": change.after_snapshot_id,
-                "verdict": change.verdict,
-            },
-        )
-        messages.success(
-            request,
-            _("Recorded your %(phase)s-change decision.") % {"phase": phase},
-        )
+        else:
+            messages.error(request, outcome.message)
         return redirect(change.get_absolute_url())
+
+
+@register_model_view(ForwardChangeApprovalRule, "add", detail=False)
+@register_model_view(ForwardChangeApprovalRule, "edit")
+class ForwardChangeApprovalRuleEditView(generic.ObjectEditView):
+    queryset = ForwardChangeApprovalRule.objects.all()
+    form = ForwardChangeApprovalRuleForm
+
+
+@register_model_view(ForwardChangeApprovalRule, "delete")
+class ForwardChangeApprovalRuleDeleteView(generic.ObjectDeleteView):
+    queryset = ForwardChangeApprovalRule.objects.all()
+
+
+class _ForwardChangeCommentView(BaseObjectView):
+    """Base for the comment endpoints: POST only, back to the change page.
+
+    Every rule about who may do what lives in `change_control.comments`; these views
+    only collect the request, call it and report its answer.
+
+    The view permission is the one NetBox checks on the change itself. Adding a
+    comment needs a permission on a DIFFERENT model, so it is checked here: handing
+    that permission to NetBox would restrict the change queryset by it and answer
+    404 to a user who is allowed to comment.
+    """
+
+    queryset = ForwardChange.objects.all()
+    action_permission = None
+    # The permission the change must be reachable by, so an object-level constraint
+    # on it holds here as it does in the API.
+    restrict_action = "view"
+
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardchange"
+
+    def get(self, request, pk, **kwargs):
+        return redirect(get_object_or_404(self.queryset, pk=pk).get_absolute_url())
+
+    def post(self, request, pk, **kwargs):
+        if self.action_permission and not request.user.has_perm(self.action_permission):
+            raise PermissionDenied
+        change = get_object_or_404(
+            self.queryset.restrict(request.user, self.restrict_action), pk=pk
+        )
+        outcome = self.act(request, change, **kwargs)
+        if outcome.ok:
+            text = getattr(outcome, "message", "") or self.success_message
+            getattr(messages, getattr(outcome, "level", "success"))(request, text)
+        else:
+            messages.error(request, outcome.message)
+        return redirect(change.get_absolute_url())
+
+
+@register_model_view(ForwardChange, "comment", path="comment")
+class ForwardChangeCommentAddView(_ForwardChangeCommentView):
+    action_permission = "forward_netbox.add_forwardchangecomment"
+    success_message = _("Comment added.")
+
+    def act(self, request, change):
+        from .change_control.comments import add_comment
+
+        return add_comment(change, request.user, request.POST.get("body"))
+
+
+@register_model_view(
+    ForwardChange, "comment_reply", path="comments/<int:comment_pk>/reply"
+)
+class ForwardChangeCommentReplyView(_ForwardChangeCommentView):
+    action_permission = "forward_netbox.add_forwardchangecommentreply"
+    success_message = _("Reply added.")
+
+    def act(self, request, change, comment_pk):
+        from .change_control.comments import reply_to_comment
+
+        comment = get_object_or_404(change.change_comments, pk=comment_pk)
+        return reply_to_comment(comment, request.user, request.POST.get("body"))
+
+
+@register_model_view(
+    ForwardChange, "comment_resolve", path="comments/<int:comment_pk>/resolve"
+)
+class ForwardChangeCommentResolveView(_ForwardChangeCommentView):
+    success_message = _("Comment updated.")
+
+    def act(self, request, change, comment_pk):
+        from .change_control.comments import set_resolved
+
+        comment = get_object_or_404(change.change_comments, pk=comment_pk)
+        return set_resolved(comment, request.user, request.POST.get("resolved") == "1")
+
+
+@register_model_view(
+    ForwardChange, "comment_delete", path="comments/<int:comment_pk>/delete"
+)
+class ForwardChangeCommentDeleteView(_ForwardChangeCommentView):
+    success_message = _("Comment deleted.")
+
+    def act(self, request, change, comment_pk):
+        from .change_control.comments import delete_comment
+
+        comment = get_object_or_404(change.change_comments, pk=comment_pk)
+        return delete_comment(comment, request.user)
+
+
+@register_model_view(
+    ForwardChange, "reply_delete", path="replies/<int:reply_pk>/delete"
+)
+class ForwardChangeReplyDeleteView(_ForwardChangeCommentView):
+    success_message = _("Reply deleted.")
+
+    def act(self, request, change, reply_pk):
+        from .change_control.comments import delete_reply
+        from .models import ForwardChangeCommentReply
+
+        reply = get_object_or_404(
+            ForwardChangeCommentReply, pk=reply_pk, comment__change=change
+        )
+        return delete_reply(reply, request.user)
+
+
+class _Said:
+    """An outcome reduced to what the view needs: did it work, and what to say."""
+
+    def __init__(self, ok, message, level="success"):
+        self.ok = ok
+        self.message = message
+        self.level = level
+
+
+class _ForwardChangeForwardActionView(_ForwardChangeCommentView):
+    """An action on a change that talks to Forward: POST only, edit permission.
+
+    These write to Forward (a workspace) or read it (snapshots, queries), so they
+    are user actions on a change, never background work. Each runs inline for now;
+    the criteria run on the few devices a workspace holds, so they are short.
+    """
+
+    action_permission = "forward_netbox.change_forwardchange"
+    restrict_action = "change"
+    show_outcome_message = False
+
+    def act(self, request, change, **kwargs):
+        outcome = self.run(request, change, **kwargs)
+        if outcome.ok:
+            verdict = getattr(outcome, "verdict", "")
+            if verdict:
+                held = verdict != "proceed"
+                reasons = " ".join(getattr(outcome, "reasons", ()) or ())
+                return _Said(
+                    True,
+                    _("Verified: %(verdict)s. %(reasons)s")
+                    % {"verdict": verdict, "reasons": reasons},
+                    "warning" if held else "success",
+                )
+            # Only some actions have a report worth showing (which criteria were
+            # not measured); for the others the message is an internal id.
+            text = outcome.message if self.show_outcome_message else ""
+            problems = getattr(outcome, "problems", ())
+            if problems:
+                text = f"{text} {' '.join(problems)}".strip()
+            return _Said(True, text, "warning" if problems else "success")
+        reasons = " ".join(getattr(outcome, "reasons", ()) or ())
+        message = getattr(outcome, "message", "") or reasons
+        problems = " ".join(getattr(outcome, "problems", ()) or ())
+        message = f"{message} {problems}".strip()
+        return _Said(False, message or _("The action was refused."))
+
+
+@register_model_view(ForwardChange, "workspace_create", path="workspace/create")
+class ForwardChangeWorkspaceCreateView(_ForwardChangeForwardActionView):
+    success_message = _("Forward workspace created.")
+
+    def run(self, request, change):
+        from .change_control.workspace import create_workspace
+
+        return create_workspace(change, request.user)
+
+
+@register_model_view(ForwardChange, "workspace_adopt", path="workspace/adopt")
+class ForwardChangeWorkspaceAdoptView(_ForwardChangeForwardActionView):
+    success_message = _("Forward workspace adopted.")
+
+    def run(self, request, change):
+        from .change_control.workspace import adopt_workspace
+
+        return adopt_workspace(change, request.POST.get("network_id"), request.user)
+
+
+@register_model_view(ForwardChange, "workspace_refresh", path="workspace/refresh")
+class ForwardChangeWorkspaceRefreshView(_ForwardChangeForwardActionView):
+    success_message = _("Snapshots refreshed from Forward.")
+
+    def run(self, request, change):
+        from .change_control.workspace import refresh_snapshots
+
+        return refresh_snapshots(change)
+
+
+@register_model_view(ForwardChange, "evidence_baseline", path="evidence/baseline")
+class ForwardChangeBaselineEvidenceView(_ForwardChangeForwardActionView):
+    success_message = _("Baseline evidence recorded.")
+    show_outcome_message = True
+
+    def run(self, request, change):
+        from .change_control.choices import ForwardEvidencePhaseChoices
+        from .change_control.runner import record_evidence
+
+        return record_evidence(change, ForwardEvidencePhaseChoices.BEFORE)
+
+
+@register_model_view(ForwardChange, "verify", path="verify")
+class ForwardChangeVerifyView(_ForwardChangeForwardActionView):
+    success_message = _("Verified.")
+
+    show_outcome_message = True
+
+    def run(self, request, change):
+        from .change_control.queueing import enqueue_verify
+
+        return enqueue_verify(change, request.user)
 
 
 @register_model_view(ForwardChangePolicyRule, "add", detail=False)
@@ -4852,3 +5410,301 @@ class ForwardChangePolicyRuleEditView(generic.ObjectEditView):
 @register_model_view(ForwardChangePolicyRule, "delete")
 class ForwardChangePolicyRuleDeleteView(generic.ObjectDeleteView):
     queryset = ForwardChangePolicyRule.objects.all()
+
+
+@register_model_view(ForwardChange, "devices_add", path="devices/add")
+class ForwardChangeDevicesAddView(_ForwardChangeForwardActionView):
+    show_outcome_message = True
+
+    def run(self, request, change):
+        from .change_control.scope import add_devices
+        from .change_control.scope import parse_device_names
+
+        return add_devices(
+            change, parse_device_names(request.POST.get("names")), request.user
+        )
+
+
+@register_model_view(
+    ForwardChange, "devices_remove", path="devices/<int:row_pk>/remove"
+)
+class ForwardChangeDevicesRemoveView(_ForwardChangeForwardActionView):
+    show_outcome_message = True
+
+    def run(self, request, change, row_pk):
+        from .change_control.scope import remove_device
+
+        return remove_device(change, row_pk, request.user)
+
+
+@register_model_view(ForwardChange, "devices_resolve", path="devices/resolve")
+class ForwardChangeDevicesResolveView(_ForwardChangeForwardActionView):
+    show_outcome_message = True
+
+    def run(self, request, change):
+        from .change_control.scope import resolve_forward_names
+
+        return resolve_forward_names(change, request.user)
+
+
+@register_model_view(
+    ForwardChange, "criterion_bind", path="criteria/<int:criterion_pk>/bind"
+)
+class ForwardChangeCriterionBindView(_ForwardChangeForwardActionView):
+    action_permission = "forward_netbox.change_forwardchangecriterion"
+    show_outcome_message = True
+
+    def run(self, request, change, criterion_pk):
+        from .change_control.criteria_admin import bind
+
+        return bind(change, criterion_pk, request.user)
+
+
+@register_model_view(
+    ForwardChange, "criterion_delete", path="criteria/<int:criterion_pk>/delete"
+)
+class ForwardChangeCriterionDeleteView(_ForwardChangeForwardActionView):
+    action_permission = "forward_netbox.delete_forwardchangecriterion"
+    show_outcome_message = True
+
+    def run(self, request, change, criterion_pk):
+        from .change_control.criteria_admin import delete
+
+        return delete(change, criterion_pk, request.user)
+
+
+@register_model_view(ForwardChange, "transition", path="transition")
+class ForwardChangeTransitionView(_ForwardChangeForwardActionView):
+    """Move the change along one edge of the state machine, or say why not."""
+
+    show_outcome_message = True
+
+    def run(self, request, change):
+        from .change_control.actions import transition
+        from .change_control.state_machine import manual_transitions
+
+        target = request.POST.get("target", "")
+        if target not in manual_transitions(change.state):
+            return _Said(False, _("That move is not one you can make by hand."))
+        return _TransitionSaid(transition(change, target, request.user))
+
+
+@register_model_view(ForwardChange, "close", path="close")
+class ForwardChangeCloseView(_ForwardChangeForwardActionView):
+    """Ask Branching to merge the change's branch, which closes it."""
+
+    show_outcome_message = True
+
+    def run(self, request, change):
+        from .change_control.actions import close_change
+
+        outcome = close_change(change, request.user)
+        if outcome.ok:
+            return _Said(
+                True, _("Merge requested; the change closes when it completes.")
+            )
+        return _TransitionSaid(outcome)
+
+
+@register_model_view(ForwardChange, "attest_applied", path="attest-applied")
+class ForwardChangeAttestAppliedView(_ForwardChangeForwardActionView):
+    """A person says the change was applied. Nothing here can observe it."""
+
+    show_outcome_message = True
+
+    def run(self, request, change):
+        from .change_control.actions import attest_applied
+
+        outcome = attest_applied(
+            change,
+            request.user,
+            ref=(request.POST.get("applied_ref") or "").strip()[:200],
+        )
+        return _TransitionSaid(outcome)
+
+
+class _TransitionSaid:
+    """A transition outcome in the shape the action views read."""
+
+    def __init__(self, outcome):
+        self.ok = outcome.ok
+        self.message = f"Moved to {outcome.state}." if outcome.ok else "Not allowed."
+        self.problems = () if outcome.ok else tuple(outcome.blockers)
+
+
+@register_model_view(ForwardChangeCriterion, "add", detail=False)
+@register_model_view(ForwardChangeCriterion, "edit")
+class ForwardChangeCriterionEditView(generic.ObjectEditView):
+    queryset = ForwardChangeCriterion.objects.all()
+    form = ForwardChangeCriterionForm
+
+
+@register_model_view(ForwardChange, "capabilities", path="capabilities")
+class ForwardChangeCapabilitiesView(_ForwardChangeForwardActionView):
+    """Ask Forward what this organisation can do (Predict, Forward AI), read-only."""
+
+    show_outcome_message = True
+    restrict_action = "view"
+    action_permission = "forward_netbox.view_forwardchange"
+
+    def run(self, request, change):
+        from .change_control.capabilities import probe_capabilities
+
+        probe_capabilities(change.source, use_cache=False)
+        return _Said(True, _("Asked Forward what this organisation can do."))
+
+
+@register_model_view(ForwardChange, "validate", path="validate")
+class ForwardChangeValidateView(_ForwardChangeForwardActionView):
+    """Queue a validation run against the change's policies."""
+
+    show_outcome_message = True
+
+    def run(self, request, change):
+        from .change_control.queueing import enqueue_validation
+
+        return enqueue_validation(change, request.user)
+
+
+@register_model_view(ForwardChangeValidationPolicy, "list", path="", detail=False)
+class ForwardChangeValidationPolicyListView(generic.ObjectListView):
+    queryset = ForwardChangeValidationPolicy.objects.all()
+    table = ForwardChangeValidationPolicyTable
+    actions = (AddObject, BulkExport, BulkDelete)
+
+
+@register_model_view(ForwardChangeValidationPolicy, "add", detail=False)
+@register_model_view(ForwardChangeValidationPolicy, "edit")
+class ForwardChangeValidationPolicyEditView(generic.ObjectEditView):
+    queryset = ForwardChangeValidationPolicy.objects.all()
+    form = ForwardChangeValidationPolicyForm
+
+
+@register_model_view(ForwardChangeValidationPolicy)
+class ForwardChangeValidationPolicyView(generic.ObjectView):
+    queryset = ForwardChangeValidationPolicy.objects.all()
+    template_name = "forward_netbox/forwardchangevalidationpolicy.html"
+
+    def get_extra_context(self, request, instance):
+        return {
+            "rules": instance.rules.all(),
+            "scope": [
+                (_("Sites"), instance.sites.all()),
+                (_("Regions"), instance.regions.all()),
+                (_("Site groups"), instance.site_groups.all()),
+                (_("Device roles"), instance.device_roles.all()),
+                (_("Platforms"), instance.platforms.all()),
+                (_("Tags"), instance.scope_tags.all()),
+            ],
+        }
+
+
+@register_model_view(ForwardChangeValidationPolicy, "delete")
+class ForwardChangeValidationPolicyDeleteView(generic.ObjectDeleteView):
+    queryset = ForwardChangeValidationPolicy.objects.all()
+
+
+@register_model_view(
+    ForwardChangeValidationPolicy, "bulk_delete", path="delete", detail=False
+)
+class ForwardChangeValidationPolicyBulkDeleteView(generic.BulkDeleteView):
+    queryset = ForwardChangeValidationPolicy.objects.all()
+    table = ForwardChangeValidationPolicyTable
+
+
+@register_model_view(ForwardChangeValidationRule, "add", detail=False)
+@register_model_view(ForwardChangeValidationRule, "edit")
+class ForwardChangeValidationRuleEditView(generic.ObjectEditView):
+    queryset = ForwardChangeValidationRule.objects.all()
+    form = ForwardChangeValidationRuleForm
+
+
+@register_model_view(ForwardChangeValidationRule, "delete")
+class ForwardChangeValidationRuleDeleteView(generic.ObjectDeleteView):
+    queryset = ForwardChangeValidationRule.objects.all()
+
+
+@register_model_view(ForwardChangeValidationRun, "list", path="", detail=False)
+class ForwardChangeValidationRunListView(generic.ObjectListView):
+    queryset = ForwardChangeValidationRun.objects.select_related("change", "policy")
+    table = ForwardChangeValidationRunTable
+    actions = (BulkExport,)
+
+
+@register_model_view(ForwardChangeValidationRun)
+class ForwardChangeValidationRunView(generic.ObjectView):
+    queryset = ForwardChangeValidationRun.objects.select_related(
+        "change", "policy", "started_by"
+    )
+    template_name = "forward_netbox/forwardchangevalidationrun.html"
+
+    def get_extra_context(self, request, instance):
+        return {
+            "results": instance.results.select_related("rule"),
+            "can_retrigger": request.user.has_perm(
+                "forward_netbox.change_forwardchange"
+            ),
+        }
+
+
+@register_model_view(ForwardChangeValidationRun, "retrigger", path="retrigger")
+class ForwardChangeValidationRunRetriggerView(BaseObjectView):
+    """Run the same policy again on the change's current snapshots."""
+
+    queryset = ForwardChangeValidationRun.objects.select_related("change", "policy")
+
+    def get_required_permission(self):
+        return "forward_netbox.view_forwardchangevalidationrun"
+
+    def get(self, request, pk):
+        return redirect(get_object_or_404(self.queryset, pk=pk).get_absolute_url())
+
+    def post(self, request, pk):
+        from .change_control.queueing import enqueue_validation
+
+        if not request.user.has_perm("forward_netbox.change_forwardchange"):
+            raise PermissionDenied
+        run = get_object_or_404(self.queryset, pk=pk)
+        change = get_object_or_404(
+            ForwardChange.objects.restrict(request.user, "change"), pk=run.change_id
+        )
+        outcome = enqueue_validation(change, request.user, policy=run.policy)
+        (messages.success if outcome.ok else messages.error)(request, outcome.message)
+        return redirect(run.change.get_absolute_url())
+
+
+@register_model_view(ForwardChangeValidationPolicy, "packs", path="packs", detail=False)
+class ForwardChangeValidationPacksView(BaseObjectView):
+    """Ready-made validation policies, installed as ordinary policies to edit."""
+
+    queryset = ForwardChangeValidationPolicy.objects.all()
+    template_name = "forward_netbox/forwardchangevalidationpacks.html"
+
+    def get_required_permission(self):
+        return "forward_netbox.add_forwardchangevalidationpolicy"
+
+    def get(self, request):
+        from .change_control.packs import PACKS
+
+        return render(
+            request,
+            self.template_name,
+            {
+                "packs": [
+                    {"key": key, **pack, "rule_count": len(pack["rules"])}
+                    for key, pack in PACKS.items()
+                ]
+            },
+        )
+
+    def post(self, request):
+        from .change_control.packs import install_pack
+
+        if not request.user.has_perm("forward_netbox.add_forwardchangevalidationrule"):
+            raise PermissionDenied
+        policy, problems = install_pack(request.POST.get("pack", ""))
+        if problems:
+            messages.error(request, " ".join(problems))
+            return redirect(request.path)
+        messages.success(request, _("Installed the policy; edit it to fit."))
+        return redirect(policy.get_absolute_url())

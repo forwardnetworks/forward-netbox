@@ -98,3 +98,31 @@ class ResolveMgmtInterfaceNameTest(SimpleTestCase):
     def test_no_match_returns_none(self):
         self.assertIsNone(resolve_mgmt_interface_name("Mgmt_Vl999", ["Vlan211"]))
         self.assertIsNone(resolve_mgmt_interface_name("Prot_BGP", ["Vlan211"]))
+
+
+class ResolveMgmtInterfaceNamesTest(SimpleTestCase):
+    def test_every_matching_interface_is_returned_literal_first(self):
+        from forward_netbox.utilities.interface_naming import (
+            resolve_mgmt_interface_names,
+        )
+
+        self.assertEqual(
+            resolve_mgmt_interface_names("Mgmt_Ma1", ["Management1", "ma1", "eth0"]),
+            ["ma1", "Management1"],
+        )
+
+    def test_a_tag_that_is_not_a_mgmt_tag_matches_nothing(self):
+        from forward_netbox.utilities.interface_naming import (
+            resolve_mgmt_interface_names,
+        )
+
+        self.assertEqual(resolve_mgmt_interface_names("Site_NYC", ["ma1"]), [])
+
+    def test_nothing_matching_gives_an_empty_list(self):
+        from forward_netbox.utilities.interface_naming import (
+            resolve_mgmt_interface_names,
+        )
+
+        self.assertEqual(
+            resolve_mgmt_interface_names("Mgmt_Ma0", ["bond0", "cimc"]), []
+        )

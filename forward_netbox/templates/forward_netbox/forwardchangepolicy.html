@@ -52,4 +52,38 @@
     </div>
   </div>
 </div>
+<div class="row mb-3">
+  <div class="col">
+    <div class="card">
+      <h5 class="card-header">{% trans "Reviewer rules" %}</h5>
+      <div class="card-body">
+        {# A scope rule says WHEN this policy applies; a reviewer rule says WHO #}
+        {# must approve. Each one must hold for a change to pass. #}
+        {% if approval_rules %}
+          <table class="table table-hover">
+            {% for rule in approval_rules %}
+              <tr>
+                <td>{{ rule.name }}</td>
+                <td>{{ rule.min_reviews }} {% trans "approval(s) from" %} {{ rule.describe_eligible }}</td>
+                <td class="text-end">
+                  {% if perms.forward_netbox.change_forwardchangeapprovalrule %}
+                    <a class="btn btn-sm btn-outline-secondary" href="{% url 'plugins:forward_netbox:forwardchangeapprovalrule_edit' pk=rule.pk %}">{% trans "Edit" %}</a>
+                  {% endif %}
+                  {% if perms.forward_netbox.delete_forwardchangeapprovalrule %}
+                    <a class="btn btn-sm btn-outline-danger" href="{% url 'plugins:forward_netbox:forwardchangeapprovalrule_delete' pk=rule.pk %}">{% trans "Delete" %}</a>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </table>
+        {% else %}
+          <p class="text-muted">{% trans "No reviewer rules: only the approval counts above are asked for." %}</p>
+        {% endif %}
+        {% if perms.forward_netbox.add_forwardchangeapprovalrule %}
+          <a class="btn btn-primary" href="{% url 'plugins:forward_netbox:forwardchangeapprovalrule_add' %}?policy={{ object.pk }}">{% trans "Add reviewer rule" %}</a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
 {% endblock content %}

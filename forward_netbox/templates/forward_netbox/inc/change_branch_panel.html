@@ -1,0 +1,27 @@
+{% load helpers %}
+{% load i18n %}
+<div class="card">
+  <h5 class="card-header">{% trans "Forward change" %}</h5>
+  <div class="card-body">
+    <table class="table table-hover attr-table">
+      <tr><th scope="row">{% trans "Change" %}</th><td>{{ change|linkify }}</td></tr>
+      <tr><th scope="row">{% trans "State" %}</th><td>{% badge change.get_state_display bg_color=change.get_state_color %}</td></tr>
+      <tr>
+        <th scope="row">{% trans "Verdict" %}</th>
+        <td>
+          {% if change.verdict %}
+            {% badge change.get_verdict_display bg_color=change.get_verdict_color %}
+          {% else %}
+            <span class="text-muted">{% trans "Not yet verified" %}</span>
+          {% endif %}
+        </td>
+      </tr>
+      <tr><th scope="row">{% trans "Requester" %}</th><td>{{ change.requester|placeholder }}</td></tr>
+    </table>
+    {% if can_merge %}
+      <p class="text-success mb-0">{% trans "This change allows its branch to merge." %}</p>
+    {% else %}
+      <div class="alert alert-warning mb-0 small">{{ gate_message }}</div>
+    {% endif %}
+  </div>
+</div>

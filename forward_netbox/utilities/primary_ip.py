@@ -15,7 +15,7 @@ from .diagnostics import failure_classifier
 from .forward_api import get_device_management_ips
 from .forward_api import get_device_mgmt_tags
 from .interface_naming import parse_mgmt_tag
-from .interface_naming import resolve_mgmt_interface_name
+from .interface_naming import resolve_mgmt_interface_names
 
 PRIMARY_IP_FROM_MGMT_TAG_PARAMETER = "set_primary_ip_from_mgmt_tag"
 PRIMARY_IP_FROM_MANAGEMENT_IP_PARAMETER = "set_primary_ip_from_forward_management_ip"
@@ -71,22 +71,26 @@ def resolve_primary_ip_assignments(device_mgmt_tags, device_interface_ips):
             continue
         interface_ips = (device_interface_ips or {}).get(device_name) or {}
         interface_names = list(interface_ips.keys())
-        # First Mgmt_ tag that resolves to a real interface with IPs wins.
+        # First Mgmt_ tag that resolves to a real interface with IPs wins. A tag can
+        # agree with several interfaces (`Ma1` with both `Management1` and `ma1`);
+        # the first one that actually carries an address is used, not merely the
+        # first that matches, or a template interface with no address hides the
+        # real management interface.
         for tag in mgmt_tags:
-            matched_name = resolve_mgmt_interface_name(tag, interface_names)
-            if matched_name is None:
-                continue
-            ips = interface_ips.get(matched_name) or []
-            v4 = _pick_lowest(ips, 4)
-            v6 = _pick_lowest(ips, 6)
-            if v4 is None and v6 is None:
-                continue
-            assignments[device_name] = {
-                "interface": matched_name,
-                "v4": v4,
-                "v6": v6,
-            }
-            break
+            for matched_name in resolve_mgmt_interface_names(tag, interface_names):
+                ips = interface_ips.get(matched_name) or []
+                v4 = _pick_lowest(ips, 4)
+                v6 = _pick_lowest(ips, 6)
+                if v4 is None and v6 is None:
+                    continue
+                assignments[device_name] = {
+                    "interface": matched_name,
+                    "v4": v4,
+                    "v6": v6,
+                }
+                break
+            if device_name in assignments:
+                break
     return assignments
 
 

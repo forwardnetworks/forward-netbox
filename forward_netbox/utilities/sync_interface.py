@@ -377,6 +377,8 @@ def apply_dcim_interface(runner, row):
                 "because a top-level interface already has that name.",
                 model_string="dcim.interface",
                 dependency="dcim.interface",
+                reason="subinterface-name-taken-by-parentless-interface",
+                netbox_pk=existing_interface.pk,
                 context={"device": device.name, "name": row["name"]},
                 data=row,
             )
@@ -387,6 +389,8 @@ def apply_dcim_interface(runner, row):
                 f"because its parent interface `{row['parent']}` was not found.",
                 model_string="dcim.interface",
                 dependency="dcim.interface",
+                reason="subinterface-parent-not-found",
+                netbox_pk=getattr(existing_interface, "pk", None),
                 context={"device": device.name, "name": row["name"]},
                 data=row,
             )

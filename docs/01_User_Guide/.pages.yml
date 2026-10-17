@@ -3,6 +3,7 @@ nav:
   - configuration.md
   - usage.md
   - operations.md
+  - change-control.md
   - upgrade.md
   - versioning.md
   - troubleshooting.md

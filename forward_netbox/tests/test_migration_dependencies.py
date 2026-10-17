@@ -49,6 +49,21 @@ ALLOWED_DCIM_DEPENDENCIES = {
 _DCIM_DEPENDENCY = re.compile(r"""\(\s*["']dcim["']\s*,\s*["']([^"']+)["']\s*\)""")
 
 
+# The same hazard with extras: a migration that needs `extras.Tag` needs
+# 0001_initial, not whichever extras migration was newest when it was generated.
+ALLOWED_EXTRAS_DEPENDENCIES = {
+    "0001_initial",
+    # Adds the `owner` field the primary models carry.
+    "0134_owner",
+}
+
+# Only dependency tuples name a migration (`0001_initial`); `apps.get_model("extras",
+# "Tag")` has the same shape and must not match.
+_EXTRAS_DEPENDENCY = re.compile(
+    r"""\(\s*["']extras["']\s*,\s*["'](\d{4}_[^"']+)["']\s*\)"""
+)
+
+
 class MigrationsDoNotPinANetBoxVersionTest(SimpleTestCase):
     def test_no_migration_depends_on_a_version_specific_dcim_migration(self):
         offenders = []
@@ -75,3 +90,17 @@ class MigrationsDoNotPinANetBoxVersionTest(SimpleTestCase):
 
         self.assertEqual(found, ["0241_nullify_empty_cable_end"])
         self.assertNotIn(found[0], ALLOWED_DCIM_DEPENDENCIES)
+
+    def test_no_migration_depends_on_a_version_specific_extras_migration(self):
+        offenders = []
+        for path in sorted(MIGRATIONS_DIR.glob("0*.py")):
+            for name in _EXTRAS_DEPENDENCY.findall(path.read_text(encoding="utf-8")):
+                if name not in ALLOWED_EXTRAS_DEPENDENCIES:
+                    offenders.append(f"{path.name} -> extras.{name}")
+
+        self.assertEqual(
+            offenders,
+            [],
+            "these migrations depend on an extras migration that may not exist on "
+            f"every supported NetBox: {offenders}",
+        )

@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 from ipaddress import ip_interface
 
@@ -288,6 +289,9 @@ def dependency_skip_direction(exception) -> str:
     return "missing"
 
 
+_REASON_SLUG = re.compile(r"[a-z0-9-]{1,64}")
+
+
 def dependency_skip_reason(exception) -> str:
     """The catalogued reason a skip persists with, derived from the exception.
 
@@ -299,6 +303,11 @@ def dependency_skip_reason(exception) -> str:
     raiser that names nothing records `dependency-unnamed`, which is honest
     about the gap rather than a guess.
     """
+    explicit = str(getattr(exception, "reason", "") or "")
+    # A slug the raiser defines, never a value: anything else is ignored rather
+    # than persisted, because `coalesce_fields` is not checked for row values.
+    if explicit and _REASON_SLUG.fullmatch(explicit):
+        return explicit
     dependency = str(getattr(exception, "dependency", "") or "")
     if not dependency:
         return "dependency-unnamed"
@@ -319,6 +328,24 @@ def _dependency_skip_directions(runner):
         except AttributeError:  # pragma: no cover - frozen runner stand-ins
             pass
     return directions
+
+
+def _count_suppressed_skip_reason(runner, model_string, exception):
+    """Tally why a skip past the detail cap was suppressed, so the rollup can say.
+
+    Lazily created, like the directions: not every runner-shaped object that
+    records issues declares the attribute.
+    """
+    reasons = getattr(runner, "_dependency_skip_issue_reasons", None)
+    if reasons is None:
+        reasons = {}
+        try:
+            runner._dependency_skip_issue_reasons = reasons
+        except AttributeError:  # pragma: no cover - frozen runner stand-ins
+            return
+    bucket = reasons.setdefault(model_string, {})
+    reason = dependency_skip_reason(exception)
+    bucket[reason] = bucket.get(reason, 0) + 1
 
 
 def _record_dependency_skip_direction(runner, model_string, exception):
@@ -382,6 +409,11 @@ def emit_dependency_skip_issue_summary(runner, model_string):
         "detail_limit": limit,
         "missing_parent_count": buckets["missing"],
         "protected_delete_count": buckets["protecting"],
+        # The rows past the cap have no issue of their own, so their reasons
+        # are only here. Slugs and counts, never values.
+        "beyond_cap_reasons": dict(
+            getattr(runner, "_dependency_skip_issue_reasons", {}).get(model_string, {})
+        ),
     }
     from ..models import ForwardIngestionIssue
 
@@ -577,6 +609,7 @@ def record_issue(
         runner._dependency_skip_issue_counts[model_string] = seen
         _record_dependency_skip_direction(runner, model_string, exception)
         if seen > runner.DEPENDENCY_SKIP_ISSUE_DETAIL_LIMIT:
+            _count_suppressed_skip_reason(runner, model_string, exception)
             samples = runner._dependency_skip_issue_samples.setdefault(model_string, [])
             example = str(
                 (context or {}).get("device_type")

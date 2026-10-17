@@ -62,6 +62,33 @@ def available_transitions(current: str) -> tuple[str, ...]:
     return tuple(sorted(TRANSITIONS.get(current, frozenset())))
 
 
+# What a person may move a change to by hand. Everything else has its own door:
+# APPLIED is attested (`attest_applied`), COLLECTED and the two verdict states are
+# set by `verify_change` from evidence, and CLOSED is reached by merging the branch
+# (`close_change`). A button for those would let a click skip the check that gives
+# them their meaning. The one exception is the way back out of a HOLD.
+MANUAL_TARGETS = frozenset(
+    {
+        State.DRAFT,
+        State.SCOPED,
+        State.BASELINED,
+        State.STAGED,
+        State.PREDICTED,
+        State.APPROVED,
+        State.ABANDONED,
+    }
+)
+
+
+def manual_transitions(current: str) -> tuple[str, ...]:
+    allowed = set(TRANSITIONS.get(current, frozenset())) & MANUAL_TARGETS
+    if current == State.VERIFIED_HOLD and State.APPLIED in TRANSITIONS.get(
+        current, frozenset()
+    ):
+        allowed.add(State.APPLIED)
+    return tuple(sorted(allowed))
+
+
 def check_transition(change, target: str) -> TransitionResult:
     """Whether `change` may move to `target`, and what is missing if not."""
     current = change.state
@@ -141,13 +168,14 @@ def _approval_gate(change, phase, what) -> TransitionResult:
     `what` names the evidence the reviewer signed off on, so the blocker reads
     as an instruction rather than a code.
     """
-    from .policy import distinct_approvers
+    from .policy import active_approvers
     from .policy import required_approvals
+    from .policy import rule_blockers
     from .policy import stale_approvals
 
     blockers = []
     needed = required_approvals(change, phase)
-    approvers = distinct_approvers(change, phase)
+    approvers = active_approvers(change, phase)
     stale = stale_approvals(change, phase)
 
     if len(approvers) < needed:
@@ -162,6 +190,10 @@ def _approval_gate(change, phase, what) -> TransitionResult:
             f"{len(stale)} approval(s) are stale: {what} moved after they were "
             f"given, so they approved a different change."
         )
+    blockers.extend(rule_blockers(change, phase))
+    from .validation import validation_blockers
+
+    blockers.extend(validation_blockers(change))
     return TransitionResult(not blockers, tuple(blockers))
 
 
@@ -231,8 +263,28 @@ def _closed(change) -> TransitionResult:
     return _approval_gate(
         change,
         ForwardReviewPhaseChoices.POST,
-        "the post-change snapshot or the verdict",
+        "the post-change snapshot, the verdict or the branch",
     )
+
+
+def closure_check(change) -> TransitionResult:
+    """What must hold before the change's branch may merge.
+
+    The branch merges at CLOSE, so this is the CLOSED entry check, exposed
+    without the edge test: a change that is still STAGED has no edge to CLOSED,
+    and answering "this does not lead to closed" would not tell anyone what is
+    actually missing.
+    """
+    return _closed(change)
+
+
+def plan_approval_check(change) -> TransitionResult:
+    """Whether the plan has the approvals its policy needs, whatever the state.
+
+    The APPROVED entry check without the edge test, so a change that is still
+    STAGED can be asked whether it already has enough.
+    """
+    return _approved(change)
 
 
 _ENTRY_CHECKS = {

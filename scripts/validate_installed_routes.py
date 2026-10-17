@@ -23,6 +23,11 @@ from django.urls import reverse  # noqa: E402
 
 from forward_netbox.choices import ForwardSyncStatusChoices  # noqa: E402
 from forward_netbox.models import ForwardChange  # noqa: E402
+from forward_netbox.models import ForwardChangeApprovalRule  # noqa: E402
+from forward_netbox.models import ForwardChangeCriterion  # noqa: E402
+from forward_netbox.models import ForwardChangeValidationPolicy  # noqa: E402
+from forward_netbox.models import ForwardChangeValidationRule  # noqa: E402
+from forward_netbox.models import ForwardChangeValidationRun  # noqa: E402
 from forward_netbox.models import ForwardChangePolicy  # noqa: E402
 from forward_netbox.models import ForwardChangePolicyRule  # noqa: E402
 from forward_netbox.models import ForwardDeviceAnalysis  # noqa: E402
@@ -51,6 +56,14 @@ MENU_ROUTES = (
     (
         "plugins:forward_netbox:forwardvalidationrun_list",
         "Artifact route smoke sync",
+    ),
+    (
+        "plugins:forward_netbox:forwardchangevalidationpolicy_list",
+        "Artifact route smoke validation policy",
+    ),
+    (
+        "plugins:forward_netbox:forwardchangevalidationrun_list",
+        "Artifact route smoke change",
     ),
     (
         "plugins:forward_netbox:forwarddeviceanalysis_list",
@@ -153,6 +166,21 @@ def main():
         title="Artifact route smoke change",
     )
     change_policy_rule = ForwardChangePolicyRule.objects.create(policy=change_policy)
+    # Without their own fixtures the longest-prefix rule below binds these models'
+    # routes to the change's pk, and the probe reports a 404 for a route that works.
+    change_criterion = ForwardChangeCriterion.objects.create(
+        change=change, name="Artifact route smoke criterion", query_path="/smoke"
+    )
+    validation_policy = ForwardChangeValidationPolicy.objects.create(
+        name="Artifact route smoke validation policy"
+    )
+    validation_rule = ForwardChangeValidationRule.objects.create(
+        policy=validation_policy, name="Artifact route smoke rule", engine="predict"
+    )
+    validation_change_run = ForwardChangeValidationRun.objects.create(change=change)
+    change_approval_rule = ForwardChangeApprovalRule.objects.create(
+        policy=change_policy, name="Artifact route smoke rule", any_reviewer=True
+    )
     validation_run = ForwardValidationRun.objects.create(
         sync=sync,
         policy=policy,
@@ -240,6 +268,11 @@ def main():
         "forwarddriftpolicy": policy.pk,
         "forwardchangepolicy": change_policy.pk,
         "forwardchangepolicyrule": change_policy_rule.pk,
+        "forwardchangeapprovalrule": change_approval_rule.pk,
+        "forwardchangecriterion": change_criterion.pk,
+        "forwardchangevalidationpolicy": validation_policy.pk,
+        "forwardchangevalidationrule": validation_rule.pk,
+        "forwardchangevalidationrun": validation_change_run.pk,
         "forwardchange": change.pk,
     }
     detail = []

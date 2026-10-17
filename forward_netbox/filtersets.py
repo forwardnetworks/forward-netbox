@@ -7,12 +7,26 @@ from netbox.filtersets import ChangeLoggedModelFilterSet
 from netbox.filtersets import NetBoxModelFilterSet
 from netbox_branching.models import ChangeDiff
 
+from .change_control.choices import ForwardChangeStateChoices
+from .change_control.choices import ForwardChangeVerdictChoices
 from .choices import ForwardDriftPolicyBaselineChoices
 from .choices import ForwardIngestionPhaseChoices
 from .choices import ForwardSourceDeploymentChoices
 from .choices import ForwardSourceStatusChoices
 from .choices import ForwardSyncStatusChoices
 from .choices import ForwardValidationStatusChoices
+from .models import ForwardChange
+from .models import ForwardChangeApprovalRule
+from .models import ForwardChangeComment
+from .models import ForwardChangeCriterion
+from .models import ForwardChangeEvidence
+from .models import ForwardChangePolicy
+from .models import ForwardChangePolicyRule
+from .models import ForwardChangeReview
+from .models import ForwardChangeValidationPolicy
+from .models import ForwardChangeValidationResult
+from .models import ForwardChangeValidationRule
+from .models import ForwardChangeValidationRun
 from .models import ForwardDeviceAnalysis
 from .models import ForwardDriftPolicy
 from .models import ForwardIngestion
@@ -262,4 +276,127 @@ class ForwardValidationRunFilterSet(BaseFilterSet):
             Q(sync__name__icontains=value)
             | Q(snapshot_id__icontains=value)
             | Q(baseline_snapshot_id__icontains=value)
+        )
+
+
+class ForwardChangeFilterSet(NetBoxModelFilterSet):
+    q = django_filters.CharFilter(method="search")
+    source_id = django_filters.ModelMultipleChoiceFilter(
+        queryset=ForwardSource.objects.all()
+    )
+    state = django_filters.MultipleChoiceFilter(
+        choices=ForwardChangeStateChoices.CHOICES
+    )
+    verdict = django_filters.MultipleChoiceFilter(
+        choices=ForwardChangeVerdictChoices.CHOICES
+    )
+
+    class Meta:
+        model = ForwardChange
+        fields = ("id", "ref", "title", "priority", "branch_id", "requester_id")
+
+    def search(self, queryset, name, value):
+        if not value.strip():
+            return queryset
+        return queryset.filter(
+            Q(title__icontains=value)
+            | Q(ref__icontains=value)
+            | Q(summary__icontains=value)
+        )
+
+
+class ForwardChangePolicyFilterSet(NetBoxModelFilterSet):
+    q = django_filters.CharFilter(method="search")
+
+    class Meta:
+        model = ForwardChangePolicy
+        fields = ("id", "name", "enabled")
+
+    def search(self, queryset, name, value):
+        if not value.strip():
+            return queryset
+        return queryset.filter(Q(name__icontains=value))
+
+
+class ForwardChangePolicyRuleFilterSet(ChangeLoggedModelFilterSet):
+    class Meta:
+        model = ForwardChangePolicyRule
+        fields = ("id", "policy_id", "device_role_id", "site_id", "tag_slug")
+
+
+class ForwardChangeApprovalRuleFilterSet(ChangeLoggedModelFilterSet):
+    class Meta:
+        model = ForwardChangeApprovalRule
+        fields = ("id", "policy_id", "name", "any_reviewer")
+
+
+class ForwardChangeCriterionFilterSet(ChangeLoggedModelFilterSet):
+    class Meta:
+        model = ForwardChangeCriterion
+        fields = ("id", "change_id", "name", "family", "blocking")
+
+
+class ForwardChangeReviewFilterSet(ChangeLoggedModelFilterSet):
+    class Meta:
+        model = ForwardChangeReview
+        fields = ("id", "change_id", "phase", "approved")
+
+
+class ForwardChangeCommentFilterSet(ChangeLoggedModelFilterSet):
+    class Meta:
+        model = ForwardChangeComment
+        fields = ("id", "change_id", "resolved")
+
+
+class ForwardChangeEvidenceFilterSet(BaseFilterSet):
+    class Meta:
+        model = ForwardChangeEvidence
+        fields = ("id", "criterion_id", "phase", "passed", "snapshot_id")
+
+
+class ForwardChangeValidationPolicyFilterSet(NetBoxModelFilterSet):
+    q = django_filters.CharFilter(method="search")
+
+    class Meta:
+        model = ForwardChangeValidationPolicy
+        fields = ("id", "name", "enabled", "require_passed_run", "run_on_submission")
+
+    def search(self, queryset, name, value):
+        if not value.strip():
+            return queryset
+        return queryset.filter(Q(name__icontains=value))
+
+
+class ForwardChangeValidationRuleFilterSet(ChangeLoggedModelFilterSet):
+    class Meta:
+        model = ForwardChangeValidationRule
+        fields = (
+            "id",
+            "policy_id",
+            "name",
+            "engine",
+            "category",
+            "severity",
+            "enabled",
+        )
+
+
+class ForwardChangeValidationRunFilterSet(ChangeLoggedModelFilterSet):
+    class Meta:
+        model = ForwardChangeValidationRun
+        fields = ("id", "change_id", "policy_id", "trigger", "status", "snapshot_id")
+
+
+class ForwardChangeValidationResultFilterSet(BaseFilterSet):
+    class Meta:
+        model = ForwardChangeValidationResult
+        fields = (
+            "id",
+            "run_id",
+            "rule_id",
+            "engine",
+            "category",
+            "status",
+            "severity",
+            "device_name",
         )
