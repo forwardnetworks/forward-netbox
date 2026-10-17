@@ -58,6 +58,14 @@ MENU_ROUTES = (
         "Artifact route smoke sync",
     ),
     (
+        "plugins:forward_netbox:forwardchangevalidationpolicy_list",
+        "Artifact route smoke validation policy",
+    ),
+    (
+        "plugins:forward_netbox:forwardchangevalidationrun_list",
+        "Artifact route smoke change",
+    ),
+    (
         "plugins:forward_netbox:forwarddeviceanalysis_list",
         "artifact-route-smoke-device",
     ),
