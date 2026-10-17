@@ -1,16 +1,16 @@
 # Quality Score
 
-Last reviewed: 2026-07-18
+Last reviewed: 2026-10-17
 
 Current score: **B+ release candidate**
 
-This score reflects architecture and focused evidence in the 2.6 tree. It does
+This score reflects architecture and focused evidence in the 3.0 tree. It does
 not replace the final release gate or customer-equivalent acceptance run.
 
 ## Strengths
 
-- The supported matrix is exact: NetBox `4.6.5` and
-  `netbox-branching` `1.1.1`.
+- The supported matrix is NetBox `4.7.x`, tested on `4.7.2`, and
+  `netbox-branching` `1.2.x`, tested on `1.2.1`.
 - Every production sync uses one reviewable native Branching branch. There is no
   direct-write fast-bootstrap lane.
 - The custom merge has an explicit incomplete state: failed rows produce issues,
@@ -27,6 +27,10 @@ not replace the final release gate or customer-equivalent acceptance run.
   checks, migrations, focused scenarios, the full plugin suite, the UI harness, and
   packaging.
 - Shipped NQE maps and model contracts are versioned with the plugin.
+- Change control and validation gate approval and close on evidence: a change's
+  verdict comes from pinned Forward snapshots, validation is judged per policy and
+  never counts an unanswered rule as a pass, and each slice was audited before it
+  was committed.
 
 ## Operational Invariants
 
@@ -48,7 +52,7 @@ fixed with regression evidence before release.
 
 ## Release Bar
 
-The 2.6 release candidate is acceptable only when all of the following describe
+A release candidate is acceptable only when all of the following describe
 the same commit and exact runtime matrix:
 
 - migrations apply cleanly and `makemigrations --check` reports no drift
@@ -56,8 +60,8 @@ the same commit and exact runtime matrix:
   regressions pass
 - `invoke harness-check`, `invoke harness-test`, `invoke lint`, `invoke check`,
   `invoke scenario-test`, `invoke test`, `invoke docs`, and `invoke ci` pass
-- The UI harness and package installation tests pass against NetBox `4.6.5` with
-  Branching `1.1.1`
+- The UI harness and package installation tests pass against the tested NetBox and
+  Branching versions in `scripts/tested_runtime.py`
 - `forward_ownership_audit --fail-on-inconsistent` passes after upgraded syncs
   establish current ownership generations
 - no incomplete branch merge, pending/failed ownership domain, parent conflict,
@@ -66,7 +70,7 @@ the same commit and exact runtime matrix:
   virtual-parent, DLM, CVE, software-version, and drift workflows
 
 Passing an earlier commit or a different dependency matrix is not release
-evidence for 2.6.
+evidence.
 
 ## Maintainer Priorities
 

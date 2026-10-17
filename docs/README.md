@@ -8,13 +8,14 @@ Forward 26.6 is the baseline for async NQE.
 
 ## Release Compatibility
 
-The `3.0.6` release requires NetBox `4.7.x` (tested on `4.7.1`) and `netbox-branching` `1.2.x` (tested on `1.2.0`). Expand for the published release history and release notes.
+The `3.0.7` release candidate requires NetBox `4.7.x` (tested on `4.7.1`) and `netbox-branching` `1.2.x` (tested on `1.2.0`). Expand for the published release history and candidate notes.
 
 <details>
 <summary>Release compatibility history</summary>
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
+| `v3.0.7` | NetBox `4.7.x` supported, tested on `4.7.1`; needs netbox-branching `1.2.x`, tested on `1.2.0` | Release candidate; Change control and validation are operational: a change is authored, scoped to a Forward workspace, reviewed, verified and closed from the UI and the REST API, with notifications, NetBox event types, GraphQL and a branch-page panel; validation policies hold NQE, Forward intent-check and Predict rules and gate approval and close on a current run that answered every rule; the support bundle names why subinterface rows are skipped; a Mgmt_ tag that matches several interfaces uses the one that carries the address. Run migrate after upgrading |
 | `v3.0.6` | NetBox `4.7.x` supported, tested on `4.7.1`; needs netbox-branching `1.2.x`, tested on `1.2.0` | Current release; An address on a subinterface attaches to the subinterface, not its parent; the interfaces query returns every column the apply reads; netbox-validity 3.6.1 accepted |
 | `v3.0.5` | NetBox `4.7.x` supported, tested on `4.7.1`; needs netbox-branching `1.2.x`, tested on `1.2.0` | Superseded by `v3.0.6`; A shared management IP is owned by the physical device, and the support bundle accounts for the bare primary-IP count |
 | `v3.0.4` | NetBox `4.7.x` supported, tested on `4.7.1`; needs netbox-branching `1.2.x`, tested on `1.2.0` | Superseded by `v3.0.5`; OSPF instance name clashes keep a stable per-process name instead of being skipped; Infoblox and Palo Alto endpoints are named by vendor; netbox-dlm 0.10.1 and 0.10.2 accepted; the UI gate runs on agent-browser; support bundle gains endpoint mask, site placement and fallback-reason figures; tested on NetBox 4.7.2 and netbox-branching 1.2.1 |
