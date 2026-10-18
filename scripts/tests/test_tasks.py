@@ -1568,17 +1568,28 @@ class UpgradeFromConstraintsTests(unittest.TestCase):
             tasks.upgrade_from_default_netbox_version("not-a-version"), "v4.6.5"
         )
 
+    def test_the_sdk_pin_may_lag_on_the_upgrade_source(self):
+        # Every release pins forward-sdk exactly, so the previous release's own
+        # metadata asks for ITS version. Holding the current one here makes the
+        # install unsatisfiable (3.0.7 needs 0.1.20, a bump to 0.1.22 cannot be
+        # imposed on it), exactly like the optional-plugin case above. It must
+        # still be present, and must not run ahead of the current pin.
+        self.assertIn("forward-sdk", self.upgrade_from)
+        self.assertLessEqual(
+            tuple(int(part) for part in self.upgrade_from["forward-sdk"].split(".")),
+            tuple(int(part) for part in self.current["forward-sdk"].split(".")),
+        )
+
     def test_every_other_pin_is_identical(self):
+        lagging = ("netboxlabs-netbox-branching", "netbox-dlm", "forward-sdk")
         expected = {
-            name: pin
-            for name, pin in self.current.items()
-            if name not in ("netboxlabs-netbox-branching", "netbox-dlm")
+            name: pin for name, pin in self.current.items() if name not in lagging
         }
         self.assertEqual(
             expected,
             {
                 name: pin
                 for name, pin in self.upgrade_from.items()
-                if name != "netbox-dlm"
+                if name not in ("netbox-dlm", "forward-sdk")
             },
         )

@@ -15,6 +15,10 @@
 # Branching is deliberately absent: the previous release's own metadata pins it,
 # and letting that resolve is the point.
 #
+# `forward-sdk` is the previous release's pin, not the current one: every release
+# pins the SDK exactly in its own metadata, so asking the from side for a newer one is
+# unsatisfiable. It moves forward with the release that ships the bump, not before.
+#
 # `netbox-dlm` is pinned at 0.10.1 here even though the FROM release (3.0.0,
 # `<0.10.0`) never installed it. The usual rule - hold the newest version the
 # FROM release supports - has no answer on NetBox 4.7: 3.0.0 shipped with no
