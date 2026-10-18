@@ -799,14 +799,14 @@ files = [
 
 [[package]]
 name = "forward-sdk"
-version = "0.1.20"
+version = "0.1.22"
 description = "Python SDK for the Forward Networks REST API. A Forward Networks Field Integration."
 optional = false
 python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "forward_sdk-0.1.20-py3-none-any.whl", hash = "sha256:fb48fc0ebc6c7922003ec88db62caa02950051983e490a48ac1093a16853a054"},
-    {file = "forward_sdk-0.1.20.tar.gz", hash = "sha256:16e9522e930aa0110dfa8c2125b7580677d915385721127c480f1fa5efefc6ad"},
+    {file = "forward_sdk-0.1.22-py3-none-any.whl", hash = "sha256:20651569a13c690c345cece63bd7f8a55ac29f5806be86cce14f290344a93394"},
+    {file = "forward_sdk-0.1.22.tar.gz", hash = "sha256:7ebdb0e16b03fa34bcfa81bfcc32a6a58d97c4e0488f0c90ef2eccfecf249dbb"},
 ]
 
 [package.dependencies]
@@ -2839,4 +2839,4 @@ validity = ["netbox-validity", "scrapli"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.15"
-content-hash = "f3cafd684e113732580b83bb4ef4569eeffee97e4e37cd0f3b8d45d661674356"
+content-hash = "6e217a4fe902f91132779e83af00bfcff432601a41eba6031e9f74e7f247eafa"
