@@ -734,7 +734,36 @@ def _interface_state_bundle_payload():
         "unassigned_ip_addresses": {
             "total": unassigned.count(),
             "in_a_vrf": unassigned.filter(vrf__isnull=False).count(),
+            **_unassigned_ip_split(unassigned),
         },
+    }
+
+
+def _unassigned_ip_split(unassigned):
+    """Of the addresses assigned to nothing, how many a BGP peer needs.
+
+    A BGP peer's neighbour is a remote device, so the routing sync creates its
+    address as an IP address with no interface. A customer's 14,988 unassigned
+    addresses looked like orphans and were almost all neighbours: Forward listed
+    18,398 distinct neighbour addresses, the rest being interface addresses the
+    neighbour already had. Splitting them leaves the real orphans (an address no
+    interface and no peer uses) visible as their own count. Counts only.
+    """
+    from django.apps import apps
+    from django.db.models import Q
+
+    if not apps.is_installed("netbox_routing"):
+        return {}
+    needed = unassigned.filter(
+        Q(remote_peers__isnull=False) | Q(source_peers__isnull=False)
+    ).distinct()
+    needed_count = needed.count()
+    return {
+        "used_by_a_bgp_peer": needed_count,
+        "used_by_a_bgp_peer_in_a_vrf": needed.filter(vrf__isnull=False).count(),
+        "used_by_no_interface_and_no_bgp_peer": max(
+            0, unassigned.count() - needed_count
+        ),
     }
 
 
