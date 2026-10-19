@@ -19,9 +19,8 @@ from forward_netbox.views import _interface_state_bundle_payload
 NETBOX_ROUTING_INSTALLED = apps.is_installed("netbox_routing")
 
 
-@unittest.skipUnless(NETBOX_ROUTING_INSTALLED, "netbox-routing is not installed")
-class UnassignedIpSplitTest(TestCase):
-    """An address no interface holds is not an orphan if a BGP peer needs it."""
+class BgpPeerFixture:
+    """One device, two ASNs and the netbox-routing models, for tests of peers."""
 
     def setUp(self):
         site = Site.objects.create(name="U Site", slug="u-site")
@@ -39,7 +38,7 @@ class UnassignedIpSplitTest(TestCase):
         self.BGPScope = optional_model("netbox_routing", "BGPScope", model)
         self.BGPPeer = optional_model("netbox_routing", "BGPPeer", model)
 
-    def peer_on(self, ip, vrf=None):
+    def peer_on(self, ip, vrf=None, source=None):
         router, _ = self.BGPRouter.objects.get_or_create(
             name="u-router",
             defaults={
@@ -52,12 +51,27 @@ class UnassignedIpSplitTest(TestCase):
         return self.BGPPeer.objects.create(
             scope=scope,
             peer=ip,
+            source=source,
             name=f"peer-{ip.pk}",
             remote_as=self.remote,
             local_as=self.local,
             enabled=True,
             status="active",
         )
+
+
+@unittest.skipUnless(NETBOX_ROUTING_INSTALLED, "netbox-routing is not installed")
+class UnassignedIpSplitTest(BgpPeerFixture, TestCase):
+    """An address no interface holds is not an orphan if a BGP peer needs it."""
+
+    def test_an_address_used_only_as_a_source_is_counted_too(self):
+        remote_side = IPAddress.objects.create(address="10.0.0.2/32")
+        update_source = IPAddress.objects.create(address="10.0.0.9/32")
+        self.peer_on(remote_side, source=update_source)
+
+        block = _interface_state_bundle_payload()["unassigned_ip_addresses"]
+
+        self.assertEqual(block["used_by_a_bgp_peer"], 2)
 
     def test_a_neighbour_address_is_told_apart_from_a_real_orphan(self):
         vrf = VRF.objects.create(name="INSIDE")

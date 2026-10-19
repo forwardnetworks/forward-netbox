@@ -140,6 +140,24 @@ whose identity is indeterminate — never flagged), and `stale_count` with a
 sample with `--limit`, and add `--fail-on-stale` for CI. Delete confirmed-stale
 objects by hand in NetBox.
 
+### Unassigned IP addresses are mostly BGP neighbours
+
+The routing sync creates a BGP peer's neighbour address as an IP address with no
+interface, because the neighbour is a remote device. In IPAM those look like
+orphans. The support bundle splits the unassigned count into addresses a BGP peer
+uses and addresses nothing uses (`used_by_no_interface_and_no_bgp_peer`, the only
+count that can be a real orphan). To filter them in IPAM, tag them:
+
+```
+python manage.py forward_tag_bgp_neighbours --user <username>
+```
+
+This adds `forward-bgp-neighbour` to every unassigned address a BGP peer uses and
+removes it from any that gained an interface or lost their peer, so it is safe to
+rerun. It never deletes. Every edit is change-logged to `--user`. The first run
+writes one change per address, so run it deliberately rather than from a sync.
+Without `netbox_routing` it does nothing.
+
 ### Prune orphans
 
 The **Prune orphans** button queues a job that deletes the out-of-scope devices

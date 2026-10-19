@@ -696,7 +696,9 @@ def _interface_state_bundle_payload():
             "device_id", flat=True
         )
     )
-    unassigned = IPAddress.objects.filter(assigned_object_id__isnull=True)
+    from forward_netbox.utilities.bgp_neighbour_ips import unassigned_ip_addresses
+
+    unassigned = unassigned_ip_addresses()
     return {
         "virtual_dotted_with_parent": counts["with_parent"],
         "virtual_dotted_without_parent": counts["without_parent"],
@@ -749,14 +751,12 @@ def _unassigned_ip_split(unassigned):
     neighbour already had. Splitting them leaves the real orphans (an address no
     interface and no peer uses) visible as their own count. Counts only.
     """
-    from django.apps import apps
-    from django.db.models import Q
+    from forward_netbox.utilities.bgp_neighbour_ips import bgp_neighbour_ip_addresses
+    from forward_netbox.utilities.bgp_neighbour_ips import routing_installed
 
-    if not apps.is_installed("netbox_routing"):
+    if not routing_installed():
         return {}
-    needed = unassigned.filter(
-        Q(remote_peers__isnull=False) | Q(source_peers__isnull=False)
-    ).distinct()
+    needed = bgp_neighbour_ip_addresses(unassigned)
     needed_count = needed.count()
     return {
         "used_by_a_bgp_peer": needed_count,
