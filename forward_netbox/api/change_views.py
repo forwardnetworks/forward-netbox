@@ -105,6 +105,15 @@ class _AdoptBody(serializers.Serializer):
     network_id = serializers.CharField()
 
 
+class _CollectBody(serializers.Serializer):
+    confirm = serializers.BooleanField(
+        help_text=(
+            "Must be true: a collection logs in to the workspace's live devices "
+            "through your collector."
+        )
+    )
+
+
 class _CommentBody(serializers.Serializer):
     body = serializers.CharField()
 
@@ -370,6 +379,28 @@ class ForwardChangeViewSet(NetBoxModelViewSet):
             pk,
             self.CHANGE,
             lambda change, data: _reply(refresh_snapshots(change)),
+        )
+
+    @extend_schema(request=_CollectBody, responses={200: ActionResultSerializer})
+    @action(
+        detail=True,
+        methods=["post"],
+        permission_classes=[TokenWritePermission],
+        url_path="workspace/collect",
+    )
+    def workspace_collect(self, request, pk=None):
+        from forward_netbox.change_control.workspace import collect_snapshot
+
+        return self._act(
+            request,
+            pk,
+            self.CHANGE,
+            lambda change, data: _reply(
+                collect_snapshot(
+                    change, request.user, confirmed=bool(data.get("confirm"))
+                )
+            ),
+            _CollectBody,
         )
 
     @extend_schema(request=_NoBody, responses={200: ActionResultSerializer})

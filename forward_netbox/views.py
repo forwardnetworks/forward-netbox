@@ -5405,6 +5405,55 @@ class ForwardChangeWorkspaceRefreshView(_ForwardChangeForwardActionView):
         return refresh_snapshots(change)
 
 
+@register_model_view(ForwardChange, "workspace_collect", path="workspace/collect")
+class ForwardChangeWorkspaceCollectView(_ForwardChangeForwardActionView):
+    """Start a collection in the change's workspace, after a warning.
+
+    The page (GET) states what a collection does and whether the account may take
+    one, and starts nothing; the collection starts only from its confirmed form.
+    """
+
+    success_message = _("Collection started.")
+    show_outcome_message = True
+
+    def get(self, request, pk, **kwargs):
+        from .change_control.workspace import COLLECTABLE_STATES
+        from .change_control.workspace import COLLECTION_WARNING
+        from .change_control.workspace import collection_access
+
+        if not request.user.has_perm(self.action_permission):
+            raise PermissionDenied
+        change = get_object_or_404(
+            self.queryset.restrict(request.user, self.restrict_action), pk=pk
+        )
+        if not change.workspace_network_id or change.state not in COLLECTABLE_STATES:
+            messages.error(
+                request,
+                _(
+                    "A snapshot is collected after the change is applied, in its "
+                    "workspace."
+                ),
+            )
+            return redirect(change.get_absolute_url())
+        return render(
+            request,
+            "forward_netbox/forwardchange_collect.html",
+            {
+                "object": change,
+                "warning": COLLECTION_WARNING,
+                "access": collection_access(change),
+                "device_count": change.devices.count(),
+            },
+        )
+
+    def run(self, request, change):
+        from .change_control.workspace import collect_snapshot
+
+        return collect_snapshot(
+            change, request.user, confirmed=request.POST.get("confirm") == "on"
+        )
+
+
 @register_model_view(ForwardChange, "evidence_baseline", path="evidence/baseline")
 class ForwardChangeBaselineEvidenceView(_ForwardChangeForwardActionView):
     success_message = _("Baseline evidence recorded.")

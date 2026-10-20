@@ -377,6 +377,9 @@
               {% csrf_token %}
               <button type="submit" class="btn btn-outline-secondary">{% trans "Refresh snapshots" %}</button>
             </form>
+            {% if object.state == 'applied' or object.state == 'collected' %}
+              <a class="btn btn-outline-warning" href="{% url 'plugins:forward_netbox:forwardchange_workspace_collect' pk=object.pk %}">{% trans "Collect a snapshot..." %}</a>
+            {% endif %}
             <form method="post" class="d-inline" action="{% url 'plugins:forward_netbox:forwardchange_evidence_baseline' pk=object.pk %}">
               {% csrf_token %}
               <button type="submit" class="btn btn-outline-secondary">{% trans "Record baseline evidence" %}</button>

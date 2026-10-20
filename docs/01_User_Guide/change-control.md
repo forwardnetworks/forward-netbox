@@ -39,9 +39,15 @@ A change goes from creation to close without leaving the page:
    offered: applying is attested, verification sets the verdict, and closing
    merges the branch.
 6. **Review**: reviewers approve or reject at each gate, and comment.
-7. **Attest it was applied**, wait for Forward to collect the devices, then
-   **Verify against Forward**. Verification and validation run as background
-   jobs.
+7. **Attest it was applied**, then get a snapshot taken after the change: collect
+   in Forward, or use **Collect a snapshot...** on the change. That button opens a
+   page that says what a collection does (Forward logs in to each device in the
+   workspace through your collector) and whether your Forward account may collect,
+   and starts nothing until you tick the confirmation. An account with no role in
+   Forward is refused; one whose role cannot be confirmed may try, and Forward's own
+   refusal is shown. The REST route is `workspace/collect` with `confirm: true`. Then
+   **Refresh snapshots** and **Verify against Forward**. Verification and validation
+   run as background jobs.
 8. **Close** merges the branch, once the verdict is PROCEED and the closing
    approvals are in.
 
