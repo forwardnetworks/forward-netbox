@@ -1,6 +1,8 @@
 from dcim.models import Device
 from dcim.models import Interface
+from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
+from django.urls import reverse
 from extras.models import Tag
 from ipam.models import IPAddress
 
@@ -204,7 +206,9 @@ class ExplainedFindingsTest(PrimaryIpFixture):
         IPAddress.objects.create(address="10.98.0.1/32")
 
         for row in explained_findings(self.sync):
-            self.assertRegex(row["finding"], r"\((this sync|all of NetBox)\)", row)
+            self.assertRegex(
+                row["finding"], r"\((this sync|all of NetBox|latest ingestion)\)", row
+            )
 
 
 class HealthNeverBreaksOnThemTest(PrimaryIpFixture):
@@ -247,3 +251,344 @@ class BundleTest(DevicesWithoutAPrimaryIp):
         exported = json.dumps(export_safe_payload(payload))
         for device in devices:
             self.assertNotIn(device.name, exported)
+
+
+class SkipReasonCatalogueTest(PrimaryIpFixture):
+    def test_every_catalogued_reason_is_one_the_code_really_saves(self):
+        import pathlib
+
+        import forward_netbox
+        from forward_netbox.utilities.skip_reason_catalogue import KNOWN
+
+        root = pathlib.Path(forward_netbox.__file__).parent / "utilities"
+        source = "\n".join(
+            path.read_text()
+            for path in root.glob("*.py")
+            if path.name != "skip_reason_catalogue.py"
+        )
+        for reason in KNOWN:
+            self.assertIn(f'"{reason}"', source, reason)
+
+    def test_the_parentless_interface_advice_never_says_to_set_a_parent(self):
+        from forward_netbox.utilities.skip_reason_catalogue import explain_skip_reason
+
+        why, fixable, action = explain_skip_reason(
+            "subinterface-name-taken-by-parentless-interface"
+        )
+
+        # Those interfaces are real top-level ones; giving them a parent corrupts
+        # them. The advice must say so, and it is not a fix an operator can make.
+        self.assertIn("Do not set a parent", action)
+        self.assertNotEqual(fixable, "yes")
+
+    def test_every_named_reason_says_why_whether_fixable_and_what_to_do(self):
+        from forward_netbox.utilities.skip_reason_catalogue import KNOWN
+
+        for reason, (why, fixable, action) in KNOWN.items():
+            self.assertTrue(why.strip() and fixable.strip() and action.strip(), reason)
+
+    def test_the_open_ended_reasons_are_explained_not_dropped(self):
+        from forward_netbox.utilities.skip_reason_catalogue import explain_skip_reason
+
+        why, _, action = explain_skip_reason("missing-modulebay")
+        self.assertIn("modulebay", why)
+        self.assertIn("modulebay", action)
+        why, _, action = explain_skip_reason("still-referenced-by-vlan")
+        self.assertIn("vlan", why)
+
+    def test_a_reason_nobody_catalogued_gets_an_honest_generic_answer(self):
+        from forward_netbox.utilities.skip_reason_catalogue import explain_skip_reason
+        from forward_netbox.utilities.skip_reason_catalogue import GENERIC
+
+        self.assertEqual(explain_skip_reason("something-new"), GENERIC)
+        self.assertEqual(explain_skip_reason(""), GENERIC)
+
+
+class IssueRowsTest(PrimaryIpFixture):
+    def test_skipped_rows_are_grouped_by_why_with_a_link_to_the_issues(self):
+        from forward_netbox.models import ForwardIngestion
+        from forward_netbox.models import ForwardIngestionIssue
+
+        ingestion = ForwardIngestion.objects.create(sync=self.sync, snapshot_id="s")
+        for _ in range(3):
+            ForwardIngestionIssue.objects.create(
+                ingestion=ingestion,
+                model="dcim.interface",
+                exception="ForwardDependencySkipError",
+                message="m",
+                raw_data={},
+                coalesce_fields={
+                    "skip_reason": "subinterface-name-taken-by-parentless-interface"
+                },
+            )
+
+        rows = [
+            r
+            for r in explained_findings(self.sync)
+            if r["finding"].startswith("Skipped rows in dcim.interface")
+        ]
+
+        self.assertEqual([r["count"] for r in rows], [3])
+        self.assertIn("top-level interface", rows[0]["reason"])
+        self.assertEqual(rows[0]["fixable"], NEEDS_A_PERSON)
+        self.assertIn("model=dcim.interface", rows[0]["url"])
+        # The link opens THIS ingestion's issues, not every ingestion's.
+        self.assertTrue(
+            rows[0]["url"].startswith(
+                reverse(
+                    "plugins:forward_netbox:forwardingestion_issues",
+                    kwargs={"pk": ingestion.pk},
+                )
+            )
+        )
+
+
+class EveryRowLinksSomewhereTest(PrimaryIpFixture):
+    def test_the_rows_that_have_something_to_open_carry_a_working_link(self):
+        devices = self.build()
+        for device in devices:
+            ForwardDeviceIdentity.objects.create(
+                sync=self.sync, source_device_key=device.name, device=device
+            )
+        IPAddress.objects.create(address="10.97.0.1/32")
+        user = get_user_model().objects.create_superuser(
+            "root-x", "x@example.com", "pw"
+        )
+        self.client.force_login(user)
+
+        rows = explained_findings(self.sync)
+
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertTrue(row["url"], row["finding"])
+            self.assertTrue(row["url_label"], row["finding"])
+            self.assertEqual(self.client.get(row["url"]).status_code, 200, row["url"])
+
+
+class DrillDownTest(PrimaryIpFixture):
+    def setUp(self):
+        super().setUp()
+        self.devices = self.build()
+        for device in self.devices:
+            ForwardDeviceIdentity.objects.create(
+                sync=self.sync, source_device_key=device.name, device=device
+            )
+        self.url = reverse(
+            "plugins:forward_netbox:forwardsync_explained", args=[self.sync.pk]
+        )
+
+    def test_it_lists_the_devices_behind_one_reason_and_only_those(self):
+        user = get_user_model().objects.create_superuser(
+            "root-y", "y@example.com", "pw"
+        )
+        self.client.force_login(user)
+
+        response = self.client.get(
+            self.url, {"reason": "has_an_address_but_none_was_chosen"}
+        )
+
+        self.assertContains(response, "zq-unchosen-4484")
+        self.assertNotContains(response, "zq-bare-4485")
+        self.assertContains(response, "Turn on the primary-IP settings")
+
+    def test_an_unknown_reason_lists_nothing(self):
+        user = get_user_model().objects.create_superuser(
+            "root-z", "z@example.com", "pw"
+        )
+        self.client.force_login(user)
+
+        response = self.client.get(self.url, {"reason": "made-up"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "zq-")
+
+    def test_someone_without_view_permission_cannot_see_the_names(self):
+        user = get_user_model().objects.create(username="nobody-here")
+        self.client.force_login(user)
+
+        response = self.client.get(
+            self.url, {"reason": "has_an_address_but_none_was_chosen"}
+        )
+
+        self.assertNotEqual(response.status_code, 200)
+        self.assertNotContains(
+            response, "zq-unchosen-4484", status_code=response.status_code
+        )
+
+
+class UncoveredSplitTest(PrimaryIpFixture):
+    """Uncovered devices are split by what the last scope report says about them."""
+
+    def make(self, report=True):
+        from unittest import mock
+
+        from django.utils import timezone
+
+        from forward_netbox.models import ForwardDeviceAbsence
+
+        tag = Tag.objects.create(name="Uncovered", slug=UNCOVERED_TAG_SLUG)
+        self.gone = self.new_device("zq-gone-9001")
+        self.still = self.new_device("zq-still-9002")
+        self.other = self.new_device("zq-other-9003")
+        for device in (self.gone, self.still, self.other):
+            device.tags.add(tag)
+        ForwardDeviceAbsence.objects.create(
+            sync=self.sync,
+            device=self.gone,
+            consecutive_absent_runs=7,
+            first_absent_at=timezone.now(),
+            last_absent_at=timezone.now(),
+            last_absent_snapshot_id="s1",
+        )
+        payload = {
+            "unmanaged": {
+                "owned_untagged_device_ids": [self.gone.pk, self.still.pk],
+                "owned_absent_device_ids": [self.gone.pk],
+                "owned_absence": {"available": True},
+                "owned_detail_by_id": {
+                    str(self.gone.pk): "absent_configured_disabled",
+                    str(self.still.pk): "endpoint_untagged",
+                },
+            }
+        }
+        patcher = mock.patch(
+            "forward_netbox.utilities.scope_reconciliation.latest_scope_report",
+            return_value=(None, payload if report else None, timezone.now(), None),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def by_group(self):
+        from forward_netbox.utilities.explained_findings import uncovered_devices
+
+        return uncovered_devices(self.sync)[0]
+
+    def test_a_device_forward_no_longer_returns_is_told_from_one_that_lost_its_tag(
+        self,
+    ):
+        self.make()
+
+        groups = self.by_group()
+
+        self.assertEqual(groups["uncovered_absent"], [self.gone.pk])
+        self.assertEqual(groups["uncovered_in_forward"], [self.still.pk])
+        self.assertEqual(groups["uncovered_unrecorded"], [self.other.pk])
+
+    def test_every_uncovered_device_is_in_exactly_one_group(self):
+        self.make()
+
+        groups = self.by_group()
+
+        flat = [pk for pks in groups.values() for pk in pks]
+        self.assertEqual(
+            sorted(flat), sorted({self.gone.pk, self.still.pk, self.other.pk})
+        )
+        self.assertEqual(len(flat), len(set(flat)))
+
+    def test_having_an_absence_record_alone_does_not_mean_forward_dropped_it(self):
+        from django.utils import timezone
+
+        from forward_netbox.models import ForwardDeviceAbsence
+
+        self.make()
+        # Still in Forward under other tags, yet reconciliation also recorded it.
+        ForwardDeviceAbsence.objects.create(
+            sync=self.sync,
+            device=self.still,
+            consecutive_absent_runs=1,
+            first_absent_at=timezone.now(),
+            last_absent_at=timezone.now(),
+        )
+
+        groups = self.by_group()
+
+        self.assertNotIn(self.still.pk, groups["uncovered_absent"])
+        self.assertIn(self.still.pk, groups["uncovered_in_forward"])
+
+    def test_a_failed_absence_check_does_not_make_gone_devices_look_present(self):
+        self.make()
+        from forward_netbox.utilities import scope_reconciliation
+
+        _job, payload, at, err = scope_reconciliation.latest_scope_report(self.sync)
+        payload["unmanaged"]["owned_absent_device_ids"] = []
+        payload["unmanaged"]["owned_absence"] = {"available": False}
+
+        groups = self.by_group()
+
+        self.assertEqual(groups["uncovered_in_forward"], [])
+        self.assertEqual(groups["uncovered_absent"], [])
+        self.assertEqual(
+            sorted(groups["uncovered_unclassified"]),
+            sorted([self.gone.pk, self.still.pk]),
+        )
+
+    def test_a_report_from_before_the_absence_check_existed_is_unclassified(self):
+        self.make()
+        from forward_netbox.utilities import scope_reconciliation
+
+        _job, payload, at, err = scope_reconciliation.latest_scope_report(self.sync)
+        del payload["unmanaged"]["owned_absent_device_ids"]
+
+        groups = self.by_group()
+
+        self.assertEqual(groups["uncovered_in_forward"], [])
+        self.assertEqual(len(groups["uncovered_unclassified"]), 2)
+
+    def test_without_a_scope_report_nothing_is_described_by_a_guess(self):
+        self.make(report=False)
+
+        groups = self.by_group()
+
+        self.assertEqual(groups["uncovered_absent"], [])
+        self.assertEqual(groups["uncovered_in_forward"], [])
+        self.assertEqual(len(groups["uncovered_unrecorded"]), 3)
+
+    def test_the_drill_down_names_the_rule_and_how_long_it_has_been_uncovered(self):
+        self.make()
+        user = get_user_model().objects.create_superuser(
+            "root-u", "u@example.com", "pw"
+        )
+        self.client.force_login(user)
+        url = reverse(
+            "plugins:forward_netbox:forwardsync_explained", args=[self.sync.pk]
+        )
+
+        absent = self.client.get(url, {"reason": "uncovered_absent"})
+        in_forward = self.client.get(url, {"reason": "uncovered_in_forward"})
+
+        self.assertContains(absent, "zq-gone-9001")
+        self.assertContains(absent, "collection is disabled")
+        self.assertNotContains(absent, "absent_configured_disabled")
+        self.assertContains(absent, "7 run(s), since")
+        self.assertNotContains(absent, "zq-still-9002")
+        self.assertContains(in_forward, "zq-still-9002")
+        self.assertContains(in_forward, "match none of the include tags")
+        self.assertNotContains(in_forward, "endpoint_untagged")
+        self.assertNotContains(in_forward, "zq-gone-9001")
+
+    def test_a_user_who_may_open_the_sync_but_not_the_devices_sees_no_names(self):
+        from forward_netbox.models import ForwardSync
+        from forward_netbox.tests.test_change_control_comments import grant
+
+        self.make()
+        user = get_user_model().objects.create(username="sync-viewer-only")
+        grant(user, ForwardSync, "view")
+        self.client.force_login(user)
+        url = reverse(
+            "plugins:forward_netbox:forwardsync_explained", args=[self.sync.pk]
+        )
+
+        response = self.client.get(url, {"reason": "uncovered_absent"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "zq-gone-9001")
+        # The header counts what this user can see, not the unrestricted total.
+        self.assertContains(response, "<td>0</td>")
+
+    def new_device(self, name):
+        return Device.objects.create(
+            name=name,
+            device_type=self.device.device_type,
+            role=self.device.role,
+            site=self.device.site,
+        )

@@ -1,0 +1,73 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+{% load i18n %}
+
+{% block title %}{{ object }} - {% trans "Counts explained" %}{% endblock %}
+
+{% block extra_controls %}
+  <a class="btn btn-outline-secondary" href="{% url 'plugins:forward_netbox:forwardsync_health' pk=object.pk %}">
+    <i class="mdi mdi-arrow-left" aria-hidden="true"></i>&nbsp;{% trans "Health" %}
+  </a>
+{% endblock extra_controls %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col">
+    <div class="card">
+      <h5 class="card-header">{{ title|default:_("Counts explained") }}</h5>
+      <div class="card-body">
+        {% if not known %}
+          <p class="text-muted">{% trans "That reason is not one this page lists. Open it from the Counts explained table on the Health page." %}</p>
+        {% else %}
+          <table class="table attr-table">
+            <tr><th scope="row">{% trans "Why" %}</th><td>{{ why }}</td></tr>
+            <tr><th scope="row">{% trans "Fixable" %}</th><td>{{ fixable }}</td></tr>
+            <tr><th scope="row">{% trans "What to do" %}</th><td>{{ advice }}</td></tr>
+            <tr><th scope="row">{% trans "Devices" %}</th><td>{{ total }}{% if truncated %} <span class="text-muted">({% blocktrans %}first {{ limit }} shown{% endblocktrans %})</span>{% endif %}</td></tr>
+          </table>
+        {% endif %}
+      </div>
+      {% if known %}
+        <div class="table-responsive">
+          <table class="table table-hover">
+            <thead>
+              <tr>
+                <th>{% trans "Device" %}</th>
+                <th>{% trans "Site" %}</th>
+                <th>{% trans "Role" %}</th>
+                <th>{% trans "Status" %}</th>
+                {% if uncovered %}
+                  <th>{% trans "Rule" %}</th>
+                  <th>{% trans "Uncovered for (this sync)" %}</th>
+                {% endif %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in rows %}
+                <tr>
+                  <td>{{ row.device|linkify }}</td>
+                  <td>{{ row.device.site|linkify }}</td>
+                  <td>{{ row.device.role|linkify }}</td>
+                  <td>{{ row.device.get_status_display }}</td>
+                  {% if uncovered %}
+                    <td>{{ row.detail|default:"" }}</td>
+                    <td>
+                      {% if row.absence %}
+                        {% blocktrans with runs=row.absence.consecutive_absent_runs since=row.absence.first_absent_at|date:"Y-m-d" %}{{ runs }} run(s), since {{ since }}{% endblocktrans %}
+                      {% else %}
+                        <span class="text-muted">&mdash;</span>
+                      {% endif %}
+                    </td>
+                  {% endif %}
+                </tr>
+              {% empty %}
+                <tr><td colspan="6" class="text-muted">{% trans "No devices." %}</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock content %}

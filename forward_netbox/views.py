@@ -3862,6 +3862,105 @@ class ForwardSyncHealthView(generic.ObjectView):
         return {"health": sync_health_summary(instance, include_evidence=True)}
 
 
+@register_model_view(ForwardSync, "explained", path="explained")
+class ForwardSyncExplainedView(generic.ObjectView):
+    """The devices behind one reason in the Counts explained table.
+
+    The table says how many and why; this lists which, so an operator can open each
+    and fix it. Names appear here, behind the permission, and never in the bundle.
+    """
+
+    queryset = ForwardSync.objects.all()
+    template_name = "forward_netbox/forwardsync_explained.html"
+    tab = None
+    LIMIT = 500
+
+    def get_extra_context(self, request, instance):
+        from dcim.models import Device
+
+        from .models import ForwardDeviceIdentity
+        from .utilities.explained_findings import UNCOVERED_REASONS
+        from .utilities.explained_findings import uncovered_devices
+        from .utilities.primary_ip_reasons import classify_primary_ip_devices
+        from .utilities.primary_ip_reasons import REASONS
+
+        reason = request.GET.get("reason", "")
+        absences = {}
+        details = {}
+        if reason in UNCOVERED_REASONS:
+            why, fixable, advice = UNCOVERED_REASONS[reason]
+            groups, details, absences = uncovered_devices(instance)
+            wanted = groups[reason]
+            title = _("Uncovered devices")
+        elif reason in {row[0] for row in REASONS}:
+            _key, fixable, why, advice = next(
+                row for row in REASONS if row[0] == reason
+            )
+            bound = ForwardDeviceIdentity.objects.filter(sync=instance).values_list(
+                "device_id", flat=True
+            )
+            missing = Device.objects.filter(
+                pk__in=bound, primary_ip4__isnull=True, primary_ip6__isnull=True
+            )
+            wanted = sorted(
+                pk
+                for pk, kind in classify_primary_ip_devices(missing).items()
+                if kind == reason
+            )
+            title = _("Devices without a primary IP")
+            from .models import ForwardDeviceAbsence
+
+            absences = {
+                row.device_id: row
+                for row in ForwardDeviceAbsence.objects.filter(
+                    sync=instance, device_id__in=wanted
+                )
+            }
+        else:
+            return {"known": False, "reason": "", "rows": []}
+        # The sync's permission is not the device's: a user who may open the sync
+        # sees only the devices their own device permissions reach.
+        # Restricted first, then cut: the cut must not spend itself on devices
+        # the user may not see.
+        visible = (
+            Device.objects.restrict(request.user, "view")
+            .filter(pk__in=wanted)
+            .select_related("site", "role")
+            .order_by("name")
+        )
+        total = visible.count()
+        devices = list(visible[: self.LIMIT])
+        if reason == "has_an_address_but_none_was_chosen":
+            from .utilities.primary_ip import primary_ip_from_management_ip_enabled
+            from .utilities.primary_ip import primary_ip_from_mgmt_tag_enabled
+            from .utilities.primary_ip_reasons import ALREADY_ON_ADVICE
+
+            if primary_ip_from_mgmt_tag_enabled(
+                instance
+            ) and primary_ip_from_management_ip_enabled(instance):
+                advice = ALREADY_ON_ADVICE
+        return {
+            "known": True,
+            "title": title,
+            "reason": reason,
+            "why": why,
+            "fixable": fixable,
+            "advice": advice,
+            "rows": [
+                {
+                    "device": device,
+                    "absence": absences.get(device.pk),
+                    "detail": details.get(device.pk, ""),
+                }
+                for device in devices
+            ],
+            "total": total,
+            "limit": self.LIMIT,
+            "truncated": total > self.LIMIT,
+            "uncovered": reason in UNCOVERED_REASONS,
+        }
+
+
 def _store_live_drift_results(results):
     """Record each live drift result on its map, best effort.
 

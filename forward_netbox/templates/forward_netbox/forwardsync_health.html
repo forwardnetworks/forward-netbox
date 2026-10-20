@@ -329,7 +329,7 @@
                   <td>{{ item.count }}</td>
                   <td>{{ item.reason }}</td>
                   <td>{{ item.fixable }}</td>
-                  <td>{{ item.action }}</td>
+                  <td>{{ item.action }}{% if item.url %} <a href="{{ item.url }}" class="ms-1">{{ item.url_label|default:_("Open") }}</a>{% endif %}</td>
                 </tr>
               {% endfor %}
             </tbody>

@@ -17,9 +17,11 @@ REASONS = (
     (
         "not_refreshed_by_forward",
         NEEDS_A_PERSON,
-        "Forward no longer returns the device (it is tagged forward-uncovered), so "
-        "there is no address to promote.",
-        "Bring it back into Forward's scope, or prune it in Scope Reconciliation.",
+        "The device is tagged forward-uncovered: Forward no longer returns it, or it "
+        "left this sync's device-tag scope. Nothing refreshes its addresses, so none "
+        "can be promoted.",
+        "List the uncovered devices in Counts explained to see which, then bring it "
+        "back into scope or prune it in Scope Reconciliation.",
     ),
     (
         "shares_an_address_with_another_device",
@@ -38,11 +40,13 @@ REASONS = (
     (
         "interfaces_carry_no_address",
         NEEDS_A_PERSON,
-        "It has interfaces but none carries an address in NetBox, so there is "
-        "nothing to promote. Forward reports none, or it is on an interface the "
-        "sync skipped.",
-        "Check the device in Forward; if it has an address, look for skipped "
-        "interfaces in the ingestion issues.",
+        "It has interfaces but none carries an address in NetBox. Either Forward "
+        "gives the device no interface address (some firewalls have a management "
+        "address but none on an interface), or every address it has also belongs "
+        "to another device (virtual systems and HA peers) and NetBox gives each "
+        "address to one device.",
+        "Usually nothing to fix. If the device must show an address, add it to an "
+        "interface by hand and set it as primary.",
     ),
     (
         "no_interfaces_synced",
@@ -63,13 +67,10 @@ ALREADY_ON_ADVICE = (
 )
 
 
-def primary_ip_reasons(missing, *, settings_on=False):
-    """Count the devices in ``missing`` (no primary IP) by why, with what to do.
+def classify_primary_ip_devices(missing):
+    """``{device pk: reason}`` for the devices in ``missing`` (no primary IP).
 
-    Every device lands in exactly one reason, in the order of ``REASONS``. Pass
-    ``settings_on`` when the sync's primary-IP settings are already enabled, so
-    the advice for an unchosen address does not tell the operator to turn on
-    what is on.
+    Every device lands in exactly one reason, in the order of ``REASONS``.
     """
     from dcim.models import Device
     from dcim.models import Interface
@@ -81,7 +82,7 @@ def primary_ip_reasons(missing, *, settings_on=False):
 
     device_ids = set(missing.values_list("pk", flat=True))
     if not device_ids:
-        return []
+        return {}
     uncovered = set(
         missing.filter(tags__slug=UNCOVERED_TAG_SLUG).values_list("pk", flat=True)
     )
@@ -122,7 +123,7 @@ def primary_ip_reasons(missing, *, settings_on=False):
         host for host, owners in devices_by_host.items() if len(owners) > 1
     }
 
-    counts = Counter()
+    classified = {}
     for device_id in device_ids:
         held = held_by_device.get(device_id, set())
         if device_id in uncovered:
@@ -135,7 +136,18 @@ def primary_ip_reasons(missing, *, settings_on=False):
             reason = "interfaces_carry_no_address"
         else:
             reason = "no_interfaces_synced"
-        counts[reason] += 1
+        classified[device_id] = reason
+    return classified
+
+
+def primary_ip_reasons(missing, *, settings_on=False):
+    """Count the devices in ``missing`` by why, with what to do about each reason.
+
+    Pass ``settings_on`` when the sync's primary-IP settings are already enabled,
+    so the advice for an unchosen address does not tell the operator to turn on
+    what is on.
+    """
+    counts = Counter(classify_primary_ip_devices(missing).values())
     return [
         {
             "reason": reason,
