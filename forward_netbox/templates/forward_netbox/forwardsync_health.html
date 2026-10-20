@@ -309,7 +309,8 @@
       <div class="card mb-3">
         <h5 class="card-header">{% trans "Counts explained" %}</h5>
         <div class="card-body pb-0">
-          <p class="text-muted small">{% trans "Numbers that look wrong but may not be, each with why it is what it is, whether it can be fixed, and what to do." %}</p>
+          <p class="text-muted small">{% trans "Numbers that look wrong but may not be, each with why it is what it is, whether it can be fixed, and what to do." %}
+            <a href="{% url 'plugins:forward_netbox:forwardsync_explained' pk=object.pk %}?reason=all" class="ms-1">{% trans "All devices without a primary IP, by role and reason" %}</a></p>
         </div>
         <div class="table-responsive">
           <table class="table table-hover">

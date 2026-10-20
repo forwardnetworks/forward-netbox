@@ -592,3 +592,149 @@ class UncoveredSplitTest(PrimaryIpFixture):
             role=self.device.role,
             site=self.device.site,
         )
+
+
+class AllDevicesWithoutAPrimaryIpTest(PrimaryIpFixture):
+    """One page for every device without a primary IP, by role and reason."""
+
+    def setUp(self):
+        super().setUp()
+        from dcim.models import DeviceRole
+
+        self.devices = self.build()
+        for device in self.devices:
+            ForwardDeviceIdentity.objects.create(
+                sync=self.sync, source_device_key=device.name, device=device
+            )
+        # Two of the five are routers; the rest keep the fixture's role.
+        self.router_role = DeviceRole.objects.create(
+            name="zq-router-role", slug="zq-router-role"
+        )
+        for device in self.devices[:2]:
+            device.role = self.router_role
+            device.save()
+        self.url = reverse(
+            "plugins:forward_netbox:forwardsync_explained", args=[self.sync.pk]
+        )
+        user = get_user_model().objects.create_superuser(
+            "root-a", "a@example.com", "pw"
+        )
+        self.client.force_login(user)
+
+    def names(self):
+        return [d.name for d in self.devices]
+
+    def test_every_device_without_a_primary_ip_is_listed_with_its_reason(self):
+        response = self.client.get(self.url, {"reason": "all"})
+
+        for name in self.names():
+            self.assertContains(response, name)
+        for title in (
+            "Has an address, none chosen",
+            "Interfaces carry no address",
+            "No interfaces synced",
+            "Shares an address with another device",
+        ):
+            self.assertContains(response, title)
+
+    def test_the_role_buttons_count_each_role(self):
+        response = self.client.get(self.url, {"reason": "all"})
+
+        chips = {c["name"]: c["count"] for c in response.context["chips"]}
+        self.assertEqual(chips["All roles"], 5)
+        self.assertEqual(chips["zq-router-role"], 2)
+
+    def test_choosing_a_role_narrows_the_list_to_that_role(self):
+        response = self.client.get(
+            self.url, {"reason": "all", "role": self.router_role.pk}
+        )
+
+        shown = {row["device"].name for row in response.context["rows"]}
+        self.assertEqual(shown, {self.devices[0].name, self.devices[1].name})
+        self.assertEqual(response.context["total"], 2)
+
+    def test_a_role_that_is_not_in_the_list_is_ignored(self):
+        for bad in ("9999999", "abc", "-1", "\u00b2", "9" * 5000, ""):
+            response = self.client.get(self.url, {"reason": "all", "role": bad})
+
+            self.assertEqual(response.context["total"], 5, bad)
+
+    def test_the_legend_names_each_reason_present_once_with_what_to_do(self):
+        response = self.client.get(self.url, {"reason": "all"})
+
+        legend = response.context["legend"]
+        reasons = [row["reason"] for row in legend]
+        self.assertEqual(len(reasons), len(set(reasons)))
+        self.assertEqual(sum(row["count"] for row in legend), 5)
+        for row in legend:
+            self.assertTrue(row["why"].strip() and row["what_to_do"].strip())
+        self.assertContains(response, "How to read this")
+
+    def test_the_role_filter_works_on_a_single_reason_list_too(self):
+        # "Interfaces carry no address" holds one router (devices[... via the bare
+        # device is the fixture's role) - use the reason that spans both roles:
+        # every reason is a list of one device here, so narrow by a role that the
+        # list does offer, and check a role it does not offer is ignored.
+        base = {"reason": "has_an_address_but_none_was_chosen"}
+        offered = self.devices[2].role_id
+
+        narrowed = self.client.get(self.url, {**base, "role": offered})
+        not_offered = self.client.get(self.url, {**base, "role": self.router_role.pk})
+
+        self.assertEqual(narrowed.context["total"], 1)
+        self.assertEqual(
+            [c["name"] for c in narrowed.context["chips"] if c["active"]],
+            [self.devices[2].role.name],
+        )
+        # No button exists for a role with no device in this list, so a made-up
+        # link for it shows the whole list rather than an empty one.
+        self.assertEqual(not_offered.context["total"], 1)
+        self.assertEqual(
+            [c["name"] for c in not_offered.context["chips"] if c["active"]],
+            ["All roles"],
+        )
+
+    def test_the_legend_adds_up_to_the_devices_under_the_chosen_role(self):
+        response = self.client.get(
+            self.url, {"reason": "all", "role": self.router_role.pk}
+        )
+
+        self.assertEqual(response.context["total"], 2)
+        self.assertEqual(sum(r["count"] for r in response.context["legend"]), 2)
+
+    def test_each_row_carries_its_own_reason(self):
+        response = self.client.get(self.url, {"reason": "all"})
+
+        by_name = {
+            row["device"].name: row["reason_title"] for row in response.context["rows"]
+        }
+        self.assertEqual(by_name["zq-unchosen-4484"], "Has an address, none chosen")
+        self.assertEqual(by_name["zq-empty-4486"], "No interfaces synced")
+        self.assertEqual(by_name["zq-bare-4485"], "Interfaces carry no address")
+
+    def test_someone_who_may_open_the_sync_but_not_the_devices_sees_none(self):
+        from forward_netbox.models import ForwardSync
+        from forward_netbox.tests.test_change_control_comments import grant
+
+        user = get_user_model().objects.create(username="sync-viewer-all")
+        grant(user, ForwardSync, "view")
+        self.client.force_login(user)
+
+        response = self.client.get(self.url, {"reason": "all"})
+
+        self.assertEqual(response.status_code, 200)
+        for name in self.names():
+            self.assertNotContains(response, name)
+        self.assertEqual(response.context["total"], 0)
+        self.assertEqual([c["count"] for c in response.context["chips"]], [0])
+        # The legend follows the viewer too: two numbers on one page must agree.
+        self.assertEqual(response.context["legend"], [])
+
+    def test_the_health_page_links_to_it(self):
+        health = reverse(
+            "plugins:forward_netbox:forwardsync_health", args=[self.sync.pk]
+        )
+
+        response = self.client.get(health)
+
+        self.assertContains(response, f"{self.url}?reason=all")

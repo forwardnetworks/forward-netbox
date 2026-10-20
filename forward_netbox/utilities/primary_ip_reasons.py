@@ -12,6 +12,15 @@ FIXABLE = "yes"
 BY_DESIGN = "no, by design"
 NEEDS_A_PERSON = "needs a person"
 
+# A short name for each reason, for lists and filters.
+REASON_TITLES = {
+    "not_refreshed_by_forward": "Uncovered: not refreshed by Forward",
+    "shares_an_address_with_another_device": "Shares an address with another device",
+    "has_an_address_but_none_was_chosen": "Has an address, none chosen",
+    "interfaces_carry_no_address": "Interfaces carry no address",
+    "no_interfaces_synced": "No interfaces synced",
+}
+
 # (reason, fixable, why it has no primary IP, what to do about it)
 REASONS = (
     (
@@ -140,17 +149,18 @@ def classify_primary_ip_devices(missing):
     return classified
 
 
-def primary_ip_reasons(missing, *, settings_on=False):
-    """Count the devices in ``missing`` by why, with what to do about each reason.
+def reason_rows(classified, *, settings_on=False):
+    """Rows (count, why, fixable, what to do) for a ``{device pk: reason}`` map.
 
     Pass ``settings_on`` when the sync's primary-IP settings are already enabled,
     so the advice for an unchosen address does not tell the operator to turn on
     what is on.
     """
-    counts = Counter(classify_primary_ip_devices(missing).values())
+    counts = Counter(classified.values())
     return [
         {
             "reason": reason,
+            "title": REASON_TITLES[reason],
             "count": counts[reason],
             "fixable": fixable,
             "why": why,
@@ -163,3 +173,8 @@ def primary_ip_reasons(missing, *, settings_on=False):
         for reason, fixable, why, advice in REASONS
         if counts[reason]
     ]
+
+
+def primary_ip_reasons(missing, *, settings_on=False):
+    """Count the devices in ``missing`` by why, with what to do about each reason."""
+    return reason_rows(classify_primary_ip_devices(missing), settings_on=settings_on)

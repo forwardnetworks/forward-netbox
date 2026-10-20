@@ -152,6 +152,12 @@ address with another device, holding an address that was not chosen, interfaces
 carrying no address, or no interfaces synced. The first two rows count this sync's
 devices; the uncovered and unassigned rows count all of NetBox, and say so.
 
+To see every device without a primary IP in one place, use **All devices without a
+primary IP, by role and reason** above the table. It lists each device with its
+reason, and the role buttons narrow it to one kind of device (for example routers and
+switches). A legend says what each reason means, whether it can be fixed and what to
+do. You see only the devices your own permissions allow, and the counts follow that.
+
 ### Unassigned IP addresses are mostly BGP neighbours
 
 The routing sync creates a BGP peer's neighbour address as an IP address with no

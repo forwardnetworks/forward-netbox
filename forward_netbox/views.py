@@ -3915,69 +3915,129 @@ class ForwardSyncExplainedView(generic.ObjectView):
     LIMIT = 500
 
     def get_extra_context(self, request, instance):
+        from urllib.parse import urlencode
+
         from dcim.models import Device
+        from django.db.models import Count
 
         from .models import ForwardDeviceIdentity
         from .utilities.explained_findings import UNCOVERED_REASONS
         from .utilities.explained_findings import uncovered_devices
+        from .utilities.primary_ip import primary_ip_from_management_ip_enabled
+        from .utilities.primary_ip import primary_ip_from_mgmt_tag_enabled
         from .utilities.primary_ip_reasons import classify_primary_ip_devices
+        from .utilities.primary_ip_reasons import REASON_TITLES
+        from .utilities.primary_ip_reasons import reason_rows
         from .utilities.primary_ip_reasons import REASONS
 
         reason = request.GET.get("reason", "")
         absences = {}
         details = {}
+        reason_by_pk = {}
+        legend = []
+        settings_on = bool(
+            primary_ip_from_mgmt_tag_enabled(instance)
+            and primary_ip_from_management_ip_enabled(instance)
+        )
+
+        def missing_devices():
+            bound = ForwardDeviceIdentity.objects.filter(sync=instance).values_list(
+                "device_id", flat=True
+            )
+            return Device.objects.filter(
+                pk__in=bound, primary_ip4__isnull=True, primary_ip6__isnull=True
+            )
+
         if reason in UNCOVERED_REASONS:
             why, fixable, advice = UNCOVERED_REASONS[reason]
             groups, details, absences = uncovered_devices(instance)
             wanted = groups[reason]
             title = _("Uncovered devices")
+        elif reason == "all":
+            missing = missing_devices()
+            reason_by_pk = classify_primary_ip_devices(missing)
+            wanted = sorted(reason_by_pk)
+            title = _("All devices without a primary IP")
+            why = _(
+                "Every device this sync manages that has no primary IP, each with "
+                "the reason it has none."
+            )
+            fixable = ""
+            advice = _(
+                "Narrow to a role below, then read the reason on each row; the "
+                "legend says what each reason means and what to do about it."
+            )
         elif reason in {row[0] for row in REASONS}:
             _key, fixable, why, advice = next(
                 row for row in REASONS if row[0] == reason
             )
-            bound = ForwardDeviceIdentity.objects.filter(sync=instance).values_list(
-                "device_id", flat=True
-            )
-            missing = Device.objects.filter(
-                pk__in=bound, primary_ip4__isnull=True, primary_ip6__isnull=True
-            )
             wanted = sorted(
                 pk
-                for pk, kind in classify_primary_ip_devices(missing).items()
+                for pk, kind in classify_primary_ip_devices(missing_devices()).items()
                 if kind == reason
             )
             title = _("Devices without a primary IP")
-            from .models import ForwardDeviceAbsence
+            if reason == "has_an_address_but_none_was_chosen" and settings_on:
+                from .utilities.primary_ip_reasons import ALREADY_ON_ADVICE
 
-            absences = {
-                row.device_id: row
-                for row in ForwardDeviceAbsence.objects.filter(
-                    sync=instance, device_id__in=wanted
-                )
-            }
+                advice = ALREADY_ON_ADVICE
         else:
             return {"known": False, "reason": "", "rows": []}
         # The sync's permission is not the device's: a user who may open the sync
-        # sees only the devices their own device permissions reach.
-        # Restricted first, then cut: the cut must not spend itself on devices
-        # the user may not see.
+        # sees only the devices their own device permissions reach, and the counts,
+        # the role chips and the cut all follow that.
         visible = (
             Device.objects.restrict(request.user, "view")
             .filter(pk__in=wanted)
-            .select_related("site", "role")
-            .order_by("name")
+            .distinct()
         )
+        roles = list(
+            visible.values("role_id", "role__name")
+            .annotate(n=Count("pk", distinct=True))
+            .order_by("-n", "role__name")
+        )
+        # A role id is a small integer; anything else (a stray character, an absurd
+        # length) is ignored rather than allowed to fail the page.
+        role_param = request.GET.get("role", "")
+        role_id = (
+            int(role_param)
+            if role_param.isascii() and role_param.isdigit() and len(role_param) < 10
+            else None
+        )
+        if role_id not in {row["role_id"] for row in roles}:
+            role_id = None
+        base = reverse(
+            "plugins:forward_netbox:forwardsync_explained", kwargs={"pk": instance.pk}
+        )
+        chips = [
+            {
+                "name": _("All roles"),
+                "count": sum(row["n"] for row in roles),
+                "url": f"{base}?{urlencode({'reason': reason})}",
+                "active": role_id is None,
+            }
+        ] + [
+            {
+                "name": row["role__name"] or _("(no role)"),
+                "count": row["n"],
+                "url": f"{base}?{urlencode({'reason': reason, 'role': row['role_id']})}",
+                "active": row["role_id"] == role_id,
+            }
+            for row in roles
+        ]
+        if role_id is not None:
+            visible = visible.filter(role_id=role_id)
+        # The legend counts exactly the devices this viewer sees under this role, so
+        # it adds up to the total beside it.
+        if reason == "all":
+            shown = set(visible.values_list("pk", flat=True))
+            legend = reason_rows(
+                {pk: kind for pk, kind in reason_by_pk.items() if pk in shown},
+                settings_on=settings_on,
+            )
+        visible = visible.select_related("site", "role").order_by("name")
         total = visible.count()
         devices = list(visible[: self.LIMIT])
-        if reason == "has_an_address_but_none_was_chosen":
-            from .utilities.primary_ip import primary_ip_from_management_ip_enabled
-            from .utilities.primary_ip import primary_ip_from_mgmt_tag_enabled
-            from .utilities.primary_ip_reasons import ALREADY_ON_ADVICE
-
-            if primary_ip_from_mgmt_tag_enabled(
-                instance
-            ) and primary_ip_from_management_ip_enabled(instance):
-                advice = ALREADY_ON_ADVICE
         return {
             "known": True,
             "title": title,
@@ -3990,6 +4050,7 @@ class ForwardSyncExplainedView(generic.ObjectView):
                     "device": device,
                     "absence": absences.get(device.pk),
                     "detail": details.get(device.pk, ""),
+                    "reason_title": REASON_TITLES.get(reason_by_pk.get(device.pk), ""),
                 }
                 for device in devices
             ],
@@ -3997,6 +4058,9 @@ class ForwardSyncExplainedView(generic.ObjectView):
             "limit": self.LIMIT,
             "truncated": total > self.LIMIT,
             "uncovered": reason in UNCOVERED_REASONS,
+            "all_reasons": reason == "all",
+            "chips": chips,
+            "legend": legend,
         }
 
 
