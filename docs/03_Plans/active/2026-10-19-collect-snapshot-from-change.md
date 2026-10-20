@@ -8,7 +8,7 @@ After a change is applied, verification needs a snapshot of the workspace taken 
 
 - A collection is a Forward write that contacts live devices through the organisation's collector. It is a user action on a change, never background work, and never starts without an explicit confirmation.
 - Forward is only reached through the SDK. `snapshots.collect(network_id, wait=False)` already exists in forward-sdk 0.1.22, so there is no SDK gap.
-- The access check is read-only (`user_accounts.get_current_user`). Forward's role table is not published, so the check refuses only what is certain: an account with no role at all. An organisation or network ADMIN is allowed. Any other role is allowed after the same confirmation, with the page saying access could not be confirmed, and Forward's own refusal is shown if it comes.
+- The access check is read-only (`user_accounts.get_current_user`) and follows Forward's published role table (docs.fwd.app, Settings > Accounts > RBAC): Collection Triggering is Yes for Workspace Operator, Network Admin and Org Admin, and No for Network Operator, Read-only and Limited Read-only. The role on the workspace decides, and roles granted through access-control groups are part of what Forward returns. A role held only on the parent network is not taken as one on the workspace, because Forward copies parent roles onto workspaces only when an organisation setting is on; that case, and any role the table does not cover, is left to Forward, and Forward's own refusal is shown. The table matches Forward's source (TRIGGER_SNAPSHOT_COLLECTION is held by WORKSPACE_OPERATOR and ADMIN only), as confirmed by the Go SDK session.
 - No new model fields; the journal records who asked and the collector task id.
 
 ## Touched Surfaces
@@ -25,7 +25,7 @@ After a change is applied, verification needs a snapshot of the workspace taken 
 
 ## Validation
 
-- Tests, from the requirement: no collection without confirmation; no collection before the change is applied or without a workspace; an account with no role is refused; ADMIN is allowed; an unconfirmed role needs the confirmation and says so; the journal names the user and task; Forward's refusal is reported, not raised; the page shows the warning on GET and starts nothing; the API requires `confirm`.
+- Tests, from the requirement: no collection without confirmation; no collection before the change is applied or without a workspace; a role Forward says cannot collect is refused for each of Network Operator, Read-only and Limited Read-only; an account with no role is refused; ADMIN is allowed; an unconfirmed role needs the confirmation and says so; the journal names the user and task; Forward's refusal is reported, not raised; the page shows the warning on GET and starts nothing; the API requires `confirm`.
 - Not tested against Forward: starting a real collection. That is a Forward write and needs an explicit go-ahead on a throwaway workspace.
 
 ## Rollback
@@ -35,5 +35,5 @@ Revert; verification returns to using a collection started in Forward.
 ## Decision Log
 
 - A double click can start two collections: the row lock serialises the requests but the second still sees the same applied state. There is no field to record one in flight and adding one needs a migration; the confirmation tick-box makes it unlikely and the journal shows each start.
-- Access that cannot be confirmed (a role Forward does not publish as able to collect, or an account that cannot read its own roles) proceeds after the confirmation, and Forward's own refusal is shown. Only a definite lack of access blocks. The alternative is to block unless the account is an administrator, which would stop legitimate non-administrator collectors with no way past it.
+- Access the table does not settle (an unlisted role, or no role on the workspace itself, including a parent-only admin) proceeds after the confirmation, and Forward's own refusal is shown. Only a role the table says cannot collect, or no role at all, blocks.
 - The collector binding is not probed: a missing binding is reported by Forward when the collection starts.

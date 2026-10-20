@@ -474,11 +474,24 @@ class CollectionAccess:
     reason: str = ""
 
 
+# Forward's role table (docs.fwd.app/latest/application/settings/accounts/rbac/):
+# "Collection Triggering" is Yes for Workspace Operator, Network Admin and Org
+# Admin, and No for Limited Read-only, Read-only and Network Operator. Workspace
+# Operator exists only on a workspace network, which is where a change collects.
+# The roles are the SDK's `NetworkRoles` values. Forward's source agrees: starting
+# a collection is TRIGGER_SNAPSHOT_COLLECTION, held by WORKSPACE_OPERATOR and ADMIN.
+ROLES_THAT_CAN_COLLECT = frozenset({"ADMIN", "WORKSPACE_OPERATOR"})
+ROLES_THAT_CANNOT_COLLECT = frozenset({"OPERATOR", "READ_ONLY", "LIMITED_READ_ONLY"})
+
+
 def collection_access(change, *, api=None):
     """May this source's Forward account start a collection on the workspace?
 
-    Read-only. Refuses only what is certain (no role at all); an administrator is
-    allowed; any other role is left to Forward, and the page says so.
+    Read-only, from the account's own roles and Forward's role table. Roles granted
+    through access-control groups are part of what Forward returns, so the role on
+    the workspace itself decides. A role held only on the parent network is not
+    taken as one on the workspace: Forward copies parent roles onto workspaces only
+    when an organisation setting is on, so that case is left to Forward.
     """
     api, error = _open_api(change, api)
     if error:
@@ -493,24 +506,31 @@ def collection_access(change, *, api=None):
         return CollectionAccess(
             None, "Forward returned no role information for this account."
         )
-    org = roles.get("org_roles") or []
+    org = set(roles.get("org_roles") or [])
     network = roles.get("network_roles") or {}
-    on_network = [
-        role
-        for key, role in network.items()
-        if key in (str(change.workspace_network_id), str(_source_network(change)))
-    ]
-    if "ADMIN" in org or "ADMIN" in on_network:
-        return CollectionAccess(True, "This account is an administrator in Forward.")
-    if not org and not on_network:
+    on_workspace = network.get(str(change.workspace_network_id))
+    if "ADMIN" in org:
+        return CollectionAccess(True, "This account is an organisation administrator.")
+    if on_workspace in ROLES_THAT_CAN_COLLECT:
+        return CollectionAccess(
+            True, f"This account is {on_workspace} on the workspace, which can collect."
+        )
+    if on_workspace in ROLES_THAT_CANNOT_COLLECT:
+        return CollectionAccess(
+            False,
+            f"This account is {on_workspace} on the workspace, and Forward does not "
+            "let that role trigger a collection.",
+        )
+    if not org and not network:
         return CollectionAccess(
             False, "This account has no role on the workspace in Forward."
         )
-    held = ", ".join(sorted({*org, *on_network}))
+    held = ", ".join(sorted({*org, *network.values()}))
     return CollectionAccess(
         None,
-        f"This account's Forward roles ({held}) could not be confirmed to allow "
-        "collecting; Forward will refuse it if they do not.",
+        f"This account's roles ({held}) do not include one on the workspace itself, "
+        "so whether it may collect there is left to Forward, which will refuse it if "
+        "it may not.",
     )
 
 

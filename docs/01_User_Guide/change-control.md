@@ -43,9 +43,12 @@ A change goes from creation to close without leaving the page:
    in Forward, or use **Collect a snapshot...** on the change. That button opens a
    page that says what a collection does (Forward logs in to each device in the
    workspace through your collector) and whether your Forward account may collect,
-   and starts nothing until you tick the confirmation. An account with no role in
-   Forward is refused; one whose role cannot be confirmed may try, and Forward's own
-   refusal is shown. The REST route is `workspace/collect` with `confirm: true`. Then
+   and starts nothing until you tick the confirmation. It follows Forward's role
+   table: Workspace Operator, Network Admin and Org Admin may trigger a collection;
+   Network Operator, Read-only and Limited Read-only may not, and are refused. A
+   role the table does not cover, or one held only on the source network rather
+   than the workspace, is left to Forward, whose own refusal is shown. The
+   REST route is `workspace/collect` with `confirm: true`. Then
    **Refresh snapshots** and **Verify against Forward**. Verification and validation
    run as background jobs.
 8. **Close** merges the branch, once the verdict is PROCEED and the closing

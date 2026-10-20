@@ -85,13 +85,55 @@ class CollectSnapshotTest(AppliedChange):
         self.assertEqual(forward.started, [])
         self.assertFalse(JournalEntry.objects.exists())
 
-    def test_a_role_forward_does_not_publish_is_left_to_forward_and_says_so(self):
-        forward = FakeForward(org=["VIEWER"])
+    def test_a_workspace_operator_can_collect_on_the_workspace(self):
+        forward = FakeForward(network={"ws-1": "WORKSPACE_OPERATOR"})
+
+        self.assertTrue(
+            collect_snapshot(
+                self.change_, self.requester, confirmed=True, api=forward
+            ).ok
+        )
+        self.assertEqual(forward.started, ["ws-1"])
+
+    def test_the_roles_forward_says_cannot_collect_are_refused(self):
+        # Forward's RBAC table: Collection Triggering is No for these.
+        for role in ("OPERATOR", "READ_ONLY", "LIMITED_READ_ONLY"):
+            forward = FakeForward(network={"ws-1": role})
+
+            access = collection_access(self.change_, api=forward)
+            outcome = collect_snapshot(
+                self.change_, self.requester, confirmed=True, api=forward
+            )
+
+            self.assertIs(access.allowed, False, role)
+            self.assertIn(role, access.reason)
+            self.assertFalse(outcome.ok, role)
+            self.assertEqual(forward.started, [], role)
+        self.assertFalse(JournalEntry.objects.exists())
+
+    def test_a_role_on_the_parent_alone_is_left_to_forward_even_an_admin(self):
+        # net-1 is the source's network (see ChangeFixture). Forward copies parent
+        # roles onto workspaces only when an organisation setting is on.
+        for role in ("OPERATOR", "ADMIN"):
+            access = collection_access(
+                self.change_, api=FakeForward(network={"net-1": role})
+            )
+
+            self.assertIsNone(access.allowed, role)
+            self.assertIn(role, access.reason)
+
+    def test_the_workspace_role_wins_over_the_parents(self):
+        forward = FakeForward(network={"net-1": "ADMIN", "ws-1": "READ_ONLY"})
+
+        self.assertIs(collection_access(self.change_, api=forward).allowed, False)
+
+    def test_a_role_name_not_in_the_table_is_left_to_forward_and_says_so(self):
+        forward = FakeForward(network={"ws-1": "AUDITOR"})
 
         access = collection_access(self.change_, api=forward)
 
         self.assertIsNone(access.allowed)
-        self.assertIn("VIEWER", access.reason)
+        self.assertIn("AUDITOR", access.reason)
         self.assertTrue(
             collect_snapshot(
                 self.change_, self.requester, confirmed=True, api=forward
