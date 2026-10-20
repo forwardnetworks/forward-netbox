@@ -56,6 +56,7 @@ class ButtonJobEnqueueTest(TestCase):
             "dependency_preview": "dependency preview",
             "prune_orphans": "prune orphans",
             "tag_delete_eligible_ipam": "tag delete-eligible IPAM",
+            "tag_bgp_neighbour_ips": "tag BGP neighbour addresses",
         }
         for kind, suffix in expected.items():
             self.assertEqual(BUTTON_JOB_SPECS[kind][1], suffix, kind)
@@ -322,6 +323,7 @@ class ButtonJobRunnerParityTest(TestCase):
         "config_backup": "_run_forward_config_backup_work",
         "recover_stuck_sync": "_recover_stuck_sync_work",
         "tag_delete_eligible_ipam": "_tag_delete_eligible_ipam_work",
+        "tag_bgp_neighbour_ips": "_tag_bgp_neighbour_ips_work",
         "audit_primary_ip": "_audit_primary_ip_work",
         "audit_global_ipam": "_audit_global_ipam_work",
         "audit_stale_hardware_notices": "_audit_stale_hardware_notices_work",

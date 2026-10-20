@@ -1570,6 +1570,26 @@ def _tag_delete_eligible_ipam_work(job):
         raise
 
 
+def _tag_bgp_neighbour_ips_work(job):
+    """Tag the addresses a BGP peer needs, change-logged to the invoking user."""
+    from .utilities.bgp_neighbour_ips import tag_bgp_neighbour_ips
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    try:
+        result = tag_bgp_neighbour_ips(user=_resolve_request_user(sync=sync, job=job))
+        job.data = {"available": result is not None, **(result or {})}
+        job.save(update_fields=["data"])
+    except Exception as exc:
+        # Recorded on the job so the failure is visible in the UI, not an empty
+        # Error field with null data.
+        job.data = {
+            "error": safe_operation_failure("Tagging BGP neighbour addresses", exc),
+            "error_type": exception_type(exc),
+        }
+        job.save(update_fields=["data"])
+        raise
+
+
 def _dependency_preview_work(job):
     """Run a dependency preview for a JobRunner-managed sync job."""
     from .views import _dependency_dry_run_payload
@@ -2527,6 +2547,16 @@ class TagDeleteEligibleIpamJob(ForwardJobRunner):
 
     def run(self, *args, **kwargs):
         _tag_delete_eligible_ipam_work(self.job)
+
+
+class TagBgpNeighbourIpsJob(ForwardJobRunner):
+    """Tag-only BGP neighbour address runner used by HTML and REST actions."""
+
+    class Meta:
+        name = "tag BGP neighbour addresses"
+
+    def run(self, *args, **kwargs):
+        _tag_bgp_neighbour_ips_work(self.job)
 
 
 # --- Forward-backed audit reports (utilities/audit_reports.py) ---------------

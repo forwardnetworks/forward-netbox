@@ -3055,6 +3055,45 @@ class ForwardSyncTagDeleteEligibleIpamView(BaseObjectView):
         )
 
 
+@register_model_view(ForwardSync, "tag_bgp_neighbour_ips", path="tag-bgp-neighbour-ips")
+class ForwardSyncTagBgpNeighbourIpsView(BaseObjectView):
+    """Queue the job that tags the addresses a BGP peer needs. Tag-only."""
+
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "ipam.change_ipaddress"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return redirect(
+            reverse("plugins:forward_netbox:forwardsync_health", kwargs={"pk": sync.pk})
+        )
+
+    def post(self, request, pk):
+        from .utilities.sync_facade import JobAlreadyActive, enqueue_button_job
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        try:
+            job = enqueue_button_job(sync, "tag_bgp_neighbour_ips", request.user)
+        except JobAlreadyActive:
+            messages.warning(
+                request, _("An equivalent tagging job is already running.")
+            )
+        else:
+            messages.success(
+                request,
+                _(
+                    "Queued job #%(pk)d to tag the addresses BGP peers need. When it "
+                    "finishes, filter IP addresses by the forward-bgp-neighbour tag."
+                )
+                % {"pk": job.pk},
+            )
+        return redirect(
+            reverse("plugins:forward_netbox:forwardsync_health", kwargs={"pk": sync.pk})
+        )
+
+
 @register_model_view(
     ForwardSync, "prune_stale_hardware_notices", path="prune-stale-hardware-notices"
 )

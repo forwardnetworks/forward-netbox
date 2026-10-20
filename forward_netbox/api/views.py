@@ -950,6 +950,20 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
             ),
         },
     )
+    @action(detail=True, methods=["post"], url_path="tag-bgp-neighbour-ips")
+    def tag_bgp_neighbour_ips(self, request, pk):
+        return self._enqueue_button_job_response(request, "tag_bgp_neighbour_ips")
+
+    @extend_schema(
+        methods=["post"],
+        request=EmptySerializer(),
+        responses={
+            201: JobSerializer(),
+            202: OpenApiResponse(
+                description='{"status": "already_running", "job_id": N}'
+            ),
+        },
+    )
     @action(detail=True, methods=["post"], url_path="recover-stuck-sync")
     def recover_stuck_sync(self, request, pk):
         return self._enqueue_button_job_response(request, "recover_stuck_sync")

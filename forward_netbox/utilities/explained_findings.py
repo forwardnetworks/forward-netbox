@@ -9,7 +9,17 @@ from .primary_ip_reasons import BY_DESIGN
 from .primary_ip_reasons import NEEDS_A_PERSON
 
 
-def _row(finding, count, reason, fixable, action, url="", url_label=""):
+def _row(
+    finding,
+    count,
+    reason,
+    fixable,
+    action,
+    url="",
+    url_label="",
+    post_url="",
+    post_label="",
+):
     # `url` is where to go to do it: a list already filtered to the rows, so the
     # operator is one click from fixing them rather than told where to look.
     return {
@@ -20,6 +30,9 @@ def _row(finding, count, reason, fixable, action, url="", url_label=""):
         "action": action,
         "url": url,
         "url_label": url_label,
+        # A button that does it, for what a click can fix (queues a job).
+        "post_url": post_url,
+        "post_label": post_label,
     }
 
 
@@ -192,7 +205,7 @@ def _uncovered_rows(sync):
     return rows
 
 
-def _unassigned_ip_row():
+def _unassigned_ip_row(sync):
     from .bgp_neighbour_ips import bgp_neighbour_ip_addresses
     from .bgp_neighbour_ips import routing_installed
     from .bgp_neighbour_ips import unassigned_ip_addresses
@@ -214,10 +227,15 @@ def _unassigned_ip_row():
                 "A BGP peer's neighbour is a remote device, so the sync holds its "
                 "address with no interface. Expected, not an orphan.",
                 BY_DESIGN,
-                "Run `manage.py forward_tag_bgp_neighbours --user <name>` to tag "
-                "them so they can be filtered out of IPAM.",
+                "Tag them so they can be filtered out of IPAM. This queues a job and "
+                "can be run again any time.",
                 url=_link("ipam:ipaddress_list", {"tag": "forward-bgp-neighbour"}),
                 url_label="List the tagged addresses",
+                post_url=_link(
+                    "plugins:forward_netbox:forwardsync_tag_bgp_neighbour_ips",
+                    pk=sync.pk,
+                ),
+                post_label="Tag these addresses",
             )
         )
     if total - needed > 0:
@@ -274,5 +292,5 @@ def explained_findings(sync):
     rows = _primary_ip_rows(sync)
     rows.extend(_issue_rows(sync))
     rows.extend(_uncovered_rows(sync))
-    rows.extend(_unassigned_ip_row())
+    rows.extend(_unassigned_ip_row(sync))
     return rows

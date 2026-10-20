@@ -590,6 +590,14 @@ BUTTON_JOB_SPECS = {
         "tag delete-eligible IPAM",
         "ipam.change_prefix",
     ),
+    # Tags the addresses a BGP peer needs so they can be filtered out of IPAM. A
+    # button job, not part of a sync: the first run writes one change-logged edit
+    # per address, which inside a sync would trip the large-run guard.
+    "tag_bgp_neighbour_ips": (
+        "forward_netbox.jobs.TagBgpNeighbourIpsJob",
+        "tag BGP neighbour addresses",
+        "ipam.change_ipaddress",
+    ),
     "prune_stale_hardware_notices": (
         "forward_netbox.jobs.PruneStaleHardwareNoticesJob",
         "prune stale hardware notices",

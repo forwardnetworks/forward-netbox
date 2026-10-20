@@ -160,15 +160,15 @@ orphans. The support bundle splits the unassigned count into addresses a BGP pee
 uses and addresses nothing uses (`used_by_no_interface_and_no_bgp_peer`, the only
 count that can be a real orphan). To filter them in IPAM, tag them:
 
-```
-python manage.py forward_tag_bgp_neighbours --user <username>
-```
-
-This adds `forward-bgp-neighbour` to every unassigned address a BGP peer uses and
-removes it from any that gained an interface or lost their peer, so it is safe to
-rerun. It never deletes. Every edit is change-logged to `--user`. The first run
-writes one change per address, so run it deliberately rather than from a sync.
-Without `netbox_routing` it does nothing.
+Use **Tag these addresses** on the "IP addresses assigned to nothing" row of
+**Counts explained** on the Health page. It queues a job that adds
+`forward-bgp-neighbour` to every unassigned address a BGP peer uses and removes it
+from any that gained an interface or lost their peer, so it is safe to run again. It
+never deletes. The edits are change-logged to the person who clicked. The first run
+writes one edit per address, which is why it is a button and not part of a sync.
+Without `netbox_routing` it does nothing. The same action is on the REST API as
+`tag-bgp-neighbour-ips`, and `manage.py forward_tag_bgp_neighbours --user <name>`
+does it from a shell.
 
 ### Prune orphans
 
@@ -597,13 +597,14 @@ active and can be retried after that job finishes.
 
 ## Automating operator jobs (API + standing schedules)
 
-The three operator jobs are also exposed as token-authenticated REST
+The operator jobs are also exposed as token-authenticated REST
 actions, so an external scheduler can drive them:
 
 ```bash
 POST /api/plugins/forward/sync/<id>/dependency-preview/
 POST /api/plugins/forward/sync/<id>/prune-orphans/
 POST /api/plugins/forward/sync/<id>/tag-delete-eligible-ipam/
+POST /api/plugins/forward/sync/<id>/tag-bgp-neighbour-ips/
 ```
 
 Each returns `201` with the job on success, `403` without permission, and

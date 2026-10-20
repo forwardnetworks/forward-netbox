@@ -7,6 +7,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
 from django.core.management import call_command
 from django.test import TestCase
+from django.urls import reverse
 from extras.models import Tag
 from ipam.models import IPAddress
 from ipam.models import VRF
@@ -169,3 +170,154 @@ class NoRoutingTest(TestCase):
             self.assertIsNone(tag_bgp_neighbour_ips())
 
         self.assertFalse(Tag.objects.filter(slug=BGP_NEIGHBOUR_TAG_SLUG).exists())
+
+
+@unittest.skipUnless(NETBOX_ROUTING_INSTALLED, "netbox-routing is not installed")
+class TagButtonTest(BgpPeerFixture, TestCase):
+    """The tagging is a button an operator can click, not a shell command."""
+
+    def setUp(self):
+        super().setUp()
+        from forward_netbox.models import ForwardSource
+        from forward_netbox.models import ForwardSync
+
+        source = ForwardSource.objects.create(
+            name="btn-bgp-src",
+            type="saas",
+            url="https://fwd.app",
+            status="ready",
+            parameters={
+                "username": "u@example.com",
+                "password": "p",
+                "verify": True,
+                "network_id": "net-1",
+            },
+        )
+        self.sync = ForwardSync.objects.create(
+            name="btn-bgp-sync",
+            source=source,
+            parameters={"snapshot_id": "latestProcessed"},
+        )
+        self.peer_on(IPAddress.objects.create(address="10.0.0.2/32"))
+        self.url = reverse(
+            "plugins:forward_netbox:forwardsync_tag_bgp_neighbour_ips",
+            args=[self.sync.pk],
+        )
+
+    def operator(self, permitted=True):
+        from forward_netbox.tests.test_change_control_comments import grant
+        from forward_netbox.models import ForwardSync
+
+        user = User.objects.create(username=f"op-{permitted}")
+        grant(user, ForwardSync, "view")
+        if permitted:
+            # Both: the click changes addresses, and NetBox reaches the sync by
+            # the same action.
+            grant(user, ForwardSync, "change")
+            grant(user, IPAddress, "change")
+        self.client.force_login(user)
+        return user
+
+    def test_the_job_tags_the_addresses_as_the_user_who_clicked(self):
+        from core.models import Job
+        from core.choices import JobStatusChoices
+        from django.contrib.contenttypes.models import ContentType
+
+        from forward_netbox.jobs import _tag_bgp_neighbour_ips_work
+        from forward_netbox.models import ForwardSync
+
+        user = User.objects.create(username="clicker")
+        job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name="btn-bgp-sync - tag BGP neighbour addresses",
+            status=JobStatusChoices.STATUS_RUNNING,
+            user=user,
+            job_id="123e4567-e89b-12d3-a456-426614179901",
+        )
+
+        _tag_bgp_neighbour_ips_work(job)
+
+        job.refresh_from_db()
+        self.assertEqual(job.data["added"], 1)
+        self.assertEqual(tagged(), addresses("10.0.0.2"))
+        from core.models import ObjectChange
+
+        self.assertTrue(
+            ObjectChange.objects.filter(
+                changed_object_type=ContentType.objects.get_for_model(IPAddress),
+                user=user,
+            ).exists()
+        )
+
+    def test_posting_queues_the_job_for_someone_who_may_change_addresses(self):
+        from unittest import mock
+
+        user = self.operator()
+
+        with mock.patch(
+            "forward_netbox.jobs.enqueue_forward_job", return_value=mock.Mock(pk=7)
+        ) as enqueue:
+            response = self.client.post(self.url)
+
+        self.assertEqual(response.status_code, 302)
+        enqueue.assert_called_once()
+        # The job runs as, and change-logs to, the person who clicked.
+        self.assertEqual(enqueue.call_args.kwargs["user"], user)
+        self.assertEqual(tagged(), set())  # nothing is written by the request itself
+
+    def test_a_user_who_may_only_change_addresses_is_not_offered_the_button(self):
+        from forward_netbox.tests.test_change_control_comments import grant
+        from forward_netbox.models import ForwardSync
+
+        user = User.objects.create(username="addresses-only")
+        grant(user, ForwardSync, "view")
+        grant(user, IPAddress, "change")
+        self.client.force_login(user)
+        health = reverse(
+            "plugins:forward_netbox:forwardsync_health", args=[self.sync.pk]
+        )
+
+        response = self.client.get(health)
+
+        self.assertNotContains(response, f'<form method="post" action="{self.url}"')
+
+    def test_posting_without_the_permission_queues_nothing(self):
+        from unittest import mock
+
+        self.operator(permitted=False)
+
+        with mock.patch("forward_netbox.jobs.enqueue_forward_job") as enqueue:
+            response = self.client.post(self.url)
+
+        self.assertEqual(response.status_code, 403)
+        enqueue.assert_not_called()
+
+    def test_the_health_row_offers_a_button_not_a_command(self):
+        from forward_netbox.utilities.explained_findings import explained_findings
+
+        row = [
+            r
+            for r in explained_findings(self.sync)
+            if r["finding"].startswith("IP addresses assigned to nothing")
+        ][0]
+
+        self.assertEqual(row["post_url"], self.url)
+        self.assertTrue(row["post_label"])
+        self.assertNotIn("manage.py", row["action"])
+
+    def test_the_button_shows_only_to_someone_who_can_use_it(self):
+        health = reverse(
+            "plugins:forward_netbox:forwardsync_health", args=[self.sync.pk]
+        )
+
+        self.operator(permitted=True)
+        shown = self.client.get(health)
+        self.operator(permitted=False)
+        hidden = self.client.get(health)
+
+        # The label also sits in the page's embedded health JSON, so look for the
+        # form itself.
+        form = f'<form method="post" action="{self.url}"'
+        self.assertContains(shown, form)
+        self.assertNotContains(hidden, form)
