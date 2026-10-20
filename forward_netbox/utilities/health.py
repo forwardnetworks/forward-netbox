@@ -1355,6 +1355,9 @@ def sync_health_summary(sync, *, include_evidence=False):
         "collection_gap": collection_gap,
         "out_of_scope": out_of_scope,
         "uncovered": uncovered,
+        # Counts that look wrong but may not be, each with a reason and the next
+        # action. Heavier than the rest, so only where the evidence is wanted.
+        "explained_findings": _explained_findings(sync) if include_evidence else [],
         "quarantine_cadence": quarantine_cadence,
         "ownership_finalization": ownership_finalization,
         "dependency_lookup_cache": dependency_lookup_cache,
@@ -2021,6 +2024,16 @@ def _quarantine_cadence_summary(sync):
             "parameters (device_tag_prune_absence_runs / _hours)."
         ),
     }
+
+
+def _explained_findings(sync):
+    from .explained_findings import explained_findings
+
+    try:
+        return explained_findings(sync)
+    except Exception:  # noqa: BLE001 - an explanation must never break Health
+        logger.exception("Could not build the explained findings.")
+        return []
 
 
 def _uncovered_summary(sync):

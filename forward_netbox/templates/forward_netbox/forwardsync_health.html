@@ -305,6 +305,38 @@
         {% endfor %}
       </div>
     </div>
+    {% if health.explained_findings %}
+      <div class="card mb-3">
+        <h5 class="card-header">{% trans "Counts explained" %}</h5>
+        <div class="card-body pb-0">
+          <p class="text-muted small">{% trans "Numbers that look wrong but may not be, each with why it is what it is, whether it can be fixed, and what to do." %}</p>
+        </div>
+        <div class="table-responsive">
+          <table class="table table-hover">
+            <thead>
+              <tr>
+                <th>{% trans "Finding" %}</th>
+                <th>{% trans "Count" %}</th>
+                <th>{% trans "Reason" %}</th>
+                <th>{% trans "Fixable" %}</th>
+                <th>{% trans "Suggested action" %}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for item in health.explained_findings %}
+                <tr>
+                  <td>{{ item.finding }}</td>
+                  <td>{{ item.count }}</td>
+                  <td>{{ item.reason }}</td>
+                  <td>{{ item.fixable }}</td>
+                  <td>{{ item.action }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    {% endif %}
     <div class="card">
       <h5 class="card-header">{% trans "Checks" %}</h5>
       <div class="table-responsive">

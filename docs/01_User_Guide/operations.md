@@ -140,6 +140,18 @@ whose identity is indeterminate — never flagged), and `stale_count` with a
 sample with `--limit`, and add `--fail-on-stale` for CI. Delete confirmed-stale
 objects by hand in NetBox.
 
+### Counts explained
+
+The Health page has a **Counts explained** table for numbers that look wrong but may
+not be: devices with no primary IP, uncovered devices and IP addresses assigned to
+nothing. Each row says why it is what it is, whether it can be fixed (yes, no because
+it is by design, or needs a person) and the next action. The same rows are in the
+support bundle, as counts only. Devices with no primary IP are split into one reason
+each, so the reasons add up to the count: no longer returned by Forward, sharing an
+address with another device, holding an address that was not chosen, interfaces
+carrying no address, or no interfaces synced. The first two rows count this sync's
+devices; the uncovered and unassigned rows count all of NetBox, and say so.
+
 ### Unassigned IP addresses are mostly BGP neighbours
 
 The routing sync creates a BGP peer's neighbour address as an IP address with no

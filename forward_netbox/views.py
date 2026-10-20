@@ -781,6 +781,7 @@ def _primary_ip_bundle_payload(sync):
     from .models import ForwardDeviceIdentity
     from .utilities.primary_ip import primary_ip_from_management_ip_enabled
     from .utilities.primary_ip import primary_ip_from_mgmt_tag_enabled
+    from .utilities.primary_ip_reasons import primary_ip_reasons
 
     enabled = primary_ip_from_mgmt_tag_enabled(sync)
     device_ids = ForwardDeviceIdentity.objects.filter(sync=sync).values_list(
@@ -821,6 +822,12 @@ def _primary_ip_bundle_payload(sync):
             "with_an_interface_ip": with_interface_ip.count(),
             "with_no_ip_at_all": len(missing_ids) - with_interface_ip.count(),
         },
+        # One reason per device and whether anything can fix it, so the bare count
+        # reconciles instead of leaving a remainder to work out by hand.
+        "without_primary_ip_reasons": primary_ip_reasons(
+            missing,
+            settings_on=enabled and primary_ip_from_management_ip_enabled(sync),
+        ),
         "without_primary_ip_by_status": dict(
             Counter(missing.values_list("status", flat=True))
         ),
@@ -1359,7 +1366,7 @@ def _sync_support_bundle_payload(sync):
         # of NetBox's delete dialog was the only evidence for.
         "delete_blockers": _delete_blocker_survey_bundle_payload(sync),
         "stuck_sync": _stuck_verdict_bundle_payload(sync),
-        "primary_ip": _primary_ip_bundle_payload(sync),
+        "primary_ip": _guarded_bundle_section(lambda: _primary_ip_bundle_payload(sync)),
         "interface_state": _guarded_bundle_section(_interface_state_bundle_payload),
         "change_log_writers": _guarded_bundle_section(
             _change_log_writers_bundle_payload
