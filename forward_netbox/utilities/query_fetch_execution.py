@@ -60,6 +60,7 @@ from .full_removal_reconciliation import previous_full_rows
 from .full_removal_reconciliation import prune_removals_allowed
 from .full_removal_reconciliation import RemovalReconciliationRefused
 from .model_contracts import architecture_default_coalesce_fields_for_model
+from .netbox_type_matching import match_existing_types_split
 from .query_diagnostics import (
     append_aci_source_diagnostics as sync_append_aci_source_diagnostics,
 )
@@ -2078,7 +2079,9 @@ class ForwardQueryFetcher:
             execution_mode=spec.execution_mode,
             execution_value=spec.execution_value,
             sync_mode=sync_mode,
-            row_count=len(rows),
+            # Rows skipped because NetBox already holds their device type still
+            # count: they are in Forward's result, so the shrink guards see it whole.
+            row_count=len(rows) + int(fetch_meta.get("matched_type_rows_skipped") or 0),
             delete_count=len(delete_rows),
             runtime_ms=runtime_ms,
             snapshot_id=context.snapshot_id,
@@ -2690,8 +2693,31 @@ class ForwardQueryFetcher:
         else:
             contract = None
 
+        # Device-type rows whose type NetBox already holds are skipped, not applied.
+        # The count is reported so the row-count guards still see the whole result.
+        skipped_type_rows = [0]
+
+        def _match_types(fetched):
+            # Fetched rows only, never `delete_rows`: a rewrite there could point a
+            # delete at a library type. Returns the rows to apply and the skipped
+            # device-type rows, which go through the same scope and shard filters so
+            # they are counted only if they would have survived them, and are never
+            # part of a removal.
+            return match_existing_types_split(
+                model_string, fetched, logger=self.logger, obj=self.sync
+            )
+
+        def _settle(rows, dropped):
+            """``rows`` without the skipped ones, counting the ones that survived."""
+            if not dropped:
+                return rows
+            dropped_ids = {id(row) for row in dropped}
+            skipped_type_rows[0] += sum(1 for row in rows if id(row) in dropped_ids)
+            return [row for row in rows if id(row) not in dropped_ids]
+
         def _return(rows, delete_rows, sync_mode, metadata):
             metadata = dict(metadata or {})
+            metadata["matched_type_rows_skipped"] = skipped_type_rows[0]
             if return_fetch_meta:
                 return rows, delete_rows, sync_mode, metadata
             return rows, delete_rows, sync_mode
@@ -2761,6 +2787,8 @@ class ForwardQueryFetcher:
             ):
                 self._block_contributor_staging()
                 raise
+            rows, dropped = _match_types(rows)
+            rows = rows + dropped
             if original_shard_scope:
                 rows, delete_rows = self._filter_rows_to_shard(
                     model_string,
@@ -2769,6 +2797,7 @@ class ForwardQueryFetcher:
                     coalesce_fields,
                     original_shard_scope,
                 )
+            rows = _settle(rows, dropped)
             return _return(
                 rows,
                 delete_rows,
@@ -2850,6 +2879,10 @@ class ForwardQueryFetcher:
                     context=context,
                 )
                 rows, delete_rows = runner._split_diff_rows(model_string, diff_rows)
+                # Fetched rows only, never `delete_rows`; before scope and shard
+                # filtering so they see the rows the apply will.
+                rows, dropped = _match_types(rows)
+                rows = rows + dropped
                 if ownership_mode == "global":
                     rows, _ = self._apply_device_tag_scope(model_string, rows, context)
                     delete_rows, _ = self._apply_device_tag_scope(
@@ -2863,6 +2896,7 @@ class ForwardQueryFetcher:
                         coalesce_fields,
                         original_shard_scope,
                     )
+                rows = _settle(rows, dropped)
                 return _return(
                     rows,
                     delete_rows,
@@ -3013,6 +3047,10 @@ class ForwardQueryFetcher:
                     f"for {model_string}: {safe_exc}"
                 ) from exc
             raise
+        # Before scope filtering and the removal computation, so every later step
+        # sees the same rows the apply will.
+        rows, dropped = _match_types(rows)
+        rows = rows + dropped
         if original_shard_scope:
             rows, _ = self._filter_rows_to_shard(
                 model_string,
@@ -3024,6 +3062,11 @@ class ForwardQueryFetcher:
         filtered_rows, removed_rows = self._apply_device_tag_scope(
             model_string, rows, context
         )
+        # A skipped row is counted, never applied and never removed: a delete built
+        # from it could reach a type the sync does not own.
+        dropped_ids = {id(row) for row in dropped}
+        filtered_rows = _settle(filtered_rows, dropped)
+        removed_rows = [row for row in removed_rows if id(row) not in dropped_ids]
         # Prune-out-of-scope is an operator decision about DEVICES leaving tag
         # scope, so it may remove devices, their sites, and the rows derived
         # from them - but not a shared catalogue or global IPAM, which device

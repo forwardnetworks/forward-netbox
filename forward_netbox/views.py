@@ -696,7 +696,9 @@ def _interface_state_bundle_payload():
             "device_id", flat=True
         )
     )
-    unassigned = IPAddress.objects.filter(assigned_object_id__isnull=True)
+    from forward_netbox.utilities.bgp_neighbour_ips import unassigned_ip_addresses
+
+    unassigned = unassigned_ip_addresses()
     return {
         "virtual_dotted_with_parent": counts["with_parent"],
         "virtual_dotted_without_parent": counts["without_parent"],
@@ -734,7 +736,34 @@ def _interface_state_bundle_payload():
         "unassigned_ip_addresses": {
             "total": unassigned.count(),
             "in_a_vrf": unassigned.filter(vrf__isnull=False).count(),
+            **_unassigned_ip_split(unassigned),
         },
+    }
+
+
+def _unassigned_ip_split(unassigned):
+    """Of the addresses assigned to nothing, how many a BGP peer needs.
+
+    A BGP peer's neighbour is a remote device, so the routing sync creates its
+    address as an IP address with no interface. A customer's 14,988 unassigned
+    addresses looked like orphans and were almost all neighbours: Forward listed
+    18,398 distinct neighbour addresses, the rest being interface addresses the
+    neighbour already had. Splitting them leaves the real orphans (an address no
+    interface and no peer uses) visible as their own count. Counts only.
+    """
+    from forward_netbox.utilities.bgp_neighbour_ips import bgp_neighbour_ip_addresses
+    from forward_netbox.utilities.bgp_neighbour_ips import routing_installed
+
+    if not routing_installed():
+        return {}
+    needed = bgp_neighbour_ip_addresses(unassigned)
+    needed_count = needed.count()
+    return {
+        "used_by_a_bgp_peer": needed_count,
+        "used_by_a_bgp_peer_in_a_vrf": needed.filter(vrf__isnull=False).count(),
+        "used_by_no_interface_and_no_bgp_peer": max(
+            0, unassigned.count() - needed_count
+        ),
     }
 
 
@@ -752,6 +781,7 @@ def _primary_ip_bundle_payload(sync):
     from .models import ForwardDeviceIdentity
     from .utilities.primary_ip import primary_ip_from_management_ip_enabled
     from .utilities.primary_ip import primary_ip_from_mgmt_tag_enabled
+    from .utilities.primary_ip_reasons import primary_ip_reasons
 
     enabled = primary_ip_from_mgmt_tag_enabled(sync)
     device_ids = ForwardDeviceIdentity.objects.filter(sync=sync).values_list(
@@ -792,6 +822,12 @@ def _primary_ip_bundle_payload(sync):
             "with_an_interface_ip": with_interface_ip.count(),
             "with_no_ip_at_all": len(missing_ids) - with_interface_ip.count(),
         },
+        # One reason per device and whether anything can fix it, so the bare count
+        # reconciles instead of leaving a remainder to work out by hand.
+        "without_primary_ip_reasons": primary_ip_reasons(
+            missing,
+            settings_on=enabled and primary_ip_from_management_ip_enabled(sync),
+        ),
         "without_primary_ip_by_status": dict(
             Counter(missing.values_list("status", flat=True))
         ),
@@ -1330,7 +1366,7 @@ def _sync_support_bundle_payload(sync):
         # of NetBox's delete dialog was the only evidence for.
         "delete_blockers": _delete_blocker_survey_bundle_payload(sync),
         "stuck_sync": _stuck_verdict_bundle_payload(sync),
-        "primary_ip": _primary_ip_bundle_payload(sync),
+        "primary_ip": _guarded_bundle_section(lambda: _primary_ip_bundle_payload(sync)),
         "interface_state": _guarded_bundle_section(_interface_state_bundle_payload),
         "change_log_writers": _guarded_bundle_section(
             _change_log_writers_bundle_payload
@@ -2338,6 +2374,7 @@ class ForwardSyncDriftReportView(BaseObjectView):
         from core.models import Job
         from django.contrib.contenttypes.models import ContentType
 
+        from .utilities.drift_explanations import COLUMN_HELP
         from .utilities.drift_report import (
             build_latest_sync_evidence,
             compute_drift_report,
@@ -2390,6 +2427,7 @@ class ForwardSyncDriftReportView(BaseObjectView):
                 "last_sync_at": last_ingestion.created if last_ingestion else None,
                 "preview_at": job.created,
                 "latest_sync_evidence": latest_sync_evidence,
+                "column_help": COLUMN_HELP,
             },
         )
 
@@ -3016,6 +3054,45 @@ class ForwardSyncTagDeleteEligibleIpamView(BaseObjectView):
                 "plugins:forward_netbox:forwardsync_scope_reconciliation",
                 kwargs={"pk": sync.pk},
             )
+        )
+
+
+@register_model_view(ForwardSync, "tag_bgp_neighbour_ips", path="tag-bgp-neighbour-ips")
+class ForwardSyncTagBgpNeighbourIpsView(BaseObjectView):
+    """Queue the job that tags the addresses a BGP peer needs. Tag-only."""
+
+    queryset = ForwardSync.objects.all()
+
+    def get_required_permission(self):
+        return "ipam.change_ipaddress"
+
+    def get(self, request, pk):
+        sync = get_object_or_404(self.queryset, pk=pk)
+        return redirect(
+            reverse("plugins:forward_netbox:forwardsync_health", kwargs={"pk": sync.pk})
+        )
+
+    def post(self, request, pk):
+        from .utilities.sync_facade import JobAlreadyActive, enqueue_button_job
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        try:
+            job = enqueue_button_job(sync, "tag_bgp_neighbour_ips", request.user)
+        except JobAlreadyActive:
+            messages.warning(
+                request, _("An equivalent tagging job is already running.")
+            )
+        else:
+            messages.success(
+                request,
+                _(
+                    "Queued job #%(pk)d to tag the addresses BGP peers need. When it "
+                    "finishes, filter IP addresses by the forward-bgp-neighbour tag."
+                )
+                % {"pk": job.pk},
+            )
+        return redirect(
+            reverse("plugins:forward_netbox:forwardsync_health", kwargs={"pk": sync.pk})
         )
 
 
@@ -3824,6 +3901,255 @@ class ForwardSyncHealthView(generic.ObjectView):
 
     def get_extra_context(self, request, instance):
         return {"health": sync_health_summary(instance, include_evidence=True)}
+
+
+@register_model_view(ForwardSync, "explained", path="explained")
+class ForwardSyncExplainedView(generic.ObjectView):
+    """The devices behind one reason in the Counts explained table.
+
+    The table says how many and why; this lists which, so an operator can open each
+    and fix it. Names appear here, behind the permission, and never in the bundle.
+    """
+
+    queryset = ForwardSync.objects.all()
+    template_name = "forward_netbox/forwardsync_explained.html"
+    tab = None
+    LIMIT = 500
+
+    def get_extra_context(self, request, instance):
+        from urllib.parse import urlencode
+
+        from dcim.models import Device
+        from django.db.models import Count
+
+        from .models import ForwardDeviceIdentity
+        from .utilities.explained_findings import UNCOVERED_REASONS
+        from .utilities.explained_findings import uncovered_devices
+        from .utilities.primary_ip import primary_ip_from_management_ip_enabled
+        from .utilities.primary_ip import primary_ip_from_mgmt_tag_enabled
+        from .utilities.primary_ip_reasons import classify_primary_ip_devices
+        from .utilities.primary_ip_reasons import REASON_TITLES
+        from .utilities.primary_ip_reasons import reason_rows
+        from .utilities.primary_ip_reasons import REASONS
+
+        reason = request.GET.get("reason", "")
+        absences = {}
+        details = {}
+        reason_by_pk = {}
+        legend = []
+        settings_on = bool(
+            primary_ip_from_mgmt_tag_enabled(instance)
+            and primary_ip_from_management_ip_enabled(instance)
+        )
+
+        def missing_devices():
+            bound = ForwardDeviceIdentity.objects.filter(sync=instance).values_list(
+                "device_id", flat=True
+            )
+            return Device.objects.filter(
+                pk__in=bound, primary_ip4__isnull=True, primary_ip6__isnull=True
+            )
+
+        if reason in UNCOVERED_REASONS:
+            why, fixable, advice = UNCOVERED_REASONS[reason]
+            groups, details, absences = uncovered_devices(instance)
+            wanted = groups[reason]
+            title = _("Uncovered devices")
+        elif reason == "all":
+            missing = missing_devices()
+            reason_by_pk = classify_primary_ip_devices(missing)
+            wanted = sorted(reason_by_pk)
+            title = _("All devices without a primary IP")
+            why = _(
+                "Every device this sync manages that has no primary IP, each with "
+                "the reason it has none."
+            )
+            fixable = ""
+            advice = _(
+                "Narrow to a role below, then read the reason on each row; the "
+                "legend says what each reason means and what to do about it."
+            )
+        elif reason in {row[0] for row in REASONS}:
+            _key, fixable, why, advice = next(
+                row for row in REASONS if row[0] == reason
+            )
+            wanted = sorted(
+                pk
+                for pk, kind in classify_primary_ip_devices(missing_devices()).items()
+                if kind == reason
+            )
+            title = _("Devices without a primary IP")
+            if reason == "has_an_address_but_none_was_chosen" and settings_on:
+                from .utilities.primary_ip_reasons import ALREADY_ON_ADVICE
+
+                advice = ALREADY_ON_ADVICE
+        else:
+            return {"known": False, "reason": "", "rows": []}
+        # The sync's permission is not the device's: a user who may open the sync
+        # sees only the devices their own device permissions reach, and the counts,
+        # the role chips and the cut all follow that.
+        visible = (
+            Device.objects.restrict(request.user, "view")
+            .filter(pk__in=wanted)
+            .distinct()
+        )
+        roles = list(
+            visible.values("role_id", "role__name")
+            .annotate(n=Count("pk", distinct=True))
+            .order_by("-n", "role__name")
+        )
+        # A role id is a small integer; anything else (a stray character, an absurd
+        # length) is ignored rather than allowed to fail the page.
+        role_param = request.GET.get("role", "")
+        role_id = (
+            int(role_param)
+            if role_param.isascii() and role_param.isdigit() and len(role_param) < 10
+            else None
+        )
+        if role_id not in {row["role_id"] for row in roles}:
+            role_id = None
+        base = reverse(
+            "plugins:forward_netbox:forwardsync_explained", kwargs={"pk": instance.pk}
+        )
+        chips = [
+            {
+                "name": _("All roles"),
+                "count": sum(row["n"] for row in roles),
+                "url": f"{base}?{urlencode({'reason': reason})}",
+                "active": role_id is None,
+            }
+        ] + [
+            {
+                "name": row["role__name"] or _("(no role)"),
+                "count": row["n"],
+                "url": f"{base}?{urlencode({'reason': reason, 'role': row['role_id']})}",
+                "active": row["role_id"] == role_id,
+            }
+            for row in roles
+        ]
+        if role_id is not None:
+            visible = visible.filter(role_id=role_id)
+        # The legend counts exactly the devices this viewer sees under this role, so
+        # it adds up to the total beside it.
+        if reason == "all":
+            shown = set(visible.values_list("pk", flat=True))
+            legend = reason_rows(
+                {pk: kind for pk, kind in reason_by_pk.items() if pk in shown},
+                settings_on=settings_on,
+            )
+        visible = visible.select_related("site", "role").order_by("name")
+        total = visible.count()
+        devices = list(visible[: self.LIMIT])
+        return {
+            "known": True,
+            "title": title,
+            "reason": reason,
+            "why": why,
+            "fixable": fixable,
+            "advice": advice,
+            "rows": [
+                {
+                    "device": device,
+                    "absence": absences.get(device.pk),
+                    "detail": details.get(device.pk, ""),
+                    "reason_title": REASON_TITLES.get(reason_by_pk.get(device.pk), ""),
+                }
+                for device in devices
+            ],
+            "total": total,
+            "limit": self.LIMIT,
+            "truncated": total > self.LIMIT,
+            "uncovered": reason in UNCOVERED_REASONS,
+            "all_reasons": reason == "all",
+            "chips": chips,
+            "legend": legend,
+        }
+
+
+@register_model_view(ForwardSync, "types", path="types")
+class ForwardSyncTypesView(generic.ObjectView):
+    """The device or module types behind one row of Counts explained.
+
+    Lists the types that look sync-created, each with the devices using it (a link to
+    NetBox's device list filtered to it) and the equivalent type NetBox already holds,
+    so the operator can move the devices with NetBox's own bulk edit. Names appear
+    here, behind the viewer's permissions, never in the bundle.
+    """
+
+    queryset = ForwardSync.objects.all()
+    template_name = "forward_netbox/forwardsync_types.html"
+    tab = None
+    LIMIT = 500
+
+    def get_extra_context(self, request, instance):
+        from urllib.parse import urlencode
+
+        from dcim.models import DeviceType
+        from dcim.models.modules import ModuleType
+
+        from .utilities.explained_findings import TYPE_GROUPS
+        from .utilities.explained_findings import TYPE_KINDS
+        from .utilities.explained_findings import type_group_text
+        from .utilities.sync_created_types import sync_created_types
+
+        key = request.GET.get("kind", "")
+        kind, _sep, group = key.partition("_")
+        if kind not in TYPE_KINDS or group not in TYPE_GROUPS:
+            return {"known": False, "rows": []}
+        finding, why, fixable, advice = type_group_text(kind, group)
+        found = sync_created_types(kind, instance)[group]
+        if group == "equivalent":
+            users = {pk: n for pk, _e, n in found}
+            equivalents = {pk: eq for pk, eq, _n in found}
+        elif group == "unmatched":
+            users = dict(found)
+            equivalents = {}
+        else:
+            users = {}
+            equivalents = {}
+        wanted = list(users) if group != "unused" else list(found)
+        model = DeviceType if kind == "device" else ModuleType
+        visible = (
+            model.objects.restrict(request.user, "view")
+            .filter(pk__in=wanted)
+            .select_related("manufacturer")
+            .order_by("manufacturer__name", "model")
+        )
+        total = visible.count()
+        types = list(visible[: self.LIMIT])
+        equivalent_by_pk = {
+            obj.pk: obj
+            for obj in model.objects.restrict(request.user, "view").filter(
+                pk__in=set(equivalents.values())
+            )
+        }
+        users_route = "dcim:device_list" if kind == "device" else "dcim:module_list"
+        users_filter = "device_type_id" if kind == "device" else "module_type_id"
+        return {
+            "known": True,
+            "title": finding,
+            "why": why,
+            "fixable": fixable,
+            "advice": advice,
+            "is_equivalent": group == "equivalent",
+            "users_label": TYPE_KINDS[kind][1],
+            "rows": [
+                {
+                    "type": obj,
+                    "users": users.get(obj.pk, 0),
+                    "users_url": (
+                        f"{reverse(users_route)}?{urlencode({users_filter: obj.pk})}"
+                        if users.get(obj.pk)
+                        else ""
+                    ),
+                    "equivalent": equivalent_by_pk.get(equivalents.get(obj.pk)),
+                }
+                for obj in types
+            ],
+            "total": total,
+            "limit": self.LIMIT,
+            "truncated": total > self.LIMIT,
+        }
 
 
 def _store_live_drift_results(results):
@@ -5374,6 +5700,55 @@ class ForwardChangeWorkspaceRefreshView(_ForwardChangeForwardActionView):
         from .change_control.workspace import refresh_snapshots
 
         return refresh_snapshots(change)
+
+
+@register_model_view(ForwardChange, "workspace_collect", path="workspace/collect")
+class ForwardChangeWorkspaceCollectView(_ForwardChangeForwardActionView):
+    """Start a collection in the change's workspace, after a warning.
+
+    The page (GET) states what a collection does and whether the account may take
+    one, and starts nothing; the collection starts only from its confirmed form.
+    """
+
+    success_message = _("Collection started.")
+    show_outcome_message = True
+
+    def get(self, request, pk, **kwargs):
+        from .change_control.workspace import COLLECTABLE_STATES
+        from .change_control.workspace import COLLECTION_WARNING
+        from .change_control.workspace import collection_access
+
+        if not request.user.has_perm(self.action_permission):
+            raise PermissionDenied
+        change = get_object_or_404(
+            self.queryset.restrict(request.user, self.restrict_action), pk=pk
+        )
+        if not change.workspace_network_id or change.state not in COLLECTABLE_STATES:
+            messages.error(
+                request,
+                _(
+                    "A snapshot is collected after the change is applied, in its "
+                    "workspace."
+                ),
+            )
+            return redirect(change.get_absolute_url())
+        return render(
+            request,
+            "forward_netbox/forwardchange_collect.html",
+            {
+                "object": change,
+                "warning": COLLECTION_WARNING,
+                "access": collection_access(change),
+                "device_count": change.devices.count(),
+            },
+        )
+
+    def run(self, request, change):
+        from .change_control.workspace import collect_snapshot
+
+        return collect_snapshot(
+            change, request.user, confirmed=request.POST.get("confirm") == "on"
+        )
 
 
 @register_model_view(ForwardChange, "evidence_baseline", path="evidence/baseline")

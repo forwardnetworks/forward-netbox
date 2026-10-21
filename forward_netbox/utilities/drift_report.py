@@ -1,7 +1,7 @@
 # Cached dependency previews can contain either exact comparisons or workload
 # upper bounds. Keep those meanings explicit so fetched rows are never reported
 # as object-level drift.
-
+from .drift_explanations import explain_drift_row
 
 EXACT_COMPARISON = "exact_comparison"
 WORKLOAD_UPPER_BOUND = "workload_upper_bound"
@@ -315,6 +315,9 @@ def compute_drift_report(payload):
             }
         )
     _label_rows(rows)
+    # What each row means and what to do, derived from the row's own fields.
+    for row in rows:
+        row.update(explain_drift_row(row))
     rows.sort(
         key=lambda row: (
             row["drift"] if row["drift"] is not None else row["estimated_apply_work"]

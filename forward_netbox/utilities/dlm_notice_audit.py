@@ -92,7 +92,11 @@ def fetch_emitted_hardware_notice_rows(sync, *, client=None):
             )
             or []
         )
-    return rows, ""
+    # The rows the sync applies, not Forward's raw ones: a notice written on an
+    # existing NetBox type would otherwise read as stale here and be pruned.
+    from .netbox_type_matching import match_existing_types
+
+    return match_existing_types("netbox_dlm.hardwarenotice", rows), ""
 
 
 def emitted_device_type_slugs(rows):

@@ -85,6 +85,37 @@ class ForwardWorkspaceApi:
             )
         return rows
 
+    def collection_access(self, network_id):
+        """The account's Forward roles, read-only: ``{org_roles, network_roles}``.
+
+        Forward has sent the org roles as a list and as a bare string, so both are
+        read; ``unknown`` is true when it sent no role information at all, which is
+        not the same as an account that holds none.
+        """
+        me = self._sdk(self.client._sdk_client.user_accounts.get_current_user)
+        roles = getattr(me, "roles", None)
+        if hasattr(roles, "model_dump"):
+            roles = roles.model_dump()
+        roles = roles or {}
+        org = roles.get("org")
+        network = roles.get("network")
+        if isinstance(org, str):
+            org = [org]
+        return {
+            "unknown": org is None and not network,
+            "org_roles": [str(r).strip().upper() for r in (org or [])],
+            "network_roles": {
+                str(k): str(v).strip().upper() for k, v in (network or {}).items()
+            },
+        }
+
+    def start_collection(self, network_id):
+        """Queue a collection on the network and return its task id."""
+        run = self._sdk(
+            self.client._sdk_client.snapshots.collect, network_id, wait=False
+        )
+        return str(getattr(run, "task_id", "") or "")
+
     def run_query(self, query_id, commit_id, network_id, snapshot_id):
         from ..utilities.forward_api import run_nqe_query
 
@@ -422,3 +453,131 @@ def refresh_snapshots(change, *, api=None):
     if updates:
         change.save(update_fields=updates)
     return WorkspaceOutcome(True, ", ".join(updates) or "nothing new")
+
+
+# A collection logs in to the live devices through the organisation's collector.
+COLLECTABLE_STATES = frozenset({State.APPLIED, State.COLLECTED})
+
+COLLECTION_WARNING = (
+    "Collecting starts a live collection of the workspace's devices. Forward "
+    "logs in to each device through your collector, which takes device and "
+    "collector capacity, and the collection carries on in Forward if you stop "
+    "waiting here. Only collect once the change has really been applied."
+)
+
+
+@dataclass(frozen=True)
+class CollectionAccess:
+    # True: an administrator. False: certainly not allowed. None: Forward does not
+    # publish which roles may collect, so it is left to Forward to decide.
+    allowed: object
+    reason: str = ""
+
+
+# Forward's role table (docs.fwd.app/latest/application/settings/accounts/rbac/):
+# "Collection Triggering" is Yes for Workspace Operator, Network Admin and Org
+# Admin, and No for Limited Read-only, Read-only and Network Operator. Workspace
+# Operator exists only on a workspace network, which is where a change collects.
+# The roles are the SDK's `NetworkRoles` values. Forward's source agrees: starting
+# a collection is TRIGGER_SNAPSHOT_COLLECTION, held by WORKSPACE_OPERATOR and ADMIN.
+ROLES_THAT_CAN_COLLECT = frozenset({"ADMIN", "WORKSPACE_OPERATOR"})
+ROLES_THAT_CANNOT_COLLECT = frozenset({"OPERATOR", "READ_ONLY", "LIMITED_READ_ONLY"})
+
+
+def collection_access(change, *, api=None):
+    """May this source's Forward account start a collection on the workspace?
+
+    Read-only, from the account's own roles and Forward's role table. Roles granted
+    through access-control groups are part of what Forward returns, so the role on
+    the workspace itself decides. A role held only on the parent network is not
+    taken as one on the workspace: Forward copies parent roles onto workspaces only
+    when an organisation setting is on, so that case is left to Forward.
+    """
+    api, error = _open_api(change, api)
+    if error:
+        return CollectionAccess(None, error)
+    try:
+        roles = api.collection_access(change.workspace_network_id)
+    except Exception as exc:  # noqa: BLE001
+        return CollectionAccess(
+            None, f"Forward would not say what this account may do ({exc})."
+        )
+    if roles.get("unknown"):
+        return CollectionAccess(
+            None, "Forward returned no role information for this account."
+        )
+    org = set(roles.get("org_roles") or [])
+    network = roles.get("network_roles") or {}
+    on_workspace = network.get(str(change.workspace_network_id))
+    if "ADMIN" in org:
+        return CollectionAccess(True, "This account is an organisation administrator.")
+    if on_workspace in ROLES_THAT_CAN_COLLECT:
+        return CollectionAccess(
+            True, f"This account is {on_workspace} on the workspace, which can collect."
+        )
+    if on_workspace in ROLES_THAT_CANNOT_COLLECT:
+        return CollectionAccess(
+            False,
+            f"This account is {on_workspace} on the workspace, and Forward does not "
+            "let that role trigger a collection.",
+        )
+    if not org and not network:
+        return CollectionAccess(
+            False, "This account has no role on the workspace in Forward."
+        )
+    held = ", ".join(sorted({*org, *network.values()}))
+    return CollectionAccess(
+        None,
+        f"This account's roles ({held}) do not include one on the workspace itself, "
+        "so whether it may collect there is left to Forward, which will refuse it if "
+        "it may not.",
+    )
+
+
+def collect_snapshot(change, user, *, confirmed=False, api=None):
+    """Start a collection in the change's workspace, after the change is applied.
+
+    A write to Forward that touches live devices, so it needs the operator's
+    confirmation every time and an account that may collect. It does not wait: the
+    snapshot is picked up by `refresh_snapshots` once Forward has made it.
+    """
+    from ..models import ForwardChange
+
+    if not confirmed:
+        return _refuse(
+            "Confirm that you understand what a collection does before starting one."
+        )
+    with transaction.atomic():
+        locked = ForwardChange.objects.select_for_update().get(pk=change.pk)
+        if not locked.workspace_network_id:
+            return _refuse("This change has no workspace.")
+        if locked.state not in COLLECTABLE_STATES:
+            return _refuse(
+                "A snapshot is collected after the change is applied; this change "
+                f"is {locked.state}."
+            )
+        api, error = _open_api(locked, api)
+        if error:
+            return _refuse(error)
+        access = collection_access(locked, api=api)
+        if access.allowed is False:
+            return _refuse(access.reason)
+        try:
+            task_id = api.start_collection(locked.workspace_network_id)
+        except Exception as exc:  # noqa: BLE001 - reported, never raised past the page
+            return _refuse(f"Forward would not start the collection: {exc}")
+        # The collection is already running in Forward here; if the journal write
+        # failed the transaction would roll back and leave it unrecorded, so the
+        # journal is the last thing that can fail.
+        devices = locked.devices.count()
+        _journal(
+            locked,
+            user,
+            f"Started a Forward collection (task {task_id or 'unknown'}) in "
+            f"workspace {locked.workspace_network_id} for {devices} device(s).",
+        )
+    return WorkspaceOutcome(
+        True,
+        f"Collection started (task {task_id or 'unknown'}). Refresh snapshots once "
+        "Forward has finished it.",
+    )

@@ -140,6 +140,88 @@ whose identity is indeterminate — never flagged), and `stale_count` with a
 sample with `--limit`, and add `--fail-on-stale` for CI. Delete confirmed-stale
 objects by hand in NetBox.
 
+### How the device numbers fit together
+
+On the Health page, above Counts explained, **How the device numbers fit together** lays out the
+device counts from the latest Scope Reconciliation report, so no Forward call is made.
+It names the sync's tag scope and then shows, in the same labels as Scope
+Reconciliation, the devices Forward returns in that scope (collected, SNMP endpoints,
+and the ones missing from NetBox), the tagged devices Forward could not collect, and
+what NetBox holds: the named devices, the ones matched to a tagged Forward device, and
+the ones that carry no include tag (created by this sync, which are the uncovered
+devices, or not claimed by it) and, of those, the ones Scope Reconciliation also lists as
+out-of-scope orphans. Devices outside the tag scope are not fetched, which is
+why the in-scope number is smaller than your whole Forward network. The card says when
+the report was made and links to run Scope Reconciliation again if it is old.
+
+### Reading the drift table
+
+The drift report's **Per-Model Drift** table has a **How to read this table** note that
+says what each column counts, and a **What it means** column for each model that is out
+of sync or not compared. The figures are the dependency preview's estimates, not a check
+of NetBox row by row, and not a promise of what a sync will do. Forward rows is the rows
+the preview counted for the model; for the bundled device maps that is the devices
+matching the sync's tags, which may be smaller than your whole Forward network (the
+Health page's device-numbers card lays this out). Upsert/change candidates are the
+preview's estimate of rows to create or update, not a promise of what a sync will stage. Pending removals
+are the removals the preview counted, and whether one happens follows the sync's removal
+rules. The smaller "declared, not staged" line is how many more removals Forward declared than
+this run stages, for reasons such as an earlier removal, a row never imported, or
+protection.
+Nothing about the figures themselves changes.
+
+### Counts explained
+
+The Health page has a **Counts explained** table for numbers that look wrong but may
+not be: devices with no primary IP, uncovered devices, IP addresses assigned to
+nothing, the latest ingestion's skipped rows, and device and module types that look
+sync-created. Each row says why it is what it is, whether it can be fixed (yes, no
+because it is by design, or needs a person) and the next action, and links to a list of
+the things to fix. The same rows are in the support bundle, as counts only. Devices with no primary IP are split into one reason
+each, so the reasons add up to the count: no longer returned by Forward, sharing an
+address with another device, holding an address that was not chosen, interfaces
+carrying no address, or no interfaces synced. Each row says whether it counts this
+sync's devices or all of NetBox.
+
+**Types the sync created.** NetBox does not record who made a device or module type, so
+the rows use a lead: a type the sync creates has no component templates (interface,
+port or bay templates), while one imported from the device-type library has them. Types
+with none that this sync's devices use are split into those with an equivalent type
+that does have templates (found by the same matching the sync uses: part number, or
+name ignoring case, punctuation and a vendor name in front) and those with none, which
+are probably not in your library. Types nothing uses anywhere in NetBox are listed as
+unused. A hand-made type looks the same, so treat the list as a lead to check. To move
+devices off a type that has an equivalent, open the list, follow the link to the
+devices using it, select them in NetBox, bulk edit their device type to the equivalent,
+and delete the old type straight away. Until the old type is deleted the next sync
+matches it exactly and moves the devices back, so do it between syncs and not while a
+sync branch is waiting to merge. Types the sync creates from now on reuse an existing
+type when exactly one fits.
+
+To see every device without a primary IP in one place, use **All devices without a
+primary IP, by role and reason** above the table. It lists each device with its
+reason, and the role buttons narrow it to one kind of device (for example routers and
+switches). A legend says what each reason means, whether it can be fixed and what to
+do. You see only the devices your own permissions allow, and the counts follow that.
+
+### Unassigned IP addresses are mostly BGP neighbours
+
+The routing sync creates a BGP peer's neighbour address as an IP address with no
+interface, because the neighbour is a remote device. In IPAM those look like
+orphans. The support bundle splits the unassigned count into addresses a BGP peer
+uses and addresses nothing uses (`used_by_no_interface_and_no_bgp_peer`, the only
+count that can be a real orphan). To filter them in IPAM, tag them:
+
+Use **Tag these addresses** on the "IP addresses assigned to nothing" row of
+**Counts explained** on the Health page. It queues a job that adds
+`forward-bgp-neighbour` to every unassigned address a BGP peer uses and removes it
+from any that gained an interface or lost their peer, so it is safe to run again. It
+never deletes. The edits are change-logged to the person who clicked. The first run
+writes one edit per address, which is why it is a button and not part of a sync.
+Without `netbox_routing` it does nothing. The same action is on the REST API as
+`tag-bgp-neighbour-ips`, and `manage.py forward_tag_bgp_neighbours --user <name>`
+does it from a shell.
+
 ### Prune orphans
 
 The **Prune orphans** button queues a job that deletes the out-of-scope devices
@@ -283,8 +365,9 @@ renders the cached result and `?format=json` downloads it. The preview never run
 the dry-run in the web request, so it does not time out on large fabrics.
 
 Dependency preview reports fetched apply candidates and planned deletes as a
-workload upper bound. It does not compare every candidate with persisted NetBox
-objects, so the Drift Report labels object drift as **Not measured**. The report
+workload estimate. It does not compare every candidate with persisted NetBox
+objects, so the Drift Report labels object drift as **Not measured** for the models
+it cannot compare exactly. The report
 also shows the latest ingestion's persisted created, updated, deleted, applied,
 and failed counters. A merged sync with zero changes and zero failures confirms
 convergence only when its snapshot ID matches the preview snapshot. If a sync
@@ -567,13 +650,14 @@ active and can be retried after that job finishes.
 
 ## Automating operator jobs (API + standing schedules)
 
-The three operator jobs are also exposed as token-authenticated REST
+The operator jobs are also exposed as token-authenticated REST
 actions, so an external scheduler can drive them:
 
 ```bash
 POST /api/plugins/forward/sync/<id>/dependency-preview/
 POST /api/plugins/forward/sync/<id>/prune-orphans/
 POST /api/plugins/forward/sync/<id>/tag-delete-eligible-ipam/
+POST /api/plugins/forward/sync/<id>/tag-bgp-neighbour-ips/
 ```
 
 Each returns `201` with the job on success, `403` without permission, and

@@ -858,3 +858,19 @@ For the first validation:
 5. Run an adhoc ingestion from the sync detail page.
 
 For large datasets, treat that first run as the baseline establishment step: merge it before expecting later `latestProcessed` ingestions to switch to the incremental `nqe-diffs` path.
+
+## Device and module types already in NetBox
+
+If your device types and module types come from the NetBox device-type library, the
+sync uses them rather than creating look-alikes. When Forward's model name differs
+from an existing type only by case, punctuation, a vendor name written in front, or a
+part number, and exactly one existing type fits, that type is used. A matched type is
+never changed by the sync, and its own row is skipped. If more than one type could
+fit, or none does, the sync creates a type as before. Types the sync already created
+keep matching exactly and are not merged. The Counts explained table on the Health page lists them and
+the type each could be moved to; moving the devices is done in NetBox with its bulk edit (see Operations).
+This does not change how the sync creates components. A hardware-notice row for a
+model that matched an existing type is matched on its own, so if that cannot be done
+unambiguously the notice is skipped. A device-type row that is skipped because its type
+exists still counts in the model's row total, so the row-count checks see the whole
+result.

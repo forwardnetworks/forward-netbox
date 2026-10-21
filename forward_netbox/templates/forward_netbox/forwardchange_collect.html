@@ -1,0 +1,46 @@
+{% extends 'base/layout.html' %}
+{% load i18n %}
+
+{% block title %}{% trans "Collect a snapshot" %}{% endblock %}
+
+{% block content %}
+<div class="row">
+  <div class="col col-md-8">
+    <div class="card">
+      <h5 class="card-header">{% blocktrans with change=object %}Collect a snapshot for {{ change }}{% endblocktrans %}</h5>
+      <div class="card-body">
+        <div class="alert alert-warning" role="alert">{{ warning }}</div>
+        <table class="table attr-table">
+          <tr><th scope="row">{% trans "Workspace network" %}</th><td>{{ object.workspace_network_id }}</td></tr>
+          <tr><th scope="row">{% trans "Devices in the change" %}</th><td>{{ device_count }}</td></tr>
+          <tr>
+            <th scope="row">{% trans "Your Forward access" %}</th>
+            <td>
+              {% if access.allowed is False %}
+                <span class="text-danger">{{ access.reason }}</span>
+              {% elif access.allowed %}
+                <span class="text-success">{{ access.reason }}</span>
+              {% else %}
+                <span class="text-warning">{{ access.reason }}</span>
+              {% endif %}
+            </td>
+          </tr>
+        </table>
+        {% if access.allowed is False %}
+          <p class="text-muted">{% trans "This account cannot start a collection, so none can be started from here. Collect in Forward with an account that can, then refresh snapshots." %}</p>
+        {% else %}
+          <form method="post" action="{% url 'plugins:forward_netbox:forwardchange_workspace_collect' pk=object.pk %}">
+            {% csrf_token %}
+            <div class="form-check mb-3">
+              <input type="checkbox" class="form-check-input" id="confirm" name="confirm" required>
+              <label class="form-check-label" for="confirm">{% trans "I understand this logs in to the devices in the workspace, and I want to collect now." %}</label>
+            </div>
+            <button type="submit" class="btn btn-warning">{% trans "Start collection" %}</button>
+            <a class="btn btn-outline-secondary" href="{{ object.get_absolute_url }}">{% trans "Cancel" %}</a>
+          </form>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock content %}

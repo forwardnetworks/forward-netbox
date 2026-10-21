@@ -1,0 +1,114 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+{% load i18n %}
+
+{% block title %}{{ object }} - {% trans "Counts explained" %}{% endblock %}
+
+{% block extra_controls %}
+  <a class="btn btn-outline-secondary" href="{% url 'plugins:forward_netbox:forwardsync_health' pk=object.pk %}">
+    <i class="mdi mdi-arrow-left" aria-hidden="true"></i>&nbsp;{% trans "Health" %}
+  </a>
+{% endblock extra_controls %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col">
+    <div class="card">
+      <h5 class="card-header">{{ title|default:_("Counts explained") }}</h5>
+      <div class="card-body">
+        {% if not known %}
+          <p class="text-muted">{% trans "That reason is not one this page lists. Open it from the Counts explained table on the Health page." %}</p>
+        {% else %}
+          <table class="table attr-table">
+            <tr><th scope="row">{% trans "What this is" %}</th><td>{{ why }}</td></tr>
+            {% if fixable %}<tr><th scope="row">{% trans "Fixable" %}</th><td>{{ fixable }}</td></tr>{% endif %}
+            <tr><th scope="row">{% trans "What to do" %}</th><td>{{ advice }}</td></tr>
+            <tr><th scope="row">{% trans "Devices" %}</th><td>{{ total }}{% if truncated %} <span class="text-muted">({% blocktrans %}first {{ limit }} shown{% endblocktrans %})</span>{% endif %}</td></tr>
+          </table>
+          {% if not uncovered %}
+          <details class="mb-3">
+            <summary>{% trans "How to read this" %}</summary>
+            <p class="mt-2 mb-1">{% trans "A device with no primary IP is not always a problem. Each one is given exactly one reason, so the reasons add up to the count. A firewall virtual system or HA peer sharing its parent's address, for example, is by design, while a router that holds an address but was not given a primary IP is worth a look." %}</p>
+            <p class="mb-1">{% trans "Use the role buttons to see one kind of device, such as routers and switches. Open a device to fix it in NetBox. Fixable says whether a change can help: yes, needs a person (look at it), or no (by design)." %}</p>
+          </details>
+          {% endif %}
+          <div class="mb-2">
+            {% for chip in chips %}
+              <a href="{{ chip.url }}" class="btn btn-sm {% if chip.active %}btn-primary{% else %}btn-outline-secondary{% endif %} mb-1">{{ chip.name }} <span class="badge text-bg-light">{{ chip.count }}</span></a>
+            {% endfor %}
+          </div>
+        {% endif %}
+      </div>
+      {% if known and legend %}
+        <div class="table-responsive">
+          <table class="table table-sm">
+            <caption class="px-3">{% trans "What each reason means" %}</caption>
+            <thead>
+              <tr>
+                <th>{% trans "Reason" %}</th>
+                <th>{% trans "Devices" %}</th>
+                <th>{% trans "Fixable" %}</th>
+                <th>{% trans "Why" %}</th>
+                <th>{% trans "What to do" %}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for item in legend %}
+                <tr>
+                  <td>{{ item.title }}</td>
+                  <td>{{ item.count }}</td>
+                  <td>{{ item.fixable }}</td>
+                  <td>{{ item.why }}</td>
+                  <td>{{ item.what_to_do }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+      {% if known %}
+        <div class="table-responsive">
+          <table class="table table-hover">
+            <thead>
+              <tr>
+                <th>{% trans "Device" %}</th>
+                <th>{% trans "Site" %}</th>
+                <th>{% trans "Role" %}</th>
+                <th>{% trans "Status" %}</th>
+                {% if all_reasons %}<th>{% trans "Reason" %}</th>{% endif %}
+                {% if uncovered %}
+                  <th>{% trans "Rule" %}</th>
+                  <th>{% trans "Uncovered for (this sync)" %}</th>
+                {% endif %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in rows %}
+                <tr>
+                  <td>{{ row.device|linkify }}</td>
+                  <td>{{ row.device.site|linkify }}</td>
+                  <td>{{ row.device.role|linkify }}</td>
+                  <td>{{ row.device.get_status_display }}</td>
+                  {% if all_reasons %}<td>{{ row.reason_title }}</td>{% endif %}
+                  {% if uncovered %}
+                    <td>{{ row.detail|default:"" }}</td>
+                    <td>
+                      {% if row.absence %}
+                        {% blocktrans with runs=row.absence.consecutive_absent_runs since=row.absence.first_absent_at|date:"Y-m-d" %}{{ runs }} run(s), since {{ since }}{% endblocktrans %}
+                      {% else %}
+                        <span class="text-muted">&mdash;</span>
+                      {% endif %}
+                    </td>
+                  {% endif %}
+                </tr>
+              {% empty %}
+                <tr><td colspan="6" class="text-muted">{% trans "No devices." %}</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock content %}
