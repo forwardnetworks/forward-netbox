@@ -867,7 +867,8 @@ from an existing type only by case, punctuation, a vendor name written in front,
 part number, and exactly one existing type fits, that type is used. A matched type is
 never changed by the sync, and its own row is skipped. If more than one type could
 fit, or none does, the sync creates a type as before. Types the sync already created
-keep matching exactly and are not merged; moving devices off them is a separate step.
+keep matching exactly and are not merged. The Counts explained table on the Health page lists them and
+the type each could be moved to; moving the devices is done in NetBox with its bulk edit (see Operations).
 This does not change how the sync creates components. A hardware-notice row for a
 model that matched an existing type is matched on its own, so if that cannot be done
 unambiguously the notice is skipped. A device-type row that is skipped because its type

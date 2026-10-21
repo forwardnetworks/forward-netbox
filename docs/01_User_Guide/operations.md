@@ -157,14 +157,30 @@ the report was made and links to run Scope Reconciliation again if it is old.
 ### Counts explained
 
 The Health page has a **Counts explained** table for numbers that look wrong but may
-not be: devices with no primary IP, uncovered devices and IP addresses assigned to
-nothing. Each row says why it is what it is, whether it can be fixed (yes, no because
-it is by design, or needs a person) and the next action. The same rows are in the
-support bundle, as counts only. Devices with no primary IP are split into one reason
+not be: devices with no primary IP, uncovered devices, IP addresses assigned to
+nothing, the latest ingestion's skipped rows, and device and module types that look
+sync-created. Each row says why it is what it is, whether it can be fixed (yes, no
+because it is by design, or needs a person) and the next action, and links to a list of
+the things to fix. The same rows are in the support bundle, as counts only. Devices with no primary IP are split into one reason
 each, so the reasons add up to the count: no longer returned by Forward, sharing an
 address with another device, holding an address that was not chosen, interfaces
-carrying no address, or no interfaces synced. The first two rows count this sync's
-devices; the uncovered and unassigned rows count all of NetBox, and say so.
+carrying no address, or no interfaces synced. Each row says whether it counts this
+sync's devices or all of NetBox.
+
+**Types the sync created.** NetBox does not record who made a device or module type, so
+the rows use a lead: a type the sync creates has no component templates (interface,
+port or bay templates), while one imported from the device-type library has them. Types
+with none that this sync's devices use are split into those with an equivalent type
+that does have templates (found by the same matching the sync uses: part number, or
+name ignoring case, punctuation and a vendor name in front) and those with none, which
+are probably not in your library. Types nothing uses anywhere in NetBox are listed as
+unused. A hand-made type looks the same, so treat the list as a lead to check. To move
+devices off a type that has an equivalent, open the list, follow the link to the
+devices using it, select them in NetBox, bulk edit their device type to the equivalent,
+and delete the old type straight away. Until the old type is deleted the next sync
+matches it exactly and moves the devices back, so do it between syncs and not while a
+sync branch is waiting to merge. Types the sync creates from now on reuse an existing
+type when exactly one fits.
 
 To see every device without a primary IP in one place, use **All devices without a
 primary IP, by role and reason** above the table. It lists each device with its

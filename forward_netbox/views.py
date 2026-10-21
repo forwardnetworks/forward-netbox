@@ -4064,6 +4064,92 @@ class ForwardSyncExplainedView(generic.ObjectView):
         }
 
 
+@register_model_view(ForwardSync, "types", path="types")
+class ForwardSyncTypesView(generic.ObjectView):
+    """The device or module types behind one row of Counts explained.
+
+    Lists the types that look sync-created, each with the devices using it (a link to
+    NetBox's device list filtered to it) and the equivalent type NetBox already holds,
+    so the operator can move the devices with NetBox's own bulk edit. Names appear
+    here, behind the viewer's permissions, never in the bundle.
+    """
+
+    queryset = ForwardSync.objects.all()
+    template_name = "forward_netbox/forwardsync_types.html"
+    tab = None
+    LIMIT = 500
+
+    def get_extra_context(self, request, instance):
+        from urllib.parse import urlencode
+
+        from dcim.models import DeviceType
+        from dcim.models.modules import ModuleType
+
+        from .utilities.explained_findings import TYPE_GROUPS
+        from .utilities.explained_findings import TYPE_KINDS
+        from .utilities.explained_findings import type_group_text
+        from .utilities.sync_created_types import sync_created_types
+
+        key = request.GET.get("kind", "")
+        kind, _sep, group = key.partition("_")
+        if kind not in TYPE_KINDS or group not in TYPE_GROUPS:
+            return {"known": False, "rows": []}
+        finding, why, fixable, advice = type_group_text(kind, group)
+        found = sync_created_types(kind, instance)[group]
+        if group == "equivalent":
+            users = {pk: n for pk, _e, n in found}
+            equivalents = {pk: eq for pk, eq, _n in found}
+        elif group == "unmatched":
+            users = dict(found)
+            equivalents = {}
+        else:
+            users = {}
+            equivalents = {}
+        wanted = list(users) if group != "unused" else list(found)
+        model = DeviceType if kind == "device" else ModuleType
+        visible = (
+            model.objects.restrict(request.user, "view")
+            .filter(pk__in=wanted)
+            .select_related("manufacturer")
+            .order_by("manufacturer__name", "model")
+        )
+        total = visible.count()
+        types = list(visible[: self.LIMIT])
+        equivalent_by_pk = {
+            obj.pk: obj
+            for obj in model.objects.restrict(request.user, "view").filter(
+                pk__in=set(equivalents.values())
+            )
+        }
+        users_route = "dcim:device_list" if kind == "device" else "dcim:module_list"
+        users_filter = "device_type_id" if kind == "device" else "module_type_id"
+        return {
+            "known": True,
+            "title": finding,
+            "why": why,
+            "fixable": fixable,
+            "advice": advice,
+            "is_equivalent": group == "equivalent",
+            "users_label": TYPE_KINDS[kind][1],
+            "rows": [
+                {
+                    "type": obj,
+                    "users": users.get(obj.pk, 0),
+                    "users_url": (
+                        f"{reverse(users_route)}?{urlencode({users_filter: obj.pk})}"
+                        if users.get(obj.pk)
+                        else ""
+                    ),
+                    "equivalent": equivalent_by_pk.get(equivalents.get(obj.pk)),
+                }
+                for obj in types
+            ],
+            "total": total,
+            "limit": self.LIMIT,
+            "truncated": total > self.LIMIT,
+        }
+
+
 def _store_live_drift_results(results):
     """Record each live drift result on its map, best effort.
 

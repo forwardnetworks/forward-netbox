@@ -1,0 +1,68 @@
+{% extends 'generic/object.html' %}
+{% load helpers %}
+{% load i18n %}
+
+{% block title %}{{ object }} - {% trans "Types the sync created" %}{% endblock %}
+
+{% block extra_controls %}
+  <a class="btn btn-outline-secondary" href="{% url 'plugins:forward_netbox:forwardsync_health' pk=object.pk %}">
+    <i class="mdi mdi-arrow-left" aria-hidden="true"></i>&nbsp;{% trans "Health" %}
+  </a>
+{% endblock extra_controls %}
+
+{% block content %}
+<div class="row mb-3">
+  <div class="col">
+    <div class="card">
+      <h5 class="card-header">{{ title|default:_("Types the sync created") }}</h5>
+      <div class="card-body">
+        {% if not known %}
+          <p class="text-muted">{% trans "That list is not one this page shows. Open it from the Counts explained table on the Health page." %}</p>
+        {% else %}
+          <table class="table attr-table">
+            <tr><th scope="row">{% trans "What this is" %}</th><td>{{ why }}</td></tr>
+            <tr><th scope="row">{% trans "Fixable" %}</th><td>{{ fixable }}</td></tr>
+            <tr><th scope="row">{% trans "What to do" %}</th><td>{{ advice }}</td></tr>
+            <tr><th scope="row">{% trans "Types" %}</th><td>{{ total }}{% if truncated %} <span class="text-muted">({% blocktrans %}first {{ limit }} shown{% endblocktrans %})</span>{% endif %}</td></tr>
+          </table>
+          <p class="text-muted small mb-2">{% trans "Used by counts this sync's devices or modules. The link opens every one of that type in NetBox, including ones another source made." %}</p>
+          <details class="mb-2">
+            <summary>{% trans "How a type is recognised" %}</summary>
+            <p class="mt-2 mb-1">{% trans "NetBox does not record who created a type. A type the sync creates has no component templates (interface, port or bay templates), while one imported from the device-type library has them, so a type with none is likely sync-created. A hand-made type, and a few library types with nothing to template, look the same, so treat this as a lead to check, not proof." %}</p>
+          </details>
+        {% endif %}
+      </div>
+      {% if known %}
+        <div class="table-responsive">
+          <table class="table table-hover">
+            <thead>
+              <tr>
+                <th>{% trans "Type" %}</th>
+                <th>{% trans "Manufacturer" %}</th>
+                <th>{% trans "Used by (this sync)" %}</th>
+                {% if is_equivalent %}<th>{% trans "Equivalent in NetBox" %}</th>{% endif %}
+              </tr>
+            </thead>
+            <tbody>
+              {% for row in rows %}
+                <tr>
+                  <td>{{ row.type|linkify }}</td>
+                  <td>{{ row.type.manufacturer|linkify }}</td>
+                  <td>
+                    {% if row.users_url %}<a href="{{ row.users_url }}">{{ row.users }} {{ users_label }}</a>{% else %}<span class="text-muted">&mdash;</span>{% endif %}
+                  </td>
+                  {% if is_equivalent %}
+                    <td>{% if row.equivalent %}{{ row.equivalent|linkify }}{% else %}<span class="text-muted">&mdash;</span>{% endif %}</td>
+                  {% endif %}
+                </tr>
+              {% empty %}
+                <tr><td colspan="4" class="text-muted">{% trans "None." %}</td></tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock content %}
