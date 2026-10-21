@@ -165,8 +165,9 @@ def record_device_absence(
     Two sets are tracked, because two sets can be deleted. Orphans are devices
     this sync claimed in the run that produced the current result. The
     uncovered set is devices it created at some point and the current result no
-    longer covers - which is not a subset of the first, and at a customer whose
-    orphan count reads zero it is the only one that has members. Streaks were
+    longer covers - which is not a subset of the first, and before streaks were
+    recorded for it, it was the only one that had members at a sync that applies
+    no scope tags. Streaks were
     kept for orphans alone, so an uncovered device could never leave quarantine
     no matter how long it had been gone, and nothing could clean it up.
 
@@ -788,6 +789,10 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         "exclude_tags": sorted(exclude_tags),
         "include_match": include_match,
         "netbox_device_count": len(netbox_names),
+        # Devices, not names: the count `unmanaged.untagged_total` is taken over, so
+        # the two can be subtracted. `netbox_device_count` above is distinct names,
+        # which is lower when two devices share one.
+        "netbox_named_device_total": len(netbox_device_name_by_pk),
         "forward_in_scope_completed": len(device_completed_names),
         "forward_in_scope_endpoints": len(endpoint_names),
         "forward_tagged_backfilled": len(backfilled_names),

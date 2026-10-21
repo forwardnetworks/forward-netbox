@@ -1358,6 +1358,9 @@ def sync_health_summary(sync, *, include_evidence=False):
         # Counts that look wrong but may not be, each with a reason and the next
         # action. Heavier than the rest, so only where the evidence is wanted.
         "explained_findings": _explained_findings(sync) if include_evidence else [],
+        # How the device numbers fit together, from the stored scope report, so no
+        # Forward call and only where the evidence is wanted.
+        "reconciliation": _reconciliation(sync) if include_evidence else None,
         "quarantine_cadence": quarantine_cadence,
         "ownership_finalization": ownership_finalization,
         "dependency_lookup_cache": dependency_lookup_cache,
@@ -2026,11 +2029,25 @@ def _quarantine_cadence_summary(sync):
     }
 
 
+def _reconciliation(sync):
+    from .reconciliation_strip import reconciliation_strip
+
+    try:
+        return reconciliation_strip(sync)
+    except JobTimeoutException:
+        raise
+    except Exception:  # noqa: BLE001 - the strip must never break Health
+        logger.exception("Could not build the device reconciliation strip.")
+        return None
+
+
 def _explained_findings(sync):
     from .explained_findings import explained_findings
 
     try:
         return explained_findings(sync)
+    except JobTimeoutException:
+        raise
     except Exception:  # noqa: BLE001 - an explanation must never break Health
         logger.exception("Could not build the explained findings.")
         return []

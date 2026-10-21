@@ -305,6 +305,36 @@
         {% endfor %}
       </div>
     </div>
+    {% if health.reconciliation %}
+      <div class="card mb-3">
+        <h5 class="card-header">{% trans "How the device numbers fit together" %}</h5>
+        <div class="card-body">
+          {% if not health.reconciliation.available %}
+            <p class="text-muted mb-1">{{ health.reconciliation.message }}
+              <a href="{{ health.reconciliation.url }}" class="ms-1">{% trans "Open Scope Reconciliation" %}</a></p>
+          {% else %}
+            <p class="text-muted small">{% trans "The device counts on this page and the drift table count different things. Each line says what it counts, from the latest scope report." %}
+              {% if health.reconciliation.as_of_date %}{% blocktrans with when=health.reconciliation.as_of_date %}Report from {{ when }}.{% endblocktrans %}{% endif %}
+              {% if health.reconciliation.old %}<span class="text-warning ms-1">{% trans "This report is old; run Scope Reconciliation to refresh it." %}</span>{% endif %}
+              <a href="{{ health.reconciliation.url }}" class="ms-1">{% trans "Open Scope Reconciliation" %}</a></p>
+            <p class="small mb-2">{% trans "The sync's tag scope:" %}
+              {% trans "include" %} <code>{{ health.reconciliation.include_tags|join:", "|default:"-" }}</code>
+              {% if health.reconciliation.exclude_tags %}, {% trans "exclude" %} <code>{{ health.reconciliation.exclude_tags|join:", " }}</code>{% endif %}</p>
+            <table class="table table-sm mb-0">
+              <tbody>
+                {% for step in health.reconciliation.steps %}
+                  <tr>
+                    <td class="text-muted small" style="width: 5.5rem">{% ifchanged step.group %}{{ step.group }}{% endifchanged %}</td>
+                    <td{% if step.indent %} style="padding-left: {{ step.indent }}rem"{% endif %}><strong>{{ step.count }}</strong> {{ step.label }}</td>
+                    <td class="text-muted small">{{ step.meaning }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          {% endif %}
+        </div>
+      </div>
+    {% endif %}
     {% if health.explained_findings %}
       <div class="card mb-3">
         <h5 class="card-header">{% trans "Counts explained" %}</h5>

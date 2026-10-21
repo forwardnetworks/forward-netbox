@@ -140,6 +140,20 @@ whose identity is indeterminate — never flagged), and `stale_count` with a
 sample with `--limit`, and add `--fail-on-stale` for CI. Delete confirmed-stale
 objects by hand in NetBox.
 
+### How the device numbers fit together
+
+On the Health page, above Counts explained, **How the device numbers fit together** lays out the
+device counts from the latest Scope Reconciliation report, so no Forward call is made.
+It names the sync's tag scope and then shows, in the same labels as Scope
+Reconciliation, the devices Forward returns in that scope (collected, SNMP endpoints,
+and the ones missing from NetBox), the tagged devices Forward could not collect, and
+what NetBox holds: the named devices, the ones matched to a tagged Forward device, and
+the ones that carry no include tag (created by this sync, which are the uncovered
+devices, or not claimed by it) and, of those, the ones Scope Reconciliation also lists as
+out-of-scope orphans. Devices outside the tag scope are not fetched, which is
+why the in-scope number is smaller than your whole Forward network. The card says when
+the report was made and links to run Scope Reconciliation again if it is old.
+
 ### Counts explained
 
 The Health page has a **Counts explained** table for numbers that look wrong but may
