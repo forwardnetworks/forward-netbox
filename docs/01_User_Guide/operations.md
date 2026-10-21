@@ -154,6 +154,22 @@ out-of-scope orphans. Devices outside the tag scope are not fetched, which is
 why the in-scope number is smaller than your whole Forward network. The card says when
 the report was made and links to run Scope Reconciliation again if it is old.
 
+### Reading the drift table
+
+The drift report's **Per-Model Drift** table has a **How to read this table** note that
+says what each column counts, and a **What it means** column for each model that is out
+of sync or not compared. The figures are the dependency preview's estimates, not a check
+of NetBox row by row, and not a promise of what a sync will do. Forward rows is the rows
+the preview counted for the model; for the bundled device maps that is the devices
+matching the sync's tags, which may be smaller than your whole Forward network (the
+Health page's device-numbers card lays this out). Upsert/change candidates are the
+preview's estimate of rows to create or update, not a promise of what a sync will stage. Pending removals
+are the removals the preview counted, and whether one happens follows the sync's removal
+rules. The smaller "declared, not staged" line is how many more removals Forward declared than
+this run stages, for reasons such as an earlier removal, a row never imported, or
+protection.
+Nothing about the figures themselves changes.
+
 ### Counts explained
 
 The Health page has a **Counts explained** table for numbers that look wrong but may
@@ -349,8 +365,9 @@ renders the cached result and `?format=json` downloads it. The preview never run
 the dry-run in the web request, so it does not time out on large fabrics.
 
 Dependency preview reports fetched apply candidates and planned deletes as a
-workload upper bound. It does not compare every candidate with persisted NetBox
-objects, so the Drift Report labels object drift as **Not measured**. The report
+workload estimate. It does not compare every candidate with persisted NetBox
+objects, so the Drift Report labels object drift as **Not measured** for the models
+it cannot compare exactly. The report
 also shows the latest ingestion's persisted created, updated, deleted, applied,
 and failed counters. A merged sync with zero changes and zero failures confirms
 convergence only when its snapshot ID matches the preview snapshot. If a sync

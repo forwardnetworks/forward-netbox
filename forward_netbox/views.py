@@ -2374,6 +2374,7 @@ class ForwardSyncDriftReportView(BaseObjectView):
         from core.models import Job
         from django.contrib.contenttypes.models import ContentType
 
+        from .utilities.drift_explanations import COLUMN_HELP
         from .utilities.drift_report import (
             build_latest_sync_evidence,
             compute_drift_report,
@@ -2426,6 +2427,7 @@ class ForwardSyncDriftReportView(BaseObjectView):
                 "last_sync_at": last_ingestion.created if last_ingestion else None,
                 "preview_at": job.created,
                 "latest_sync_evidence": latest_sync_evidence,
+                "column_help": COLUMN_HELP,
             },
         )
 
