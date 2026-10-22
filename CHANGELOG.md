@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v3.0.8
 
-Release candidate; Reasons and actions for the counts that look wrong, existing NetBox types reused, drift table explained, BGP neighbour tagging, snapshot collection from a change
+Reasons and actions for the counts that look wrong, existing NetBox types reused, drift table explained, BGP neighbour tagging, snapshot collection from a change
 
 ## v3.0.7
 
