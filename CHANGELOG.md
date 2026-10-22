@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v3.0.8
+
+Release candidate; Reasons and actions for the counts that look wrong, existing NetBox types reused, drift table explained, BGP neighbour tagging, snapshot collection from a change
+
 ## v3.0.7
 
 Change control and validation are operational: a change is authored, scoped to a Forward workspace, reviewed, verified and closed from the UI and the REST API, with notifications, NetBox event types, GraphQL and a branch-page panel; validation policies hold NQE, Forward intent-check and Predict rules and gate approval and close on a current run that answered every rule; the support bundle names why subinterface rows are skipped; a Mgmt_ tag that matches several interfaces uses the one that carries the address. Run migrate after upgrading

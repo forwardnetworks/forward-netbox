@@ -281,17 +281,7 @@ def check_lockfile_consistency() -> str:
 # PYSEC-2026-2858 does not appear in this repo's Dependabot alerts at all, and
 # nothing here has yet needed a waiver) that are accepted rather than fixed.
 # Same rule as above: name why, here.
-ACCEPTED_DEPENDABOT_ALERTS: set[str] = {
-    # TEMPORARY, 2026-10-21. These alerts are on poetry.lock and
-    # requirements-release.txt (certifi, virtualenv), which this branch moves past
-    # the patched versions. The alerts only close once the fixed lock is on the
-    # default branch, and the push that lands it is gated by this same check, so
-    # the fix could not be pushed. Remove these ids in the next change once the
-    # alerts read closed.
-    "GHSA-6q48-6c7w-9gw2",  # certifi < 2026.10.19
-    "GHSA-vxj4-q4g9-crj7",  # virtualenv < 21.14.7
-    "GHSA-5vjq-rrrf-7h2q",  # virtualenv < 21.14.4
-}
+ACCEPTED_DEPENDABOT_ALERTS: set[str] = {}
 
 _DEPENDABOT_BLOCKING_SEVERITIES = frozenset({"high", "critical"})
 
