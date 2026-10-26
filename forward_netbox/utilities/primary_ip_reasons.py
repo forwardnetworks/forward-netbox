@@ -71,9 +71,42 @@ def _host(address):
 
 
 ALREADY_ON_ADVICE = (
-    "The primary-IP settings are already on, so look in the ingestion job log for "
-    "the management-address summary, or give the device a Mgmt_ tag in Forward."
+    "The primary-IP settings are already on, so the management-address step has "
+    "run. A Mgmt_<interface> device tag in Forward points the step at that "
+    "interface (it takes the lowest address there)."
 )
+
+# The management-address summary's counts, in the words the operator reads.
+_FALLBACK_PHRASES = (
+    ("shared_with_another_device", "share the address with another device"),
+    ("address_on_no_synced_interface", "have it on no synced interface"),
+    ("several_management_addresses", "have several management addresses"),
+    ("address_on_several_interfaces", "have it on several interfaces"),
+)
+
+
+def fallback_sentence(fallback_reasons):
+    """What the last management-address step reported, across the whole sync.
+
+    ``fallback_reasons`` is the parsed job-log summary (or ``None``). The
+    sentence is a cross-reference, not a split of this reason's devices: the
+    step reports on the devices in its own tag scope, and the classifier here
+    counts this sync's devices by what NetBox holds.
+    """
+    if not fallback_reasons:
+        return ""
+    total = fallback_reasons.get("left_without_primary_ip", 0)
+    parts = [
+        f"{fallback_reasons.get(key, 0)} {phrase}"
+        for key, phrase in _FALLBACK_PHRASES
+        if fallback_reasons.get(key)
+    ]
+    return (
+        f" The last management-address step reported {total} device(s) it could "
+        "not give a primary IP from the management address"
+        + (": " + ", ".join(parts) if parts else "")
+        + "."
+    )
 
 
 def classify_primary_ip_devices(missing):
@@ -149,12 +182,13 @@ def classify_primary_ip_devices(missing):
     return classified
 
 
-def reason_rows(classified, *, settings_on=False):
+def reason_rows(classified, *, settings_on=False, fallback_reasons=None):
     """Rows (count, why, fixable, what to do) for a ``{device pk: reason}`` map.
 
     Pass ``settings_on`` when the sync's primary-IP settings are already enabled,
     so the advice for an unchosen address does not tell the operator to turn on
-    what is on.
+    what is on. ``fallback_reasons`` (the parsed management-address summary)
+    adds what that step reported to the unchosen-address reason.
     """
     counts = Counter(classified.values())
     return [
@@ -163,7 +197,11 @@ def reason_rows(classified, *, settings_on=False):
             "title": REASON_TITLES[reason],
             "count": counts[reason],
             "fixable": fixable,
-            "why": why,
+            "why": (
+                why + fallback_sentence(fallback_reasons)
+                if reason == "has_an_address_but_none_was_chosen"
+                else why
+            ),
             "what_to_do": (
                 ALREADY_ON_ADVICE
                 if settings_on and reason == "has_an_address_but_none_was_chosen"
@@ -175,6 +213,10 @@ def reason_rows(classified, *, settings_on=False):
     ]
 
 
-def primary_ip_reasons(missing, *, settings_on=False):
+def primary_ip_reasons(missing, *, settings_on=False, fallback_reasons=None):
     """Count the devices in ``missing`` by why, with what to do about each reason."""
-    return reason_rows(classify_primary_ip_devices(missing), settings_on=settings_on)
+    return reason_rows(
+        classify_primary_ip_devices(missing),
+        settings_on=settings_on,
+        fallback_reasons=fallback_reasons,
+    )

@@ -546,6 +546,12 @@ different answer:
 `primary_ip.without_primary_ip_not_in_fallback_summary` is the part of the bare
 count none of those buckets explain; that is the figure to investigate.
 
+The same counts now appear on the "Has an address, none chosen" finding in
+`explained_findings`, so nobody has to find the job-log line. The step reports on
+the devices in its own tag scope, so its counts sit beside this finding rather
+than splitting it. `primary_ip.without_primary_ip_examples` lists a few device
+ids per reason, to check a reason against the device list.
+
 For the `scope_reconciliation` split of uncovered devices: **unclaimed** devices
 were not created by this sync (another source or an operator did), so adopt or
 tag them deliberately; **owned quarantine** devices are held for the required

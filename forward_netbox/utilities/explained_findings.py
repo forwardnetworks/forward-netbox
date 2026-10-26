@@ -63,7 +63,13 @@ def _primary_ip_rows(sync):
         pk__in=bound, primary_ip4__isnull=True, primary_ip6__isnull=True
     )
     rows = []
-    for item in primary_ip_reasons(missing, settings_on=settings_on):
+    from ..views import _primary_ip_fallback_reasons
+
+    for item in primary_ip_reasons(
+        missing,
+        settings_on=settings_on,
+        fallback_reasons=_primary_ip_fallback_reasons(sync),
+    ):
         rows.append(
             _row(
                 "Devices without a primary IP (this sync)",

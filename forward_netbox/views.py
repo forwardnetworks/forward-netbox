@@ -781,7 +781,8 @@ def _primary_ip_bundle_payload(sync):
     from .models import ForwardDeviceIdentity
     from .utilities.primary_ip import primary_ip_from_management_ip_enabled
     from .utilities.primary_ip import primary_ip_from_mgmt_tag_enabled
-    from .utilities.primary_ip_reasons import primary_ip_reasons
+    from .utilities.primary_ip_reasons import classify_primary_ip_devices
+    from .utilities.primary_ip_reasons import reason_rows
 
     enabled = primary_ip_from_mgmt_tag_enabled(sync)
     device_ids = ForwardDeviceIdentity.objects.filter(sync=sync).values_list(
@@ -804,6 +805,7 @@ def _primary_ip_bundle_payload(sync):
         primary_ip4__isnull=True, primary_ip6__isnull=True
     )
     fallback_reasons = _primary_ip_fallback_reasons(sync)
+    classified = classify_primary_ip_devices(missing)
     return {
         "enabled": enabled,
         "management_ip_fallback_enabled": primary_ip_from_management_ip_enabled(sync),
@@ -824,10 +826,14 @@ def _primary_ip_bundle_payload(sync):
         },
         # One reason per device and whether anything can fix it, so the bare count
         # reconciles instead of leaving a remainder to work out by hand.
-        "without_primary_ip_reasons": primary_ip_reasons(
-            missing,
+        "without_primary_ip_reasons": reason_rows(
+            classified,
             settings_on=enabled and primary_ip_from_management_ip_enabled(sync),
+            fallback_reasons=fallback_reasons,
         ),
+        # A few device ids per reason, so a reason can be checked against the
+        # device list without asking the customer which devices it meant.
+        "without_primary_ip_examples": _primary_ip_reason_examples(classified),
         "without_primary_ip_by_status": dict(
             Counter(missing.values_list("status", flat=True))
         ),
@@ -866,6 +872,15 @@ def _primary_ip_bundle_payload(sync):
             else None
         ),
     }
+
+
+def _primary_ip_reason_examples(classified, per_reason=10):
+    examples = {}
+    for pk, reason in sorted(classified.items()):
+        bucket = examples.setdefault(reason, [])
+        if len(bucket) < per_reason:
+            bucket.append(pk)
+    return examples
 
 
 def _primary_ip_fallback_reasons(sync):

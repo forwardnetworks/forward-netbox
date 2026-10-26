@@ -137,6 +137,26 @@ class DevicesWithoutAPrimaryIp(PrimaryIpFixture):
             [row["reason"] for row in rows], ["shares_an_address_with_another_device"]
         )
 
+    def test_the_unchosen_reason_carries_what_the_management_step_reported(self):
+        unchosen = self.new_device("u2")
+        self.give_address(unchosen, "10.9.1.9/24")
+        summary = {
+            "left_without_primary_ip": 649,
+            "shared_with_another_device": 585,
+            "address_on_no_synced_interface": 55,
+            "several_management_addresses": 8,
+            "address_on_several_interfaces": 1,
+        }
+
+        row = primary_ip_reasons(
+            self.missing([unchosen]), settings_on=True, fallback_reasons=summary
+        )[0]
+
+        self.assertIn("585 share the address with another device", row["why"])
+        self.assertIn("55 have it on no synced interface", row["why"])
+        self.assertNotIn("more have no primary IP", row["why"])
+        self.assertNotIn("ingestion job log", row["what_to_do"])
+
     def test_the_advice_does_not_say_to_turn_on_what_is_on(self):
         unchosen = self.new_device("u1")
         self.give_address(unchosen, "10.9.0.9/24")
@@ -251,6 +271,12 @@ class BundleTest(DevicesWithoutAPrimaryIp):
         exported = json.dumps(export_safe_payload(payload))
         for device in devices:
             self.assertNotIn(device.name, exported)
+        # A few ids per reason, so a reason can be checked without a question.
+        examples = payload["without_primary_ip_examples"]
+        self.assertEqual(
+            {pk for pks in examples.values() for pk in pks},
+            {device.pk for device in devices},
+        )
 
 
 class SkipReasonCatalogueTest(PrimaryIpFixture):
