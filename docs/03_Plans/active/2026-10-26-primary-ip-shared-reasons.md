@@ -36,3 +36,4 @@ Revert; the finding returns to the previous wording and classification.
 - Ids are job-log evidence from the last ingestion; the branch merge keeps object ids, and the bundle counts any logged id that is not a bare device of this sync rather than trusting it.
 - The classifier is unchanged: broadening "shared" to any holder was reviewed out, because the sync-time step does not skip on sharing and uniqueness is per address record, so it could hide fixable devices.
 - The summary counts are shown as a sync-wide cross-reference, not as a split of this reason's devices, because the step counts every bare device and the classifier counts by what NetBox holds.
+- `filelock` moved past three advisories (release lock 3.31.1 to 4.2.4, which needs Python 3.11; `poetry.lock` to 4.1.0, the newest that still supports the 3.10 floor). The pre-push release preflight refused the push on them; `pip-audit` on the release lock reports none.
