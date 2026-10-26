@@ -804,7 +804,10 @@ def _primary_ip_bundle_payload(sync):
     all_missing = Device.objects.filter(
         primary_ip4__isnull=True, primary_ip6__isnull=True
     )
+    from .utilities.primary_ip import primary_ip_log_facts
+
     fallback_reasons = _primary_ip_fallback_reasons(sync)
+    outcomes = primary_ip_log_facts(sync)[1]  # None: the log has no per-device lines
     classified = classify_primary_ip_devices(missing)
     return {
         "enabled": enabled,
@@ -830,7 +833,11 @@ def _primary_ip_bundle_payload(sync):
             classified,
             settings_on=enabled and primary_ip_from_management_ip_enabled(sync),
             fallback_reasons=fallback_reasons,
+            outcomes=outcomes,
         ),
+        # What the management-address step recorded per device, set against the
+        # reasons above, with the device that owns the address where it said.
+        "management_step_outcomes": _primary_ip_outcome_detail(classified, outcomes),
         # A few device ids per reason, so a reason can be checked against the
         # device list without asking the customer which devices it meant.
         "without_primary_ip_examples": _primary_ip_reason_examples(classified),
@@ -874,6 +881,33 @@ def _primary_ip_bundle_payload(sync):
     }
 
 
+def _primary_ip_outcome_detail(classified, outcomes):
+    from .utilities.primary_ip_reasons import outcome_split
+
+    if outcomes is None:
+        # The last ingestion's log has no per-device lines (written by an earlier
+        # release, or rotated), so nothing here is "recorded nothing".
+        return {"device_lines_present": False}
+
+    split = outcome_split(classified, outcomes)
+    recorded_here = {pk for pk in outcomes if pk in classified}
+    return {
+        "device_lines_present": True,
+        "recorded_in_log": len(outcomes),
+        "recorded_for_bare_devices": len(recorded_here),
+        "recorded_not_bare_here": len(outcomes) - len(recorded_here),
+        "by_reason": {
+            reason: {str(code or "none_recorded"): n for code, n in counts.items()}
+            for reason, counts in split.items()
+        },
+        "shared_holder_examples": [
+            {"device": pk, "holder": outcomes[pk][1]}
+            for pk in sorted(recorded_here)
+            if outcomes[pk][1]
+        ][:10],
+    }
+
+
 def _primary_ip_reason_examples(classified, per_reason=10):
     examples = {}
     for pk, reason in sorted(classified.items()):
@@ -884,15 +918,9 @@ def _primary_ip_reason_examples(classified, per_reason=10):
 
 
 def _primary_ip_fallback_reasons(sync):
-    from .utilities.primary_ip import parse_fallback_summary
+    from .utilities.primary_ip import primary_ip_log_facts
 
-    job = getattr(getattr(sync, "last_ingestion", None), "job", None)
-    for entry in reversed(list(getattr(job, "log_entries", None) or [])):
-        message = entry.get("message") if isinstance(entry, dict) else None
-        parsed = parse_fallback_summary(message)
-        if parsed is not None:
-            return parsed
-    return None
+    return primary_ip_log_facts(sync)[0]
 
 
 def _interface_ip4_prefix_lengths(devices, limit=12):

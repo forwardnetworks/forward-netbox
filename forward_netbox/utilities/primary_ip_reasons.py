@@ -85,6 +85,55 @@ _FALLBACK_PHRASES = (
 )
 
 
+# What the step recorded for one device, in the words the operator reads.
+_OUTCOME_PHRASES = {
+    "shared": "share the address with another device",
+    "no-interface": "have it on no synced interface",
+    "multiple-addresses": "have several management addresses",
+    "several-interfaces": "have it on several interfaces",
+    "holder": "lost the address to a device that already owned it",
+    "tag-unresolved": "have a Mgmt_ tag that matched no interface address",
+    "no-management-address": "have no usable management address from Forward",
+}
+
+
+def outcome_split(classified, outcomes):
+    """``{reason: Counter({code or None: devices})}`` for the devices in ``classified``.
+
+    ``outcomes`` is what the last management-address step recorded per device.
+    A recorded device that is not in ``classified`` (it has a primary IP now, or
+    is not this sync's) is left out, so every figure counts a bare device of this
+    sync; ``None`` counts the bare devices the step recorded nothing for.
+    """
+    split = {}
+    for pk, reason in classified.items():
+        code = (outcomes.get(pk) or (None, None))[0]
+        split.setdefault(reason, Counter())[code] += 1
+    return split
+
+
+def outcome_sentence(counts):
+    """The step's recorded outcomes for one reason's devices, or "" if none recorded."""
+    if not counts:
+        return ""
+    if not any(code for code in counts):
+        return (
+            f" The last management-address step recorded no reason for "
+            f"{counts[None]} of these devices."
+        )
+    parts = [
+        f"{counts[code]} {_OUTCOME_PHRASES.get(code, code)}"
+        for code in _OUTCOME_PHRASES
+        if counts.get(code)
+    ]
+    sentence = " Of these devices, the last management-address step recorded: " + (
+        ", ".join(parts) if parts else "nothing it can name"
+    )
+    if counts.get(None):
+        sentence += f"; it recorded no reason for {counts[None]}"
+    return sentence + "."
+
+
 def fallback_sentence(fallback_reasons):
     """What the last management-address step reported, across the whole sync.
 
@@ -182,14 +231,26 @@ def classify_primary_ip_devices(missing):
     return classified
 
 
-def reason_rows(classified, *, settings_on=False, fallback_reasons=None):
+def _step_sentence(reason, split, fallback_reasons):
+    recorded = outcome_sentence(split.get(reason))
+    if recorded:
+        return recorded
+    if reason == "has_an_address_but_none_was_chosen":
+        return fallback_sentence(fallback_reasons)
+    return ""
+
+
+def reason_rows(classified, *, settings_on=False, fallback_reasons=None, outcomes=None):
     """Rows (count, why, fixable, what to do) for a ``{device pk: reason}`` map.
 
     Pass ``settings_on`` when the sync's primary-IP settings are already enabled,
     so the advice for an unchosen address does not tell the operator to turn on
     what is on. ``fallback_reasons`` (the parsed management-address summary)
-    adds what that step reported to the unchosen-address reason.
+    adds what that step reported to the unchosen-address reason. ``outcomes`` (the
+    step's per-device record) adds, to every reason, how that reason's devices
+    split by what the step recorded; it takes the place of the sync-wide counts.
     """
+    split = outcome_split(classified, outcomes) if outcomes is not None else {}
     counts = Counter(classified.values())
     return [
         {
@@ -197,11 +258,7 @@ def reason_rows(classified, *, settings_on=False, fallback_reasons=None):
             "title": REASON_TITLES[reason],
             "count": counts[reason],
             "fixable": fixable,
-            "why": (
-                why + fallback_sentence(fallback_reasons)
-                if reason == "has_an_address_but_none_was_chosen"
-                else why
-            ),
+            "why": why + _step_sentence(reason, split, fallback_reasons),
             "what_to_do": (
                 ALREADY_ON_ADVICE
                 if settings_on and reason == "has_an_address_but_none_was_chosen"
@@ -213,10 +270,13 @@ def reason_rows(classified, *, settings_on=False, fallback_reasons=None):
     ]
 
 
-def primary_ip_reasons(missing, *, settings_on=False, fallback_reasons=None):
+def primary_ip_reasons(
+    missing, *, settings_on=False, fallback_reasons=None, outcomes=None
+):
     """Count the devices in ``missing`` by why, with what to do about each reason."""
     return reason_rows(
         classify_primary_ip_devices(missing),
         settings_on=settings_on,
         fallback_reasons=fallback_reasons,
+        outcomes=outcomes,
     )

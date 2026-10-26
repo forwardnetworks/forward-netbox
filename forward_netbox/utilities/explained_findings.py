@@ -63,12 +63,14 @@ def _primary_ip_rows(sync):
         pk__in=bound, primary_ip4__isnull=True, primary_ip6__isnull=True
     )
     rows = []
-    from ..views import _primary_ip_fallback_reasons
+    from .primary_ip import primary_ip_log_facts
 
+    fallback_reasons, outcomes = primary_ip_log_facts(sync)
     for item in primary_ip_reasons(
         missing,
         settings_on=settings_on,
-        fallback_reasons=_primary_ip_fallback_reasons(sync),
+        fallback_reasons=fallback_reasons,
+        outcomes=outcomes,
     ):
         rows.append(
             _row(

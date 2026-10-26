@@ -547,10 +547,21 @@ different answer:
 count none of those buckets explain; that is the figure to investigate.
 
 The same counts now appear on the "Has an address, none chosen" finding in
-`explained_findings`, so nobody has to find the job-log line. The step reports on
-the devices in its own tag scope, so its counts sit beside this finding rather
-than splitting it. `primary_ip.without_primary_ip_examples` lists a few device
-ids per reason, to check a reason against the device list.
+`explained_findings`, so nobody has to find the job-log line. The step also writes
+job-log lines, in chunks, with the ids of the devices it recorded a reason for
+(and, for a shared address, the id of another device holding it), and the bundle
+splits each reason's devices by what the step recorded:
+`primary_ip.management_step_outcomes.by_reason`. The codes are `shared`,
+`no-interface`, `multiple-addresses`, `several-interfaces`, `holder` (the address
+was already another device's primary), `tag-unresolved` and
+`no-management-address`. `none_recorded` counts bare devices the step wrote no
+reason for, and `recorded_not_bare_here` counts logged devices that are not bare
+in this sync now. If `device_lines_present` is `false` the last ingestion's log
+has no per-device lines (it ran on an earlier release), so nothing is implied
+about those devices; re-run the sync. `shared_holder_examples` pairs a few
+devices with another device holding their address.
+`primary_ip.without_primary_ip_examples` lists a few device ids per reason, to
+check a reason against the device list.
 
 For the `scope_reconciliation` split of uncovered devices: **unclaimed** devices
 were not created by this sync (another source or an operator did), so adopt or

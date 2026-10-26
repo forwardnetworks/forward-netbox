@@ -157,6 +157,102 @@ class DevicesWithoutAPrimaryIp(PrimaryIpFixture):
         self.assertNotIn("more have no primary IP", row["why"])
         self.assertNotIn("ingestion job log", row["what_to_do"])
 
+    def test_the_unchosen_reason_splits_by_what_the_step_recorded(self):
+        first = self.new_device("r1")
+        second = self.new_device("r2")
+        third = self.new_device("r3")
+        for index, device in enumerate((first, second, third)):
+            self.give_address(device, f"10.9.3.{index + 1}/24")
+        outcomes = {first.pk: ("shared", 99), second.pk: ("no-interface", None)}
+
+        row = primary_ip_reasons(
+            self.missing([first, second, third]), outcomes=outcomes
+        )[0]
+
+        self.assertIn("1 share the address with another device", row["why"])
+        self.assertIn("1 have it on no synced interface", row["why"])
+        self.assertIn("it recorded no reason for 1", row["why"])
+
+    def test_a_recorded_device_that_is_not_bare_here_is_not_counted(self):
+        bare = self.new_device("b1")
+        self.give_address(bare, "10.9.4.1/24")
+
+        row = primary_ip_reasons(
+            self.missing([bare]),
+            outcomes={bare.pk: ("shared", 1), 12345: ("shared", 1)},
+        )[0]
+
+        self.assertIn("1 share the address with another device", row["why"])
+        self.assertNotIn("no reason", row["why"])
+
+    def test_the_bundle_carries_the_per_device_split_and_the_owner(self):
+        from forward_netbox.views import _primary_ip_outcome_detail
+
+        first = self.new_device("o1")
+        second = self.new_device("o2")
+        self.give_address(first, "10.9.5.1/24")
+        classified = {
+            first.pk: "has_an_address_but_none_was_chosen",
+            second.pk: "no_interfaces_synced",
+        }
+        outcomes = {first.pk: ("shared", 77), 555: ("shared", 1)}
+
+        detail = _primary_ip_outcome_detail(classified, outcomes)
+
+        self.assertTrue(detail["device_lines_present"])
+        self.assertEqual(detail["recorded_in_log"], 2)
+        self.assertEqual(detail["recorded_for_bare_devices"], 1)
+        self.assertEqual(detail["recorded_not_bare_here"], 1)
+        self.assertEqual(
+            detail["by_reason"]["has_an_address_but_none_was_chosen"], {"shared": 1}
+        )
+        self.assertEqual(
+            detail["by_reason"]["no_interfaces_synced"], {"none_recorded": 1}
+        )
+        self.assertEqual(
+            detail["shared_holder_examples"], [{"device": first.pk, "holder": 77}]
+        )
+
+    def test_a_log_without_per_device_lines_is_not_read_as_nothing_recorded(self):
+        from forward_netbox.views import _primary_ip_outcome_detail
+
+        self.assertEqual(
+            _primary_ip_outcome_detail({1: "no_interfaces_synced"}, None),
+            {"device_lines_present": False},
+        )
+        device = self.new_device("e1")
+        self.give_address(device, "10.9.6.1/24")
+
+        row = primary_ip_reasons(self.missing([device]), outcomes=None)[0]
+
+        self.assertNotIn("recorded", row["why"])
+
+    def test_a_marked_log_with_nothing_recorded_says_so(self):
+        device = self.new_device("e2")
+        self.give_address(device, "10.9.7.1/24")
+
+        row = primary_ip_reasons(self.missing([device]), outcomes={})[0]
+
+        self.assertIn("recorded no reason for 1 of these devices", row["why"])
+
+    def test_the_log_reader_uses_the_jobs_log_entries(self):
+        from types import SimpleNamespace
+
+        from forward_netbox.utilities.primary_ip import format_device_reason_lines
+        from forward_netbox.utilities.primary_ip import primary_ip_log_facts
+
+        lines = format_device_reason_lines({5: ("shared", 6)})
+        job = SimpleNamespace(log_entries=[{"message": line} for line in lines])
+        sync = SimpleNamespace(last_ingestion=SimpleNamespace(job=job))
+        unmarked = SimpleNamespace(
+            last_ingestion=SimpleNamespace(
+                job=SimpleNamespace(log_entries=[{"message": "something else"}])
+            )
+        )
+
+        self.assertEqual(primary_ip_log_facts(sync)[1], {5: ("shared", 6)})
+        self.assertIsNone(primary_ip_log_facts(unmarked)[1])
+
     def test_the_advice_does_not_say_to_turn_on_what_is_on(self):
         unchosen = self.new_device("u1")
         self.give_address(unchosen, "10.9.0.9/24")
