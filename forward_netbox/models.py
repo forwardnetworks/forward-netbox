@@ -2086,6 +2086,21 @@ class ForwardChange(ForwardPluginModelDocsMixin, PrimaryModel):
     predict_reason = models.TextField(blank=True, default="")
     predict_pre_verdict = models.CharField(max_length=32, blank=True, default="")
     netbox_impact = models.JSONField(blank=True, default=dict)
+    # Where the prediction lives in Forward. Ids only, written the moment Forward
+    # returns them: a change set that Forward holds and NetBox has forgotten pins
+    # its predicted snapshots against Forward's retention for good. `predict_digest`
+    # is the digest of the proposal as it was predicted, so a proposal edited
+    # afterwards reads as stale.
+    predict_change_set_id = models.CharField(
+        max_length=100, blank=True, default="", db_default=""
+    )
+    predict_snapshot_id = models.CharField(
+        max_length=100, blank=True, default="", db_default=""
+    )
+    predict_digest = models.CharField(
+        max_length=64, blank=True, default="", db_default=""
+    )
+    predict_started_at = models.DateTimeField(blank=True, null=True)
 
     class Meta:
         ordering = ("-created",)
@@ -2120,6 +2135,45 @@ class ForwardChange(ForwardPluginModelDocsMixin, PrimaryModel):
 
     def get_verdict_color(self):
         return ForwardChangeVerdictChoices.colors.get(self.verdict)
+
+
+class ForwardChangeProposal(models.Model):
+    """One entry of a change's proposal: what to change on one device.
+
+    Deliberately not a change-logged model. NetBox's change log serialises every
+    field of a change-logged object, and a proposal's commands can hold keys and
+    SNMP communities; they are kept here and nowhere else, and never copied to the
+    journal, a job log, an event or the support bundle. `kind` leaves room for
+    other kinds of entry (a BGP advertisement) without another migration; only
+    `cli` is read today.
+    """
+
+    CLI = "cli"
+
+    change = models.ForeignKey(
+        ForwardChange,
+        on_delete=models.CASCADE,
+        related_name="proposals",
+    )
+    kind = models.CharField(max_length=16, default=CLI)
+    # The device's Forward name, as the change's device rows carry it.
+    target = models.CharField(max_length=255)
+    body = models.TextField(blank=True, default="")
+
+    class Meta:
+        ordering = ("target",)
+        verbose_name = _("Forward Change Proposal")
+        verbose_name_plural = _("Forward Change Proposals")
+        db_table = "forward_netbox_change_proposal"
+        constraints = [
+            models.UniqueConstraint(
+                fields=["change", "kind", "target"],
+                name="forward_change_proposal_unique",
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.change}: {self.kind} {self.target}"
 
 
 class ForwardChangeDevice(models.Model):

@@ -290,9 +290,54 @@
         <p class="text-muted small">
           {% trans "Advisory only. The verdict does not depend on this." %}
         </p>
-        <p class="mb-0">{{ predict_panel.message }}</p>
+        <p class="mb-2">{{ predict_panel.message }}</p>
+        {% if predict_panel.stale %}
+          <p class="text-warning mb-2">{% trans "The proposal changed after this prediction, so it describes an earlier proposal." %}</p>
+        {% endif %}
+        {% if predict_snapshot_id %}
+          <p class="mb-2 small">{% trans "Predicted snapshot" %}: <code>{{ predict_snapshot_id }}</code></p>
+        {% endif %}
+        {% if predict_panel.scope %}
+          <p class="text-muted small mb-2">{{ predict_panel.scope }}</p>
+        {% endif %}
+        {% if perms.forward_netbox.change_forwardchange %}
+          {% if predict_pending %}
+            <form method="post" class="d-inline" action="{% url 'plugins:forward_netbox:forwardchange_predict_refresh' pk=object.pk %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm btn-outline-primary">{% trans "Refresh prediction" %}</button>
+            </form>
+          {% elif predict_offered and can_predict %}
+            <a class="btn btn-sm btn-outline-primary" href="{% url 'plugins:forward_netbox:forwardchange_predict' pk=object.pk %}">{% trans "Ask Forward to predict" %}</a>
+          {% elif not predict_offered %}
+            <p class="text-muted small mb-0">{% trans "Predict is off for this source. Turn on Ask Forward to predict change-control changes on the source to offer it." %}</p>
+          {% endif %}
+        {% endif %}
       </div>
     </div>
+
+    {% if proposal_rows and perms.forward_netbox.change_forwardchange %}
+    <div class="card">
+      <h5 class="card-header">{% trans "Proposal" %}</h5>
+      <div class="card-body">
+        <p class="text-muted small">{% trans "CLI commands to try on each device. They are kept in NetBox for this change only and are not written to the change log, the journal or the support bundle." %}</p>
+        {% if proposal_editable %}
+        <form method="post" action="{% url 'plugins:forward_netbox:forwardchange_proposal_save' pk=object.pk %}">
+          {% csrf_token %}
+          {% for name, commands in proposal_rows %}
+            <div class="mb-3">
+              <label class="form-label" for="commands_{{ forloop.counter0 }}"><code>{{ name }}</code></label>
+              <input type="hidden" name="target_{{ forloop.counter0 }}" value="{{ name }}">
+              <textarea class="form-control font-monospace" id="commands_{{ forloop.counter0 }}" name="commands_{{ forloop.counter0 }}" rows="4" autocomplete="off" spellcheck="false">{{ commands }}</textarea>
+            </div>
+          {% endfor %}
+          <button type="submit" class="btn btn-sm btn-primary">{% trans "Save proposal" %}</button>
+        </form>
+        {% else %}
+          <p class="text-muted mb-0">{% trans "The proposal can no longer be edited." %}</p>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
 
     <div class="card">
       <h5 class="card-header">{% trans "Scope" %}</h5>

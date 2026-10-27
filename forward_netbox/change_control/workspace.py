@@ -85,6 +85,53 @@ class ForwardWorkspaceApi:
             )
         return rows
 
+    # -- change sets (Forward Predict) --------------------------------------------
+    #
+    # Checked once against a live Forward (create, validate, stage, commit, predict,
+    # delete); the tests drive these through the SDK's own service classes so a
+    # renamed method fails there instead of in production.
+
+    def _change_set(self, network_id, change_set_id):
+        return self.client._sdk_client.change_sets.handle(
+            change_set_id, network_id=network_id
+        )
+
+    def create_change_set(self, network_id, *, name, snapshot_id):
+        created = self._sdk(
+            self.client._sdk_client.change_sets.create,
+            name,
+            snapshot_id=snapshot_id,
+            network_id=network_id,
+        )
+        return str(created.id)
+
+    def validate_commands(self, network_id, change_set_id, device_name, commands):
+        """How many errors Forward found in the text; nothing is staged."""
+        handle = self._change_set(network_id, change_set_id)
+        found = self._sdk(handle.validate_commands, device_name, commands)
+        return len(getattr(found, "command_errors", None) or [])
+
+    def set_commands(self, network_id, change_set_id, device_name, commands):
+        handle = self._change_set(network_id, change_set_id)
+        self._sdk(handle.set_commands, device_name, commands)
+
+    def commit(self, network_id, change_set_id, note):
+        handle = self._change_set(network_id, change_set_id)
+        self._sdk(handle.commit, note)
+
+    def predict(self, network_id, change_set_id, note):
+        """Start the prediction and return the predicted snapshot's id at once."""
+        handle = self._change_set(network_id, change_set_id)
+        started = self._sdk(handle.predict, note)
+        return str(getattr(started, "id", "") or "")
+
+    def delete_change_set(self, network_id, change_set_id):
+        self._sdk(
+            self.client._sdk_client.change_sets.delete,
+            [change_set_id],
+            network_id=network_id,
+        )
+
     def collection_access(self, network_id):
         """The account's Forward roles, read-only: ``{org_roles, network_roles}``.
 

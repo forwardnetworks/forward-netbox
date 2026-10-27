@@ -19,7 +19,9 @@ from django.shortcuts import redirect
 from django.shortcuts import render
 from django.urls import reverse
 from django.utils import timezone
+from django.utils.decorators import method_decorator
 from django.utils.translation import gettext as _
+from django.views.decorators.debug import sensitive_post_parameters
 from netbox.object_actions import AddObject
 from netbox.object_actions import BulkDelete
 from netbox.object_actions import BulkEdit
@@ -5378,6 +5380,47 @@ class ForwardChangeEditView(generic.ObjectEditView):
     form = ForwardChangeForm
 
 
+def _proposal_rows(change):
+    """`(Forward device name, commands)` for each device the proposal can name.
+
+    The commands are for the editor on this page only; they are not put in any
+    message, journal entry, bundle or log.
+    """
+    from .change_control.predict import proposal_entries
+    from .change_control.workspace import workspace_device_names
+
+    entries = proposal_entries(change)
+    names = workspace_device_names(change)
+    # An entry for a device that has left the change stays visible, so it can be
+    # cleared; otherwise it would block a prediction with nothing on the page to fix.
+    names = names + sorted(set(entries) - set(names))
+    return [(name, entries.get(name, "")) for name in names]
+
+
+def _visible_proposal_rows(request, change):
+    """The proposal editor's rows, only for a user who may change this change.
+
+    The commands can hold secrets, and the page template checks only the global
+    permission, which an object-level constraint does not narrow; so the rows are
+    built here, from the same restricted queryset the save view uses. Without the
+    opt-in the editor shows only if commands are already stored, so they can be
+    cleared.
+    """
+    from .change_control.predict import predict_enabled
+    from .change_control.predict import proposal_entries
+
+    allowed = (
+        ForwardChange.objects.restrict(request.user, "change")
+        .filter(pk=change.pk)
+        .exists()
+    )
+    if not allowed:
+        return []
+    if not predict_enabled(change.source) and not proposal_entries(change):
+        return []
+    return _proposal_rows(change)
+
+
 @register_model_view(ForwardChange)
 class ForwardChangeView(generic.ObjectView):
     queryset = ForwardChange.objects.all()
@@ -5392,7 +5435,11 @@ class ForwardChangeView(generic.ObjectView):
         panel that looks like evidence is how a prediction becomes a decision.
         """
         from .change_control.evidence import criterion_outcomes
+        from .change_control.predict import predict_enabled
+        from .change_control.predict import prediction_is_stale
         from .change_control.predict import PredictOutcome
+        from .change_control.predict import PREDICTABLE_STATES
+        from .change_control.predict import PROPOSAL_STATES
         from .change_control.predict import render_predict_panel
         from .change_control.state_machine import check_transition
         from .change_control.state_machine import manual_transitions
@@ -5422,10 +5469,24 @@ class ForwardChangeView(generic.ObjectView):
             "predict_panel": render_predict_panel(
                 PredictOutcome(
                     status=instance.predict_status or PredictOutcome.UNAVAILABLE,
-                    reason=instance.predict_reason,
+                    reason=instance.predict_reason
+                    or (
+                        "No prediction has been asked for."
+                        if predict_enabled(instance.source)
+                        else ""
+                    ),
                     pre_verdict=instance.predict_pre_verdict,
-                )
+                ),
+                stale=prediction_is_stale(instance),
             ),
+            "predict_offered": predict_enabled(instance.source),
+            "predict_pending": instance.predict_status == PredictOutcome.PENDING,
+            "predict_snapshot_id": instance.predict_snapshot_id,
+            "proposal_editable": instance.state in PROPOSAL_STATES,
+            "can_predict": instance.state in PREDICTABLE_STATES
+            and bool(instance.workspace_network_id)
+            and bool(instance.before_snapshot_id),
+            "proposal_rows": _visible_proposal_rows(request, instance),
             "review_anchor": review_anchor(instance),
             "scoped_devices": instance.devices.select_related("device"),
             "criteria": instance.criteria.all(),
@@ -5792,6 +5853,89 @@ class ForwardChangeWorkspaceCollectView(_ForwardChangeForwardActionView):
         return collect_snapshot(
             change, request.user, confirmed=request.POST.get("confirm") == "on"
         )
+
+
+@register_model_view(ForwardChange, "proposal_save", path="proposal")
+@method_decorator(sensitive_post_parameters(), name="dispatch")
+class ForwardChangeProposalSaveView(_ForwardChangeForwardActionView):
+    """Store the commands proposed for each device of the change.
+
+    The form posts one `target_<n>` (the device's Forward name) and one
+    `commands_<n>` per device. The commands are never echoed into a message or
+    the journal.
+    """
+
+    success_message = _("Proposal saved.")
+
+    def run(self, request, change):
+        from .change_control.predict import save_proposal
+
+        bodies = {}
+        for key, target in request.POST.items():
+            if key.startswith("target_"):
+                bodies[target] = request.POST.get(
+                    "commands_" + key[len("target_") :], ""
+                )
+        return save_proposal(change, request.user, bodies)
+
+
+@register_model_view(ForwardChange, "predict", path="predict")
+class ForwardChangePredictView(_ForwardChangeForwardActionView):
+    """Ask Forward to predict the proposal, after a warning.
+
+    The page (GET) says what asking does and starts nothing; the request is made
+    only from its confirmed form.
+    """
+
+    success_message = _("Prediction started in Forward.")
+    show_outcome_message = True
+
+    def get(self, request, pk, **kwargs):
+        from .change_control.predict import PREDICTABLE_STATES
+        from .change_control.predict import proposal_entries
+        from .change_control.predict import SCOPE_NOTE
+
+        if not request.user.has_perm(self.action_permission):
+            raise PermissionDenied
+        change = get_object_or_404(
+            self.queryset.restrict(request.user, self.restrict_action), pk=pk
+        )
+        if change.state not in PREDICTABLE_STATES or not change.workspace_network_id:
+            messages.error(
+                request,
+                _(
+                    "A prediction is asked for once the change has its workspace "
+                    "baseline and before it is approved."
+                ),
+            )
+            return redirect(change.get_absolute_url())
+        return render(
+            request,
+            "forward_netbox/forwardchange_predict.html",
+            {
+                "object": change,
+                "scope_note": SCOPE_NOTE,
+                "device_count": len(proposal_entries(change)),
+            },
+        )
+
+    def run(self, request, change):
+        from .change_control.predict import start_prediction
+
+        return start_prediction(
+            change, request.user, confirmed=request.POST.get("confirm") == "on"
+        )
+
+
+@register_model_view(ForwardChange, "predict_refresh", path="predict/refresh")
+class ForwardChangePredictRefreshView(_ForwardChangeForwardActionView):
+    success_message = _("Prediction refreshed from Forward.")
+    show_outcome_message = True
+
+    def run(self, request, change):
+        from .change_control.predict import refresh_prediction
+
+        return refresh_prediction(change, request.user)
 
 
 @register_model_view(ForwardChange, "evidence_baseline", path="evidence/baseline")

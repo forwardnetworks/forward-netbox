@@ -171,6 +171,8 @@ class ForwardChangeSerializer(PrimaryModelSerializer):
             "applied_ref",
             "predict_status",
             "predict_reason",
+            "predict_snapshot_id",
+            "predict_change_set_id",
             "comment_count",
             "devices",
             "description",
@@ -188,6 +190,8 @@ class ForwardChangeSerializer(PrimaryModelSerializer):
             "applied_ref",
             "predict_status",
             "predict_reason",
+            "predict_snapshot_id",
+            "predict_change_set_id",
         )
         brief_fields = ("id", "display", "ref", "title", "state", "status")
 

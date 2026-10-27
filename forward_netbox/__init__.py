@@ -10,6 +10,10 @@ class NetboxForwardConfig(PluginConfig):
     min_version = "4.7.0"
     max_version = "4.7.99"
     graphql_schema = "graphql.schema.schema"
+    # Show the Forward Network Maps panel on Site pages (one cached, short
+    # timeout read per source); set False where the Forward login has no maps
+    # access or the pages should not call Forward at all.
+    default_settings = {"network_maps_panel": True}
 
     def ready(self):
         super().ready()

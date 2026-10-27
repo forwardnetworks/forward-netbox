@@ -61,9 +61,13 @@ def _translate_api_error(exc: ForwardAPIError) -> ForwardSyncError:
             "Forward API request returned transient HTTP "
             f"{exc.status}; retry attempts were exhausted."
         )
-    return ForwardClientError(
+    error = ForwardClientError(
         f"Forward API request failed with HTTP {exc.status}: {body}"
     )
+    # Callers that must tell "refused" from "failed" read this rather than the
+    # message text.
+    error.status = exc.status
+    return error
 
 
 def _translate_transport_error(exc: ForwardTransportError) -> ForwardSyncError:

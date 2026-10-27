@@ -345,8 +345,34 @@ class ForwardChangeBranchPanel(PluginTemplateExtension):
         )
 
 
+class ForwardSiteNetworkMapsPanel(PluginTemplateExtension):
+    """Forward maps named for this Site, on the Site detail page.
+
+    One cached, short-timeout list call per source the user may view (see
+    `utilities/network_maps.py`); stores nothing. Renders nothing when no map
+    matches and Forward answered, so a Site without a diagram shows no panel.
+    """
+
+    models = ["dcim.site"]
+
+    def right_page(self):
+        from .utilities.network_maps import site_network_maps
+
+        request = self.context.get("request")
+        entries = site_network_maps(
+            self.context["object"], getattr(request, "user", None)
+        )
+        if not entries:
+            return ""
+        return self.render(
+            "forward_netbox/inc/site_network_maps_panel.html",
+            extra_context={"entries": entries},
+        )
+
+
 template_extensions = [
     ForwardDeviceAnalysisPanel,
     ForwardDeviceOwnershipPanel,
     ForwardChangeBranchPanel,
+    ForwardSiteNetworkMapsPanel,
 ]

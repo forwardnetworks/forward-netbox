@@ -2,6 +2,7 @@ from core.choices import JobStatusChoices
 from core.models import Job
 from django.contrib.contenttypes.models import ContentType
 from django.db import connection
+from django.db import transaction
 from django.db.models import Q
 from django.db.models.deletion import ProtectedError
 from django.db.models.signals import post_migrate
@@ -9,6 +10,7 @@ from django.db.models.signals import pre_delete
 from django.dispatch import receiver
 from netbox.constants import ADVISORY_LOCK_KEYS
 
+from .models import ForwardChange
 from .models import ForwardIngestion
 from .models import ForwardNQEMap
 from .models import ForwardSync
@@ -94,6 +96,28 @@ def seed_builtin_nqe_maps(sender, **kwargs):
             update_fields.append("enabled")
         if update_fields:
             query_map.save(update_fields=update_fields)
+
+
+@receiver(pre_delete, sender=ForwardChange)
+def discard_prediction_on_change_delete(sender, instance, **kwargs):
+    """Delete the change's Forward change set once the delete has committed.
+
+    A change set that Forward holds and NetBox no longer knows about keeps its
+    predicted snapshots out of Forward's retention. The call waits for the commit
+    so a bulk delete never makes Forward calls inside the delete transaction and
+    a rolled-back delete never loses the id of a change set that still exists.
+    Best-effort: Forward being unreachable must not make a change undeletable.
+    """
+    change_set_id = getattr(instance, "predict_change_set_id", "")
+    if not change_set_id:
+        return
+    from .change_control.predict import delete_remote_change_set
+
+    source = instance.source
+    network_id = instance.workspace_network_id
+    transaction.on_commit(
+        lambda: delete_remote_change_set(source, network_id, change_set_id)
+    )
 
 
 @receiver(pre_delete, sender=ForwardSync)
