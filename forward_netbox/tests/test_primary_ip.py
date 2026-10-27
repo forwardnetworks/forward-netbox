@@ -285,3 +285,59 @@ class FallbackSummaryTest(SimpleTestCase):
 
         self.assertIsNone(parse_fallback_summary("primary_ip-from-tag: set primary IP"))
         self.assertIsNone(parse_fallback_summary(None))
+
+
+class DeviceReasonLinesTest(SimpleTestCase):
+    def test_outcomes_round_trip_through_job_log_lines(self):
+        from forward_netbox.utilities.primary_ip import format_device_reason_lines
+        from forward_netbox.utilities.primary_ip import parse_device_reason_lines
+
+        outcomes = {
+            7: ("shared", 40),
+            8: ("no-interface", None),
+            9: ("holder", 12),
+        }
+
+        lines = format_device_reason_lines(outcomes)
+
+        self.assertEqual(parse_device_reason_lines(lines), outcomes)
+
+    def test_a_long_bucket_is_split_across_lines_and_still_parses(self):
+        from forward_netbox.utilities.primary_ip import format_device_reason_lines
+        from forward_netbox.utilities.primary_ip import parse_device_reason_lines
+
+        outcomes = {pk: ("shared", pk + 1) for pk in range(1, 401)}
+
+        lines = format_device_reason_lines(outcomes)
+
+        self.assertGreater(len(lines), 1)
+        self.assertEqual(parse_device_reason_lines(lines), outcomes)
+
+    def test_a_marker_is_written_even_when_nothing_is_recorded(self):
+        from forward_netbox.utilities.primary_ip import device_reasons_marked
+        from forward_netbox.utilities.primary_ip import format_device_reason_lines
+
+        lines = format_device_reason_lines({})
+
+        self.assertTrue(device_reasons_marked(lines))
+        self.assertFalse(device_reasons_marked(["primary_ip-from-tag: set primary"]))
+
+    def test_a_malformed_id_list_is_ignored_rather_than_raised(self):
+        from forward_netbox.utilities.primary_ip import parse_device_reason_lines
+
+        self.assertEqual(
+            parse_device_reason_lines(
+                ["primary_ip-from-tag device reasons [shared]: 5>6>7,>5"]
+            ),
+            {},
+        )
+
+    def test_other_log_lines_are_ignored(self):
+        from forward_netbox.utilities.primary_ip import parse_device_reason_lines
+
+        self.assertEqual(
+            parse_device_reason_lines(
+                [None, "primary_ip-from-tag: set primary IP on 1 device(s)", ""]
+            ),
+            {},
+        )

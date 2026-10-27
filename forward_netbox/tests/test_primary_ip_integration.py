@@ -255,7 +255,7 @@ class PrimaryIpFromMgmtTagIntegrationTest(TransactionTestCase):
             {"fw-vsys2": ["10.55.0.1"], "r1": ["10.66.0.1"]},
         )
 
-        self.assertEqual(shared, {"fw-vsys2"})
+        self.assertEqual(shared, {"fw-vsys2": parent.pk})
 
     def test_a_tagged_device_ignores_the_management_address(self):
         other = Interface.objects.create(
@@ -290,6 +290,75 @@ class PrimaryIpFromMgmtTagIntegrationTest(TransactionTestCase):
         self.assertEqual(updated, 0)
         with activate_branch(branch):
             self.assertIsNone(Device.objects.get(pk=self.device.pk).primary_ip4_id)
+
+    def _logged(self, executor):
+        return [call.args[0] for call in executor.logger.log_info.call_args_list]
+
+    def test_the_step_records_which_device_landed_in_which_bucket(self):
+        from forward_netbox.utilities.primary_ip import parse_device_reason_lines
+
+        self._enable(tag=False, fallback=True)
+        parent = Device.objects.create(
+            name="fw-parent",
+            site=self.device.site,
+            role=self.device.role,
+            device_type=self.device.device_type,
+        )
+        mgmt = Interface.objects.create(device=parent, name="mgmt", type="virtual")
+        IPAddress.objects.create(address="10.55.0.1/24", assigned_object=mgmt)
+        vsys = Device.objects.create(
+            name="fw-vsys2",
+            site=self.device.site,
+            role=self.device.role,
+            device_type=self.device.device_type,
+        )
+        branch = provision_branch(user=self.user, name="Outcome Branch")
+        executor = self._fallback_executor(
+            # r1 names an address on none of its interfaces; the vsys names its
+            # parent's.
+            management_ips={"r1": ["10.77.77.77"], "fw-vsys2": ["10.55.0.1"]}
+        )
+
+        apply_primary_ip_from_mgmt_tags(executor, branch, snapshot_id="snap-1")
+
+        outcomes = parse_device_reason_lines(self._logged(executor))
+        self.assertEqual(outcomes[self.device.pk], ("no-interface", None))
+        self.assertEqual(outcomes[vsys.pk], ("shared", parent.pk))
+        # Ids only: no device name reaches the log.
+        for line in self._logged(executor):
+            self.assertNotIn("fw-vsys2", line)
+
+    def test_a_device_forward_gave_no_management_address_is_recorded(self):
+        from forward_netbox.utilities.primary_ip import parse_device_reason_lines
+
+        self._enable(tag=False, fallback=True)
+        branch = provision_branch(user=self.user, name="No Address Branch")
+        executor = self._fallback_executor(management_ips={"r1": []})
+
+        apply_primary_ip_from_mgmt_tags(executor, branch, snapshot_id="snap-1")
+
+        outcomes = parse_device_reason_lines(self._logged(executor))
+        self.assertEqual(outcomes[self.device.pk], ("no-management-address", None))
+
+    def test_a_device_that_lost_its_address_to_the_owner_is_recorded(self):
+        from forward_netbox.utilities.primary_ip import parse_device_reason_lines
+
+        self._enable(tag=False, fallback=True)
+        owner = Device.objects.create(
+            name="owner",
+            site=self.device.site,
+            role=self.device.role,
+            device_type=self.device.device_type,
+        )
+        owner.primary_ip4 = self.ip
+        owner.save(update_fields=["primary_ip4"])
+        branch = provision_branch(user=self.user, name="Holder Branch")
+        executor = self._fallback_executor(management_ips={"r1": ["10.0.211.2"]})
+
+        apply_primary_ip_from_mgmt_tags(executor, branch, snapshot_id="snap-1")
+
+        outcomes = parse_device_reason_lines(self._logged(executor))
+        self.assertEqual(outcomes[self.device.pk], ("holder", owner.pk))
 
     def test_sets_primary_ip_and_merges_into_main(self):
         # Device starts with no primary IP.

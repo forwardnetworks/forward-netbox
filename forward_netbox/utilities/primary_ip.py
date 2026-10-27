@@ -206,6 +206,37 @@ def parse_fallback_summary(message):
     }
 
 
+def device_reasons_marked(messages):
+    """Whether the log was written by a step that records per-device reasons."""
+    return any(
+        _DEVICE_REASON_MARKER_PATTERN.search(str(message or "")) for message in messages
+    )
+
+
+def primary_ip_log_facts(sync):
+    """``(fallback summary counts, device outcomes)`` from the sync's last job log.
+
+    The summary is None when the log carries no such line. The outcomes are None
+    when the log carries no per-device marker (the step did not run, the log was
+    written by an earlier release, or it was rotated away); a marked log with
+    nothing recorded gives ``{}``.
+    """
+    job = getattr(getattr(sync, "last_ingestion", None), "job", None)
+    entries = list(getattr(job, "log_entries", None) or [])
+    messages = [
+        entry.get("message") if isinstance(entry, dict) else None for entry in entries
+    ]
+    summary = None
+    for message in reversed(messages):
+        summary = parse_fallback_summary(message)
+        if summary is not None:
+            break
+    outcomes = (
+        parse_device_reason_lines(messages) if device_reasons_marked(messages) else None
+    )
+    return summary, outcomes
+
+
 def primary_ip_step_enabled(sync):
     """Either source turns the post-staging primary-IP step on."""
     return primary_ip_from_mgmt_tag_enabled(
@@ -288,16 +319,17 @@ def _existing_primary_ip_owners():
 
 
 def _devices_sharing_management_address(unresolved, device_management_ips):
-    """Devices whose one management address is already held by another device.
+    """``{name: owner pk}`` for devices whose one management address another device holds.
 
     A virtual system or an HA peer reports its parent's management address, so
     several devices name the same one. NetBox allows one primary-IP owner per
     address, so only one of them can ever have it - that is not a failure to
-    resolve, and it should not read like one.
+    resolve, and it should not read like one. The owner is the first other
+    device holding the address.
     """
     from ipam.models import IPAddress
 
-    shared = set()
+    shared = {}
     for name in unresolved:
         hosts = {
             host
@@ -310,9 +342,55 @@ def _devices_sharing_management_address(unresolved, device_management_ips):
         for ip in IPAddress.objects.filter(address__net_host=host)[:5]:
             owner = getattr(ip.assigned_object, "device", None)
             if owner is not None and owner.name != name:
-                shared.add(name)
+                shared[name] = owner.pk
                 break
     return shared
+
+
+# One line per reason and chunk, ids only: `pk` or `pk>owner pk`. A device's name
+# is customer data and does not go in a job log.
+_DEVICE_REASON_LINE = "primary_ip-from-tag device reasons [{code}]: {items}"
+_DEVICE_REASON_PATTERN = re.compile(
+    r"primary_ip-from-tag device reasons \[([a-z-]+)\]: "
+    r"(\d+(?:>\d+)?(?:,\d+(?:>\d+)?)*)$"
+)
+# Written whenever the step ran with this change, even for zero devices, so a log
+# from an earlier release (no per-device lines at all) is not read as "recorded
+# nothing".
+_DEVICE_REASON_MARKER = "primary_ip-from-tag device reasons recorded: {count}"
+_DEVICE_REASON_MARKER_PATTERN = re.compile(
+    r"primary_ip-from-tag device reasons recorded: \d+$"
+)
+_DEVICE_REASON_CHUNK = 150
+
+
+def format_device_reason_lines(outcomes):
+    """Job-log lines for ``{device pk: (code, owner pk or None)}``."""
+    by_code = {}
+    for pk, (code, owner) in sorted(outcomes.items()):
+        by_code.setdefault(code, []).append(f"{pk}>{owner}" if owner else str(pk))
+    lines = [_DEVICE_REASON_MARKER.format(count=len(outcomes))]
+    for code, items in sorted(by_code.items()):
+        for start in range(0, len(items), _DEVICE_REASON_CHUNK):
+            chunk = items[start : start + _DEVICE_REASON_CHUNK]
+            lines.append(_DEVICE_REASON_LINE.format(code=code, items=",".join(chunk)))
+    return lines
+
+
+def parse_device_reason_lines(messages):
+    """``{device pk: (code, owner pk or None)}`` from job-log messages; ``{}`` for none."""
+    outcomes = {}
+    for message in messages:
+        match = _DEVICE_REASON_PATTERN.search(str(message or ""))
+        if match is None:
+            continue
+        code, items = match.groups()
+        for item in items.split(","):
+            if not item:
+                continue
+            pk, _, owner = item.partition(">")
+            outcomes[int(pk)] = (code, int(owner) if owner else None)
+    return outcomes
 
 
 def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
@@ -408,6 +486,7 @@ def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
             # been staged. Claim each address once and report the loser.
             claimed_by = _existing_primary_ip_owners()
             conflicts = {}
+            lost_to_holder = {}
             for name, assignment in assignments.items():
                 device = devices.get(name)
                 if device is None:
@@ -425,6 +504,7 @@ def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
                     holder = claimed_by.get((attr, ip.pk))
                     if holder is not None and holder != device.pk:
                         conflicts[attr] = conflicts.get(attr, 0) + 1
+                        lost_to_holder.setdefault(device.pk, ("holder", holder))
                         continue
                     setattr(device, attr, ip)
                     claimed_by[(attr, ip.pk)] = device.pk
@@ -465,6 +545,7 @@ def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
                 for name, reason in fallback_reasons.items()
                 if name not in assignments
             }
+            outcomes = dict(lost_to_holder)
             if self_unresolved:
                 shared = _devices_sharing_management_address(
                     self_unresolved, device_management_ips
@@ -473,7 +554,34 @@ def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
                 for name, reason in self_unresolved.items():
                     key = "shared" if name in shared else reason
                     counts[key] = counts.get(key, 0) + 1
+                    device = devices.get(name)
+                    if device is not None:
+                        outcomes[device.pk] = (key, shared.get(name))
                 logger.log_info(format_fallback_summary(len(self_unresolved), counts))
+            # The two ways a bare device got no code above: its Mgmt_ tag matched
+            # no interface address, or Forward gave it no management address the
+            # step could use.
+            for name in set(device_mgmt_tags) | set(device_management_ips):
+                device = devices.get(name)
+                if (
+                    device is None
+                    or name in assignments
+                    or device.pk in outcomes
+                    or name in fallback_reasons
+                ):
+                    continue
+                outcomes[device.pk] = (
+                    (
+                        "tag-unresolved"
+                        if name in device_mgmt_tags
+                        else "no-management-address"
+                    ),
+                    None,
+                )
+            # Which device landed in which bucket, so a support bundle can say
+            # what the counts above cannot. Ids only.
+            for line in format_device_reason_lines(outcomes):
+                logger.log_info(line)
             return len(updated)
         finally:
             active_branch.set(None)
