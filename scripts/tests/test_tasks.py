@@ -1593,3 +1593,45 @@ class UpgradeFromConstraintsTests(unittest.TestCase):
                 if name not in ("netbox-dlm", "forward-sdk")
             },
         )
+
+
+class CiTiersTest(unittest.TestCase):
+    """`ci-quick` is the stack-free prefix of `ci`; a push runs only that."""
+
+    STACK_LEGS = {
+        "build",
+        "start",
+        "check",
+        "scenario_test_ci",
+        "test_ci",
+        "bulk_merge_retry_scale_test",
+        "validation_org_query_audit_ci",
+        "ui_test",
+    }
+
+    @staticmethod
+    def _names(task):
+        return [leg.__name__ for leg in task.pre]
+
+    def test_the_quick_tier_needs_no_running_stack(self):
+        self.assertFalse(self.STACK_LEGS & set(self._names(tasks.ci_quick)))
+
+    def test_the_quick_tier_keeps_the_legs_that_found_release_defects(self):
+        names = self._names(tasks.ci_quick)
+        for leg in ("release_preflight", "harness_test", "lint", "docs", "package"):
+            self.assertIn(leg, names)
+        self.assertEqual(names[-1], "artifact_upgrade_test")
+
+    def test_the_full_gate_is_the_quick_tier_plus_every_stack_leg(self):
+        full = self._names(tasks.ci)
+
+        self.assertEqual(full[: len(tasks.ci_quick.pre)], self._names(tasks.ci_quick))
+        self.assertTrue(self.STACK_LEGS <= set(full))
+
+    def test_the_long_suites_run_last_and_the_django_suite_is_the_last_of_them(self):
+        full = self._names(tasks.ci)
+
+        self.assertEqual(
+            full[-3:],
+            ["scenario_test_ci", "bulk_merge_retry_scale_test", "test_ci"],
+        )

@@ -34,3 +34,15 @@ Revert; the order returns to the previous list.
 ## Decision Log
 
 - The Django suite goes last because it is the longest and, with the scenario suite, is the least likely to surface a packaging or upgrade defect.
+
+## Follow-up: tiered push gate (branch `chore/tiered-pre-push`)
+
+The same four-hour `invoke ci` ran on every push, in the cut and again on the tag push, so one release cost about twelve hours of gate. With the operator's approval of the relaxations:
+
+- `invoke ci-quick` is the stack-free prefix of `ci`; a branch push runs it. `ci` is that prefix plus the stack legs, so it cannot drift from it.
+- The release cut still runs the full `ci`.
+- A tag push runs the quick tier only when `scripts/gated_tree.py` proves the tagged tree equals the tree the cut gated. The cut records a digest of every tracked file except the release plan (`gated_tree_digest` in the evidence record, rendered into the plan's Release Authorization); the tag push recomputes it from the tagged commit. A mismatch, a missing digest or a missing plan falls back to the full gate.
+- `scripts/pre_push_gate.py` chooses the tier and reads the hook's ref lines; `FORWARD_NETBOX_FULL_GATE=1` forces the full gate.
+- The hook itself is not tracked, so it becomes a thin wrapper that calls `scripts/pre_push_gate.py` when present and `invoke ci` when not.
+
+What this loses: a regression that only the long suites catch is no longer found at push time but at the cut, which fails fast and costs one cut. Validation: `scripts.tests.test_gated_tree` (19 tests, including real git repos for the digest), `test_tasks` tier tests, `test_release` render tests; not yet exercised end to end on a real tag push.

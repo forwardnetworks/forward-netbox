@@ -525,6 +525,10 @@ def _check_publish_gate_placement(failures: list[str]) -> None:
     if tasks_path.exists():
         text = tasks_path.read_text(encoding="utf-8")
         pre_list = text.rsplit("@task(", 1)[-1].split("def ci(", 1)[0]
+        # `ci` is the quick tier's legs plus the stack legs, so the quick tier's
+        # list is part of what `ci` runs.
+        _, _, quick_tail = text.partition("_QUICK_GATE_LEGS = [")
+        pre_list += quick_tail.split("\n]\n", 1)[0] if quick_tail else ""
         for task in PUBLISH_FORBIDDEN_INVOKE_TASKS:
             if task.replace("-", "_") not in pre_list:
                 failures.append(

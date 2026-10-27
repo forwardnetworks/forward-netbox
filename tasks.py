@@ -2189,27 +2189,42 @@ def sync_release_gate(
     print("sync-release-gate passed: strict release checks are clean.")
 
 
+_QUICK_GATE_LEGS = [
+    # Fail fast: cheapest first, longest last. A defect found at the end of a
+    # four-hour run costs the whole run again (3.0.9 lost one to the upgrade
+    # leg, which sat last), so every leg that needs no running stack comes
+    # before any that does.
+    #
+    # Static, sub-second checks.
+    release_preflight,
+    sensitive_check,
+    operator_text_check,
+    harness_check,
+    harness_test,
+    lint,
+    # Minutes, no stack needed. `package` builds the artifact the upgrade leg
+    # installs, and the upgrade leg is the one that found the 3.0.9 defect: an
+    # upgrade defect can only be found before the tag exists, where a version
+    # number is not yet spent.
+    docs,
+    package,
+    artifact_upgrade_test,
+]
+
+
+@task(name="ci-quick", pre=_QUICK_GATE_LEGS)
+def ci_quick(context):
+    """The legs of `ci` that need no running stack (about 35 minutes).
+
+    What a push runs by default (`scripts/pre_push_gate.py`); the release cut
+    still runs the full `ci`, and a tag push runs this only when its tree is
+    proven identical to the tree the cut gated.
+    """
+
+
 @task(
     pre=[
-        # Fail fast: cheapest first, longest last. A defect found at the end of a
-        # four-hour run costs the whole run again (3.0.9 lost one to the upgrade
-        # leg, which sat last), so every leg that needs no running stack comes
-        # before any that does, and the suites are ordered by how long they take.
-        #
-        # Static, sub-second checks.
-        release_preflight,
-        sensitive_check,
-        operator_text_check,
-        harness_check,
-        harness_test,
-        lint,
-        # Minutes, no stack needed. `package` builds the artifact the upgrade leg
-        # installs, and the upgrade leg is the one that found the 3.0.9 defect:
-        # an upgrade defect can only be found before the tag exists, where a
-        # version number is not yet spent.
-        docs,
-        package,
-        artifact_upgrade_test,
+        *_QUICK_GATE_LEGS,
         # Stack bring-up, then the legs that are quick against it.
         build,
         start,
