@@ -1,4 +1,4 @@
-# Run the cheap gate legs first so a failure does not cost the whole run
+# Run the cheap gate legs first, and land the lock fixes the push was blocked on
 
 ## Goal
 
@@ -6,12 +6,15 @@
 
 ## Constraints
 
+- Two high Dependabot alerts (virtualenv GHSA-cx6f-vjhg-g3cc, filelock GHSA-v4x8-3wr5-3wq8) block every push to `main` through the release preflight until the fixed locks are on `main`, so this change carries them: `virtualenv` 21.14.13 and `filelock` 4.2.4 in both locks, and the Python floor from 3.10 to 3.12 (NetBox 4.7 and Branching 1.2 already need 3.12, and every filelock fix needs 3.11, so the dev lock cannot otherwise drop its vulnerable entry). Both alert ids are waived in `scripts/check_release_preflight.py`, dated and temporary; remove them once the alerts read closed.
+
 - No leg is removed or weakened; only the order changes.
 - The legs keep their own isolated stacks and projects.
 
 ## Touched Surfaces
 
 - `tasks.py` (the `ci` task's `pre` list).
+- `pyproject.toml` (Python floor and classifiers), `poetry.lock`, `requirements-release.txt`, `scripts/check_release_preflight.py` (the waiver list).
 
 ## Approach
 
