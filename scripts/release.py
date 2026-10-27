@@ -45,11 +45,13 @@ from pathlib import Path
 # as a package member when the tests import `scripts.release`. Both spellings
 # resolve to the same module; neither is a fallback for the other failing.
 try:  # pragma: no cover - exercised by whichever entry point is in use
+    import gated_tree
     from release_lane import RELEASE_BRANCH
     from release_lane import ReleaseLaneError
     from release_lane import REMOTE_RELEASE_REF
     from release_lane import require_version_in_lane
 except ImportError:  # pragma: no cover
+    from scripts import gated_tree
     from scripts.release_lane import RELEASE_BRANCH
     from scripts.release_lane import ReleaseLaneError
     from scripts.release_lane import REMOTE_RELEASE_REF
@@ -526,6 +528,9 @@ def stage_verify(version: str) -> None:
         "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
         "gate": None,
         "artifact": None,
+        # The content the gate runs against, so the tag push can prove the
+        # tagged tree is this one instead of gating it a third time.
+        "gated_tree_digest": gated_tree.working_tree_digest(version),
     }
     try:
         gate_log = logs / "invoke-ci.log"
@@ -1708,6 +1713,15 @@ def render_release_authorization(record: dict, evidence_base: str) -> str:
         "  which is Markdown in a single plan file and is appended after the gate by",
         "  construction.",
         "",
+        *(
+            [
+                "- Gated tree digest (every file except this plan): "
+                f"`{record['gated_tree_digest']}`",
+                "",
+            ]
+            if record.get("gated_tree_digest")
+            else []
+        ),
         f"- [x] `exact-runtime-artifact` - `{artifact['command']}` passed with exit "
         f"status 0 against the installed `{wheel}` on NetBox "
         f"{record['netbox_version']}, Branching {record['branching_version']}, "

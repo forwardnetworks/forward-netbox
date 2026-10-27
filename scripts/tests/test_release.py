@@ -762,6 +762,37 @@ class RenderReleaseAuthorizationTest(unittest.TestCase):
                 f"{evidence_id}: {evidence}",
             )
 
+    def test_the_gated_tree_digest_is_rendered_and_read_back(self):
+        record = self._record()
+        record["gated_tree_digest"] = "f" * 64
+        section = release.render_release_authorization(record, "e" * 40)
+
+        self.assertEqual(self._gated_tree().recorded_digest(section), "f" * 64)
+
+    def test_a_record_without_a_digest_renders_no_digest_line(self):
+        section = release.render_release_authorization(self._record(), "e" * 40)
+
+        self.assertIsNone(self._gated_tree().recorded_digest(section))
+
+    def test_the_checker_still_accepts_a_section_that_carries_the_digest(self):
+        checker = self._checker()
+        record = self._record()
+        record["gated_tree_digest"] = "f" * 64
+        section = release.render_release_authorization(record, "e" * 40)
+        with tempfile.TemporaryDirectory() as scratch:
+            plan = Path(scratch) / "plan-release-3.0.9.md"
+            plan.write_text("# Plan\n\n" + section, encoding="utf-8")
+            result = checker.check_release_authorization(
+                plan, expected_base_commit="e" * 40, evidence_commit="d" * 40
+            )
+        self.assertTrue(result)
+
+    def _gated_tree(self):
+        self._checker()
+        import gated_tree
+
+        return gated_tree
+
     def test_a_failed_gate_cannot_be_rendered_as_passing(self):
         record = self._record()
         record["gate"]["exit_status"] = 1

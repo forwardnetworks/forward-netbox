@@ -810,6 +810,17 @@ a CycloneDX SBOM, publishes the pair to PyPI over OIDC, then attaches those exac
 same bytes and the SBOM to the GitHub release. The release command waits for that
 workflow to succeed before reporting completion.
 
+### Which gate a push runs
+
+The git `pre-push` hook calls `scripts/pre_push_gate.py`, which picks the tier:
+
+- **A branch push runs `invoke ci-quick`** (about 35 minutes): the static checks, lint, docs, the built package and the upgrade leg, none of which needs the docker stack. Run the tests for what you changed yourself before pushing.
+- **The release cut (`--write`) runs the full `invoke ci`** (about four hours), the Django, scenario, retry-scale and UI suites included. That is where a release is decided.
+- **A tag push runs the quick tier only when its tree is proven to be the gated one.** The cut records a digest of every file except the release plan in the plan's Release Authorization, and `scripts/gated_tree.py` recomputes it from the tagged commit. If another change landed on `main` after the cut, or the plan records no digest, the tag push runs the full gate again.
+- **`FORWARD_NETBOX_FULL_GATE=1 git push` forces the full gate** on any push.
+
+`invoke ci` itself runs the cheap legs first and the long suites last, so a defect in the packaging or the upgrade path fails in minutes instead of at the end of a four-hour run.
+
 ## Large-fabric fetch safety
 
 By default a workload's Forward fetch is bounded only by counts (HTTP request
