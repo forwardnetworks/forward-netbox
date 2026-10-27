@@ -2191,31 +2191,36 @@ def sync_release_gate(
 
 @task(
     pre=[
-        # Static, sub-second checks run first: everything below this line costs
-        # docker bring-up or minutes of test time, so a stale version surface or
-        # a missing UI dependency must be reported before any of it starts.
+        # Fail fast: cheapest first, longest last. A defect found at the end of a
+        # four-hour run costs the whole run again (3.0.9 lost one to the upgrade
+        # leg, which sat last), so every leg that needs no running stack comes
+        # before any that does, and the suites are ordered by how long they take.
+        #
+        # Static, sub-second checks.
         release_preflight,
         sensitive_check,
         operator_text_check,
         harness_check,
         harness_test,
         lint,
+        # Minutes, no stack needed. `package` builds the artifact the upgrade leg
+        # installs, and the upgrade leg is the one that found the 3.0.9 defect:
+        # an upgrade defect can only be found before the tag exists, where a
+        # version number is not yet spent.
+        docs,
+        package,
+        artifact_upgrade_test,
+        # Stack bring-up, then the legs that are quick against it.
         build,
         start,
         check,
-        scenario_test_ci,
-        test_ci,
-        bulk_merge_retry_scale_test,
         validation_org_query_audit_ci,
         ui_test,
-        docs,
-        package,
-        # The upgrade gate used to live only in `.github/workflows/ci.yml`. When
-        # the CI workflows were removed it would have been left running nowhere,
-        # and an upgrade defect can only be found after the tag exists - where a
-        # version number is already spent. It runs last because it needs the
-        # built artifact from `package`.
-        artifact_upgrade_test,
+        # The long suites, shortest first: scenario (~50 min), the retry-scale
+        # run (~20 min), then the Django suite (~2 h 10 min).
+        scenario_test_ci,
+        bulk_merge_retry_scale_test,
+        test_ci,
     ]
 )
 def ci(context):
