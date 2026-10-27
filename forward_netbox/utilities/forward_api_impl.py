@@ -12,6 +12,8 @@ from rq.timeouts import JobTimeoutException
 
 from ..exceptions import ForwardClientError
 from ..exceptions import ForwardFetchBudgetExceededError
+from ..exceptions import ForwardLicenseTierError
+from ..exceptions import ForwardSyncError
 from .forward_client_config import coerce_api_requests_per_minute
 from .forward_client_config import coerce_nqe_async_max_polls
 from .forward_client_config import coerce_nqe_async_poll_interval_seconds
@@ -275,6 +277,96 @@ def get_networks(client):
         client._networks_cache = [dict(item) for item in networks]
     client._shared_read_cache_set(shared_cache_key, [dict(item) for item in networks])
     return networks
+
+
+NETWORK_MAPS_OK = "ok"
+NETWORK_MAPS_REFUSED = "refused"
+NETWORK_MAPS_ERROR = "error"
+_NETWORK_MAPS_DETAIL_LIMIT = 200
+
+
+def get_network_maps(client, network_id):
+    """List a network's saved Forward maps for display. Never raises.
+
+    The routes are unpublished in forward-sdk, so a refusal, a missing route and
+    a changed response shape all have to degrade to a note rather than break the
+    page that asked. The result carries `state` so the caller can say which:
+    `ok` (an empty list then means no maps are saved), `refused` (HTTP 403,
+    which Forward also answers for a license or org-setting denial) or `error`.
+    One list call and one directories call per network, cached for the shared
+    read cache's lifetime - failures included, so a down Forward is not re-asked
+    on every page view.
+    """
+    network_id = str(network_id or "").strip()
+    shared_cache_key = client._shared_read_cache_key("network-maps", network_id)
+    cached = client._shared_read_cache_get(shared_cache_key)
+    if cached is not None:
+        client._record_read_cache_hit()
+        return dict(cached)
+    client._record_read_cache_miss()
+    result = {
+        "state": NETWORK_MAPS_OK,
+        "detail": "",
+        "maps": [],
+        "directories_available": False,
+    }
+    try:
+        _fill_network_maps(client, network_id, result)
+    except (ForwardSyncError, ValueError) as exc:
+        # A licence denial is translated to ForwardLicenseTierError, which carries
+        # no status; it is a refusal like any 403.
+        result["state"] = (
+            NETWORK_MAPS_REFUSED
+            if getattr(exc, "status", None) == 403
+            or isinstance(exc, ForwardLicenseTierError)
+            else NETWORK_MAPS_ERROR
+        )
+        result["detail"] = str(exc)[:_NETWORK_MAPS_DETAIL_LIMIT]
+        result["maps"] = []
+    except JobTimeoutException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - nothing here may break a page
+        result["state"] = NETWORK_MAPS_ERROR
+        result["detail"] = f"{type(exc).__name__}: {exc}"[:_NETWORK_MAPS_DETAIL_LIMIT]
+        result["maps"] = []
+    client._shared_read_cache_set(shared_cache_key, dict(result))
+    return result
+
+
+def _fill_network_maps(client, network_id, result):
+    listed = client._call_sdk(
+        client._sdk_client.network_maps.get_network_maps, network_id=network_id
+    )
+    rows = list(getattr(listed, "maps", None) or [])
+    directory_by_map: dict[str, str] = {}
+    try:
+        directories = client._call_sdk(
+            client._sdk_client.network_maps.get_network_map_directories,
+            network_id=network_id,
+        )
+        for directory in getattr(directories, "directories", None) or []:
+            for map_id in getattr(directory, "map_ids", None) or []:
+                directory_by_map[str(map_id)] = str(directory.path or "")
+        result["directories_available"] = True
+    except (ForwardSyncError, ValueError):
+        # Folders depend on an org setting that may be off; the maps still list.
+        pass
+    for item in rows:
+        map_id = str(getattr(item, "id", "") or "").strip()
+        name = str(getattr(item, "name", "") or "").strip()
+        if not map_id or not name:
+            continue
+        updated_at = getattr(item, "updated_at", None)
+        result["maps"].append(
+            {
+                "id": map_id,
+                "name": name,
+                "pinned": bool(getattr(item, "pinned", None)),
+                "directory": directory_by_map.get(map_id, ""),
+                "created_by": str(getattr(item, "created_by", "") or ""),
+                "updated_at": updated_at.isoformat() if updated_at else "",
+            }
+        )
 
 
 def get_snapshots(client, network_id, *, include_archived=False, limit=100):
@@ -1209,11 +1301,21 @@ def commit_org_nqe_queries(client, *, query_paths, message):
 
 
 class ForwardClient:
-    def __init__(self, source):
+    def __init__(self, source, *, timeout=None, retries=None, paced=True):
         self.source = source
         params = source.parameters or {}
-        self.timeout = params.get("timeout") or DEFAULT_FORWARD_API_TIMEOUT_SECONDS
-        self.retries = coerce_retry_count(params.get("retries"))
+        # A caller that renders a page passes a short timeout and no retries so
+        # a slow Forward cannot hold the page, and `paced=False` so it does not
+        # queue behind a running sync's request spacing; sync callers keep the
+        # source's settings.
+        self.timeout = (
+            timeout or params.get("timeout") or DEFAULT_FORWARD_API_TIMEOUT_SECONDS
+        )
+        self.retries = (
+            coerce_retry_count(params.get("retries"))
+            if retries is None
+            else coerce_retry_count(retries)
+        )
         self.verify = params.get("verify", True)
         self.nqe_page_size = coerce_nqe_page_size(params.get("nqe_page_size"))
         self.nqe_fetch_all_max_pages = coerce_nqe_fetch_all_max_pages(
@@ -1241,6 +1343,8 @@ class ForwardClient:
             source_type=getattr(self.source, "type", None),
             base_url=self.base_url,
         )
+        if not paced:
+            self.api_requests_per_minute = 0
         if self.api_requests_per_minute:
             self._api_request_min_interval = 60.0 / self.api_requests_per_minute
         else:

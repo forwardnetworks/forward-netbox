@@ -105,6 +105,18 @@ class _AdoptBody(serializers.Serializer):
     network_id = serializers.CharField()
 
 
+class _ProposalBody(serializers.Serializer):
+    """`{"devices": {"<Forward device name>": "<commands>"}}`; empty text clears."""
+
+    devices = serializers.DictField(
+        child=serializers.CharField(allow_blank=True, trim_whitespace=False)
+    )
+
+
+class _PredictBody(serializers.Serializer):
+    confirm = serializers.BooleanField()
+
+
 class _CollectBody(serializers.Serializer):
     confirm = serializers.BooleanField(
         help_text=(
@@ -401,6 +413,65 @@ class ForwardChangeViewSet(NetBoxModelViewSet):
                 )
             ),
             _CollectBody,
+        )
+
+    @extend_schema(request=_ProposalBody, responses={200: ActionResultSerializer})
+    @action(
+        detail=True,
+        methods=["post"],
+        permission_classes=[TokenWritePermission],
+        url_path="proposal",
+    )
+    def proposal(self, request, pk=None):
+        from forward_netbox.change_control.predict import save_proposal
+
+        return self._act(
+            request,
+            pk,
+            self.CHANGE,
+            lambda change, data: _reply(
+                save_proposal(change, request.user, data["devices"])
+            ),
+            _ProposalBody,
+        )
+
+    @extend_schema(request=_PredictBody, responses={200: ActionResultSerializer})
+    @action(
+        detail=True,
+        methods=["post"],
+        permission_classes=[TokenWritePermission],
+        url_path="predict",
+    )
+    def predict(self, request, pk=None):
+        from forward_netbox.change_control.predict import start_prediction
+
+        return self._act(
+            request,
+            pk,
+            self.CHANGE,
+            lambda change, data: _reply(
+                start_prediction(
+                    change, request.user, confirmed=bool(data.get("confirm"))
+                )
+            ),
+            _PredictBody,
+        )
+
+    @extend_schema(request=_NoBody, responses={200: ActionResultSerializer})
+    @action(
+        detail=True,
+        methods=["post"],
+        permission_classes=[TokenWritePermission],
+        url_path="predict/refresh",
+    )
+    def predict_refresh(self, request, pk=None):
+        from forward_netbox.change_control.predict import refresh_prediction
+
+        return self._act(
+            request,
+            pk,
+            self.CHANGE,
+            lambda change, data: _reply(refresh_prediction(change, request.user)),
         )
 
     @extend_schema(request=_NoBody, responses={200: ActionResultSerializer})

@@ -3,7 +3,7 @@
 #
 # Three engines, all Forward's: `nqe` runs a bound org query and applies an
 # expectation, `check` reads Forward's own intent checks on a snapshot, and
-# `predict` reports unavailable until a change set can answer. A result is a
+# `predict` always skips: a prediction is advisory and never a result. A result is a
 # shape and a count, never a row; a rule that could not be answered is an ERROR or
 # a SKIP and is never counted as a pass. Everything that talks to Forward goes
 # through an `api` object (the SDK underneath), so the rules are tested without a
@@ -265,12 +265,14 @@ def _check(rule, ctx):
 
 
 def _predict(rule, ctx):
+    # Stays SKIP. A prediction is advisory (see predict.py): wiring it to a result
+    # here would put it in the approval gate, which reads validation results.
     return [
         _Result(
             rule.name,
             Status.SKIP,
-            "Forward Predict has not answered for this change. It reports "
-            "unavailable where the organization has no change-set licence.",
+            "Forward Predict is advisory and is not evaluated as a validation "
+            "result. Any prediction is shown on the change page.",
         )
     ]
 

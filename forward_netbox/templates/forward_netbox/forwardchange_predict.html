@@ -1,0 +1,34 @@
+{% extends 'base/layout.html' %}
+{% load i18n %}
+
+{% block title %}{% trans "Ask Forward to predict" %}{% endblock %}
+
+{% block content %}
+<div class="row">
+  <div class="col col-md-8">
+    <div class="card">
+      <h5 class="card-header">{% blocktrans with change=object %}Ask Forward to predict {{ change }}{% endblocktrans %}</h5>
+      <div class="card-body">
+        <div class="alert alert-warning" role="alert">
+          {% trans "This writes to Forward: it creates a change set holding your proposal in the change's workspace network, commits it and asks Forward to predict it, which creates a predicted snapshot. Nothing is sent to a device. Forward keeps the change set and its snapshot until this change is closed, abandoned or deleted, or the prediction is repeated." %}
+        </div>
+        <p class="text-muted">{{ scope_note }}</p>
+        <table class="table attr-table">
+          <tr><th scope="row">{% trans "Workspace network" %}</th><td>{{ object.workspace_network_id }}</td></tr>
+          <tr><th scope="row">{% trans "Baseline snapshot" %}</th><td>{{ object.before_snapshot_id|default:"—" }}</td></tr>
+          <tr><th scope="row">{% trans "Devices with commands" %}</th><td>{{ device_count }}</td></tr>
+        </table>
+        <form method="post" action="{% url 'plugins:forward_netbox:forwardchange_predict' pk=object.pk %}">
+          {% csrf_token %}
+          <div class="form-check mb-3">
+            <input type="checkbox" class="form-check-input" id="confirm" name="confirm" required>
+            <label class="form-check-label" for="confirm">{% trans "I understand this creates a change set and a predicted snapshot in Forward, and I want to ask for a prediction now." %}</label>
+          </div>
+          <button type="submit" class="btn btn-warning">{% trans "Ask Forward to predict" %}</button>
+          <a class="btn btn-outline-secondary" href="{{ object.get_absolute_url }}">{% trans "Cancel" %}</a>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock content %}

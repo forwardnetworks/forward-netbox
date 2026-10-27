@@ -542,11 +542,14 @@ class ForwardSourceForm(NetBoxModelForm):
             required=False,
             label="Ask Forward to predict change-control changes",
             help_text=(
-                "Off by default. Forward's predict workflow is not generally "
-                "available, is licensed separately, and is limited in scope "
-                "today, so change control never asks unless this is on. The "
-                "verdict does not depend on it either way: it is computed "
-                "from the post-change snapshot, which every licence tier has."
+                "Off by default. Forward's Predict is licensed separately and "
+                "does not model every protocol, so change control never offers "
+                "it unless this is on. Turning it on lets an operator propose "
+                "CLI commands for a change and ask Forward to predict them in "
+                "the change's workspace; Forward refuses it where the licence "
+                "or the account does not allow it. The verdict does not depend "
+                "on it either way: it is computed from the post-change "
+                "snapshot, which every licence tier has."
             ),
         )
         self.fields["config_backup_path_prefix"] = forms.CharField(

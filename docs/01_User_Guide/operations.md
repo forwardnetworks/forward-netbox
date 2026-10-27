@@ -479,6 +479,18 @@ device sync. This includes SoftwareVersion, HardwareNotice, DeviceSoftware, and
 Vulnerability. Vulnerability rows are also filtered locally by device name, so
 an out-of-scope Forward device cannot generate a DLM child apply failure.
 
+## Forward Network Maps on a Site
+
+A Forward Network Map is a saved, named diagram that Forward keeps current with every snapshot. Teams often keep one per branch, in place of an offline drawing. A NetBox Site page now shows the map that carries the Site's name, with a link into Forward.
+
+- **What it shows:** the map's name (linked to Forward), its folder, who created it and when it last changed, for every Forward source the viewing user may see that has a network configured.
+- **How a map is matched to a Site:** by exact name, ignoring case. Forward's map list has no site field, so the panel does not claim a match by the devices a map holds, and a map with a different name is not shown. The footer says how many maps the network has.
+- **Nothing is stored and nothing is synced.** The page asks Forward for the map list through the SDK, with a 5-second timeout per stage (connect, read, write), no retries and no request pacing, and the answer is cached for 60 seconds, a failure included, so a slow or down Forward costs a page view one note and is not asked again on every reload. A Site with no map named for it shows no panel.
+- **When the panel shows a note instead:** `Forward refused the maps request` means Forward answered HTTP 403: the login lacks the maps view permission (`VIEW_NETWORK_MAPS`), or the license or an org setting does not allow it. The other note carries the error Forward returned. An empty map list from a successful read just means the network has no saved maps, and shows nothing.
+- **Folders** depend on Forward's `NETWORK_MAP_DIRECTORIES` organization setting. With it off, maps still list and the Folder column is empty.
+- **Turning it off:** set `PLUGINS_CONFIG = {"forward_netbox": {"network_maps_panel": False}}` where the Forward login has no maps access or Site pages should not call Forward.
+- **The link:** `<Forward URL>/network-maps?networkId=<network>&id=<map>`, the route Forward's own app declares. The maps endpoints are not part of Forward's documented API, so if Forward moves that route the link, not the list, is what to change (`map_url` in `forward_netbox/utilities/network_maps.py`).
+
 ## Device CVE tab (netbox-dlm)
 
 With the netbox-dlm plugin installed and the 2.5.2 **CVE / Vulnerability**

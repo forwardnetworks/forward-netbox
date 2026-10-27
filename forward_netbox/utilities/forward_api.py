@@ -26,6 +26,7 @@ from .forward_api_impl import get_device_mgmt_tags  # noqa: F401
 from .forward_api_impl import get_latest_collected_snapshot_id  # noqa: F401
 from .forward_api_impl import get_latest_processed_snapshot  # noqa: F401
 from .forward_api_impl import get_latest_processed_snapshot_id  # noqa: F401
+from .forward_api_impl import get_network_maps  # noqa: F401
 from .forward_api_impl import get_networks  # noqa: F401
 from .forward_api_impl import get_nqe_query_history  # noqa: F401
 from .forward_api_impl import get_nqe_repository_query_index  # noqa: F401
@@ -43,6 +44,9 @@ from .forward_api_impl import MAX_NQE_FETCH_ALL_MAX_PAGES  # noqa: F401
 from .forward_api_impl import MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT  # noqa: F401
 from .forward_api_impl import MAX_NQE_PAGE_SIZE  # noqa: F401
 from .forward_api_impl import MAX_QUERY_FETCH_CONCURRENCY  # noqa: F401
+from .forward_api_impl import NETWORK_MAPS_ERROR  # noqa: F401
+from .forward_api_impl import NETWORK_MAPS_OK  # noqa: F401
+from .forward_api_impl import NETWORK_MAPS_REFUSED  # noqa: F401
 from .forward_api_impl import NQE_QUERY_REPOSITORIES  # noqa: F401
 from .forward_api_impl import resolve_nqe_query_reference  # noqa: F401
 from .forward_api_impl import run_nqe_diff  # noqa: F401

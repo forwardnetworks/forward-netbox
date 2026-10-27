@@ -134,7 +134,7 @@ change). Each rule uses one engine, all of them Forward's:
 | --- | --- |
 | **NQE query** | Runs an org query in the change's workspace and applies an expectation (`no-rows` or `some-rows`). Rows naming a device become one result per device. |
 | **Forward intent checks** | Reads Forward's own checks (isolation, reachability, existential, predefined, NQE) on the snapshot, optionally narrowed by name or type. A named check Forward does not have is an error. |
-| **Forward Predict** | Reports unavailable until Forward answers. An organisation without the change-set licence never gets a pass from it. |
+| **Forward Predict** | Always reports skipped. A prediction asked for from the change page is advisory and is never read by a validation rule, so it cannot pass, fail or block an approval. |
 
 A run validates the change's after snapshot once there is one, otherwise its
 baseline, and records every result as a shape and a count, never a row. A result
@@ -186,11 +186,49 @@ shown on the page and used wherever Predict is mentioned. No licence table is
 consulted. Where Forward does not allow something, the page says so and the rest
 of change control works unchanged.
 
+## Forward Predict (advisory, off by default)
+
+Predict asks Forward what a set of CLI commands would do to the network, without
+touching a device. It is licensed separately by Forward and does not model every
+protocol, so it is off until **Ask Forward to predict change-control changes** is
+turned on for the source, and Forward still refuses it where the licence, the
+account or the organisation's settings do not allow it. The page names which.
+
+1. Once the change has its workspace baseline, type the commands to try for each
+   device in **Proposal** and save.
+2. **Ask Forward to predict** creates a change set holding the proposal in the
+   change's workspace network, commits it and asks Forward to predict it. This is a
+   Forward write, so it asks for confirmation every time. Nothing is sent to a
+   device.
+3. **Refresh prediction** reads the predicted snapshot's state. It shows the
+   predicted snapshot's id once Forward has processed it, or a failure naming
+   Forward's state (Forward gives no further reason).
+
+What to expect:
+
+- The prediction covers the devices in the workspace on the workspace's baseline,
+  not the rest of the estate. Firewalls staged as CLI text (PAN-OS) are refused
+  because Forward cannot predict them that way.
+- It is advisory. Approval, closing and the verdict never read it, a validation
+  rule for Predict always reports skipped, and an answer does not move the
+  change's state. Editing the proposal afterwards marks the prediction stale.
+- The commands can hold secrets. They are kept in NetBox for this change only, not
+  in the change log, the journal, the support bundle or an event, and the journal
+  records only how many devices had commands. They are also held in Forward, in the
+  change set, which anyone with access to the workspace can read; closing,
+  abandoning or deleting the change deletes the change set and its predicted
+  snapshots. A change set Forward could not delete is logged with its ids and, on
+  an open change, stays recorded so asking again retries the delete; for a change
+  that is already closed or gone it can only be removed in Forward.
+- **Checked once against a live Forward**, on a demo network: create, validate,
+  stage, commit, predict and delete worked, the predicted snapshot appears in the
+  workspace's snapshot list, and a one-device prediction processed in under a
+  minute. Not yet checked: what the predicted snapshot says, a licence refusal, a
+  firewall, or a large network. An unlisted snapshot stays "in progress" for two
+  hours before it is reported failed.
+
 ## What is not connected yet
 
-- **Forward Predict** does not run: authoring a proposal for a Forward change set
-  is not built, so where Predict is available the panel says a proposal cannot be
-  authored from NetBox yet, and where it is not, it says why.
 - **Forward AI** is not used, only detected.
 - **Scheduled validation runs** are not built: runs start on demand, through the
   API, when a change is staged, or when a gate asks for a current one.

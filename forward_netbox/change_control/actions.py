@@ -169,7 +169,22 @@ def _apply(change, target, user, note=""):
     from .events import announce_transition
 
     announce_transition(change, target, user)
+    if target in State.TERMINAL and change.predict_change_set_id:
+        # Forward keeps a change set's predicted snapshots out of its retention
+        # until the set is deleted. After the transaction commits, so the network
+        # call never holds the change's row lock, and best-effort so Forward being
+        # down never blocks closing a change.
+        transaction.on_commit(lambda pk=change.pk: _discard_prediction_for(pk))
     return TransitionOutcome(True, target)
+
+
+def _discard_prediction_for(change_pk):
+    from ..models import ForwardChange
+    from .predict import discard_prediction
+
+    change = ForwardChange.objects.filter(pk=change_pk).first()
+    if change is not None:
+        discard_prediction(change)
 
 
 def transition(change, target, user):
@@ -374,5 +389,7 @@ def close_when_the_branch_merges(sender, branch, user, **kwargs):
             from .events import announce_transition
 
             announce_transition(change, State.CLOSED, user)
+            if change.predict_change_set_id:
+                transaction.on_commit(lambda pk=change.pk: _discard_prediction_for(pk))
     except Exception:  # noqa: BLE001 - see the docstring
         logger.exception("Could not close the change for merged branch %s", branch)
