@@ -281,14 +281,7 @@ def check_lockfile_consistency() -> str:
 # PYSEC-2026-2858 does not appear in this repo's Dependabot alerts at all, and
 # nothing here has yet needed a waiver) that are accepted rather than fixed.
 # Same rule as above: name why, here.
-# 2026-10-27, TEMPORARY: GHSA-j586-36cw-2gc2 (msgpack) is fixed by the msgpack
-# 1.2.4 pin in requirements-release.txt. The alert only closes once the fixed pin
-# is on main, and pushing it is gated by the alert. Remove this in the next change
-# once the alert reads closed. (The earlier virtualenv and filelock waivers were
-# removed: those alerts read closed after the fix landed.)
-ACCEPTED_DEPENDABOT_ALERTS: set[str] = {
-    "GHSA-j586-36cw-2gc2",
-}
+ACCEPTED_DEPENDABOT_ALERTS: set[str] = set()
 
 _DEPENDABOT_BLOCKING_SEVERITIES = frozenset({"high", "critical"})
 
