@@ -119,6 +119,35 @@ class GitBackedTest(unittest.TestCase):
 
         self.assertEqual(working, gated_tree.commit_digest("HEAD", "3.0.9"))
 
+    def test_a_tracked_file_that_gitignore_matches_stays_in_the_digest(self):
+        (self.repo / ".gitignore").write_text("env/\n")
+        (self.repo / "env").mkdir()
+        (self.repo / "env/app.env").write_text("A=1\n")
+        self._git("add", "-A")
+        self._git("add", "-f", "env/app.env")
+        self._git("commit", "-q", "-m", "track an ignored file")
+
+        working = gated_tree.working_tree_digest("3.0.9")
+
+        self.assertEqual(working, gated_tree.commit_digest("HEAD", "3.0.9"))
+
+    def test_a_modified_or_deleted_tracked_ignored_file_matches_its_commit(self):
+        (self.repo / ".gitignore").write_text("env/\n")
+        (self.repo / "env").mkdir()
+        (self.repo / "env/a.env").write_text("A=1\n")
+        (self.repo / "env/b.env").write_text("B=1\n")
+        self._git("add", "-A")
+        self._git("add", "-f", "env/a.env", "env/b.env")
+        self._git("commit", "-q", "-m", "track ignored files")
+        (self.repo / "env/a.env").write_text("A=2\n")
+        (self.repo / "env/b.env").unlink()
+
+        working = gated_tree.working_tree_digest("3.0.9")
+
+        self._git("add", "-A")
+        self._git("commit", "-q", "-m", "change them")
+        self.assertEqual(working, gated_tree.commit_digest("HEAD", "3.0.9"))
+
     def test_the_working_tree_digest_does_not_touch_the_real_index(self):
         (self.repo / "untracked.py").write_text("x\n")
 

@@ -70,9 +70,15 @@ def working_tree_digest(version: str) -> str:
     Built through a throwaway index so the real one is never touched: this is
     the content `git add -A && git commit` would record, which is the content
     the gate ran against.
+
+    The scratch index starts from HEAD: `git add -A` into an empty index skips
+    a tracked file that .gitignore also matches, which a real commit keeps. A
+    file untracked from the real index but still in HEAD is the one case that
+    differs, and it only forces a full gate.
     """
     with tempfile.TemporaryDirectory() as scratch:
         env = {**os.environ, "GIT_INDEX_FILE": str(Path(scratch) / "index")}
+        _git("read-tree", "HEAD", env=env)
         _git("add", "-A", env=env)
         tree = _git("write-tree", env=env).strip()
         return digest_entries(_list_tree(tree, env=env), version)
