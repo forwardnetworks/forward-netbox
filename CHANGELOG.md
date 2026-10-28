@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v3.0.9
 
-Release candidate; Support bundle records why each device has no primary IP; Site page lists Forward Network Maps; forward-sdk 0.1.27 picks the latest processed snapshot by creation date; change control can propose CLI commands and ask Forward to predict them (off by default, advisory, checked once against a live Forward)
+Support bundle records why each device has no primary IP; Site page lists Forward Network Maps; forward-sdk 0.1.27 picks the latest processed snapshot by creation date; change control can propose CLI commands and ask Forward to predict them (off by default, advisory, checked once against a live Forward)
 
 ## v3.0.8
 
