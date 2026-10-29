@@ -561,7 +561,15 @@ has no per-device lines (it ran on an earlier release), so nothing is implied
 about those devices; re-run the sync. `shared_holder_examples` pairs a few
 devices with another device holding their address.
 `primary_ip.without_primary_ip_examples` lists a few device ids per reason, to
-check a reason against the device list.
+check a reason against the device list; `primary_ip.without_primary_ip_device_keys`
+lists every device id per reason, and
+`primary_ip.management_step_outcomes.shared_holders` lists every device that lost
+an address with the device that owns it (`holders` counts devices per owner).
+`primary_ip.outside_this_sync` accounts for the devices without a primary IP that
+the device list shows and this sync does not manage: by role, status and scope
+tag, split by whether another sync manages them (`managed_by_another_sync`) or none
+does, with their ids. `netbox_devices_without_primary_ip` equals
+`without_primary_ip` plus `outside_this_sync.count`.
 
 For the `scope_reconciliation` split of uncovered devices: **unclaimed** devices
 were not created by this sync (another source or an operator did), so adopt or
