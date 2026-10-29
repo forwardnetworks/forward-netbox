@@ -1579,15 +1579,15 @@ docs = ["zensical"]
 
 [[package]]
 name = "netbox-routing"
-version = "0.5.0"
+version = "0.5.1"
 description = "A NetBox Routing Plugin"
 optional = true
 python-versions = ">=3.12"
 groups = ["main"]
 markers = "extra == \"routing\" or extra == \"integrations\" or extra == \"peering\""
 files = [
-    {file = "netbox_routing-0.5.0-py3-none-any.whl", hash = "sha256:98022efab7c11b2a801187573a7f63253344d90f8f6a1b359ac307ba5dfec2df"},
-    {file = "netbox_routing-0.5.0.tar.gz", hash = "sha256:c721f0c0b2495fb8080ea71ed74f1923036151cc540478db8ca99a2f995eafa0"},
+    {file = "netbox_routing-0.5.1-py3-none-any.whl", hash = "sha256:ccd4fa0b29b38ecf6411904b1a74239861023fe63b601bee2c06a601d700e59a"},
+    {file = "netbox_routing-0.5.1.tar.gz", hash = "sha256:f4224f2abd4c31e2f70d02d6e3a5a41bb9e549ced6659c7f3717abd046fb9301"},
 ]
 
 [package.dependencies]

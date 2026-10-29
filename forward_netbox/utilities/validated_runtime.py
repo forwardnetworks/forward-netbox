@@ -71,7 +71,9 @@ VALIDATED_PLUGIN_APPS = frozenset(
 # silently lost the fast paths, because the whole tuple stopped matching.
 # Only the versions that boot on 4.7: every earlier release of each caps at
 # 4.6.99, and their 4.6 validations are evidence about a different runtime.
-# netbox-routing 0.5.0 is its first release that boots on 4.7. netbox-cisco-aci is absent, not
+# netbox-routing 0.5.0 is its first release that boots on 4.7; 0.5.1 changes only
+# model ordering, owner foreign keys and where a message string lives.
+# netbox-cisco-aci is absent, not
 # removed - its registry, models and sync paths are all still here and still
 # report an absent plugin honestly; its 4.6 value (0.4.0) is recorded in
 # `docs/03_Plans/active/2026-09-02-netbox-4.7-runtime.md` so regaining it is a
@@ -79,7 +81,7 @@ VALIDATED_PLUGIN_APPS = frozenset(
 VALIDATED_OPTIONAL_DISTRIBUTIONS: dict[str, frozenset[str]] = {
     "netbox-dlm": frozenset({"0.10.0", "0.10.1", "0.10.2"}),
     "netbox-peering-manager": frozenset({"0.3.1"}),
-    "netbox-routing": frozenset({"0.5.0"}),
+    "netbox-routing": frozenset({"0.5.0", "0.5.1"}),
     "netbox-validity": frozenset({"3.6.0", "3.6.1"}),
 }
 

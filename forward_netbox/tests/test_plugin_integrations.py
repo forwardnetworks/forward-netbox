@@ -10,6 +10,7 @@ from forward_netbox.utilities.plugin_integrations import iter_integrations
 from forward_netbox.utilities.plugin_integrations import optional_integration_for_model
 from forward_netbox.utilities.plugin_integrations.registry import DLM_INTEGRATION
 from forward_netbox.utilities.plugin_integrations.registry import integration_capability
+from forward_netbox.utilities.plugin_integrations.registry import PEERING_INTEGRATION
 from forward_netbox.utilities.plugin_integrations.registry import ROUTING_INTEGRATION
 from forward_netbox.utilities.query_fetch import ForwardQueryFetcher
 
@@ -188,44 +189,48 @@ class OptionalPluginIntegrationRegistryTest(TestCase):
                 [],
             )
 
+    def _capability_at(self, integration, version):
+        with patch(
+            "forward_netbox.utilities.plugin_integrations.registry.apps.is_installed",
+            return_value=True,
+        ), patch(
+            "forward_netbox.utilities.plugin_integrations.registry._present_models",
+            side_effect=lambda models: sorted(models),
+        ), patch(
+            "forward_netbox.utilities.plugin_integrations.registry._missing_models",
+            return_value=[],
+        ), patch(
+            "forward_netbox.utilities.plugin_integrations.registry.metadata.version",
+            return_value=version,
+        ):
+            return integration_capability(integration)
+
     def test_single_version_integration_keeps_exact_match_behavior(self):
-        with patch(
-            "forward_netbox.utilities.plugin_integrations.registry.apps.is_installed",
-            return_value=True,
-        ), patch(
-            "forward_netbox.utilities.plugin_integrations.registry._present_models",
-            side_effect=lambda models: sorted(models),
-        ), patch(
-            "forward_netbox.utilities.plugin_integrations.registry._missing_models",
-            return_value=[],
-        ), patch(
-            "forward_netbox.utilities.plugin_integrations.registry.metadata.version",
-            return_value="0.5.0",
-        ):
-            capability = integration_capability(ROUTING_INTEGRATION)
-
+        capability = self._capability_at(PEERING_INTEGRATION, "0.3.1")
         self.assertTrue(capability["available"])
-        self.assertEqual(capability["supported_versions"], ["0.5.0"])
+        self.assertEqual(capability["supported_versions"], ["0.3.1"])
 
-        with patch(
-            "forward_netbox.utilities.plugin_integrations.registry.apps.is_installed",
-            return_value=True,
-        ), patch(
-            "forward_netbox.utilities.plugin_integrations.registry._present_models",
-            side_effect=lambda models: sorted(models),
-        ), patch(
-            "forward_netbox.utilities.plugin_integrations.registry._missing_models",
-            return_value=[],
-        ), patch(
-            "forward_netbox.utilities.plugin_integrations.registry.metadata.version",
-            return_value="0.4.3",
-        ):
-            capability = integration_capability(ROUTING_INTEGRATION)
-
+        capability = self._capability_at(PEERING_INTEGRATION, "0.3.0")
         self.assertFalse(capability["available"])
         self.assertEqual(
             capability["availability_reason"],
-            "Installed plugin version must equal 0.5.0.",
+            "Installed plugin version must equal 0.3.1.",
+        )
+
+    def test_routing_accepts_0_5_0_and_0_5_1_only(self):
+        # A customer on netbox-routing 0.5.1 lost the routing import's version
+        # match and every fast path with it.
+        for version in ("0.5.0", "0.5.1"):
+            with self.subTest(version=version):
+                capability = self._capability_at(ROUTING_INTEGRATION, version)
+                self.assertTrue(capability["available"])
+                self.assertEqual(capability["supported_versions"], ["0.5.0", "0.5.1"])
+
+        capability = self._capability_at(ROUTING_INTEGRATION, "0.4.3")
+        self.assertFalse(capability["available"])
+        self.assertEqual(
+            capability["availability_reason"],
+            "Installed plugin version must equal one of: 0.5.0, 0.5.1.",
         )
 
     def test_registry_reports_no_plugin_state_cleanly(self):

@@ -732,6 +732,10 @@ class ForwardIngestionLogExportViewTest(TestCase):
             "ownership_incomplete",
         )
         self.assertEqual(preview["latest_sync_evidence"]["applied"], 7)
+        # The Drift report page's table, keyed by its column headings.
+        self.assertEqual(
+            len(preview["drift_table"]), len(preview["drift_report"]["models"])
+        )
         self.assertEqual(
             preview["forward_api_usage"],
             {
@@ -971,6 +975,67 @@ class SupportBundleTroubleshootingDepthTest(TestCase):
             "private-name-4",
         ):
             self.assertNotIn(name, raw)
+
+    def test_a_figure_the_scope_page_shows_is_in_the_bundle_by_its_label(self):
+        # A customer quoted "278 uncovered" off the page's "Carry no include tag"
+        # row; the bundle held it only as unmanaged.untagged_total.
+        now = timezone.now()
+        Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name=f"{self.sync.name} - scope reconciliation",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id="123e4567-e89b-12d3-a456-426614174503",
+            created=now,
+            started=now,
+            completed=now,
+            data={
+                "include_tags": ["private-scope-tag-77"],
+                "exclude_tags": ["private-exclude-tag-77"],
+                "netbox_device_count": 410,
+                "forward_tagged_backfilled": 63,
+                "netbox_present_backfilled": 63,
+                "netbox_out_of_scope": 58,
+                "out_of_scope_device_ids": [5, 3, 4],
+                "unmanaged": {
+                    "untagged_total": 270,
+                    "owned_untagged": 58,
+                    "unclaimed": 212,
+                    "unclaimed_sample": ["private-name-9"],
+                    "unclaimed_device_ids": [9, 7, 8],
+                    "owned_untagged_device_ids": [3, 4, 5],
+                },
+            },
+        )
+        payload, raw = self._bundle()
+        section = payload["scope_reconciliation"]
+        figures = {row["label"]: row for row in section["ui_figures"]}
+
+        carry = figures["Carry no include tag"]
+        self.assertEqual(carry["page"], "Scope Reconciliation")
+        self.assertEqual(carry["value"], 270)
+        self.assertEqual(
+            {part["label"]: part["value"] for part in carry["parts"]},
+            {"created by this sync": 58, "not claimed by this sync": 212},
+        )
+        self.assertEqual(figures["Out of scope (orphans)"]["value"], 58)
+        self.assertEqual(
+            figures["Tagged but backfilled"]["parts"],
+            [{"label": "view tagged", "value": 63}],
+        )
+        # Tag names are the operator's own words: counted, never exported.
+        self.assertEqual(figures["Include tags"]["value"], 1)
+        self.assertEqual(section["report"]["include_tag_count"], 1)
+        self.assertEqual(section["report"]["exclude_tag_count"], 1)
+        self.assertNotIn("private-scope-tag-77", raw)
+        self.assertNotIn("private-exclude-tag-77", raw)
+        self.assertEqual(figures["NetBox devices"]["value"], 410)
+        # Which devices, not just how many.
+        self.assertEqual(
+            section["device_keys"]["unmanaged.unclaimed"]["pks"], [7, 8, 9]
+        )
+        self.assertEqual(section["device_keys"]["out_of_scope"]["count"], 3)
+        self.assertNotIn("private-name-9", raw)
 
     def test_blocking_issues_are_exported_before_non_blocking_ones(self):
         from forward_netbox.models import ForwardIngestion

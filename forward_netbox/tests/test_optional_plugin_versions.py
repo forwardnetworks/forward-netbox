@@ -45,8 +45,8 @@ class OptionalDistributionVersionSetTest(SimpleTestCase):
     """The validated optional-distribution sets, whatever they currently hold.
 
     On NetBox 4.7 they hold four entries - netbox-dlm 0.10.0, netbox-validity
-    3.6.0, netbox-peering-manager 0.3.1, and netbox-routing 0.5.0 (the first
-    netbox-routing release that boots on 4.7). netbox-cisco-aci still declares a max_version in the
+    3.6.0, netbox-peering-manager 0.3.1, and netbox-routing 0.5.0 and 0.5.1
+    (0.5.0 is the first netbox-routing release that boots on 4.7). netbox-cisco-aci still declares a max_version in the
     4.6 series, and NetBox refuses to start with a plugin outside its declared
     range, so it cannot be installed on this runtime. Claiming a validated
     version for a plugin nobody can install would be a claim about a runtime
@@ -73,7 +73,7 @@ class OptionalDistributionVersionSetTest(SimpleTestCase):
             {
                 "netbox-dlm": frozenset({"0.10.0", "0.10.1", "0.10.2"}),
                 "netbox-peering-manager": frozenset({"0.3.1"}),
-                "netbox-routing": frozenset({"0.5.0"}),
+                "netbox-routing": frozenset({"0.5.0", "0.5.1"}),
                 "netbox-validity": frozenset({"3.6.0", "3.6.1"}),
             },
             "netbox-cisco-aci cannot be installed on NetBox 4.7, so a "
@@ -168,6 +168,20 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
     def test_the_validated_runtime_keeps_the_fast_baseline(self):
         self.assertNotEqual(self._decide().reason_code, "unsupported_runtime_tuple")
 
+    def test_netbox_routing_0_5_1_keeps_the_fast_baseline(self):
+        # A customer on 0.5.1 had every fast path off over this one version.
+        self.assertNotEqual(
+            self._decide(
+                optional_plugins={
+                    "netbox-dlm": "0.10.2",
+                    "netbox-peering-manager": "0.3.1",
+                    "netbox-routing": "0.5.1",
+                    "netbox-validity": "3.6.1",
+                }
+            ).reason_code,
+            "unsupported_runtime_tuple",
+        )
+
     def test_a_later_netbox_patch_keeps_the_fast_baseline(self):
         # Series matching, not an exact pin: a 4.7 patch must not silently drop
         # a deployment onto the slow path.
@@ -227,7 +241,7 @@ class FastBaselineRuntimeTupleTest(SimpleTestCase):
             {
                 "netbox-dlm": ["0.10.0", "0.10.1", "0.10.2"],
                 "netbox-peering-manager": ["0.3.1"],
-                "netbox-routing": ["0.5.0"],
+                "netbox-routing": ["0.5.0", "0.5.1"],
                 "netbox-validity": ["3.6.0", "3.6.1"],
             },
         )

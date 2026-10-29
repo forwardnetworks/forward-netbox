@@ -158,11 +158,25 @@ def fallback_sentence(fallback_reasons):
     )
 
 
-def classify_primary_ip_devices(missing):
+# What the management-address step records when another device already owns
+# the address it would have chosen.
+SHARED_OUTCOMES = frozenset({"shared", "holder"})
+
+
+def classify_primary_ip_devices(missing, outcomes=None):
     """``{device pk: reason}`` for the devices in ``missing`` (no primary IP).
 
     Every device lands in exactly one reason, in the order of ``REASONS``.
+    ``outcomes`` is what the last management-address step recorded per device,
+    ``{pk: (code, owner pk or None)}``. When it says another device already owns
+    the address, the device shares it if every address it holds is that owner's
+    too (or already collides), even where NetBox shows no second holder among
+    the devices counted here: the owner is another sync's, or holds it on an
+    interface this count never sees. A customer's bundle classed 346 such
+    devices as fixable by a Mgmt_ tag. A device that also holds an address of
+    its own stays fixable: a Mgmt_ tag can point the step at that one.
     """
+    outcomes = outcomes or {}
     from dcim.models import Device
     from dcim.models import Interface
     from django.contrib.contenttypes.models import ContentType
@@ -213,13 +227,37 @@ def classify_primary_ip_devices(missing):
     colliding = primary_hosts | {
         host for host, owners in devices_by_host.items() if len(owners) > 1
     }
+    # The addresses each recorded owner holds, for the devices the step said lost
+    # their address to it.
+    owner_by_device = {
+        device_id: outcome[1]
+        for device_id, outcome in outcomes.items()
+        if device_id in device_ids and outcome and outcome[0] in SHARED_OUTCOMES
+    }
+    owner_hosts = {}
+    for owner_id, address in IPAddress.objects.filter(
+        assigned_object_type=interface_type,
+        interface__device_id__in={pk for pk in owner_by_device.values() if pk},
+    ).values_list("interface__device_id", "address"):
+        owner_hosts.setdefault(owner_id, set()).add(_host(address))
+
+    def shared_with_recorded_owner(device_id, held):
+        if device_id not in owner_by_device:
+            return False
+        owner = owner_by_device[device_id]
+        if owner is None:
+            # No owner named: only the one address the step chose can be it.
+            return len(held) == 1
+        return held <= colliding | owner_hosts.get(owner, set())
 
     classified = {}
     for device_id in device_ids:
         held = held_by_device.get(device_id, set())
         if device_id in uncovered:
             reason = "not_refreshed_by_forward"
-        elif held and held <= colliding:
+        elif held and (
+            held <= colliding or shared_with_recorded_owner(device_id, held)
+        ):
             reason = "shares_an_address_with_another_device"
         elif held:
             reason = "has_an_address_but_none_was_chosen"
@@ -275,7 +313,7 @@ def primary_ip_reasons(
 ):
     """Count the devices in ``missing`` by why, with what to do about each reason."""
     return reason_rows(
-        classify_primary_ip_devices(missing),
+        classify_primary_ip_devices(missing, outcomes),
         settings_on=settings_on,
         fallback_reasons=fallback_reasons,
         outcomes=outcomes,
