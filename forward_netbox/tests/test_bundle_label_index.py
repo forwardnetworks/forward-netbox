@@ -9,6 +9,7 @@ from django.urls import reverse
 
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
+from forward_netbox.utilities.bundle_label_index import PAGE_CARD_PATHS
 from forward_netbox.utilities.bundle_label_index import PAGE_LABEL_PATHS
 from forward_netbox.utilities.export_redaction import export_safe_payload
 
@@ -17,6 +18,26 @@ PAGES = {
     "Health": "forwardsync_health.html",
     "Scope Reconciliation": "forwardsync_scope_reconciliation.html",
     "Drift report": "forwardsync_drift_report.html",
+    "Ingestion": "forwardingestion.html",
+    "Module readiness": "forwardsync_module_readiness.html",
+}
+CARD_HEADING = re.compile(
+    r'<h5[^>]*class="card-header[^>]*>\s*{% trans "([^"]+)" %}', re.S
+)
+ANY_CARD_HEADING = re.compile(r'class="card-header')
+# A card the page pulls in from another template, or a raw-data card titled in the
+# include: `{% include '...configcontext_data.html' with title="Model Results" %}`.
+INCLUDE_TITLE = re.compile(r"configcontext_data\.html' with title=\"([^\"]+)\"")
+INCLUDE = re.compile(r"{% include 'forward_netbox/partials/([\w]+\.html)'")
+PARTIALS = TEMPLATES / "partials"
+
+# Partials that hold a card for a page above, or none (buttons, tabs, status).
+CARD_PARTIALS = {"ingestion_statistics.html", "change_explainability.html"}
+NO_CARD_PARTIALS = {
+    "ingestion_merge_button.html",
+    "object_tabs.html",
+    "ingestion_status.html",
+    "job_logs.html",
 }
 ROW_LABEL = re.compile(r'<th[^>]*scope="row"[^>]*>\s*{% trans "([^"]+)" %}\s*</th>')
 
@@ -49,7 +70,8 @@ class BundleLabelIndexTest(TestCase):
             counts = Counter(ROW_LABEL.findall((TEMPLATES / name).read_text()))
             for label, count in counts.items():
                 paths = PAGE_LABEL_PATHS[page][label]
-                self.assertEqual(
+                # One path per row, or more when one row reads several fields.
+                self.assertGreaterEqual(
                     len(paths) if isinstance(paths, list) else 1,
                     count,
                     f"{page} / {label} appears {count} time(s)",
@@ -69,10 +91,40 @@ class BundleLabelIndexTest(TestCase):
                 )
 
     def all_paths(self):
-        for page, rows in PAGE_LABEL_PATHS.items():
-            for label, value in rows.items():
-                for path in value if isinstance(value, list) else [value]:
-                    yield page, label, path
+        for index in (PAGE_LABEL_PATHS, PAGE_CARD_PATHS):
+            for page, rows in index.items():
+                for label, value in rows.items():
+                    for path in value if isinstance(value, list) else [value]:
+                        yield page, label, path
+
+    def test_every_card_has_a_place_in_the_bundle(self):
+        # A card holds tables labelled from data and figures written inside
+        # sentences, which no row label reaches; its heading leads to them.
+        for page, name in PAGES.items():
+            text = (TEMPLATES / name).read_text()
+            headings = set(CARD_HEADING.findall(text))
+            headings |= set(INCLUDE_TITLE.findall(text))
+            for partial in INCLUDE.findall(text):
+                if partial in CARD_PARTIALS:
+                    headings |= set(
+                        CARD_HEADING.findall((PARTIALS / partial).read_text())
+                    )
+                else:
+                    self.assertIn(
+                        partial,
+                        NO_CARD_PARTIALS | {"ingestion_status.html"},
+                        f"{page} includes {partial}: say whether it holds a card",
+                    )
+            self.assertEqual(
+                len(ANY_CARD_HEADING.findall(text)),
+                len(CARD_HEADING.findall(text)),
+                f"{page} has a card heading that is not a plain trans string",
+            )
+            self.assertEqual(
+                headings,
+                set(PAGE_CARD_PATHS[page]),
+                f"{page}: cards and PAGE_CARD_PATHS disagree",
+            )
 
     def test_every_path_starts_in_a_bundle_section(self):
         # Built from a sync that has never run: every section is present.

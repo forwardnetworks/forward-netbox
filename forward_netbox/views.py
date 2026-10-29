@@ -97,6 +97,7 @@ from .tables import ForwardSyncTable
 from .tables import ForwardValidationRunTable
 from .utilities.bulk_merge import describe_protecting_references
 from .utilities.bundle_diagnostics import bundle_diagnostics
+from .utilities.bundle_label_index import ui_card_index
 from .utilities.bundle_label_index import ui_label_index
 from .utilities.bundle_ui_figures import device_pk_lists
 from .utilities.bundle_ui_figures import drift_table
@@ -491,6 +492,29 @@ def _scope_reconciliation_bundle_payload(sync):
         # `*_pks`: the export filter turns a key with that suffix into a count.
         "ui_figures": json_safe_value(scope_figures(payload)),
         "device_keys": json_safe_value(device_pk_lists(payload)),
+        # The "Routing Policy Outside Scope" card: entries no in-scope device holds.
+        "catalogue_cleanup": _guarded_bundle_section(
+            lambda: json_safe_value(_catalogue_cleanup_payload(sync))
+        ),
+    }
+
+
+def _module_readiness_bundle_payload(sync):
+    """The stored Module Bay Plan report: its counts, never device or bay names."""
+    job = _latest_module_readiness_job(sync)
+    data = job.data if job is not None and isinstance(job.data, dict) else {}
+    payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+    return {
+        "job_pk": getattr(job, "pk", None),
+        "generated_at": job.completed.isoformat() if job and job.completed else None,
+        "error": str(data.get("error") or ""),
+        "payload": {
+            key: value
+            for key, value in payload.items()
+            if isinstance(value, (int, float, bool)) and not isinstance(value, str)
+        },
+        "planned_bay_count": len(data.get("module_bay_plan_rows") or ()),
+        "devices_not_in_netbox_count": len(data.get("missing_device_names") or ()),
     }
 
 
@@ -1517,6 +1541,9 @@ def _sync_support_bundle_payload(sync):
         # nothing.
         "interface_untagged_vlans": json_safe_value(interface_untagged_vlan_keys()),
         "scope_reconciliation": _scope_reconciliation_bundle_payload(sync),
+        "module_readiness": _guarded_bundle_section(
+            lambda: _module_readiness_bundle_payload(sync)
+        ),
         # What the uncovered devices are, when they became uncovered, which query
         # each map really runs, and the rows behind each ingestion issue - the
         # questions an investigation otherwise answers with a shell script on
@@ -1608,6 +1635,32 @@ def _sync_support_bundle_payload(sync):
                     (latest_ingestion.snapshot_info or {}).get("fast_baseline_load")
                     or {}
                 ),
+                # The ingestion page's snapshot rows and its "Forward Snapshot
+                # Metrics" card: how many devices Forward collected or failed.
+                "snapshot": _guarded_bundle_section(
+                    lambda: json_safe_value(latest_ingestion.get_snapshot_summary())
+                ),
+                "snapshot_metrics": _guarded_bundle_section(
+                    lambda: json_safe_value(
+                        latest_ingestion.get_snapshot_metrics_summary()
+                    )
+                ),
+                # The ingestion page's own "Created" and "Validation" rows. The
+                # job's timestamps are when it was queued, and the sync's latest
+                # validation run can be a later, different one.
+                "created": (
+                    latest_ingestion.created.isoformat()
+                    if latest_ingestion.created
+                    else None
+                ),
+                "validation_run": (
+                    {
+                        "pk": latest_ingestion.validation_run_id,
+                        "status": str(latest_ingestion.validation_run.status or ""),
+                    }
+                    if latest_ingestion.validation_run_id
+                    else None
+                ),
             }
             if latest_ingestion is not None
             else None
@@ -1616,6 +1669,7 @@ def _sync_support_bundle_payload(sync):
         # Where each row of the Health, Scope Reconciliation and Drift report
         # pages lives in this file, by the page's own label.
         "ui_label_index": ui_label_index(),
+        "ui_card_index": ui_card_index(),
     }
 
 
