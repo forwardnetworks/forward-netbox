@@ -97,6 +97,7 @@ from .tables import ForwardSyncTable
 from .tables import ForwardValidationRunTable
 from .utilities.bulk_merge import describe_protecting_references
 from .utilities.bundle_diagnostics import bundle_diagnostics
+from .utilities.bundle_label_index import ui_label_index
 from .utilities.bundle_ui_figures import device_pk_lists
 from .utilities.bundle_ui_figures import drift_table
 from .utilities.bundle_ui_figures import scope_figures
@@ -1612,6 +1613,9 @@ def _sync_support_bundle_payload(sync):
             else None
         ),
         "health": json_safe_value(health),
+        # Where each row of the Health, Scope Reconciliation and Drift report
+        # pages lives in this file, by the page's own label.
+        "ui_label_index": ui_label_index(),
     }
 
 

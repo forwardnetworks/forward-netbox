@@ -560,7 +560,9 @@ in this sync now. If `device_lines_present` is `false` the last ingestion's log
 has no per-device lines (it ran on an earlier release), so nothing is implied
 about those devices; re-run the sync. `shared_holder_examples` pairs a few
 devices with another device holding their address.
-`primary_ip.without_primary_ip_examples` lists a few device ids per reason, to
+`ui_label_index` maps the label of every row on the Health, Scope Reconciliation and
+Drift report pages to the bundle path that holds it (search it by the label a customer
+quotes). `primary_ip.without_primary_ip_examples` lists a few device ids per reason, to
 check a reason against the device list; `primary_ip.without_primary_ip_device_keys`
 lists every device id per reason, and
 `primary_ip.management_step_outcomes.shared_holders` lists every device that lost
