@@ -163,15 +163,67 @@ class DevicesWithoutAPrimaryIp(PrimaryIpFixture):
         third = self.new_device("r3")
         for index, device in enumerate((first, second, third)):
             self.give_address(device, f"10.9.3.{index + 1}/24")
-        outcomes = {first.pk: ("shared", 99), second.pk: ("no-interface", None)}
+        outcomes = {first.pk: ("no-interface", None), second.pk: ("no-interface", None)}
 
         row = primary_ip_reasons(
             self.missing([first, second, third]), outcomes=outcomes
         )[0]
 
-        self.assertIn("1 share the address with another device", row["why"])
-        self.assertIn("1 have it on no synced interface", row["why"])
+        self.assertEqual(row["reason"], "has_an_address_but_none_was_chosen")
+        self.assertIn("2 have it on no synced interface", row["why"])
         self.assertIn("it recorded no reason for 1", row["why"])
+
+    def test_an_address_the_step_found_owned_elsewhere_is_shared_not_fixable(self):
+        # A customer's bundle classed 346 devices as fixable by a Mgmt_ tag when
+        # the step had recorded that another device already owned the address.
+        # The owners are outside the devices counted, so NetBox alone shows no
+        # second holder.
+        def second_address(device, address):
+            interface = Interface.objects.create(
+                device=device, name=f"Mgmt-{device.name}", type="1000base-t"
+            )
+            IPAddress.objects.create(
+                address=address,
+                assigned_object_type=ContentType.objects.get_for_model(Interface),
+                assigned_object_id=interface.pk,
+            )
+
+        owner = self.new_device("s-owner")
+        self.give_address(owner, "10.9.6.1/24")
+        second_address(owner, "10.9.6.2/24")
+        shared = self.new_device("s1")
+        lost = self.new_device("s2")
+        unnamed = self.new_device("s3")
+        own_too = self.new_device("s4")
+        unchosen = self.new_device("s5")
+        self.give_address(shared, "10.9.6.1/32")
+        self.give_address(lost, "10.9.6.2/32")
+        self.give_address(unnamed, "10.9.6.7/24")
+        self.give_address(own_too, "10.9.6.1/32")
+        second_address(own_too, "10.9.6.8/24")
+        self.give_address(unchosen, "10.9.6.3/24")
+        outcomes = {
+            shared.pk: ("shared", owner.pk),
+            lost.pk: ("holder", owner.pk),
+            unnamed.pk: ("shared", None),
+            own_too.pk: ("shared", owner.pk),
+        }
+
+        rows = {
+            row["reason"]: row
+            for row in primary_ip_reasons(
+                self.missing([shared, lost, unnamed, own_too, unchosen]),
+                outcomes=outcomes,
+            )
+        }
+
+        self.assertEqual(rows["shares_an_address_with_another_device"]["count"], 3)
+        self.assertEqual(
+            rows["shares_an_address_with_another_device"]["fixable"], BY_DESIGN
+        )
+        # It also holds an address of its own, which a Mgmt_ tag can point at.
+        self.assertEqual(rows["has_an_address_but_none_was_chosen"]["count"], 2)
+        self.assertEqual(rows["has_an_address_but_none_was_chosen"]["fixable"], FIXABLE)
 
     def test_a_recorded_device_that_is_not_bare_here_is_not_counted(self):
         bare = self.new_device("b1")

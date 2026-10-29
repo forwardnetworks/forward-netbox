@@ -209,8 +209,12 @@ ROUTING_INTEGRATION = OptionalPluginIntegration(
     ),
     # 0.5.0 is the first released netbox-routing that boots on NetBox 4.7;
     # 0.4.3 caps at 4.6.99, and the 0.4.4 this lane used to run was upstream
-    # main, never published.
-    required_package_version="0.5.0",
+    # main, never published. 0.5.1 adds `pk` to model ordering, aligns the owner
+    # foreign keys with NetBox 4.7 and moves the OSPF uniqueness message into a
+    # constant (same words, so the name-clash match still holds). A customer on
+    # 0.5.1 had lost every fast path to the exact-version match.
+    required_package_version="0.5.1",
+    supported_package_versions=("0.5.0", "0.5.1"),
     enabled_by_default=False,
     status="supported",
     notes=("Supported routing import backed by optional NetBox routing models.",),

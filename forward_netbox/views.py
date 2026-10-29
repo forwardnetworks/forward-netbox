@@ -97,6 +97,9 @@ from .tables import ForwardSyncTable
 from .tables import ForwardValidationRunTable
 from .utilities.bulk_merge import describe_protecting_references
 from .utilities.bundle_diagnostics import bundle_diagnostics
+from .utilities.bundle_ui_figures import device_pk_lists
+from .utilities.bundle_ui_figures import drift_table
+from .utilities.bundle_ui_figures import scope_figures
 from .utilities.change_explainability import change_explainability_summary
 from .utilities.config_backup import config_backup_data_source
 from .utilities.diagnostics import diff_fallback_summary
@@ -227,6 +230,7 @@ def _latest_dependency_preview_bundle_payload(sync, latest_ingestion):
 
     data = job.data
     context = data.get("context") if isinstance(data.get("context"), dict) else {}
+    drift = compute_drift_report(data)
     return json_safe_value(
         {
             "job": {
@@ -245,7 +249,9 @@ def _latest_dependency_preview_bundle_payload(sync, latest_ingestion):
             "plan_preview": data.get("plan_preview") or {},
             "model_results": data.get("model_results") or [],
             "forward_api_usage": data.get("forward_api_usage") or {},
-            "drift_report": compute_drift_report(data),
+            "drift_report": drift,
+            # The Drift report page's table under its own column headings.
+            "drift_table": drift_table(drift),
             "latest_sync_evidence": build_latest_sync_evidence(
                 latest_ingestion,
                 data,
@@ -479,6 +485,11 @@ def _scope_reconciliation_bundle_payload(sync):
         "older_than_last_sync": older_than_last_sync,
         "error": report_error,
         "report": json_safe_value(_bundle_safe_report(payload)),
+        # The page's figures under the page's labels, and the device keys behind
+        # every count: the report above keeps only counts and field names. Not
+        # `*_pks`: the export filter turns a key with that suffix into a count.
+        "ui_figures": json_safe_value(scope_figures(payload)),
+        "device_keys": json_safe_value(device_pk_lists(payload)),
     }
 
 
@@ -810,7 +821,7 @@ def _primary_ip_bundle_payload(sync):
 
     fallback_reasons = _primary_ip_fallback_reasons(sync)
     outcomes = primary_ip_log_facts(sync)[1]  # None: the log has no per-device lines
-    classified = classify_primary_ip_devices(missing)
+    classified = classify_primary_ip_devices(missing, outcomes)
     return {
         "enabled": enabled,
         "management_ip_fallback_enabled": primary_ip_from_management_ip_enabled(sync),
@@ -3987,6 +3998,11 @@ class ForwardSyncExplainedView(generic.ObjectView):
             and primary_ip_from_management_ip_enabled(instance)
         )
 
+        def step_outcomes():
+            from .utilities.primary_ip import primary_ip_log_facts
+
+            return primary_ip_log_facts(instance)[1]
+
         def missing_devices():
             bound = ForwardDeviceIdentity.objects.filter(sync=instance).values_list(
                 "device_id", flat=True
@@ -4002,7 +4018,7 @@ class ForwardSyncExplainedView(generic.ObjectView):
             title = _("Uncovered devices")
         elif reason == "all":
             missing = missing_devices()
-            reason_by_pk = classify_primary_ip_devices(missing)
+            reason_by_pk = classify_primary_ip_devices(missing, step_outcomes())
             wanted = sorted(reason_by_pk)
             title = _("All devices without a primary IP")
             why = _(
@@ -4020,7 +4036,9 @@ class ForwardSyncExplainedView(generic.ObjectView):
             )
             wanted = sorted(
                 pk
-                for pk, kind in classify_primary_ip_devices(missing_devices()).items()
+                for pk, kind in classify_primary_ip_devices(
+                    missing_devices(), step_outcomes()
+                ).items()
                 if kind == reason
             )
             title = _("Devices without a primary IP")

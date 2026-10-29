@@ -50,6 +50,13 @@ EXACT_DROP_KEYS = ("sample",)
 # Keys whose values are bulk id lists: useful as a magnitude, noise as a list.
 COUNT_KEY_SUFFIXES = ("_device_ids", "_pks")
 
+# Keys holding the operator's own Forward tag names - often people's names. Only
+# how many there are leaves: `include_tags` becomes `include_tag_count`. A
+# customer's bundle carried them verbatim through the Health page's
+# reconciliation summary and the stored scope report, neither of which any
+# suffix rule matched.
+TAG_NAME_KEYS = ("include_tags", "exclude_tags")
+
 # Keys whose VALUES are operator-supplied but whose KEYS are the diagnostic.
 # A query's parameters are the example: which parameters were sent is what a
 # published query with a stale signature rejects, and it is the fact worth
@@ -73,6 +80,11 @@ def export_safe_payload(value):
             if key == OPERATOR_DETAIL_KEY:
                 continue
             if key in EXACT_DROP_KEYS:
+                continue
+            if key in TAG_NAME_KEYS:
+                cleaned[f"{key[:-1]}_count"] = (
+                    len(item) if isinstance(item, (list, tuple, set)) else None
+                )
                 continue
             if key.endswith(NAME_KEY_SUFFIXES):
                 cleaned[f"{key}_names"] = (
