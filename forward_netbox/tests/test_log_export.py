@@ -828,6 +828,10 @@ class SupportBundleTroubleshootingDepthTest(TestCase):
             "stuck_sync",
         ):
             self.assertIn(section, payload, section)
+        from forward_netbox.utilities.bundle_label_index import PAGE_LABEL_PATHS
+
+        # The lookup from a page's label to where the bundle holds it ships in it.
+        self.assertEqual(payload["ui_label_index"], PAGE_LABEL_PATHS)
         self.assertEqual(payload["scope_reconciliation"]["report"], {})
         self.assertEqual(payload["ownership_records"]["device_identities"], 0)
 
