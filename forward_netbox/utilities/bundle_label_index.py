@@ -174,6 +174,19 @@ PAGE_LABEL_PATHS = {
         "Snapshot Processed": "latest_ingestion.snapshot.processed_at",
         "Created": "latest_ingestion.created",
     },
+    "Audits": {},
+    "Dependency preview": {
+        "Snapshot": "latest_dependency_preview.context.snapshot_id",
+        "Selector": "latest_dependency_preview.context.snapshot_selector",
+        "Planned shards": "latest_dependency_preview.plan_preview.planned_shards",
+        "Estimated changes": "latest_dependency_preview.plan_preview.estimated_changes",
+        "Models": "latest_dependency_preview.plan_preview.model_count",
+        "Retry risk": "latest_dependency_preview.plan_preview.retry_risk",
+        "Status": "latest_dependency_preview.plan_preview.delete_dependency_plan.status",
+        "Delete rows": "latest_dependency_preview.plan_preview.delete_dependency_plan.delete_rows",
+        "Delete shards": "latest_dependency_preview.plan_preview.delete_dependency_plan.delete_shards",
+        "Max delete shard": "latest_dependency_preview.plan_preview.delete_dependency_plan.max_delete_shard_changes",
+    },
     "Module readiness": {
         "Module rows": "module_readiness.payload.candidate_rows",
         "Bays already present": "module_readiness.payload.existing_bay_rows",
@@ -187,6 +200,13 @@ PAGE_LABEL_PATHS = {
 # whole JSON documents in the page and in the bundle's health.latest_ingestion; a
 # model's per-row results are summarised (failures, fallbacks, top models), and
 # "Snapshot Metrics (Raw)" is cut to the allowlisted keys.
+#
+# Older ingestions: the ingestion page of each of the sync's newest ten is in
+# `ingestion_pages` (the "Ingestion" rows above describe the latest, which has the
+# fuller `latest_ingestion`). An audit's rows name devices, so the bundle keeps each
+# Forward-backed audit's summary figures and table sizes in `audit_reports`. The
+# Types page lists type names, which stay out by design; its counts are the "Types"
+# row of Counts explained (`health.explained_findings`).
 #
 # Each card on those pages, by its heading, to the bundle path(s) that hold what it
 # shows. Rows list a label; a card also holds tables whose labels come from the data
@@ -272,6 +292,16 @@ PAGE_CARD_PATHS = {
         "Analysis Summary": "health.latest_ingestion.analysis_summary",
         "Advisory Summary": "sync.advisory_summary",
     },
+    "Dependency preview": {
+        "Dependency Preview": "latest_dependency_preview.plan_preview",
+        "Delete Dependency Plan": "latest_dependency_preview.plan_preview.delete_dependency_plan",
+        "Planned Shards": [
+            "latest_dependency_preview.plan_items",
+            "latest_dependency_preview.plan_items_count",
+        ],
+        "Plan Preview": "latest_dependency_preview",
+    },
+    "Audits": {"Audits": "audit_reports"},
     "Module readiness": {
         "Module Bay Plan": [
             "module_readiness.payload",

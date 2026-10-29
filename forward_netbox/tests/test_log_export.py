@@ -1144,6 +1144,96 @@ class SupportBundleTroubleshootingDepthTest(TestCase):
         self.assertEqual(cleanup["entry_count"], 7)
         self.assertEqual(cleanup["by_model"], [["netbox_routing.prefixlist", 7]])
 
+    def test_audits_older_ingestions_and_planned_shards_are_in_the_bundle(self):
+        from forward_netbox.utilities.audit_reports import AUDIT_REPORTS
+
+        older = ForwardIngestion.objects.create(
+            sync=self.sync,
+            snapshot_selector="latestProcessed",
+            snapshot_id="snap-old",
+            applied_change_count=5,
+            snapshot_metrics={"numCollectionFailureDevices": 12},
+        )
+        now = timezone.now()
+        Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name=f"{self.sync.name} - dependency preview",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id="123e4567-e89b-12d3-a456-426614174521",
+            created=now,
+            started=now,
+            completed=now,
+            data={
+                "generated_at": now.isoformat(),
+                "plan_items_count": 2,
+                "plan_items": [
+                    {
+                        "index": 1,
+                        "model": "dcim.device",
+                        "estimated_changes": 40,
+                        "upsert_count": 38,
+                        "delete_count": 2,
+                        "fetch_mode": "nqe",
+                        "apply_engine": "orm",
+                        "private": "private-shard-note",
+                    }
+                ],
+                "model_results": [],
+            },
+        )
+        payload, _raw = self._bundle()
+
+        pages = {page["pk"]: page for page in payload["ingestion_pages"]}
+        self.assertIn(older.pk, pages)
+        self.assertEqual(pages[older.pk]["snapshot_id"], "snap-old")
+        self.assertEqual(
+            pages[older.pk]["snapshot_metrics"], {"numCollectionFailureDevices": 12}
+        )
+        self.assertEqual(pages[older.pk]["change_counts"]["applied"], 5)
+        preview = payload["latest_dependency_preview"]
+        self.assertEqual(preview["plan_items_count"], 2)
+        self.assertEqual(preview["plan_items"][0]["model"], "dcim.device")
+        # Only the page's columns; the job's own record (under operator_action_jobs)
+        # is unchanged by this section.
+        self.assertNotIn("private", preview["plan_items"][0])
+        self.assertEqual(set(payload["audit_reports"]), set(AUDIT_REPORTS))
+
+    def test_an_audit_exports_its_figures_and_never_the_names_it_found(self):
+        now = timezone.now()
+        Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name=f"{self.sync.name} - audit primary IP resolution",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id="123e4567-e89b-12d3-a456-426614174522",
+            created=now,
+            started=now,
+            completed=now,
+            data={
+                "audit": "primary_ip",
+                "payload": {
+                    "snapshot_id": "snap-private-1",
+                    "example_device_not_in_netbox": ["private-dev-1", "private-dev-2"],
+                    "nested": {"example_interface": ["private-if-9"], "total": 6},
+                },
+            },
+        )
+        payload, raw = self._bundle()
+
+        self.assertNotIn("private-dev", raw)
+        self.assertNotIn("private-if", raw)
+        self.assertNotIn(
+            "snap-private-1", payload["audit_reports"]["primary_ip"].__repr__()
+        )
+        # The button job keeps its numbers and the size of each example list.
+        data = payload["operator_action_jobs"]["audit_primary_ip"]["data"]["payload"]
+        self.assertEqual(data["nested"]["total"], 6)
+        self.assertEqual(data["example_device_not_in_netbox"], {"count": 2})
+        self.assertEqual(
+            payload["audit_reports"]["primary_ip"]["job_status"], "completed"
+        )
+
     def test_blocking_issues_are_exported_before_non_blocking_ones(self):
         from forward_netbox.models import ForwardIngestion
         from forward_netbox.models import ForwardIngestionIssue
