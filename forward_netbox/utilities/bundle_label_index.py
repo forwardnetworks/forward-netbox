@@ -159,9 +159,135 @@ PAGE_LABEL_PATHS = {
         "Ownership": "latest_dependency_preview.latest_sync_evidence.ownership",
         "Same as preview": "latest_dependency_preview.latest_sync_evidence.same_snapshot",
     },
+    "Ingestion": {
+        "Name": "latest_ingestion.name",
+        "Sync": "sync.name",
+        "Branch": "latest_ingestion.branch",
+        "Job": "latest_ingestion.job",
+        "Merge Job": "latest_ingestion.merge_job",
+        "Status": ["sync.status", "latest_ingestion_issues.total"],
+        "Validation": "latest_ingestion.validation_run.status",
+        "Snapshot Selection": "latest_ingestion.snapshot_selector",
+        "Snapshot ID": "latest_ingestion.snapshot_id",
+        "Snapshot State": "latest_ingestion.snapshot.state",
+        "Snapshot Created": "latest_ingestion.snapshot.created_at",
+        "Snapshot Processed": "latest_ingestion.snapshot.processed_at",
+        "Created": "latest_ingestion.created",
+    },
+    "Module readiness": {
+        "Module rows": "module_readiness.payload.candidate_rows",
+        "Bays already present": "module_readiness.payload.existing_bay_rows",
+        "Missing bays": "module_readiness.payload.unique_missing_bays",
+        "Rows whose device is not yet in NetBox": "module_readiness.payload.missing_device_rows",
+    },
+}
+
+
+# The ingestion page's raw-data cards (Model Results and the three summaries) are
+# whole JSON documents in the page and in the bundle's health.latest_ingestion; a
+# model's per-row results are summarised (failures, fallbacks, top models), and
+# "Snapshot Metrics (Raw)" is cut to the allowlisted keys.
+#
+# Each card on those pages, by its heading, to the bundle path(s) that hold what it
+# shows. Rows list a label; a card also holds tables whose labels come from the data
+# and figures written inside a sentence, which a row label cannot reach.
+PAGE_CARD_PATHS = {
+    "Health": {
+        "Health Summary": ["health.source", "health.runtime", "health.next_run"],
+        "Health Details": "health",
+        "Forward API Usage": "health.api_usage",
+        "Dependency Lookup Cache": "health.dependency_lookup_cache",
+        "Optional Plugin Capabilities": [
+            "health.optional_plugin_capabilities_ui",
+            "health.reconciliation",
+        ],
+        "How the device numbers fit together": [
+            "health.reconciliation",
+            "health.explained_findings",
+        ],
+        "Counts explained": "health.explained_findings",
+        "Checks": "health.checks",
+        "Query Binding": "health.query_modes",
+        "Query Path Resolution": "health.query_path_resolution",
+        "Query Drift Summary": "health.query_drift_summary",
+        "Local Query Drift": "health.query_modes.local_drift",
+        "Apply Engines": "health.apply_engines",
+        "Fetch Contracts": "health.fetch_contracts",
+        "Collection Gap": "health.collection_gap",
+        "Out of Scope": "health.out_of_scope",
+        "Uncovered": "health.uncovered",
+        "Absence Quarantine": "health.quarantine_cadence",
+        "Density Learning": "health.density_learning",
+        "Latest State": [
+            "health.latest_validation",
+            "health.latest_ingestion",
+            "health.ownership_finalization",
+        ],
+        "Delete Wave": "health.delete_wave",
+        "Current Branch & Jobs": ["health.latest_ingestion", "health.config_backup"],
+        "Config Backup": "health.config_backup",
+        "NetBox vs Forward Row Counts": "health.row_counts",
+        "Recent Ingestions": "health.recent_ingestions",
+    },
+    "Scope Reconciliation": {
+        "Device Scope Reconciliation": [
+            "scope_reconciliation.report",
+            "scope_reconciliation.ui_figures",
+        ],
+        "Out-of-Scope Sample": "scope_reconciliation.device_keys",
+        "Post-Upgrade Catalog Reconciliation": "upgrade_reconciliation",
+        "Review Candidates": "upgrade_reconciliation",
+        "Backfill Reason Breakdown": "scope_reconciliation.report.backfilled_reason_breakdown",
+        "Tagged-but-Backfilled Sample": "scope_reconciliation.device_keys",
+        "Routing Policy Outside Scope": "scope_reconciliation.catalogue_cleanup",
+        "Site-Relabel Duplicates": "diagnostics.site_relabel_pairs",
+        "Uncovered, Created by This Sync": [
+            "scope_reconciliation.report.unmanaged",
+            "scope_reconciliation.device_keys",
+        ],
+        "Uncovered, Not Claimed by This Sync": [
+            "scope_reconciliation.report.unmanaged",
+            "scope_reconciliation.device_keys",
+        ],
+    },
+    "Drift report": {
+        "Drift Summary": "latest_dependency_preview.drift_report",
+        "Latest Sync Evidence": "latest_dependency_preview.latest_sync_evidence",
+        "Per-Model Drift (NetBox vs Forward)": "latest_dependency_preview.drift_table",
+    },
+    "Ingestion": {
+        "Ingestion Information": "latest_ingestion",
+        "Statistics": "latest_ingestion.change_counts",
+        "Change Explainability": "latest_ingestion.change_explainability",
+        "Forward Snapshot Metrics": "latest_ingestion.snapshot_metrics",
+        "Snapshot Metrics (Raw)": "latest_ingestion.snapshot_metrics",
+        "Fast Baseline Attestation": "latest_ingestion.fast_baseline_attestation",
+        "Model Results": [
+            "latest_ingestion.model_failures",
+            "latest_ingestion.diff_fallbacks",
+            "health.latest_ingestion.query_modes",
+        ],
+        "Execution Summary": "health.latest_ingestion.execution_summary",
+        "Workload Preview": "health.latest_ingestion.workload_preview",
+        "Analysis Summary": "health.latest_ingestion.analysis_summary",
+        "Advisory Summary": "sync.advisory_summary",
+    },
+    "Module readiness": {
+        "Module Bay Plan": [
+            "module_readiness.payload",
+            "module_readiness.planned_bay_count",
+            "module_readiness.generated_at",
+        ],
+        "Devices Not Yet in NetBox": "module_readiness.devices_not_in_netbox_count",
+    },
 }
 
 
 def ui_label_index():
     """The index as the bundle carries it: page -> label -> bundle path(s)."""
     return {page: dict(rows) for page, rows in PAGE_LABEL_PATHS.items()}
+
+
+def ui_card_index():
+    """Page -> card heading -> bundle path(s), for what a row label cannot reach."""
+    return {page: dict(cards) for page, cards in PAGE_CARD_PATHS.items()}

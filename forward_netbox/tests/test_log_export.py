@@ -325,6 +325,42 @@ class ForwardIngestionLogExportViewTest(TestCase):
         )
         self.assertNotIn(sentinel, response.content.decode())
 
+    def test_the_bundle_carries_the_snapshot_rows_and_metrics_the_page_shows(self):
+        # The ingestion page's "Snapshot State/Created/Processed" rows and its
+        # "Forward Snapshot Metrics" card were not in the bundle.
+        self.ingestion.snapshot_info = {
+            "state": "PROCESSED",
+            "createdAt": "2026-10-28T10:00:00Z",
+            "processedAt": "2026-10-28T10:30:00Z",
+        }
+        self.ingestion.snapshot_metrics = {
+            "numSuccessfulDevices": 3829,
+            "numCollectionFailureDevices": 12,
+            "collectionDuration": 1800,
+            "somethingElse": "left out",
+        }
+        self.ingestion.save(update_fields=["snapshot_info", "snapshot_metrics"])
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_support_bundle",
+                kwargs={"pk": self.sync.pk},
+            )
+        )
+
+        latest = json.loads(response.content)["latest_ingestion"]
+        self.assertEqual(latest["snapshot"]["state"], "PROCESSED")
+        self.assertEqual(latest["snapshot"]["processed_at"], "2026-10-28T10:30:00Z")
+        self.assertEqual(
+            latest["snapshot_metrics"],
+            {
+                "numSuccessfulDevices": 3829,
+                "numCollectionFailureDevices": 12,
+                "collectionDuration": 1800,
+            },
+        )
+
     def test_sync_support_bundle_carries_the_merge_evidence(self):
         applied = timezone.now() - timedelta(minutes=5)
         finalized = timezone.now() - timedelta(minutes=1)
@@ -828,10 +864,12 @@ class SupportBundleTroubleshootingDepthTest(TestCase):
             "stuck_sync",
         ):
             self.assertIn(section, payload, section)
+        from forward_netbox.utilities.bundle_label_index import PAGE_CARD_PATHS
         from forward_netbox.utilities.bundle_label_index import PAGE_LABEL_PATHS
 
         # The lookup from a page's label to where the bundle holds it ships in it.
         self.assertEqual(payload["ui_label_index"], PAGE_LABEL_PATHS)
+        self.assertEqual(payload["ui_card_index"], PAGE_CARD_PATHS)
         self.assertEqual(payload["scope_reconciliation"]["report"], {})
         self.assertEqual(payload["ownership_records"]["device_identities"], 0)
 
@@ -1040,6 +1078,71 @@ class SupportBundleTroubleshootingDepthTest(TestCase):
         )
         self.assertEqual(section["device_keys"]["out_of_scope"]["count"], 3)
         self.assertNotIn("private-name-9", raw)
+
+    def test_the_module_bay_plan_and_routing_cleanup_cards_are_in_the_bundle(self):
+        now = timezone.now()
+        content_type = ContentType.objects.get_for_model(ForwardSync)
+        Job.objects.create(
+            object_type=content_type,
+            object_id=self.sync.pk,
+            name=f"{self.sync.name} - module readiness",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id="123e4567-e89b-12d3-a456-426614174511",
+            created=now,
+            started=now,
+            completed=now,
+            data={
+                "payload": {
+                    "candidate_rows": 40,
+                    "existing_bay_rows": 31,
+                    "unique_missing_bays": 9,
+                    "missing_device_rows": 4,
+                    "note": "a string is not a count",
+                },
+                "module_bay_plan_rows": [
+                    {"device": "private-device-1", "name": "Slot 1"},
+                    {"device": "private-device-2", "name": "Slot 2"},
+                ],
+                "missing_device_names": ["private-device-3"],
+            },
+        )
+        Job.objects.create(
+            object_type=content_type,
+            object_id=self.sync.pk,
+            name=f"{self.sync.name} - dependency preview",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id="123e4567-e89b-12d3-a456-426614174512",
+            created=now,
+            started=now,
+            completed=now,
+            data={
+                "generated_at": now.isoformat(),
+                "model_results": [
+                    {
+                        "model": "netbox_routing.prefixlist",
+                        "outside_scope_in_netbox_count": 7,
+                    }
+                ],
+            },
+        )
+        payload, raw = self._bundle()
+
+        module = payload["module_readiness"]
+        self.assertEqual(
+            module["payload"],
+            {
+                "candidate_rows": 40,
+                "existing_bay_rows": 31,
+                "unique_missing_bays": 9,
+                "missing_device_rows": 4,
+            },
+        )
+        self.assertEqual(module["planned_bay_count"], 2)
+        self.assertEqual(module["devices_not_in_netbox_count"], 1)
+        self.assertNotIn("private-device", raw)
+        cleanup = payload["scope_reconciliation"]["catalogue_cleanup"]
+        self.assertEqual(cleanup["entry_count"], 7)
+        self.assertEqual(cleanup["by_model"], [["netbox_routing.prefixlist", 7]])
 
     def test_blocking_issues_are_exported_before_non_blocking_ones(self):
         from forward_netbox.models import ForwardIngestion
