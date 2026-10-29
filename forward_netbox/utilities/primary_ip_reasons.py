@@ -97,6 +97,50 @@ _OUTCOME_PHRASES = {
 }
 
 
+# What to do about a device by what the management-address step recorded for it,
+# written only for the outcomes a person can act on, and only for a device that
+# holds an address and has neither primary-IP source off (a Mgmt_ tag does nothing
+# when tags are not read). `None` is a bare device the step recorded nothing for:
+# the step handles the devices Forward gives a management address or a Mgmt_ tag,
+# so "nothing" usually means Forward gave it neither; a device whose chosen address
+# matched no interface in the branch is skipped without a record too.
+_OUTCOME_ADVICE = (
+    (
+        None,
+        "{n} were not handled by the step, usually because Forward gave them no "
+        "management address or Mgmt_ tag: tag the interface to use with "
+        "Mgmt_<interface> in Forward, or set a primary IP by hand.",
+    ),
+    (
+        "no-interface",
+        "{n} have a management address from Forward that matched no interface of "
+        "the device in NetBox: the interface may not have synced (see the ingestion "
+        "issues), or Forward's collection holds an address no interface carries.",
+    ),
+    (
+        "multiple-addresses",
+        "{n} have several management addresses: tag the one to use with "
+        "Mgmt_<interface> in Forward.",
+    ),
+    (
+        "several-interfaces",
+        "{n} have the management address on several interfaces: tag the one to "
+        "use with Mgmt_<interface> in Forward.",
+    ),
+)
+
+
+def outcome_advice(counts):
+    """What to do for each actionable outcome in ``counts`` ({code or None: n}), or ""."""
+    if not counts:
+        return ""
+    return " ".join(
+        text.format(n=counts[code])
+        for code, text in _OUTCOME_ADVICE
+        if counts.get(code)
+    )
+
+
 def outcome_split(classified, outcomes):
     """``{reason: Counter({code or None: devices})}`` for the devices in ``classified``.
 
@@ -297,10 +341,24 @@ def reason_rows(classified, *, settings_on=False, fallback_reasons=None, outcome
             "count": counts[reason],
             "fixable": fixable,
             "why": why + _step_sentence(reason, split, fallback_reasons),
-            "what_to_do": (
-                ALREADY_ON_ADVICE
-                if settings_on and reason == "has_an_address_but_none_was_chosen"
-                else advice
+            "what_to_do": " ".join(
+                part
+                for part in (
+                    (
+                        ALREADY_ON_ADVICE
+                        if settings_on
+                        and reason == "has_an_address_but_none_was_chosen"
+                        else advice
+                    ),
+                    (
+                        outcome_advice(split.get(reason))
+                        if outcomes is not None
+                        and settings_on
+                        and reason == "has_an_address_but_none_was_chosen"
+                        else ""
+                    ),
+                )
+                if part
             ),
         }
         for reason, fixable, why, advice in REASONS

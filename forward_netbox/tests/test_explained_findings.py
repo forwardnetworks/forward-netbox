@@ -225,6 +225,45 @@ class DevicesWithoutAPrimaryIp(PrimaryIpFixture):
         self.assertEqual(rows["has_an_address_but_none_was_chosen"]["count"], 2)
         self.assertEqual(rows["has_an_address_but_none_was_chosen"]["fixable"], FIXABLE)
 
+    def test_the_advice_follows_what_the_step_recorded(self):
+        # A customer's 37 "none recorded" and 20 "no interface" devices were told
+        # nothing to do about them.
+        quiet = self.new_device("a1")
+        off = self.new_device("a2")
+        many = self.new_device("a3")
+        for index, device in enumerate((quiet, off, many)):
+            self.give_address(device, f"10.9.7.{index + 1}/24")
+        outcomes = {
+            off.pk: ("no-interface", None),
+            many.pk: ("multiple-addresses", None),
+        }
+
+        row = primary_ip_reasons(
+            self.missing([quiet, off, many]), settings_on=True, outcomes=outcomes
+        )[0]
+
+        advice = row["what_to_do"]
+        self.assertIn("1 were not handled by the step", advice)
+        self.assertIn(
+            "1 have a management address from Forward that matched no", advice
+        )
+        self.assertIn("1 have several management addresses", advice)
+        # The settings-are-on line is still first.
+        self.assertTrue(advice.startswith("The primary-IP settings are already on"))
+
+        # A Mgmt_ tag does nothing unless both settings are on.
+        off = primary_ip_reasons(
+            self.missing([quiet]), settings_on=False, outcomes=outcomes
+        )[0]
+        self.assertNotIn("Mgmt_<interface>", off["what_to_do"])
+        # The advice fits a device holding an address it did not choose, no other.
+        bare = self.new_device("a5")
+        Interface.objects.create(device=bare, name="Eth0", type="1000base-t")
+        other = primary_ip_reasons(self.missing([bare]), settings_on=True, outcomes={})[
+            0
+        ]
+        self.assertNotIn("were not handled", other["what_to_do"])
+
     def test_a_recorded_device_that_is_not_bare_here_is_not_counted(self):
         bare = self.new_device("b1")
         self.give_address(bare, "10.9.4.1/24")
@@ -398,6 +437,86 @@ class HealthNeverBreaksOnThemTest(PrimaryIpFixture):
 
 
 class BundleTest(DevicesWithoutAPrimaryIp):
+    def test_the_bundle_accounts_for_devices_outside_the_sync_and_every_holder(self):
+        # A customer's 845 devices without a primary IP against the sync's 702
+        # left 143 unexplained, and ten examples of who owned a shared address.
+        import json
+
+        from forward_netbox.models import ForwardSync
+        from forward_netbox.utilities.export_redaction import export_safe_payload
+        from forward_netbox.views import _primary_ip_bundle_payload
+        from forward_netbox.views import _shared_holder_pairs
+
+        inside = self.new_device("zq-inside-5501")
+        other_sync_device = self.new_device("zq-elsewhere-5502")
+        unmanaged = self.new_device("zq-unmanaged-5503")
+        unmanaged.tags.add(
+            Tag.objects.create(name="Orphan", slug="forward-out-of-scope")
+        )
+        other = ForwardSync.objects.create(
+            name="the-other-sync", source=self.sync.source, parameters={}
+        )
+        ForwardDeviceIdentity.objects.create(
+            sync=self.sync, source_device_key="k-in", device=inside
+        )
+        ForwardDeviceIdentity.objects.create(
+            sync=other, source_device_key="k-else", device=other_sync_device
+        )
+
+        payload = _primary_ip_bundle_payload(self.sync)
+
+        outside = payload["outside_this_sync"]
+        # All three exist without a primary IP; only one is this sync's.
+        self.assertEqual(
+            payload["netbox_devices_without_primary_ip"],
+            payload["without_primary_ip"] + outside["count"],
+        )
+        self.assertEqual(outside["managed_by_another_sync"], 1)
+        self.assertEqual(outside["managed_by_no_sync"], outside["count"] - 1)
+        self.assertEqual(outside["by_other_sync"], {str(other.pk): 1})
+        self.assertEqual(outside["by_scope_tag"]["forward-out-of-scope"], 1)
+        self.assertEqual(
+            outside["device_keys"]["managed_by_another_sync"]["keys"],
+            [other_sync_device.pk],
+        )
+        self.assertIn(
+            unmanaged.pk, outside["device_keys"]["managed_by_no_sync"]["keys"]
+        )
+        self.assertFalse(outside["device_keys"]["managed_by_no_sync"]["truncated"])
+        # Every device by reason, not ten.
+        self.assertEqual(
+            payload["without_primary_ip_device_keys"][
+                next(iter(payload["without_primary_ip_device_keys"]))
+            ]["count"],
+            1,
+        )
+        exported = json.dumps(export_safe_payload(payload))
+        for name in (
+            inside.name,
+            other_sync_device.name,
+            unmanaged.name,
+            "the-other-sync",
+        ):
+            self.assertNotIn(name, exported)
+
+        pairs = _shared_holder_pairs(
+            {1, 2, 3, 4},
+            {
+                1: ("shared", 90),
+                2: ("shared", 90),
+                3: ("holder", 91),
+                4: ("no-interface", None),
+            },
+        )
+        self.assertEqual(pairs["count"], 3)
+        self.assertEqual(pairs["distinct_holders"], 2)
+        self.assertEqual(
+            pairs["holders"],
+            [{"holder": 90, "devices": 2}, {"holder": 91, "devices": 1}],
+        )
+        self.assertEqual(pairs["pairs"], [[1, 90], [2, 90], [3, 91]])
+        self.assertFalse(pairs["truncated"])
+
     def test_the_bundle_reasons_add_up_to_the_bare_count_and_hold_no_names(self):
         import json
 

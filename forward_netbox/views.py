@@ -869,6 +869,10 @@ def _primary_ip_bundle_payload(sync):
         # Every NetBox device, not just this sync's: the number an operator
         # reads off the device list, so the two can be reconciled.
         "netbox_devices_without_primary_ip": all_missing.count(),
+        # The part of that count this sync does not manage, split by what they are.
+        "outside_this_sync": _primary_ip_outside_this_sync(sync, all_missing, missing),
+        # Every device by reason, not just ten: which devices a reason means.
+        "without_primary_ip_device_keys": _primary_ip_reason_keys(classified),
         # What mask the primary addresses carry. A customer asked whether primary
         # IPs "coming in as /32" were fixed; a /32 is correct for a loopback and
         # wrong for an SNMP endpoint's interface, and only the split says which.
@@ -918,6 +922,114 @@ def _primary_ip_outcome_detail(classified, outcomes):
             for pk in sorted(recorded_here)
             if outcomes[pk][1]
         ][:10],
+        # Every device the step said lost its address, and to whom: the examples
+        # above say a few exist, never which devices share which owner.
+        "shared_holders": _shared_holder_pairs(recorded_here, outcomes),
+    }
+
+
+_BUNDLE_DEVICE_KEY_LIMIT = 5000
+
+
+def _shared_holder_pairs(recorded_here, outcomes):
+    """``{count, truncated, holders, pairs}`` for the recorded shared addresses.
+
+    ``holders`` lists each owner with how many devices lost an address to it
+    (largest first), so a firewall chassis holding 40 virtual systems reads as
+    one line; ``pairs`` is every ``[device, holder]`` by NetBox key.
+    """
+    from collections import Counter
+
+    pairs = [[pk, outcomes[pk][1]] for pk in sorted(recorded_here) if outcomes[pk][1]]
+    holders = Counter(holder for _device, holder in pairs)
+    return {
+        "count": len(pairs),
+        "truncated": len(pairs) > _BUNDLE_DEVICE_KEY_LIMIT,
+        "distinct_holders": len(holders),
+        "holders": [
+            {"holder": holder, "devices": devices}
+            for holder, devices in holders.most_common(50)
+        ],
+        "pairs": pairs[:_BUNDLE_DEVICE_KEY_LIMIT],
+    }
+
+
+def _primary_ip_outside_this_sync(sync, all_missing, this_sync_missing):
+    """The NetBox devices without a primary IP that this sync does not manage.
+
+    The device list shows every NetBox device; the sync's own count is smaller.
+    A customer's 845 against the sync's 702 left 143 with no explanation, so this
+    says what they are: their role, status, scope tags, and whether another sync
+    manages them or none does. Counts and NetBox keys only.
+    """
+    from collections import Counter
+
+    from .models import ForwardDeviceIdentity
+    from .utilities.scope_reconciliation import UNCOVERED_TAG_SLUG
+
+    outside = all_missing.exclude(pk__in=this_sync_missing.values("pk"))
+    outside_ids = list(outside.values_list("pk", flat=True))
+    # A device can be bound to several syncs, so this is device -> every other
+    # sync that manages it.
+    other_syncs = {}
+    for device_id, sync_id in (
+        ForwardDeviceIdentity.objects.filter(device_id__in=outside_ids)
+        .exclude(sync=sync)
+        .values_list("device_id", "sync_id")
+    ):
+        other_syncs.setdefault(device_id, set()).add(sync_id)
+    tags = Counter()
+    for slug in (UNCOVERED_TAG_SLUG, "forward-out-of-scope", "forward-backfilled"):
+        tags[slug] = outside.filter(tags__slug=slug).distinct().count()
+    elsewhere = sorted(other_syncs)
+    nowhere = sorted(set(outside_ids) - set(other_syncs))
+    return {
+        "count": len(outside_ids),
+        # A device with no role counts under "none": the export filter drops a
+        # key that is not a string, which would leave the split short of the total.
+        "by_role": {
+            str(role or "none"): n
+            for role, n in Counter(
+                outside.values_list("role__name", flat=True)
+            ).most_common(15)
+        },
+        "by_status": dict(Counter(outside.values_list("status", flat=True))),
+        "by_scope_tag": dict(tags),
+        "managed_by_another_sync": len(elsewhere),
+        "managed_by_no_sync": len(nowhere),
+        # Devices per other sync; a device bound to two counts under both.
+        "by_other_sync": {
+            str(sync_id): n
+            for sync_id, n in Counter(
+                sync_id for ids in other_syncs.values() for sync_id in ids
+            ).items()
+        },
+        "device_keys": {
+            "managed_by_another_sync": {
+                "count": len(elsewhere),
+                "truncated": len(elsewhere) > _BUNDLE_DEVICE_KEY_LIMIT,
+                "keys": elsewhere[:_BUNDLE_DEVICE_KEY_LIMIT],
+            },
+            "managed_by_no_sync": {
+                "count": len(nowhere),
+                "truncated": len(nowhere) > _BUNDLE_DEVICE_KEY_LIMIT,
+                "keys": nowhere[:_BUNDLE_DEVICE_KEY_LIMIT],
+            },
+        },
+    }
+
+
+def _primary_ip_reason_keys(classified):
+    keys = {}
+    for pk, reason in sorted(classified.items()):
+        keys.setdefault(reason, []).append(pk)
+    return {
+        reason: {
+            "count": len(pks),
+            "truncated": len(pks) > _BUNDLE_DEVICE_KEY_LIMIT,
+            "device_keys": pks[:_BUNDLE_DEVICE_KEY_LIMIT],
+        }
+        for reason, pks in keys.items()
     }
 
 
