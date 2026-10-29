@@ -560,6 +560,7 @@ in this sync now. If `device_lines_present` is `false` the last ingestion's log
 has no per-device lines (it ran on an earlier release), so nothing is implied
 about those devices; re-run the sync. `shared_holder_examples` pairs a few
 devices with another device holding their address.
+`audit_reports` holds each Forward-backed audit's last summary figures and table sizes (the rows name devices, so open the audit for those; an audit button's job under `operator_action_jobs` carries its numbers and the size of each example list), `ingestion_pages` the ingestion page's figures for the newest ten ingestions, and `latest_dependency_preview.plan_items` the Planned Shards table.
 `ui_label_index` maps the label of every row on the Health, Scope Reconciliation,
 Drift report, ingestion (latest ingestion only) and Module Bay Plan pages to the bundle
 path that holds it (search it by the label a customer quotes), and `ui_card_index` does the same for each

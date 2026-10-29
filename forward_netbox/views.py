@@ -187,6 +187,23 @@ def annotate_statistics(queryset):
     )
 
 
+def _counts_only(value):
+    """A stored audit payload as the numbers in it: lists become their length and
+    text is dropped. An audit's example lists name devices, interfaces and tags,
+    and the sanitizer that cleans job data does not know those keys."""
+    if isinstance(value, bool) or isinstance(value, (int, float)):
+        return value
+    if isinstance(value, dict):
+        return {
+            str(key): kept
+            for key, item in value.items()
+            if (kept := _counts_only(item)) is not None
+        }
+    if isinstance(value, (list, tuple)):
+        return {"count": len(value)}
+    return None
+
+
 def _job_export_payload(job):
     if not job:
         return None
@@ -249,6 +266,24 @@ def _latest_dependency_preview_bundle_payload(sync, latest_ingestion):
             },
             "change_estimate_kind": data.get("change_estimate_kind") or "",
             "plan_preview": data.get("plan_preview") or {},
+            # The page's "Planned Shards" table: model labels and counts only.
+            "plan_items": [
+                {
+                    key: item.get(key)
+                    for key in (
+                        "index",
+                        "model",
+                        "estimated_changes",
+                        "upsert_count",
+                        "delete_count",
+                        "fetch_mode",
+                        "apply_engine",
+                    )
+                }
+                for item in (data.get("plan_items") or ())
+                if isinstance(item, dict)
+            ],
+            "plan_items_count": data.get("plan_items_count"),
             "model_results": data.get("model_results") or [],
             "forward_api_usage": data.get("forward_api_usage") or {},
             "drift_report": drift,
@@ -516,6 +551,88 @@ def _module_readiness_bundle_payload(sync):
         "planned_bay_count": len(data.get("module_bay_plan_rows") or ()),
         "devices_not_in_netbox_count": len(data.get("missing_device_names") or ()),
     }
+
+
+def _audit_reports_bundle_payload(sync):
+    """What each Forward-backed audit last found: its summary figures and the size
+    of its tables. Never the rows, which name devices; open the audit for those.
+    The audits that run locally on every page view are not run here."""
+    from .utilities.audit_reports import AUDIT_REPORTS
+    from .utilities.audit_reports import latest_audit_job
+
+    reports = {}
+    for key, report in AUDIT_REPORTS.items():
+        if not report.forward_backed:
+            reports[key] = {"title": str(report.title), "computed_here": False}
+            continue
+        job = latest_audit_job(sync, report)
+        data = job.data if job is not None and isinstance(job.data, dict) else {}
+        entry = {
+            "title": str(report.title),
+            "computed_here": False,
+            "job_pk": getattr(job, "pk", None),
+            "job_status": str(getattr(job, "status", "") or ""),
+            "generated_at": (
+                job.completed.isoformat() if job and job.completed else None
+            ),
+            "error_type": str(data.get("error_type") or ""),
+        }
+        if "payload" in data:
+            # One audit's odd stored payload must not blank the other audits.
+            try:
+                sections = report.present(data["payload"])
+                entry["summary"] = [
+                    {"label": row["label"], "value": row["value"]}
+                    for row in sections["summary"]
+                    if isinstance(row["value"], (int, float, bool))
+                ]
+                entry["tables"] = [
+                    {"title": table["title"], "total": table["total"]}
+                    for table in sections["tables"]
+                ]
+            except Exception as exc:  # noqa: BLE001
+                entry["present_error"] = exc.__class__.__name__
+        reports[key] = entry
+    return reports
+
+
+def _ingestion_pages_bundle_payload(sync):
+    """The ingestion page's figures for the newest ingestions, not just the latest:
+    a customer may quote an older ingestion's page."""
+    from .models import ForwardIngestion
+
+    pages = []
+    for ingestion in ForwardIngestion.objects.filter(sync=sync).order_by("-pk")[:10]:
+        pages.append(
+            {
+                "pk": ingestion.pk,
+                "name": ingestion.name,
+                "created": ingestion.created.isoformat() if ingestion.created else None,
+                "snapshot_selector": ingestion.snapshot_selector or "",
+                "snapshot_id": ingestion.snapshot_id or "",
+                "snapshot": json_safe_value(ingestion.get_snapshot_summary()),
+                "snapshot_metrics": json_safe_value(
+                    ingestion.get_snapshot_metrics_summary()
+                ),
+                "validation_run": (
+                    {
+                        "pk": ingestion.validation_run_id,
+                        "status": str(ingestion.validation_run.status or ""),
+                    }
+                    if ingestion.validation_run_id
+                    else None
+                ),
+                "change_counts": {
+                    "applied": int(ingestion.applied_change_count or 0),
+                    "failed": int(ingestion.failed_change_count or 0),
+                    "skipped": int(ingestion.skipped_change_count or 0),
+                    "created": int(ingestion.created_change_count or 0),
+                    "updated": int(ingestion.updated_change_count or 0),
+                    "deleted": int(ingestion.deleted_change_count or 0),
+                },
+            }
+        )
+    return pages
 
 
 def _change_control_bundle_payload():
@@ -1182,7 +1299,17 @@ def _operator_action_jobs_bundle_payload(sync):
             .order_by("-created")
             .first()
         )
-        actions[kind] = _job_export_payload(job)
+        exported = _job_export_payload(job)
+        # An audit's stored payload carries example device and interface names.
+        if (
+            exported
+            and kind.startswith("audit_")
+            and isinstance(exported.get("data"), dict)
+        ):
+            data = exported["data"]
+            if "payload" in data:
+                data["payload"] = _counts_only(data["payload"])
+        actions[kind] = exported
     return actions
 
 
@@ -1541,6 +1668,12 @@ def _sync_support_bundle_payload(sync):
         # nothing.
         "interface_untagged_vlans": json_safe_value(interface_untagged_vlan_keys()),
         "scope_reconciliation": _scope_reconciliation_bundle_payload(sync),
+        "audit_reports": _guarded_bundle_section(
+            lambda: _audit_reports_bundle_payload(sync)
+        ),
+        "ingestion_pages": _guarded_bundle_section(
+            lambda: _ingestion_pages_bundle_payload(sync)
+        ),
         "module_readiness": _guarded_bundle_section(
             lambda: _module_readiness_bundle_payload(sync)
         ),
