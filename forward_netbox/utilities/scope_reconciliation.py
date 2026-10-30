@@ -2635,7 +2635,7 @@ SITE_RELABEL_RELEASABLE_ROUTING_MODELS = frozenset(
 SITE_RELABEL_ROUTING_RELEASE_ROUNDS = 6
 
 
-def _objects_protecting_device(device):
+def _objects_protecting_device(device, using=None):
     """Objects whose PROTECT/RESTRICT reference stops this device being deleted.
 
     Reads Django's own deletion plan, so it sees references reached through the
@@ -2646,7 +2646,10 @@ def _objects_protecting_device(device):
     from django.db.models.deletion import Collector
     from django.db.models.deletion import RestrictedError
 
-    collector = Collector(using=DEFAULT_DB_ALIAS)
+    # The alias the delete will write to: a netbox-branching branch has its own,
+    # and reading the blockers from the main database while deleting on the
+    # branch's would find the same rows again every round.
+    collector = Collector(using=using or DEFAULT_DB_ALIAS)
     try:
         collector.collect([device])
     except ProtectedError as exc:
@@ -2656,7 +2659,11 @@ def _objects_protecting_device(device):
     return []
 
 
-def _delete_releasable_object(obj, released, *, depth=0):
+def _site_relabel_releasable(row):
+    return row._meta.label_lower in SITE_RELABEL_RELEASABLE_ROUTING_MODELS
+
+
+def _delete_releasable_object(obj, released, *, depth=0, releasable=None):
     """Delete ``obj``, recursively releasing allowlisted rows that protect it.
 
     Rows on the allowlist can themselves protect each other -
@@ -2674,6 +2681,7 @@ def _delete_releasable_object(obj, released, *, depth=0):
     something outside the allowlist protects ``obj``, or recursion runs past
     `SITE_RELABEL_ROUTING_RELEASE_ROUNDS` levels deep.
     """
+    releasable = releasable or _site_relabel_releasable
     if depth >= SITE_RELABEL_ROUTING_RELEASE_ROUNDS:
         return {obj._meta.label_lower: 1}
     try:
@@ -2682,9 +2690,9 @@ def _delete_releasable_object(obj, released, *, depth=0):
         refused = {}
         for blocker in exc.protected_objects:
             blabel = blocker._meta.label_lower
-            if blabel in SITE_RELABEL_RELEASABLE_ROUTING_MODELS:
+            if releasable(blocker):
                 sub_refused = _delete_releasable_object(
-                    blocker, released, depth=depth + 1
+                    blocker, released, depth=depth + 1, releasable=releasable
                 )
                 if sub_refused:
                     return sub_refused
@@ -2693,13 +2701,15 @@ def _delete_releasable_object(obj, released, *, depth=0):
         if refused:
             return refused
         # Every blocker was on the allowlist and is now gone; retry.
-        return _delete_releasable_object(obj, released, depth=depth + 1)
+        return _delete_releasable_object(
+            obj, released, depth=depth + 1, releasable=releasable
+        )
     label = obj._meta.label_lower
     released[label] = released.get(label, 0) + 1
     return None
 
 
-def _release_routing_rows_protecting(device):
+def _release_routing_rows_protecting(device, releasable=None, using=None):
     """Delete the allowlisted routing rows that block ``device``'s delete.
 
     Returns ``(released_by_model, refused_by_model)``. Refused is non-empty when
@@ -2708,27 +2718,28 @@ def _release_routing_rows_protecting(device):
     transaction, so a refusal here rolls back whatever this function already
     deleted along with everything else in the pair.
     """
+    is_releasable = releasable or _site_relabel_releasable
     released = {}
     for _round in range(SITE_RELABEL_ROUTING_RELEASE_ROUNDS):
-        blockers = _objects_protecting_device(device)
+        blockers = _objects_protecting_device(device, using=using)
         if not blockers:
             return released, {}
         refused = {}
-        releasable = []
+        releasable_objects = []
         for obj in blockers:
             label = obj._meta.label_lower
-            if label in SITE_RELABEL_RELEASABLE_ROUTING_MODELS:
-                releasable.append(obj)
+            if is_releasable(obj):
+                releasable_objects.append(obj)
             elif not label.startswith("forward_netbox."):
                 refused[label] = refused.get(label, 0) + 1
         if refused:
             return released, refused
-        if not releasable:
+        if not releasable_objects:
             # Only this plugin's own ownership records remain; the device
             # delete that follows releases those itself.
             return released, {}
-        for obj in releasable:
-            refusal = _delete_releasable_object(obj, released)
+        for obj in releasable_objects:
+            refusal = _delete_releasable_object(obj, released, releasable=is_releasable)
             if refusal:
                 return released, refusal
     return released, {"unresolved_after_rounds": 1}

@@ -1,6 +1,7 @@
 from collections import Counter
 
 from .execution_telemetry import build_ingestion_execution_summary
+from .health_summary_blocks import blocking_reason_texts
 
 
 def get_snapshot_summary(ingestion):
@@ -79,6 +80,9 @@ def get_analysis_summary(ingestion):
         "validation_allowed": validation_run.allowed if validation_run else None,
         "validation_blocking_reason_count": (
             len(validation_run.blocking_reasons or []) if validation_run else 0
+        ),
+        "validation_blocking_reasons": (
+            blocking_reason_texts(validation_run) if validation_run else []
         ),
     }
     if validation_run is not None:

@@ -5,6 +5,7 @@ from unittest.mock import Mock
 from unittest.mock import patch
 
 import httpx
+from forward_sdk.errors import ForwardExecutionError
 from forward_sdk.nqe.repository import RepositoryQuery
 
 from forward_netbox.exceptions import ForwardClientError
@@ -581,6 +582,7 @@ class ForwardClientTest(TestCase):
                 "nqe_async_trigger_calls": 0,
                 "nqe_async_status_calls": 0,
                 "nqe_async_result_calls": 0,
+                "nqe_outcome_retries": 0,
                 "nqe_execution_signature_count": 0,
                 "nqe_repeated_execution_count": 0,
                 "nqe_max_execution_signature_count": 0,
@@ -615,6 +617,134 @@ class ForwardClientTest(TestCase):
             for items, total in pages
         ]
         return execution
+
+    def _failed_execution(self, outcome):
+        return self._fake_nqe_execution(
+            wait_error=ForwardExecutionError(
+                f"NQE execution finished with outcome {outcome}: some detail",
+                execution_key="key-1",
+                status="COMPLETED",
+                outcome=outcome,
+            )
+        )
+
+    def test_a_system_error_outcome_is_resubmitted_and_the_retry_succeeds(self):
+        # One customer run lost four queries to a Forward-side failure that a
+        # re-run minutes later did not reproduce, and one such failure blocked
+        # the whole sync.
+        good = self._fake_nqe_execution(pages=[([{"n": 1}], 1)])
+        self.client._sdk_client.nqe.execute = Mock(
+            side_effect=[self._failed_execution("SYSTEM_ERROR"), good]
+        )
+        with patch.object(forward_api_impl.time, "sleep") as sleep:
+            rows = forward_api_impl.run_nqe_query(
+                self.client,
+                query="select {n: 1}",
+                network_id="network-1",
+                snapshot_id="snapshot-1",
+            )
+        self.assertEqual(rows, [{"n": 1}])
+        self.assertEqual(self.client._sdk_client.nqe.execute.call_count, 2)
+        sleep.assert_called_once_with(forward_api_impl.NQE_OUTCOME_RETRY_DELAY_SECONDS)
+        self.assertEqual(self.client.api_usage_summary()["nqe_outcome_retries"], 1)
+
+    def test_retries_stop_after_the_limit_and_the_failure_names_its_outcome(self):
+        from forward_netbox.utilities.diagnostics import failure_reason
+
+        self.client._sdk_client.nqe.execute = Mock(
+            side_effect=lambda *a, **k: self._failed_execution("SYSTEM_ERROR")
+        )
+        with patch.object(forward_api_impl.time, "sleep"):
+            with self.assertRaises(ForwardClientError) as caught:
+                forward_api_impl.run_nqe_query(
+                    self.client,
+                    query="select {n: 1}",
+                    network_id="network-1",
+                    snapshot_id="snapshot-1",
+                )
+        # The first submission plus the permitted retries, no more.
+        self.assertEqual(
+            self.client._sdk_client.nqe.execute.call_count,
+            1 + forward_api_impl.NQE_OUTCOME_RETRIES,
+        )
+        error = caught.exception
+        self.assertEqual(error.outcome, "SYSTEM_ERROR")
+        self.assertEqual(error.attempts, 1 + forward_api_impl.NQE_OUTCOME_RETRIES)
+        self.assertEqual(failure_reason(error), "nqe-system-error")
+        # Forward's own detail never reaches the message.
+        self.assertNotIn("some detail", str(error))
+
+    def test_a_query_that_hit_its_time_limit_is_not_retried_by_the_outer_loop(self):
+        from forward_netbox.utilities.query_fetch_execution import (
+            _is_transient_fetch_error,
+        )
+
+        with patch.object(forward_api_impl.time, "sleep"):
+            self.client._sdk_client.nqe.execute = Mock(
+                return_value=self._failed_execution("TIMED_OUT")
+            )
+            with self.assertRaises(ForwardClientError) as caught:
+                forward_api_impl.run_nqe_query(
+                    self.client,
+                    query="select {n: 1}",
+                    network_id="network-1",
+                    snapshot_id="snapshot-1",
+                )
+        # The outer workload retry matches on wording; a query that already
+        # spent its budget must not be resubmitted whole.
+        self.assertFalse(_is_transient_fetch_error(caught.exception))
+
+    def test_a_job_error_that_is_not_an_nqe_execution_keeps_the_generic_wording(self):
+        from forward_netbox.utilities.forward_client_errors import (
+            translate_client_exception,
+        )
+
+        error = translate_client_exception(
+            ForwardExecutionError(
+                "Collection finished with state TIMED_OUT", outcome="TIMED_OUT"
+            )
+        )
+        self.assertNotIn("time limit reached", str(error))
+        self.assertEqual(error.outcome, "")
+
+    def test_a_user_error_or_timeout_is_not_resubmitted(self):
+        from forward_netbox.utilities.diagnostics import failure_reason
+
+        for outcome, slug in (
+            ("USER_ERROR", "nqe-user-error"),
+            ("TIMED_OUT", "nqe-timed-out"),
+        ):
+            with self.subTest(outcome=outcome):
+                self.client._sdk_client.nqe.execute = Mock(
+                    return_value=self._failed_execution(outcome)
+                )
+                with patch.object(forward_api_impl.time, "sleep") as sleep:
+                    with self.assertRaises(ForwardClientError) as caught:
+                        forward_api_impl.run_nqe_query(
+                            self.client,
+                            query="select {n: 1}",
+                            network_id="network-1",
+                            snapshot_id="snapshot-1",
+                        )
+                self.assertEqual(self.client._sdk_client.nqe.execute.call_count, 1)
+                sleep.assert_not_called()
+                self.assertIn(slug, failure_reason(caught.exception))
+
+    def test_no_retry_is_started_when_the_workload_budget_cannot_cover_it(self):
+        self.client._sdk_client.nqe.execute = Mock(
+            return_value=self._failed_execution("SYSTEM_ERROR")
+        )
+        with patch.object(forward_api_impl.time, "sleep") as sleep:
+            with self.assertRaises(ForwardClientError):
+                forward_api_impl.run_nqe_query(
+                    self.client,
+                    query="select {n: 1}",
+                    network_id="network-1",
+                    snapshot_id="snapshot-1",
+                    deadline=time.monotonic() + 0.5,
+                )
+        self.assertEqual(self.client._sdk_client.nqe.execute.call_count, 1)
+        sleep.assert_not_called()
 
     def test_run_nqe_query_returns_single_page_by_default(self):
         execution = self._fake_nqe_execution(

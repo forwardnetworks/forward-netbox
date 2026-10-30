@@ -87,6 +87,34 @@ def _primary_ip_rows(sync):
                 url_label="List these devices",
             )
         )
+    # The rows above are this sync's own. A customer read NetBox's total (845)
+    # against them (702) and took the difference for a fault, so say what makes
+    # up the rest.
+    outside = (
+        Device.objects.filter(primary_ip4__isnull=True, primary_ip6__isnull=True)
+        .exclude(pk__in=bound)
+        .count()
+    )
+    here = missing.count()
+    # Only beside this sync's own rows: with none of those there is nothing to
+    # reconcile against, and an unrelated device lacking an address is not a
+    # finding of this sync.
+    if outside and here:
+        rows.append(
+            _row(
+                "Devices without a primary IP not bound to this sync (all of NetBox)",
+                outside,
+                f"NetBox has {here + outside} devices without a primary IP: "
+                f"{here} belong to this sync (listed above) and {outside} are not "
+                "bound to it. Another sync manages them, or none does (console "
+                "servers, devices added by hand).",
+                BY_DESIGN,
+                "Nothing to do for this sync. Give these devices a primary IP "
+                "yourself, or bring them under a sync that manages them.",
+                url=_link("dcim:device_list", {"has_primary_ip": "False"}),
+                url_label="List devices without a primary IP",
+            )
+        )
     return rows
 
 

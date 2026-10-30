@@ -32,6 +32,7 @@ Forward's own denial wording, not the HTTP status, is what identifies it.
 import httpx
 from forward_sdk.errors import ForwardAPIError
 from forward_sdk.errors import ForwardError
+from forward_sdk.errors import ForwardExecutionError
 from forward_sdk.errors import ForwardResponseError
 from forward_sdk.errors import ForwardTimeoutError as SDKForwardTimeoutError
 from forward_sdk.errors import ForwardTransportError
@@ -81,6 +82,53 @@ def _translate_transport_error(exc: ForwardTransportError) -> ForwardSyncError:
     )
 
 
+# Forward's closed set of NQE execution outcomes that mean "did not succeed".
+# The words are the plugin's own (never Forward's error text, which can quote a
+# query or a value), so they can be named in a message, an issue and a bundle.
+NQE_OUTCOME_WORDS = {
+    "SYSTEM_ERROR": "system error",
+    # Not "timed out": the fetch loop treats that phrase as a transient failure
+    # and resubmits the whole workload, and a query that spent its whole budget
+    # is not worth another one.
+    "TIMED_OUT": "time limit reached",
+    "USER_ERROR": "user error",
+}
+# The one outcome worth resubmitting: Forward failed internally. A timed-out
+# query has already spent its whole budget and a user error fails the same way
+# every time, so neither is retried.
+NQE_RETRYABLE_OUTCOMES = frozenset({"SYSTEM_ERROR"})
+
+
+def _translate_execution_error(exc: ForwardExecutionError) -> ForwardClientError:
+    """An NQE execution that ran and finished badly, outcome kept.
+
+    The SDK's message is ``finished with outcome <OUTCOME>: <detail>``, and the
+    diagnostics summary stops at the first token that is not a plain word, so
+    ``SYSTEM_ERROR`` cut every such failure to "finished with outcome" and the
+    four failed queries in one customer's run read as identical and
+    unexplainable. The outcome is one of three fixed values, so it is restated
+    in the plugin's own words and the SDK's detail stays out.
+    """
+    outcome = str(getattr(exc, "outcome", "") or "")
+    # A snapshot or collection job also raises this error, with its own state in
+    # `outcome`; only an NQE execution is restated.
+    words = (
+        NQE_OUTCOME_WORDS.get(outcome, "")
+        if str(exc).startswith("NQE execution")
+        else ""
+    )
+    if not words:
+        # An outcome Forward has not documented, or an execution error with
+        # none (a snapshot or collection job): keep the generic wording rather
+        # than invent a classification.
+        error = ForwardClientError(f"Forward API request failed: {exc}")
+        error.outcome = ""
+        return error
+    error = ForwardClientError(f"Forward NQE execution finished with outcome {words}.")
+    error.outcome = outcome
+    return error
+
+
 def translate_client_exception(exc: ForwardError) -> ForwardSyncError:
     """Return the plugin exception `exc` should be re-raised as.
 
@@ -101,6 +149,8 @@ def translate_client_exception(exc: ForwardError) -> ForwardSyncError:
         return ForwardClientError(
             f"Forward API returned an unexpected response shape: {exc}"
         )
+    if isinstance(exc, ForwardExecutionError):
+        return _translate_execution_error(exc)
     # ForwardPaginationError, ForwardExecutionError, ForwardConfigurationError,
     # and anything else this SDK might add later: no equivalent httpx failure
     # exists to reproduce the wording of, so this is the same generic

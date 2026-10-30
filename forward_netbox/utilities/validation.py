@@ -358,6 +358,27 @@ class ForwardValidationRunner:
             )
         return validation_run
 
+    def fail_run(self, validation_run, exc):
+        """Mark a run FAILED, as `run_query_validation` does for its own.
+
+        Only a run still RUNNING: a run a block already saved as BLOCKED keeps
+        its reasons."""
+        from ..models import ForwardValidationRun
+
+        ForwardValidationRun.objects.filter(
+            pk=validation_run.pk, status=ForwardValidationStatusChoices.RUNNING
+        ).update(
+            status=ForwardValidationStatusChoices.FAILED,
+            allowed=False,
+            completed=timezone.now(),
+            blocking_reasons=[safe_operation_failure("Forward validation", exc)],
+        )
+
+    def start_run(self):
+        """Create the run record before it is judged, so a caller can hold it
+        even when `record_plan_validation` raises on a block."""
+        return self._create_run()
+
     def _create_run(self):
         from ..models import ForwardValidationRun
 

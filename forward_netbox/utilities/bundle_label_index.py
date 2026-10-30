@@ -289,9 +289,10 @@ PAGE_CARD_PATHS = {
             "scope_reconciliation.report.unmanaged",
             "scope_reconciliation.device_keys",
         ],
-        "Uncovered, Not Claimed by This Sync": [
+        "Not Managed by This Sync": [
             "scope_reconciliation.report.unmanaged",
             "scope_reconciliation.device_keys",
+            "scope_reconciliation.unclaimed_name_twins",
         ],
     },
     "Drift report": {

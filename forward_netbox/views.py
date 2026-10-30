@@ -4,12 +4,20 @@ import time
 from core.choices import ObjectChangeActionChoices
 from core.exceptions import SyncError
 from core.models import ObjectChange
+from dcim.filtersets import DeviceFilterSet
+from dcim.forms import DeviceFilterForm
+from dcim.models import Device
+from dcim.tables import DeviceTable
+from dcim.views import DeviceBulkDeleteView
+from dcim.views import DeviceBulkEditView
 from django.apps import apps
 from django.contrib import messages
 from django.core.exceptions import PermissionDenied
 from django.core.exceptions import ValidationError
 from django.db import connection
 from django.db import models
+from django.db import router
+from django.db import transaction
 from django.db.models.functions import Greatest
 from django.http import Http404
 from django.http import HttpResponseBadRequest
@@ -527,10 +535,30 @@ def _scope_reconciliation_bundle_payload(sync):
         # `*_pks`: the export filter turns a key with that suffix into a count.
         "ui_figures": json_safe_value(scope_figures(payload)),
         "device_keys": json_safe_value(device_pk_lists(payload)),
+        # "N share a name with a device this sync manages" on the Not Managed
+        # card: derived from the unclaimed keys, so it is not in the report.
+        "unclaimed_name_twins": _guarded_bundle_section(
+            lambda: _unclaimed_name_twins_bundle(sync, payload)
+        ),
         # The "Routing Policy Outside Scope" card: entries no in-scope device holds.
         "catalogue_cleanup": _guarded_bundle_section(
             lambda: json_safe_value(_catalogue_cleanup_payload(sync))
         ),
+    }
+
+
+def _unclaimed_name_twins_bundle(sync, payload):
+    unclaimed = [
+        device_id
+        for device_id in ((payload.get("unmanaged") or {}).get("unclaimed_device_ids"))
+        or []
+        if isinstance(device_id, int)
+    ]
+    twins = sorted(_unclaimed_name_twins(sync, unclaimed))
+    return {
+        "count": len(twins),
+        "truncated": len(twins) > _BUNDLE_DEVICE_KEY_LIMIT,
+        "keys": twins[:_BUNDLE_DEVICE_KEY_LIMIT],
     }
 
 
@@ -3141,77 +3169,215 @@ class ForwardSyncRefreshScopeReconciliationView(BaseObjectView):
         )
 
 
-class _ForwardSyncUncoveredDevicesView(BaseObjectView):
+def _device_list_params(cls, context):
+    """The query string a bulk action carries: which stored list it came from.
+
+    NetBox resolves "select all N matching" against EVERY device matching the
+    request's filters, and these lists have no filter to carry, so without this
+    that button would edit or delete every device in NetBox.
+    """
+    params = cls.get_url_params(context)
+    parent = context.get("object")
+    params["forward_sync"] = getattr(parent, "pk", "")
+    params["forward_list"] = context.get("forward_list") or ""
+    return params
+
+
+class ForwardDeviceBulkEdit(BulkEdit):
+    @classmethod
+    def get_url(cls, model):
+        return reverse("plugins:forward_netbox:device_list_bulk_edit")
+
+    @classmethod
+    def get_context(cls, context, model):
+        return {"url_params": _device_list_params(cls, context)}
+
+
+class ForwardDeviceBulkDelete(BulkDelete):
+    """The ordinary Delete Selected button, pointed at the plugin's view."""
+
+    @classmethod
+    def get_url(cls, model):
+        return reverse("plugins:forward_netbox:device_list_bulk_delete")
+
+    @classmethod
+    def get_context(cls, context, model):
+        return {"url_params": _device_list_params(cls, context)}
+
+
+# The four device lists, by the name their bulk actions carry back. Each is
+# (section of the stored report, key prefix of its `<half>_device_ids`).
+_DEVICE_LISTS = {
+    "uncovered": ("unmanaged", "owned_untagged"),
+    "unclaimed": ("unmanaged", "unclaimed"),
+    "unclaimed_twins": ("unmanaged", "unclaimed_twins"),
+    "out_of_scope": ("", "out_of_scope"),
+    "present_backfilled": ("", "present_backfilled"),
+}
+
+
+# The half whose members are derived from `unclaimed`, not stored with it.
+UNCLAIMED_TWINS = "unclaimed_twins"
+
+
+def _unclaimed_name_twins(sync, unclaimed_ids):
+    """The unclaimed devices that share a name with a device this sync manages.
+
+    Forward names a device once, and a NetBox site holds a name once, so the
+    same name at two sites is two NetBox devices for one Forward device: the
+    managed one, and an older copy another source or an earlier version of this
+    sync left behind. The site-relabel repair only pairs devices this sync
+    created, so these were counted as "not claimed" and nothing said they were
+    copies. Names are compared case-insensitively, as NetBox does.
+    """
+    from .models import ForwardDeviceIdentity
+
+    if not unclaimed_ids:
+        return []
+    managed = {
+        str(name).casefold()
+        for name in Device.objects.filter(
+            pk__in=ForwardDeviceIdentity.objects.filter(
+                sync=sync, device__isnull=False
+            ).values("device_id")
+        )
+        .exclude(pk__in=unclaimed_ids)
+        .values_list("name", flat=True)
+        if name
+    }
+    return [
+        pk
+        for pk, name in Device.objects.filter(pk__in=unclaimed_ids).values_list(
+            "pk", "name"
+        )
+        if str(name or "").casefold() in managed
+    ]
+
+
+def _stored_device_ids(sync, section, half):
+    """The device primary keys one stored report list names, and its metadata."""
+    report_job = _latest_scope_reconciliation_job(sync)
+    payload, generated_at, report_error = _scope_reconciliation_payload(report_job)
+    holder = payload.get(section) or {} if section else payload
+    key = "unclaimed" if half == UNCLAIMED_TWINS else half
+    device_ids = [
+        device_id
+        for device_id in holder.get(f"{key}_device_ids") or []
+        if isinstance(device_id, int)
+    ]
+    if half == UNCLAIMED_TWINS:
+        device_ids = _unclaimed_name_twins(sync, device_ids)
+    return device_ids, generated_at, report_error, report_job is None
+
+
+class _ForwardSyncUncoveredDevicesView(generic.ObjectChildrenView):
     """List one half of "carry no include tag" in full, from the stored report.
 
     The panel shows a count and a 25-name sample per half, and the OWNED half
     has a tag to filter the device list by. The UNCLAIMED half has neither: it
     is not this sync's data, so no tag is maintained for it, and an operator
     whose count was mostly unclaimed could see 25 names of it and nothing
-    more. The reconciliation job now persists the primary keys of both halves
+    more. The reconciliation job persists the primary keys of both halves
     (keys, not names - names are customer data in a job payload), and this
     renders NetBox's own device table over them. Read-only, no Forward call.
+
+    A children view, not a hand-rendered table: the hand-rendered one showed
+    the first 25 rows with no paginator and no way to act on the rest, so an
+    operator told to "add the include tag to these 190" could see 25 of them
+    and select none. NetBox's own bulk Edit is offered here, nothing else.
     """
 
     queryset = ForwardSync.objects.all()
-    template_name = "forward_netbox/forwardsync_uncovered_devices.html"
+    child_model = Device
+    table = DeviceTable
+    filterset = DeviceFilterSet
+    filterset_form = DeviceFilterForm
+    template_name = "forward_netbox/forwardsync_device_list.html"
     half = ""
     title = ""
     # Which part of the payload holds `<half>_device_ids`. The two uncovered
     # halves live under "unmanaged"; the orphan and backfilled lists are
     # top-level, so the section is a class attribute rather than assumed.
     section = "unmanaged"
+    # What an operator does with this list, shown above it.
+    guidance = ""
+    # Which `_DEVICE_LISTS` entry this is, for the bulk actions.
+    list_name = ""
+    actions = (ForwardDeviceBulkEdit, ForwardDeviceBulkDelete)
 
     def get_required_permission(self):
         return "forward_netbox.view_forwardsync"
 
-    def get(self, request, pk):
-        from dcim.models import Device
-        from dcim.tables import DeviceTable
+    def get_children(self, request, parent):
+        device_ids, generated_at, report_error, pending = _stored_device_ids(
+            parent, self.section, self.half
+        )
+        self._report = {
+            "device_count": len(device_ids),
+            "report_generated_at": generated_at,
+            "report_error": report_error,
+            "report_pending": pending,
+        }
+        return Device.objects.filter(pk__in=device_ids).restrict(request.user, "view")
 
-        sync = get_object_or_404(self.queryset, pk=pk)
-        report_job = _latest_scope_reconciliation_job(sync)
-        payload, generated_at, report_error = _scope_reconciliation_payload(report_job)
-        section = payload.get(self.section) or {} if self.section else payload
-        device_ids = [
-            device_id
-            for device_id in section.get(f"{self.half}_device_ids") or []
-            if isinstance(device_id, int)
-        ]
-        table = DeviceTable(
-            Device.objects.filter(pk__in=device_ids).restrict(request.user, "view")
-        )
-        table.configure(request)
-        return render(
-            request,
-            self.template_name,
-            {
-                "object": sync,
-                "table": table,
-                "title": self.title,
-                "half": self.half,
-                "device_count": len(device_ids),
-                "report_generated_at": generated_at,
-                "report_error": report_error,
-                "report_pending": report_job is None,
-                "scope_reconciliation_url": reverse(
-                    "plugins:forward_netbox:forwardsync_scope_reconciliation",
-                    kwargs={"pk": sync.pk},
-                ),
-            },
-        )
+    def get_extra_context(self, request, instance):
+        return {
+            **getattr(self, "_report", {}),
+            "title": self.title,
+            "half": self.half,
+            "guidance": self.guidance,
+            # Carried on the bulk actions so a "select all" resolves to THIS
+            # list and not to every device in NetBox.
+            "forward_list": self.list_name,
+            "scope_reconciliation_url": reverse(
+                "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                kwargs={"pk": instance.pk},
+            ),
+        }
 
 
 @register_model_view(ForwardSync, "uncovered_devices", path="uncovered-devices")
 class ForwardSyncUncoveredDevicesView(_ForwardSyncUncoveredDevicesView):
     half = "owned_untagged"
+    list_name = "uncovered"
     title = "Uncovered devices created by this sync"
+    guidance = (
+        "This sync created these devices, and the current Forward result no "
+        "longer covers them. They carry the forward-uncovered tag. If Forward "
+        "really dropped them, prune them from Scope Reconciliation. If they "
+        "left this sync's device-tag scope by mistake, fix the scope and run "
+        "the sync again."
+    )
 
 
 @register_model_view(ForwardSync, "unclaimed_devices", path="unclaimed-devices")
 class ForwardSyncUnclaimedDevicesView(_ForwardSyncUncoveredDevicesView):
     half = "unclaimed"
-    title = "Uncovered devices not claimed by this sync"
+    list_name = "unclaimed"
+    title = "Devices not managed by this sync"
+    guidance = (
+        "Not a problem. This sync did not create these devices and makes no "
+        "claim about them: another source, an operator or an old SNMP endpoint "
+        "import. To have this sync manage some of them, select them, use Edit "
+        "Selected to add the include tag, then run the sync again. Otherwise "
+        "leave them alone."
+    )
+
+
+@register_model_view(ForwardSync, "unclaimed_twins", path="unclaimed-twins")
+class ForwardSyncUnclaimedTwinsView(_ForwardSyncUncoveredDevicesView):
+    half = UNCLAIMED_TWINS
+    list_name = "unclaimed_twins"
+    title = "Likely duplicates: same name as a device this sync manages"
+    guidance = (
+        "Each device here has the same name as a device this sync manages, at "
+        "another site. NetBox holds a name once per site, so these are most "
+        "likely older copies left by another source or an earlier version of "
+        "this sync. The sync only updates the copy it manages. Review each "
+        "pair, then delete the copy you do not want: select the devices "
+        "and use Delete Selected. If the delete is blocked by routing records, "
+        "the confirmation page offers to remove them with the device."
+    )
 
 
 @register_model_view(ForwardSync, "out_of_scope_devices", path="out-of-scope-devices")
@@ -3224,8 +3390,13 @@ class ForwardSyncOutOfScopeDevicesView(_ForwardSyncUncoveredDevicesView):
     """
 
     half = "out_of_scope"
+    list_name = "out_of_scope"
     section = ""
     title = "Out-of-scope devices (Prune orphans deletes these)"
+    guidance = (
+        "Prune orphans deletes every device listed here. Review the list "
+        "before using it on Scope Reconciliation."
+    )
 
 
 @register_model_view(
@@ -3233,8 +3404,218 @@ class ForwardSyncOutOfScopeDevicesView(_ForwardSyncUncoveredDevicesView):
 )
 class ForwardSyncPresentBackfilledDevicesView(_ForwardSyncUncoveredDevicesView):
     half = "present_backfilled"
+    list_name = "present_backfilled"
     section = ""
     title = "Backfilled devices present in NetBox"
+
+
+def _select_all_to_stored_list(request):
+    """Turn "select all matching" into the stored list's device keys.
+
+    Returns an error sentence when the request does not name a stored list, in
+    which case nothing is touched. See `_device_list_params`.
+    """
+    if not request.POST.get("_all"):
+        return ""
+    sync_pk = request.GET.get("forward_sync") or ""
+    spec = _DEVICE_LISTS.get(request.GET.get("forward_list") or "")
+    sync = ForwardSync.objects.filter(pk=sync_pk).first() if sync_pk.isdigit() else None
+    if sync is None or spec is None:
+        return _(
+            "Select all is only available from a Forward device list. Select "
+            "the devices on the page instead."
+        )
+    device_ids = _stored_device_ids(sync, *spec)[0]
+    # The list page can be filtered or searched; "select all" means the rows
+    # shown, so the stored list is narrowed by the same filters.
+    device_ids = list(
+        DeviceFilterSet(
+            request.GET, Device.objects.filter(pk__in=device_ids), request=request
+        ).qs.values_list("pk", flat=True)
+    )
+    post = request.POST.copy()
+    post.pop("_all")
+    post.setlist("pk", [str(device_id) for device_id in device_ids])
+    request.POST = post
+    return ""
+
+
+class ForwardDeviceListBulkEditView(DeviceBulkEditView):
+    """NetBox's device bulk edit, with "select all" held to the stored list."""
+
+    def post(self, request, **kwargs):
+        error = _select_all_to_stored_list(request)
+        if error:
+            messages.error(request, error)
+            return redirect(self.get_return_url(request))
+        return super().post(request, **kwargs)
+
+
+# Previewing what blocks a delete walks Django's deletion plan per device, which
+# is slow for a device with thousands of interfaces, so only a small selection is
+# checked on the confirmation page.
+_BLOCKER_PREVIEW_LIMIT = 25
+
+
+def _delete_blockers(device_pks):
+    """``{"routing": {label: n}, "other": {label: n}}`` of what blocks these
+    devices' deletion, or ``None`` when the selection is too large to check."""
+    from collections import Counter
+
+    from .utilities.device_cascade_delete import is_releasable_routing_row
+    from .utilities.device_cascade_delete import owning_device_ids
+    from .utilities.scope_reconciliation import _objects_protecting_device
+
+    if len(device_pks) > _BLOCKER_PREVIEW_LIMIT:
+        return None
+    selected = set(device_pks)
+    routing, other = Counter(), Counter()
+    cache = {}
+    for device in Device.objects.filter(pk__in=device_pks):
+        for blocker in _objects_protecting_device(
+            device, using=router.db_for_write(Device)
+        ):
+            label = blocker._meta.label_lower
+            if label.startswith("forward_netbox."):
+                continue
+            owners = owning_device_ids(blocker, _cache=cache)
+            ours = (
+                is_releasable_routing_row(label) and bool(owners) and owners <= selected
+            )
+            (routing if ours else other)[label] += 1
+    return {"routing": dict(routing), "other": dict(other)}
+
+
+def _delete_blocked_explanation(device_pks):
+    """One sentence on what blocks a refused device delete and what to do."""
+    blockers = _delete_blockers(device_pks)
+    if blockers is None:
+        return _(
+            "These devices could not be deleted because other records depend "
+            "on them. If they have routing configured, select the devices "
+            "again and tick the box to also delete the routing records."
+        )
+    parts = []
+    if blockers["routing"]:
+        parts.append(
+            _(
+                "Routing records (%(labels)s) block the delete. Select the "
+                "devices again and tick the box to also delete the routing "
+                "records."
+            )
+            % {"labels": _blocker_labels(blockers["routing"])}
+        )
+    if blockers["other"]:
+        parts.append(
+            _(
+                "Other records block the delete and have to be removed or "
+                "changed first: %(labels)s."
+            )
+            % {"labels": _blocker_labels(blockers["other"])}
+        )
+    return " ".join(parts) or _(
+        "The devices could not be deleted. NetBox's message above lists the "
+        "dependent objects."
+    )
+
+
+def _blocker_labels(counts):
+    return ", ".join(f"{label} x{count}" for label, count in sorted(counts.items()))
+
+
+class ForwardDeviceListBulkDeleteView(DeviceBulkDeleteView):
+    """NetBox's device bulk delete, with an opt-in cascade over routing rows.
+
+    netbox-routing makes an OSPF interface PROTECT its instance, and a device
+    delete cascades through that instance, so NetBox refuses to delete any
+    device that has routing configured. The confirmation page offers to remove
+    those rows first. Unticked, this is exactly NetBox's own delete.
+    """
+
+    template_name = "forward_netbox/device_bulk_delete.html"
+
+    def post(self, request, **kwargs):
+        error = _select_all_to_stored_list(request)
+        if error:
+            messages.error(request, error)
+            return redirect(self.get_return_url(request))
+        # Run now, not as a background job: the cascade is one transaction that
+        # has to be able to roll back, and a queued job would outlive it.
+        if request.POST.get("background_job"):
+            post = request.POST.copy()
+            post.pop("background_job")
+            request.POST = post
+        pks = [int(pk) for pk in request.POST.getlist("pk") if str(pk).isdigit()]
+        if "_confirm" not in request.POST:
+            request.forward_delete_blockers = _delete_blockers(pks)
+            return super().post(request, **kwargs)
+        if not request.POST.get("cascade_routing"):
+            response = super().post(request, **kwargs)
+            if Device.objects.filter(pk__in=pks).exists():
+                # NetBox's own message names the blocking objects only by their
+                # display names ("po3, po4"), which says nothing about what
+                # they are or what to do. Say it.
+                messages.warning(request, _delete_blocked_explanation(pks))
+            return response
+
+        from core.signals import clear_events
+
+        from .utilities.device_cascade_delete import DeviceCascadeRefused
+        from .utilities.device_cascade_delete import release_routing_rows
+
+        # Removing routing rows is only offered for devices the user may delete,
+        # and checked up front so a partial permission cannot delete some and
+        # roll the rest back behind a success message.
+        deletable = Device.objects.restrict(request.user, "delete").filter(pk__in=pks)
+        if Device.objects.filter(pk__in=pks).count() != len(set(pks)):
+            messages.error(
+                request,
+                _(
+                    "Some of the selected devices no longer exist. Reload the "
+                    "list and select again."
+                ),
+            )
+            return redirect(self.get_return_url(request))
+        if deletable.count() != len(set(pks)):
+            messages.error(
+                request,
+                _("You do not have permission to delete all the selected devices."),
+            )
+            return redirect(self.get_return_url(request))
+
+        # The write connection is the active branch's when one is in use, so the
+        # rollback has to name it: a bare `atomic()` would leave the routing
+        # rows deleted on the branch while the user is told "Not deleted".
+        with transaction.atomic(using=router.db_for_write(Device)):
+            try:
+                released = release_routing_rows(
+                    deletable, using=router.db_for_write(Device)
+                )
+            except DeviceCascadeRefused as exc:
+                transaction.set_rollback(True, using=router.db_for_write(Device))
+                clear_events.send(sender=self.__class__)
+                messages.error(
+                    request,
+                    _(
+                        "Not deleted. Records that do not belong to these devices "
+                        "or to the routing plugin also block them: %(labels)s."
+                    )
+                    % {"labels": ", ".join(sorted(exc.refused))},
+                )
+                return redirect(self.get_return_url(request))
+            response = super().post(request, **kwargs)
+            if Device.objects.filter(pk__in=pks).exists():
+                # The delete did not go through; keep the routing rows too, and
+                # do not send events for deletes that were undone.
+                transaction.set_rollback(True, using=router.db_for_write(Device))
+                clear_events.send(sender=self.__class__)
+            elif released:
+                messages.info(
+                    request,
+                    _("Also removed %(count)d routing record(s) first.")
+                    % {"count": sum(released.values())},
+                )
+        return response
 
 
 @register_model_view(ForwardSync, "scope_reconciliation", path="scope-reconciliation")
@@ -3297,6 +3678,13 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
                 "uncovered_tag_url": uncovered_tag_url,
                 "uncovered_devices_url": reverse(
                     "plugins:forward_netbox:forwardsync_uncovered_devices",
+                    kwargs={"pk": sync.pk},
+                ),
+                "unclaimed_twin_count": len(
+                    _stored_device_ids(sync, "unmanaged", UNCLAIMED_TWINS)[0]
+                ),
+                "unclaimed_twins_url": reverse(
+                    "plugins:forward_netbox:forwardsync_unclaimed_twins",
                     kwargs={"pk": sync.pk},
                 ),
                 "unclaimed_devices_url": reverse(

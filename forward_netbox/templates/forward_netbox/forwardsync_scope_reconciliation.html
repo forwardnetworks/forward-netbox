@@ -119,8 +119,11 @@
                 {% include 'forward_netbox/inc/count_trend.html' with trend=uncovered_trend %}
               {% endif %}
               {% if payload.unmanaged.unclaimed %}
-                <a href="{{ unclaimed_devices_url }}" class="badge text-bg-secondary text-decoration-none">{% blocktrans with count=payload.unmanaged.unclaimed %}{{ count }} not claimed by this sync{% endblocktrans %}</a>
+                <a href="{{ unclaimed_devices_url }}" class="badge text-bg-secondary text-decoration-none">{% blocktrans with count=payload.unmanaged.unclaimed %}{{ count }} not managed by this sync{% endblocktrans %}</a>
                 <a href="#uncovered-unclaimed" class="text-decoration-none small">{% trans "why?" %}</a>
+              {% endif %}
+              {% if payload.unmanaged.owned_untagged and payload.unmanaged.unclaimed %}
+                <div class="small text-muted mt-1">{% blocktrans with total=payload.unmanaged.untagged_total owned=payload.unmanaged.owned_untagged unclaimed=payload.unmanaged.unclaimed %}{{ total }} = {{ owned }} uncovered (needs attention) + {{ unclaimed }} not managed by this sync (informational).{% endblocktrans %}</div>
               {% endif %}
             </td>
           </tr>
@@ -610,10 +613,13 @@
   </div>
   <div class="col col-md-6">
     <div class="card">
-      <h5 class="card-header" id="uncovered-unclaimed">{% trans "Uncovered, Not Claimed by This Sync" %}</h5>
+      <h5 class="card-header" id="uncovered-unclaimed">{% trans "Not Managed by This Sync" %}</h5>
       <div class="card-body">
         {% if payload.unmanaged.unclaimed_sample %}
-          <p class="text-muted mt-0">{% trans "Devices this sync never created: another source, an operator, or an old SNMP endpoint import. Listed so the count above can be accounted for — this sync makes no claim about them, tags none of them, and never prunes them." %}</p>
+          <p class="text-muted mt-0">{% trans "Not a problem. This sync did not create these devices and makes no claim about them: another source, an operator, or an old SNMP endpoint import. It tags none of them and never prunes them. To have it manage some, select them in the list, use Edit Selected to add the include tag, then run the sync again. Otherwise leave them alone." %}</p>
+          {% if unclaimed_twin_count %}
+            <p class="mt-0"><a href="{{ unclaimed_twins_url }}" class="badge text-bg-warning text-decoration-none">{% blocktrans with count=unclaimed_twin_count %}{{ count }} share a name with a device this sync manages{% endblocktrans %}</a> <span class="text-muted small">{% trans "Likely older copies at another site. Review them and delete the copy you do not want." %}</span></p>
+          {% endif %}
           <p><a href="{{ unclaimed_devices_url }}" class="btn btn-sm btn-outline-secondary"><i class="mdi mdi-format-list-bulleted" aria-hidden="true"></i>&nbsp;{% blocktrans with count=payload.unmanaged.unclaimed %}List all {{ count }}{% endblocktrans %}</a></p>
           <ul class="mb-0">
             {% for name in payload.unmanaged.unclaimed_sample %}<li><code>{{ name }}</code></li>{% endfor %}

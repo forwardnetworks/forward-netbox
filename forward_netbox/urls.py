@@ -6,6 +6,18 @@ from . import views  # noqa: F401
 
 
 urlpatterns = (
+    # Bulk actions for the Forward device lists. Plugin-owned so "select all" is
+    # held to the stored list; see `views._device_list_params`.
+    path(
+        "device-list/bulk-edit/",
+        views.ForwardDeviceListBulkEditView.as_view(),
+        name="device_list_bulk_edit",
+    ),
+    path(
+        "device-list/bulk-delete/",
+        views.ForwardDeviceListBulkDeleteView.as_view(),
+        name="device_list_bulk_delete",
+    ),
     path(
         "source/",
         include(get_model_urls("forward_netbox", "forwardsource", detail=False)),

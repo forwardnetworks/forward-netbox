@@ -2108,7 +2108,9 @@ def _uncovered_summary(sync):
             "but absent from the current Forward tag-scope result. Open Scope "
             "Reconciliation for the split by cause (gone from Forward, in "
             "Forward but untagged, or a custom-command source), or filter the "
-            f"device list by the forward-uncovered tag.{trend_note}"
+            f"device list by the forward-uncovered tag.{trend_note} This is not "
+            'the Scope page\'s larger "Carry no include tag" count, which '
+            "also includes devices this sync never created and does not manage."
         ),
     }
 

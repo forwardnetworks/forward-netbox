@@ -100,6 +100,16 @@
       <div class="card">
         {% include 'extras/inc/configcontext_data.html' with title="Blocking Reasons" data=object.blocking_reasons format="json" copyid="forward-validation-blocking-reasons" %}
       </div>
+      {% if object.blocking_next_steps %}
+        <div class="card">
+          <h2 class="card-header">{% trans "What to do" %}</h2>
+          <div class="card-body">
+            <ul class="mb-0">
+              {% for step in object.blocking_next_steps %}<li>{{ step }}</li>{% endfor %}
+            </ul>
+          </div>
+        </div>
+      {% endif %}
     {% endif %}
     <div class="card">
       {% include 'extras/inc/configcontext_data.html' with title="Drift Summary" data=object.drift_summary format="json" copyid="forward-validation-drift-summary" %}

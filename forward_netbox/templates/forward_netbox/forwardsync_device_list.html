@@ -1,0 +1,33 @@
+{% extends 'generic/object_children.html' %}
+{% load helpers %}
+{% load i18n %}
+
+{% block title %}{{ object }} - {{ title }}{% endblock %}
+
+{% block extra_controls %}
+  <a class="btn btn-outline-secondary" href="{{ scope_reconciliation_url }}">
+    <i class="mdi mdi-arrow-left" aria-hidden="true"></i>&nbsp;{% trans "Scope Reconciliation" %}
+  </a>
+{% endblock extra_controls %}
+
+{% block content %}
+<div class="card mb-3">
+  <h5 class="card-header">{{ title }}</h5>
+  <div class="card-body">
+    {% if report_error %}
+      <span class="badge text-bg-danger">{% trans "Failed" %}</span>
+      <span class="ms-2">{{ report_error }}</span>
+    {% elif report_pending %}
+      <p class="text-muted mb-0">{% trans "No scope reconciliation report has run yet. Run one from Scope Reconciliation; this page lists devices from the stored report." %}</p>
+    {% else %}
+      {% if guidance %}<p class="mt-0">{{ guidance }}</p>{% endif %}
+      <p class="text-muted mb-0">
+        {% blocktrans with count=device_count generated=report_generated_at %}{{ count }} device(s) from the report generated {{ generated }}.{% endblocktrans %}
+      </p>
+    {% endif %}
+  </div>
+</div>
+{% if not report_error and not report_pending %}
+  {{ block.super }}
+{% endif %}
+{% endblock content %}

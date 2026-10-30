@@ -111,12 +111,31 @@ class ForwardSingleBranchExecutor(ForwardExecutorBase):
             "Recording single-branch validation results.",
             obj=self.sync,
         )
-        self.last_validation_run = ForwardValidationRunner(
+        runner = ForwardValidationRunner(
             self.sync,
             self.client,
             self.logger,
             job=self.job,
-        ).record_plan_validation(context.as_dict(), workloads, self.last_model_results)
+        )
+        # The run exists before it is judged, and the executor holds it before
+        # it can raise: a blocked run raises out of `record_plan_validation`, so
+        # assigning only its return value left the failed ingestion with no
+        # validation run and nothing to click for the blocking reasons.
+        self.last_validation_run = runner.start_run()
+        try:
+            recorded = runner.record_plan_validation(
+                context.as_dict(),
+                workloads,
+                self.last_model_results,
+                validation_run=self.last_validation_run,
+            )
+        except Exception as exc:
+            # A block saves the run as BLOCKED before it raises; any other
+            # failure would leave the run RUNNING, and the failed ingestion now
+            # links it. `fail_run` only touches a run still RUNNING.
+            runner.fail_run(self.last_validation_run, exc)
+            raise
+        self.last_validation_run = recorded or self.last_validation_run
         if not workloads:
             # Previously any empty workload recorded a completed, zero-change,
             # branchless ingestion, so a run whose every fetch failed was

@@ -903,6 +903,13 @@ class ForwardValidationRun(ForwardPluginModelDocsMixin, models.Model):
     def force_allow(self, *, user, reason):
         return force_allow_validation_run(self, user=user, reason=reason)
 
+    @property
+    def blocking_next_steps(self):
+        """What to do about this run's blocking reasons, one step per kind."""
+        from .utilities.validation_guidance import guidance_for_reasons
+
+        return guidance_for_reasons(self.blocking_reasons)
+
 
 class ForwardIngestion(ForwardPluginModelDocsMixin, JobsMixin, models.Model):
     objects = RestrictedQuerySet.as_manager()
