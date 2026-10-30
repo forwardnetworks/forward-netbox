@@ -175,6 +175,30 @@ PAGE_LABEL_PATHS = {
         "Created": "latest_ingestion.created",
     },
     "Audits": {},
+    "Counts explained (one reason)": {
+        "What this is": "health.explained_findings.<finding>.reason",
+        "Fixable": "health.explained_findings.<finding>.fixable",
+        "What to do": "health.explained_findings.<finding>.action",
+        "Devices": "health.explained_findings.<finding>.count",
+    },
+    "Types the sync created": {
+        "What this is": "health.explained_findings.<finding>.reason",
+        "Fixable": "health.explained_findings.<finding>.fixable",
+        "What to do": "health.explained_findings.<finding>.action",
+        "Types": "health.explained_findings.<finding>.count",
+    },
+    # The conflicting values and identity fields of an issue name the object, so
+    # `Coalesce Fields` and `Defaults` stay out; the counts by model and exception
+    # are in the summary.
+    "Ingestion issue": {
+        "Ingestion": "latest_ingestion.pk",
+        "Timestamp": "latest_ingestion_issues.issues.<issue>.timestamp",
+        "Phase": "latest_ingestion_issues.issues.<issue>.phase",
+        "Model": "latest_ingestion_issues.issues.<issue>.model",
+        "Exception": "latest_ingestion_issues.issues.<issue>.exception",
+        "Coalesce Fields": "latest_ingestion_issues.summary",
+        "Defaults": "latest_ingestion_issues.summary",
+    },
     "Dependency preview": {
         "Snapshot": "latest_dependency_preview.context.snapshot_id",
         "Selector": "latest_dependency_preview.context.snapshot_selector",
@@ -302,6 +326,28 @@ PAGE_CARD_PATHS = {
         "Plan Preview": "latest_dependency_preview",
     },
     "Audits": {"Audits": "audit_reports"},
+    # Pages that list the devices or types behind one count. Their headings come
+    # from the data and the names stay behind the viewer's permission, so the bundle
+    # holds the counts, the reasons and the device keys.
+    "Counts explained (one reason)": {
+        "Counts explained": [
+            "health.explained_findings",
+            "primary_ip.without_primary_ip_device_keys",
+            "primary_ip.management_step_outcomes",
+        ],
+    },
+    "Uncovered devices": {
+        "Uncovered devices": ["health.uncovered", "scope_reconciliation.device_keys"],
+    },
+    "Types the sync created": {"Types the sync created": "health.explained_findings"},
+    "Ingestion issue": {
+        "Ingestion Issue": "latest_ingestion_issues.issues",
+        "Message": "latest_ingestion_issues.issues.<issue>.message",
+        "Diagnosis": "latest_ingestion_issues.issues.<issue>.diagnosis",
+        "Conflicting Values": "latest_ingestion_issues.summary",
+        "Identity": "latest_ingestion_issues.summary",
+    },
+    "Delete sync": {"Delete": "delete_blockers"},
     "Module readiness": {
         "Module Bay Plan": [
             "module_readiness.payload",

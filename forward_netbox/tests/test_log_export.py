@@ -1223,9 +1223,13 @@ class SupportBundleTroubleshootingDepthTest(TestCase):
 
         self.assertNotIn("private-dev", raw)
         self.assertNotIn("private-if", raw)
-        self.assertNotIn(
-            "snap-private-1", payload["audit_reports"]["primary_ip"].__repr__()
-        )
+        # The audit's own text figures (an id, a selector, model labels, a reason)
+        # are kept; every other text value is not.
+        summary = {
+            row["label"]: row["value"]
+            for row in payload["audit_reports"]["primary_ip"]["summary"]
+        }
+        self.assertEqual(summary["Snapshot"], "snap-private-1")
         # The button job keeps its numbers and the size of each example list.
         data = payload["operator_action_jobs"]["audit_primary_ip"]["data"]["payload"]
         self.assertEqual(data["nested"]["total"], 6)
@@ -1233,6 +1237,45 @@ class SupportBundleTroubleshootingDepthTest(TestCase):
         self.assertEqual(
             payload["audit_reports"]["primary_ip"]["job_status"], "completed"
         )
+
+    def test_an_audit_summary_keeps_only_numbers_and_the_allowlisted_text(self):
+        from types import SimpleNamespace
+
+        from forward_netbox.views import _audit_reports_bundle_payload
+
+        report = SimpleNamespace(
+            title="Fake audit",
+            forward_backed=True,
+            present=lambda payload: {
+                "summary": [
+                    {"label": "Device", "value": "private-dev-7"},
+                    {"label": "Reason", "value": "fetch failed"},
+                    {"label": "Snapshot", "value": "x" * 300},
+                    {"label": "Count", "value": 3},
+                ],
+                "tables": [{"title": "Rows", "total": 9, "rows": [["private-dev-8"]]}],
+            },
+        )
+        job = SimpleNamespace(
+            pk=1, status="completed", completed=None, data={"payload": {}}
+        )
+        with patch(
+            "forward_netbox.utilities.audit_reports.AUDIT_REPORTS", {"fake": report}
+        ), patch(
+            "forward_netbox.utilities.audit_reports.latest_audit_job",
+            return_value=job,
+        ):
+            entry = _audit_reports_bundle_payload(self.sync)["fake"]
+
+        self.assertEqual(
+            entry["summary"],
+            [
+                {"label": "Reason", "value": "fetch failed"},
+                {"label": "Count", "value": 3},
+            ],
+        )
+        self.assertEqual(entry["tables"], [{"title": "Rows", "total": 9}])
+        self.assertNotIn("private-dev", repr(entry))
 
     def test_blocking_issues_are_exported_before_non_blocking_ones(self):
         from forward_netbox.models import ForwardIngestion

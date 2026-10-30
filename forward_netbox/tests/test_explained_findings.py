@@ -233,17 +233,29 @@ class DevicesWithoutAPrimaryIp(PrimaryIpFixture):
         many = self.new_device("a3")
         for index, device in enumerate((quiet, off, many)):
             self.give_address(device, f"10.9.7.{index + 1}/24")
+        untagged = self.new_device("a6")
+        no_ip = self.new_device("a7")
+        for index, device in enumerate((untagged, no_ip), start=4):
+            self.give_address(device, f"10.9.7.{index}/24")
         outcomes = {
             off.pk: ("no-interface", None),
             many.pk: ("multiple-addresses", None),
+            untagged.pk: ("tag-unresolved", None),
+            no_ip.pk: ("no-management-address", None),
         }
 
         row = primary_ip_reasons(
-            self.missing([quiet, off, many]), settings_on=True, outcomes=outcomes
+            self.missing([quiet, off, many, untagged, no_ip]),
+            settings_on=True,
+            outcomes=outcomes,
         )[0]
 
         advice = row["what_to_do"]
-        self.assertIn("1 were not handled by the step", advice)
+        self.assertIn("1 have no recorded outcome from the step", advice)
+        self.assertIn("not merged yet", advice)
+        self.assertIn("share the name Forward uses", advice)
+        self.assertIn("1 have a Mgmt_ tag that names no interface carrying", advice)
+        self.assertIn("1 have neither a Mgmt_ tag that resolved", advice)
         self.assertIn(
             "1 have a management address from Forward that matched no", advice
         )
@@ -262,7 +274,7 @@ class DevicesWithoutAPrimaryIp(PrimaryIpFixture):
         other = primary_ip_reasons(self.missing([bare]), settings_on=True, outcomes={})[
             0
         ]
-        self.assertNotIn("were not handled", other["what_to_do"])
+        self.assertNotIn("no recorded outcome", other["what_to_do"])
 
     def test_a_recorded_device_that_is_not_bare_here_is_not_counted(self):
         bare = self.new_device("b1")

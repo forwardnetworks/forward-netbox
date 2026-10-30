@@ -101,21 +101,38 @@ _OUTCOME_PHRASES = {
 # written only for the outcomes a person can act on, and only for a device that
 # holds an address and has neither primary-IP source off (a Mgmt_ tag does nothing
 # when tags are not read). `None` is a bare device the step recorded nothing for:
-# the step handles the devices Forward gives a management address or a Mgmt_ tag,
-# so "nothing" usually means Forward gave it neither; a device whose chosen address
-# matched no interface in the branch is skipped without a record too.
+# the step only looks at devices Forward returned a Mgmt_ tag or a management
+# address for (completed collections, inside this sync's tag scope), and only if
+# the device is in the branch under one name; a device it assigned, never saw, or
+# could not match by name has no record, and a device it assigned still reads as
+# bare here until the ingestion merges.
 _OUTCOME_ADVICE = (
     (
         None,
-        "{n} were not handled by the step, usually because Forward gave them no "
-        "management address or Mgmt_ tag: tag the interface to use with "
-        "Mgmt_<interface> in Forward, or set a primary IP by hand.",
+        "{n} have no recorded outcome from the step. Usually it never saw them: "
+        "Forward returned no Mgmt_ tag and no management address within this "
+        "sync's tag scope, or their collection did not complete, so tag the "
+        "interface to use with Mgmt_<interface> in Forward or set a primary IP by "
+        "hand. Two other causes leave no record: the step did set a primary IP "
+        "in the branch and the ingestion has not merged yet, or two NetBox "
+        "devices share the name Forward uses (check Site-relabel duplicates).",
     ),
     (
         "no-interface",
         "{n} have a management address from Forward that matched no interface of "
         "the device in NetBox: the interface may not have synced (see the ingestion "
         "issues), or Forward's collection holds an address no interface carries.",
+    ),
+    (
+        "tag-unresolved",
+        "{n} have a Mgmt_ tag that names no interface carrying an address in "
+        "NetBox (no such interface, or it has no address): fix the tag in "
+        "Forward, or check that the interface's address synced.",
+    ),
+    (
+        "no-management-address",
+        "{n} have neither a Mgmt_ tag that resolved nor a management address from "
+        "Forward the step could use: set one in Forward, or set a primary IP by hand.",
     ),
     (
         "multiple-addresses",
