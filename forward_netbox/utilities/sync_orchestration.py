@@ -9,6 +9,7 @@ from rq.timeouts import JobTimeoutException
 from ..choices import ForwardIngestionPhaseChoices
 from ..choices import ForwardSourceStatusChoices
 from ..choices import ForwardSyncStatusChoices
+from ..choices import ForwardValidationStatusChoices
 from ..models import ForwardIngestion
 from ..models import ForwardIngestionIssue
 from ..models import ForwardSource
@@ -60,6 +61,22 @@ def _build_forward_ingestion(sync, job, executor):
     )
 
 
+def _with_validation_pointer(message, ingestion):
+    """Say where the reason is when validation blocked the sync.
+
+    The issue row is where an operator lands, and for a blocked sync it names
+    only the line that raised. The reasons, and what to do about them, are on
+    the validation run the ingestion links.
+    """
+    run = getattr(ingestion, "validation_run", None)
+    if run is None or run.status != ForwardValidationStatusChoices.BLOCKED:
+        return message
+    return (
+        f"{message} Validation blocked this sync: open the validation run "
+        "linked on this ingestion for the blocking reasons and what to do."
+    )
+
+
 def _record_forward_sync_failure(sync, job, executor, ingestion, exc):
     # `exc_info=True` on purpose, and only here.
     #
@@ -103,6 +120,7 @@ def _record_forward_sync_failure(sync, job, executor, ingestion, exc):
             ingestion.validation_run = validation_run
             ingestion.save(update_fields=["validation_run"])
     message = safe_operation_failure("Forward ingestion", exc)
+    message = _with_validation_pointer(message, ingestion)
     # This is the row an operator lands on when a sync dies: it names the model
     # nothing and carried an empty `raw_data`, so the only failure that actually
     # stopped the run was the least explicable thing in the UI. Recording the

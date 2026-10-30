@@ -144,6 +144,12 @@ _FAILURE_REASON_RULES = (
     ("parse-error", "json decode"),
     ("parse-error", "could not parse"),
     ("shape-error", "unexpected response shape"),
+    # An NQE execution that ran and finished without success. The wording is
+    # plugin-authored (`forward_client_errors.NQE_OUTCOME_WORDS`), so these
+    # needles match the plugin's own sentence, never Forward's.
+    ("nqe-system-error", "finished with outcome system error"),
+    ("nqe-timed-out", "finished with outcome time limit reached"),
+    ("nqe-user-error", "finished with outcome user error"),
     ("shape-error", "missing required field"),
     # Plugin-authored refusals. These are the messages the plugin composes
     # itself, so the slug is a rename of wording the plugin already controls -

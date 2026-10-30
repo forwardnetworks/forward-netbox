@@ -123,6 +123,18 @@ Checks:
 - For deletion thresholds, review whether the run used a diff baseline and whether the destructive-change count is expected.
 - If the run was force-allowed, verify the validation run shows the override reason and actor before rerunning.
 - Use `Validate` on the sync page to rerun policy checks before staging changes.
+- The failed ingestion links its validation run, and the run page has a `What to do` card with the next step for each blocking reason. The ingestion issue also says validation blocked the sync and points at that run.
+- If a query failed inside Forward (the reason names a failed query and the support bundle shows the outcome as `nqe-system-error`), the plugin already resubmitted it twice. Run the sync again. If the same query fails again, send the support bundle: it records the outcome of each failed query and the blocking reasons.
+
+## Deleting A Device That Has Routing Records
+
+netbox-routing makes an OSPF interface protect its OSPF instance, and a device delete cascades through that instance, so NetBox refuses to delete a device that has OSPF or BGP records: "Unable to delete ... N dependent objects were found".
+
+From the Forward device lists (Scope Reconciliation, then the list links), select the devices and use `Delete Selected`. The confirmation page lists what blocks the delete and offers `Also delete the routing records attached to these devices`. Tick it to remove only those routing records first, in the same step. If anything outside the routing plugin still blocks a device, nothing is deleted and the records are restored. Unticked, the delete is NetBox's own.
+
+## Devices That Carry No Include Tag
+
+The Scope Reconciliation `Carry no include tag` count is the devices this sync does not manage: some were created by this sync and are now uncovered (needs attention), the rest are not managed by it (informational). Open `Not Managed by This Sync` for the full list. The `share a name with a device this sync manages` link lists likely older copies at another site; review them and delete the copy you do not want. To have the sync manage the rest, select them, use `Edit Selected` to add the include tag, then run the sync again. "Select all" on these lists acts on that list only.
 
 ### `Row-count drop:` Blocked The Sync
 

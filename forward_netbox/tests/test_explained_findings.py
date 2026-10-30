@@ -401,6 +401,29 @@ class ExplainedFindingsTest(PrimaryIpFixture):
             len(devices),
         )
 
+    def test_the_unbound_remainder_is_reconciled_against_this_syncs_rows(self):
+        # NetBox's total of devices without a primary IP is this sync's share
+        # plus everything not bound to it. A customer read 845 against 702.
+        devices = self.build()
+        self.bind(devices)
+        stranger = self.new_device("zq-stranger-9901")  # no primary IP, unbound
+
+        rows = explained_findings(self.sync)
+
+        finding = "Devices without a primary IP not bound to this sync (all of NetBox)"
+        row = next(row for row in rows if row["finding"] == finding)
+        mine = sum(
+            r["count"]
+            for r in rows
+            if r["finding"] == "Devices without a primary IP (this sync)"
+        )
+        everything = Device.objects.filter(
+            primary_ip4__isnull=True, primary_ip6__isnull=True
+        ).count()
+        self.assertEqual(mine + row["count"], everything)
+        self.assertIn(f"{everything} devices without a primary IP", row["reason"])
+        self.assertTrue(Device.objects.filter(pk=stranger.pk).exists())
+
     def test_nothing_to_explain_gives_no_rows(self):
         self.assertEqual(explained_findings(self.sync), [])
 

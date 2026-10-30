@@ -291,8 +291,8 @@ class UncoveredHealthSignalTest(_Fixture):
         self.assertEqual(summary["status"], "danger")
 
 
-class UncoveredListPagesTest(_Fixture):
-    """Both halves listable in full, from the stored report."""
+class _ListFixture(_Fixture):
+    """Client and stored-report helpers shared by the device list tests."""
 
     def _client(self):
         user = get_user_model().objects.create_user(username="admin-why", password="x")
@@ -303,10 +303,12 @@ class UncoveredListPagesTest(_Fixture):
         client.force_login(user)
         return client
 
-    def _stored_report(self):
+    def _stored_report(self, extra_unclaimed=0):
         owned = self._device("owned-gone")
         self._own(owned)
         self._device("someone-elses")
+        for index in range(extra_unclaimed):
+            self._device(f"unclaimed-{index:02d}")
         fwd_client = Mock()
         fwd_client.run_nqe_query = Mock(
             side_effect=[
@@ -334,6 +336,38 @@ class UncoveredListPagesTest(_Fixture):
             )
             _scope_reconciliation_work(job)
 
+    def _urls(self):
+        base = {"forward_sync": self.sync.pk, "forward_list": "unclaimed"}
+        query = "&".join(f"{k}={v}" for k, v in base.items())
+        return (
+            reverse("plugins:forward_netbox:device_list_bulk_delete") + "?" + query,
+            reverse("plugins:forward_netbox:device_list_bulk_edit") + "?" + query,
+        )
+
+    def _ospf_on(self, device):
+        from dcim.models import Interface
+        from netbox_routing.models import OSPFArea
+        from netbox_routing.models import OSPFInstance
+        from netbox_routing.models import OSPFInterface
+
+        interface = Interface.objects.create(
+            device=device, name="po3", type="1000base-t"
+        )
+        instance = OSPFInstance.objects.create(
+            name=f"ospf-{device.name}",
+            router_id="10.0.0.1",
+            process_id=1,
+            device=device,
+        )
+        area = OSPFArea.objects.create(area_id="0.0.0.0", area_type="standard")
+        return OSPFInterface.objects.create(
+            instance=instance, area=area, interface=interface
+        )
+
+
+class UncoveredListPagesTest(_ListFixture):
+    """Both halves listable in full, from the stored report."""
+
     def test_the_unclaimed_half_is_listable_without_a_tag(self):
         self._stored_report()
         response = self._client().get(
@@ -345,6 +379,31 @@ class UncoveredListPagesTest(_Fixture):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "someone-elses")
         self.assertNotContains(response, "owned-gone")
+
+    def test_a_list_longer_than_a_page_paginates_and_offers_bulk_edit(self):
+        # The hand-rendered table showed the first 25 rows with no paginator
+        # and no way to select the rest, so "add the include tag to these"
+        # reached 25 devices of a 190-device list.
+        self._stored_report(extra_unclaimed=30)
+        url = reverse(
+            "plugins:forward_netbox:forwardsync_unclaimed_devices",
+            kwargs={"pk": self.sync.pk},
+        )
+        client = self._client()
+        # A page length below the row count: the default is 50 here, and the
+        # reported 25 is the operator's own preference.
+        first = client.get(url, {"per_page": 10})
+        self.assertEqual(first.status_code, 200)
+        self.assertContains(first, "31 device(s)")
+        self.assertContains(first, "Showing 1-10 of 31")
+        self.assertContains(
+            first, reverse("plugins:forward_netbox:device_list_bulk_edit")
+        )
+        # Selection checkboxes: the bulk action acts on ticked rows.
+        self.assertContains(first, 'name="pk"')
+        # The remaining rows are on the next page, not lost.
+        second = client.get(url, {"per_page": 10, "page": 2})
+        self.assertContains(second, "Showing 11-20 of 31")
 
     def test_the_owned_half_is_listable_from_the_report(self):
         self._stored_report()
@@ -383,6 +442,327 @@ class UncoveredListPagesTest(_Fixture):
                 response,
                 reverse(f"plugins:forward_netbox:{name}", kwargs={"pk": self.sync.pk}),
             )
+
+
+class UnclaimedNameTwinsTest(_ListFixture):
+    """An unclaimed device that shares a name with a managed one is a copy.
+
+    One customer found "a good many" of the 190 not-managed devices were
+    duplicates of devices the sync manages, at another site. The site-relabel
+    repair only pairs devices this sync created, so nothing said so.
+    """
+
+    def _twin_setup(self):
+        managed = self._device("twin-dev")
+        self._own(managed)
+        other_site = Site.objects.create(name="SiteOther", slug="site-other")
+        twin = Device.objects.create(
+            name="TWIN-dev",  # NetBox compares names case-insensitively
+            device_type=self.dt,
+            role=self.role,
+            site=other_site,
+        )
+        self._stored_report()
+        return managed, twin
+
+    def test_only_the_copy_that_is_not_managed_is_listed_as_a_duplicate(self):
+        managed, twin = self._twin_setup()
+        response = self._client().get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_unclaimed_twins",
+                kwargs={"pk": self.sync.pk},
+            )
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "TWIN-dev")
+        self.assertContains(response, f'value="{twin.pk}"')
+        self.assertNotContains(response, f'value="{managed.pk}"')
+        # A device with no managed namesake is not a duplicate.
+        self.assertNotContains(response, "someone-elses")
+
+    def test_the_scope_page_counts_the_duplicates_and_links_them(self):
+        self._twin_setup()
+        response = self._client().get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                kwargs={"pk": self.sync.pk},
+            )
+        )
+        self.assertContains(response, "1 share a name with a device this sync manages")
+        self.assertContains(
+            response,
+            reverse(
+                "plugins:forward_netbox:forwardsync_unclaimed_twins",
+                kwargs={"pk": self.sync.pk},
+            ),
+        )
+
+    def test_select_all_on_the_duplicates_list_means_only_the_duplicates(self):
+        managed, twin = self._twin_setup()
+        url = (
+            reverse("plugins:forward_netbox:device_list_bulk_delete")
+            + f"?forward_sync={self.sync.pk}&forward_list=unclaimed_twins"
+        )
+        response = self._client().post(url, {"_all": "1"})
+        self.assertContains(response, "TWIN-dev")
+        self.assertNotContains(response, "someone-elses")
+
+
+class DeviceListBulkActionsTest(_ListFixture):
+    """Edit and Delete Selected on the stored lists.
+
+    NetBox resolves "select all N matching" against every device matching the
+    request's filters; these lists carry none, so unrestricted it would act on
+    every device. And netbox-routing makes an OSPF interface PROTECT its
+    instance, so NetBox refuses to delete any device with OSPF configured.
+    """
+
+    def test_select_all_is_held_to_the_stored_list_on_delete_and_edit(self):
+        self._stored_report()
+        self._device("bystander")  # in NetBox, in no stored list
+        client = self._client()
+        for url in self._urls():
+            with self.subTest(url=url.split("/")[-2]):
+                response = client.post(url, {"_all": "1"})
+                self.assertEqual(response.status_code, 200)
+                self.assertContains(response, "someone-elses")
+                self.assertNotContains(response, "bystander")
+                self.assertNotContains(response, "owned-gone")
+
+    def test_select_all_without_a_stored_list_is_refused(self):
+        self._stored_report()
+        client = self._client()
+        for name in ("device_list_bulk_delete", "device_list_bulk_edit"):
+            response = client.post(
+                reverse(f"plugins:forward_netbox:{name}"), {"_all": "1"}, follow=True
+            )
+            self.assertContains(response, "Select all is only available")
+            self.assertTrue(Device.objects.filter(name="someone-elses").exists())
+
+    def test_a_refused_delete_says_what_blocks_it_and_what_to_do(self):
+        self._stored_report()
+        device = Device.objects.get(name="someone-elses")
+        self._ospf_on(device)
+        response = self._client().post(
+            self._urls()[0],
+            {"pk": device.pk, "_confirm": "1", "confirm": "True"},
+            follow=True,
+        )
+        self.assertTrue(Device.objects.filter(pk=device.pk).exists())
+        self.assertContains(response, "netbox_routing.ospfinterface")
+        self.assertContains(response, "tick the box")
+
+    def test_the_confirmation_page_lists_what_blocks_and_offers_the_box(self):
+        self._stored_report()
+        device = Device.objects.get(name="someone-elses")
+        self._ospf_on(device)
+        response = self._client().post(self._urls()[0], {"pk": device.pk})
+        self.assertContains(response, 'name="cascade_routing"')
+        self.assertContains(response, "netbox_routing.ospfinterface")
+
+    def test_the_cascade_removes_the_routing_rows_then_the_device(self):
+        from netbox_routing.models import OSPFInterface
+
+        self._stored_report()
+        device = Device.objects.get(name="someone-elses")
+        self._ospf_on(device)
+        response = self._client().post(
+            self._urls()[0],
+            {
+                "pk": device.pk,
+                "_confirm": "1",
+                "confirm": "True",
+                "cascade_routing": "1",
+            },
+            follow=True,
+        )
+        self.assertFalse(Device.objects.filter(pk=device.pk).exists())
+        self.assertEqual(OSPFInterface.objects.count(), 0)
+        self.assertContains(response, "routing record(s) first")
+
+    def test_the_cascade_refuses_a_blocker_outside_routing_and_restores_the_rows(
+        self,
+    ):
+        from dcim.models import Interface
+        from netbox_routing.models import OSPFInterface
+
+        self._stored_report()
+        device = Device.objects.get(name="someone-elses")
+        ospf = self._ospf_on(device)
+        # A child interface on ANOTHER device restricts deleting its parent.
+        other = self._device("other-device")
+        Interface.objects.create(
+            device=other, name="po3.10", type="virtual", parent=ospf.interface
+        )
+        response = self._client().post(
+            self._urls()[0],
+            {
+                "pk": device.pk,
+                "_confirm": "1",
+                "confirm": "True",
+                "cascade_routing": "1",
+            },
+            follow=True,
+        )
+        self.assertTrue(Device.objects.filter(pk=device.pk).exists())
+        self.assertEqual(OSPFInterface.objects.count(), 1)
+        self.assertContains(response, "dcim.interface")
+
+
+class DeviceCascadeSafetyTest(_ListFixture):
+    """What the cascade must not touch, and what a failed delete must undo."""
+
+    def _post_cascade(self, device, **extra):
+        data = {
+            "pk": device.pk,
+            "_confirm": "1",
+            "confirm": "True",
+            "cascade_routing": "1",
+        }
+        data.update(extra)
+        return self._client().post(self._urls()[0], data, follow=True)
+
+    def test_another_devices_bgp_peer_is_not_removed_for_this_delete(self):
+        # A BGP peer on device B that uses an address on device A as its
+        # neighbour protects that address, so Django names it as a blocker of
+        # A's delete. It is B's row, not A's.
+        from dcim.models import Interface
+        from ipam.models import ASN
+        from ipam.models import IPAddress
+        from ipam.models import RIR
+        from netbox_routing.models import BGPPeer
+        from netbox_routing.models import BGPRouter
+        from netbox_routing.models import BGPScope
+
+        from django.contrib.contenttypes.models import ContentType
+
+        self._stored_report()
+        a = Device.objects.get(name="someone-elses")
+        b = self._device("bgp-owner")
+        interface = Interface.objects.create(device=a, name="Eth9", type="1000base-t")
+        ip = IPAddress.objects.create(
+            address="10.1.1.1/32",
+            assigned_object_type=ContentType.objects.get_for_model(Interface),
+            assigned_object_id=interface.pk,
+        )
+        asn = ASN.objects.create(asn=65001, rir=RIR.objects.create(name="r", slug="r"))
+        router = BGPRouter.objects.create(name="r1", assigned_object=b, asn=asn)
+        scope = BGPScope.objects.create(router=router)
+        peer = BGPPeer.objects.create(scope=scope, peer=ip, remote_as=asn)
+
+        response = self._post_cascade(a)
+
+        self.assertTrue(Device.objects.filter(pk=a.pk).exists())
+        self.assertTrue(BGPPeer.objects.filter(pk=peer.pk).exists())
+        self.assertContains(response, "netbox_routing.bgppeer")
+
+    def _bgp_peer_on(self, owner, address_device, *, scope=True):
+        """A BGP peer on ``owner`` that uses an address on ``address_device``."""
+        from dcim.models import Interface
+        from django.contrib.contenttypes.models import ContentType
+        from ipam.models import ASN
+        from ipam.models import IPAddress
+        from ipam.models import RIR
+        from netbox_routing.models import BGPPeer
+        from netbox_routing.models import BGPRouter
+        from netbox_routing.models import BGPScope
+
+        interface = Interface.objects.create(
+            device=address_device, name="Eth9", type="1000base-t"
+        )
+        ip = IPAddress.objects.create(
+            address="10.1.1.1/32",
+            assigned_object_type=ContentType.objects.get_for_model(Interface),
+            assigned_object_id=interface.pk,
+        )
+        asn = ASN.objects.create(asn=65001, rir=RIR.objects.create(name="r", slug="r"))
+        bgp_scope = None
+        if scope:
+            router = BGPRouter.objects.create(name="r1", assigned_object=owner, asn=asn)
+            bgp_scope = BGPScope.objects.create(router=router)
+        return BGPPeer.objects.create(scope=bgp_scope, peer=ip, remote_as=asn)
+
+    def test_a_peer_with_no_established_owner_is_refused(self):
+        from netbox_routing.models import BGPPeer
+
+        self._stored_report()
+        a = Device.objects.get(name="someone-elses")
+        peer = self._bgp_peer_on(None, a, scope=False)
+        response = self._post_cascade(a)
+        self.assertTrue(Device.objects.filter(pk=a.pk).exists())
+        self.assertTrue(BGPPeer.objects.filter(pk=peer.pk).exists())
+        self.assertContains(response, "netbox_routing.bgppeer")
+
+    def test_selecting_both_devices_releases_the_peer_that_belongs_to_one_of_them(
+        self,
+    ):
+        from netbox_routing.models import BGPPeer
+
+        self._stored_report()
+        a = Device.objects.get(name="someone-elses")
+        b = self._device("bgp-owner")
+        self._bgp_peer_on(b, a)
+        self._client().post(
+            self._urls()[0],
+            {
+                "pk": [a.pk, b.pk],
+                "_confirm": "1",
+                "confirm": "True",
+                "cascade_routing": "1",
+            },
+            follow=True,
+        )
+        self.assertFalse(Device.objects.filter(pk__in=[a.pk, b.pk]).exists())
+        self.assertEqual(BGPPeer.objects.count(), 0)
+
+    def test_a_refused_cascade_clears_the_events_it_queued(self):
+        from unittest.mock import patch
+
+        self._stored_report()
+        a = Device.objects.get(name="someone-elses")
+        b = self._device("bgp-owner")
+        self._bgp_peer_on(b, a)
+        with patch("core.signals.clear_events.send") as clear:
+            self._post_cascade(a)
+        clear.assert_called()
+
+    def test_owner_of_a_row_is_found_through_its_own_links(self):
+        from dcim.models import Interface
+        from netbox_routing.models import OSPFArea
+        from netbox_routing.models import OSPFInstance
+        from netbox_routing.models import OSPFInterface
+
+        from forward_netbox.utilities.device_cascade_delete import owning_device_ids
+
+        a = self._device("owner-a")
+        b = self._device("owner-b")
+        instance = OSPFInstance.objects.create(
+            name="i", router_id="10.0.0.1", process_id=1, device=b
+        )
+        row = OSPFInterface.objects.create(
+            instance=instance,
+            area=OSPFArea.objects.create(area_id="0.0.0.0", area_type="standard"),
+            interface=Interface.objects.create(
+                device=a, name="Eth0", type="1000base-t"
+            ),
+        )
+        self.assertEqual(owning_device_ids(row), {a.pk, b.pk})
+        self.assertEqual(owning_device_ids(a), {a.pk})
+
+    def test_the_background_job_box_is_ignored_so_the_delete_stays_in_one_step(self):
+        self._stored_report()
+        device = Device.objects.get(name="someone-elses")
+        self._ospf_on(device)
+        self._post_cascade(device, background_job="1")
+        self.assertFalse(Device.objects.filter(pk=device.pk).exists())
+
+    def test_select_all_on_a_filtered_list_means_the_filtered_rows(self):
+        self._stored_report(extra_unclaimed=3)
+        url = self._urls()[0] + "&name=unclaimed-01"
+        response = self._client().post(url, {"_all": "1"})
+        self.assertContains(response, "unclaimed-01")
+        self.assertNotContains(response, "unclaimed-02")
+        self.assertNotContains(response, "someone-elses")
 
 
 class OrphanAndBackfilledListPagesTest(_Fixture):

@@ -39,6 +39,7 @@ from .forward_client_config import MAX_NQE_ASYNC_POLL_INTERVAL_SECONDS
 from .forward_client_config import MAX_NQE_FETCH_ALL_MAX_PAGES
 from .forward_client_config import MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
 from .forward_client_config import MAX_NQE_PAGE_SIZE
+from .forward_client_errors import NQE_RETRYABLE_OUTCOMES
 from .forward_client_errors import TRANSIENT_FORWARD_HTTP_STATUS_CODES
 from .forward_client_errors import translate_client_exception
 from .forward_client_factory import get_client
@@ -1618,6 +1619,25 @@ def _fetch_nqe_async_result_page(client, execution, *, limit, offset):
     )
 
 
+# Extra submissions after a system-error outcome, and the first backoff
+# (doubling): 2 s then 4 s, so a transient Forward fault gets a short second
+# and third chance without holding a worker.
+NQE_OUTCOME_RETRIES = 2
+NQE_OUTCOME_RETRY_DELAY_SECONDS = 2.0
+
+
+def _should_retry_nqe_outcome(exc, attempt, deadline):
+    if getattr(exc, "outcome", "") not in NQE_RETRYABLE_OUTCOMES:
+        return False
+    if attempt > NQE_OUTCOME_RETRIES:
+        return False
+    if deadline is not None:
+        backoff = NQE_OUTCOME_RETRY_DELAY_SECONDS * 2 ** (attempt - 1)
+        if time.monotonic() + backoff >= deadline:
+            return False
+    return True
+
+
 def run_nqe_query(
     client,
     *,
@@ -1691,16 +1711,34 @@ def _run_nqe_query_async(
 ):
     client._record_api_usage("nqe_query_calls")
     client._record_api_usage("nqe_async_query_calls")
-    execution = _start_nqe_execution(
-        client,
-        query=query,
-        query_id=query_id,
-        commit_id=commit_id,
-        network_id=network_id,
-        snapshot_id=snapshot_id,
-        parameters=parameters,
-    )
-    _wait_for_nqe_execution(client, execution, deadline=deadline)
+    attempt = 0
+    while True:
+        attempt += 1
+        execution = _start_nqe_execution(
+            client,
+            query=query,
+            query_id=query_id,
+            commit_id=commit_id,
+            network_id=network_id,
+            snapshot_id=snapshot_id,
+            parameters=parameters,
+        )
+        try:
+            _wait_for_nqe_execution(client, execution, deadline=deadline)
+        except ForwardClientError as exc:
+            # A query that ran and finished with a system error failed inside
+            # Forward, not in anything this sync sent: one customer's run lost
+            # four of its queries that way and a re-run minutes later passed,
+            # which blocked the whole sync. Resubmit, with the SDK's own
+            # backoff shape, while the per-workload budget lasts.
+            if not _should_retry_nqe_outcome(exc, attempt, deadline):
+                if getattr(exc, "outcome", None):
+                    exc.attempts = attempt
+                raise
+            client._record_api_usage("nqe_outcome_retries")
+            time.sleep(NQE_OUTCOME_RETRY_DELAY_SECONDS * 2 ** (attempt - 1))
+            continue
+        break
     # `execution.result_page` has no per-call deadline of its own -
     # `wait()`'s own timeout already covers the execute-then-wait phase,
     # but a slow wait that used almost the whole budget could still let

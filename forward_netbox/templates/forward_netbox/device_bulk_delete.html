@@ -1,0 +1,120 @@
+{% extends 'generic/_base.html' %}
+{% load form_helpers %}
+{% load helpers %}
+{% load i18n %}
+{% load render_table from django_tables2 %}
+
+{% comment %}
+Blocks:
+  - title:    Page title
+  - tabs:     Page tabs
+  - content:  Primary page content
+
+Context:
+  - model:       The model class of the objects being deleted
+  - form:        The bulk delete form class
+  - table:       The table class for rendering list of objects being deleted
+  - return_url:  The URL to which the user is redirected after submitting the form
+{% endcomment %}
+
+{% block title %}
+  {% trans "Delete" %} {{ table.rows|length }} {{ model|meta:"verbose_name_plural"|bettertitle }}?
+{% endblock %}
+
+{% block tabs %}
+  <ul class="nav nav-tabs">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link active" id="delete-form-tab" data-bs-toggle="tab" data-bs-target="#delete-form" type="button" role="tab" aria-controls="delete-form" aria-selected="true">
+        {% trans "Bulk Delete" %}
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="object-list-tab" data-bs-toggle="tab" data-bs-target="#object-list" type="button" role="tab" aria-controls="object-list" aria-selected="false">
+        {% trans "Selected Objects" %}
+        {% badge table.rows|length %}
+      </button>
+    </li>
+  </ul>
+{% endblock tabs %}
+
+{% block content %}
+
+  {# Confirmation form #}
+  <div class="tab-pane show active" id="delete-form" role="tabpanel" aria-labelledby="delete-form-tab">
+    <div class="alert alert-danger bg-danger-subtle" role="alert">
+      <div class="d-flex">
+        <div>
+          <i class="mdi mdi-alert-octagon p-2"></i>
+        </div>
+        <div>
+          <h4 class="alert-title">{% trans "Confirm Bulk Deletion" %}</h4>
+          {% blocktrans trimmed with count=table.rows|length type_plural=model|meta:"verbose_name_plural" %}
+            The following operation will delete <strong>{{ count }}</strong> {{ type_plural }}. Please
+            carefully review the selected objects and confirm this action.
+          {% endblocktrans %}
+        </div>
+      </div>
+    </div>
+
+    <div class="row mt-3">
+      <form action="" method="post">
+        {% csrf_token %}
+
+        {# Form fields #}
+        {% for field in form.hidden_fields %}
+          {{ field }}
+        {% endfor %}
+
+        {# Meta fields #}
+        <div class="bg-primary-subtle border border-primary rounded-1 pt-3 px-3 mb-3">
+          {% if form.changelog_message %}
+            {% render_field form.changelog_message %}
+          {% endif %}
+        </div>
+
+        {# Cascade over routing rows. Off by default: unticked, this is NetBox's own delete. #}
+        {% with blockers=request.forward_delete_blockers %}
+          {% if blockers.other %}
+            <div class="alert alert-warning" role="alert">
+              {% trans "Records outside the routing plugin also block these devices, so the delete will fail until they are removed:" %}
+              {% for label, count in blockers.other.items %}<code>{{ label }}</code> &times;{{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}
+            </div>
+          {% endif %}
+          <div class="form-check mb-3">
+            <input class="form-check-input" type="checkbox" name="cascade_routing" id="cascade_routing" value="1">
+            <label class="form-check-label" for="cascade_routing">
+              {% trans "Also delete the routing records attached to these devices" %}
+            </label>
+            <div class="form-text">
+              {% trans "netbox-routing stops NetBox deleting a device that has OSPF or BGP records. Tick this to remove those records first, in the same step. If the delete then fails, they are restored." %}
+              {% if blockers.routing %}
+                <br>
+                {% trans "Blocking these devices now:" %}
+                {% for label, count in blockers.routing.items %}<code>{{ label }}</code> &times;{{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}
+              {% endif %}
+            </div>
+          </div>
+        {% endwith %}
+
+        {# Form buttons #}
+        <div class="text-end">
+          <a href="{{ return_url }}" class="btn btn-outline-secondary">{% trans "Cancel" %}</a>
+          <button type="submit" name="_confirm" class="btn btn-danger">{% trans "Delete" %} {{ table.rows|length }} {{ model|meta:"verbose_name_plural" }}</button>
+        </div>
+
+      </form>
+    </div>
+  </div>
+  {# /Confirmation form #}
+
+  {# Selected objects list #}
+  <div class="tab-pane" id="object-list" role="tabpanel" aria-labelledby="object-list-tab">
+    <div class="card">
+      <div class="table-responsive">
+        {% render_table table 'inc/table.html' %}
+      </div>
+    </div>
+  </div>
+  {# /Selected objects list #}
+
+{% endblock content %}

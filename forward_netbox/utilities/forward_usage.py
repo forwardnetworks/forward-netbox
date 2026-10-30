@@ -49,6 +49,7 @@ class ApiUsageTracker:
             "nqe_async_trigger_calls": 0,
             "nqe_async_status_calls": 0,
             "nqe_async_result_calls": 0,
+            "nqe_outcome_retries": 0,
             "read_cache_hits": 0,
             "read_cache_misses": 0,
         }

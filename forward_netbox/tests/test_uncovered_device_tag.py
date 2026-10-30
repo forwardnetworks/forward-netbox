@@ -425,4 +425,4 @@ class UncoveredPanelTest(TestCase):
         self.assertContains(response, "dev-uncovered")
         self.assertContains(response, "dev-unclaimed")
         self.assertContains(response, "Uncovered, Created by This Sync")
-        self.assertContains(response, "Uncovered, Not Claimed by This Sync")
+        self.assertContains(response, "Not Managed by This Sync")

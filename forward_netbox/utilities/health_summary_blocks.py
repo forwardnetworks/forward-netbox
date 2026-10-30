@@ -147,6 +147,13 @@ def query_map_summary(query_map):
     }
 
 
+def blocking_reason_texts(validation_run, limit=20):
+    return [
+        str(reason)
+        for reason in (getattr(validation_run, "blocking_reasons", None) or [])
+    ][:limit]
+
+
 def validation_summary(validation_run):
     if validation_run is None:
         return None
@@ -157,6 +164,10 @@ def validation_summary(validation_run):
         "snapshot_selector": validation_run.snapshot_selector,
         "snapshot_id": validation_run.snapshot_id,
         "blocking_reason_count": len(validation_run.blocking_reasons or []),
+        # The sentences themselves: a blocked sync's ingestion issue names only
+        # the frame that raised, so the reason a customer needs is here or
+        # nowhere. Plugin-written text (model labels, counts), no names.
+        "blocking_reasons": blocking_reason_texts(validation_run),
         "created": (
             validation_run.created.isoformat() if validation_run.created else None
         ),

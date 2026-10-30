@@ -28,6 +28,13 @@ PAGES = {
 }
 # Pages whose card heading is data (`{{ title }}`): their rows are checked, not
 # their cards.
+# Index pages whose headings cannot be read from a template (a title set by the
+# view, or a page with no card at all). The page still has to exist, and the
+# views that set the titles have to set one, or its index entry points at nothing.
+VIEW_TITLED_PAGES = {
+    "Uncovered devices": "forwardsync_device_list.html",
+    "Delete sync": "forwardsync_delete.html",
+}
 DATA_HEADING_PAGES = {"Counts explained (one reason)", "Types the sync created"}
 CARD_HEADING = re.compile(
     r'<h5[^>]*class="card-header[^>]*>\s*{% trans "([^"]+)" %}', re.S
@@ -104,6 +111,24 @@ class BundleLabelIndexTest(TestCase):
                 for label, value in rows.items():
                     for path in value if isinstance(value, list) else [value]:
                         yield page, label, path
+
+    def test_view_titled_pages_exist_and_their_views_set_a_title(self):
+        from forward_netbox import views
+
+        for page, name in VIEW_TITLED_PAGES.items():
+            with self.subTest(page=page):
+                self.assertIn(page, PAGE_CARD_PATHS)
+                self.assertTrue((TEMPLATES / name).exists(), name)
+        for view in (
+            views.ForwardSyncUncoveredDevicesView,
+            views.ForwardSyncUnclaimedDevicesView,
+            views.ForwardSyncUnclaimedTwinsView,
+            views.ForwardSyncOutOfScopeDevicesView,
+            views.ForwardSyncPresentBackfilledDevicesView,
+        ):
+            with self.subTest(view=view.__name__):
+                self.assertTrue(view.title.strip())
+                self.assertIn(view.list_name, views._DEVICE_LISTS)
 
     def test_every_card_has_a_place_in_the_bundle(self):
         # A card holds tables labelled from data and figures written inside
