@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v3.0.10
 
-Release candidate; Support bundle carries every page figure under the page's own label with an index from label to path; unmanaged-device accounting with shared-address owners; netbox-routing 0.5.1; audit button jobs no longer export names
+Support bundle carries every page figure under the page's own label with an index from label to path; unmanaged-device accounting with shared-address owners; netbox-routing 0.5.1; audit button jobs no longer export names
 
 ## v3.0.9
 
