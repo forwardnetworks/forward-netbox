@@ -553,6 +553,14 @@ def _module_readiness_bundle_payload(sync):
     }
 
 
+# Summary rows whose value is text the audit or the sync's own configuration wrote
+# (an id, a selector, model labels, a reason code or fetch error), not something
+# read from a device. A fetch error can name the operator's own query map, which the
+# bundle already carries under health. Every other text value stays out, because a
+# summary row could one day carry a name. Matched on the English label.
+_AUDIT_TEXT_FIGURES = {"Snapshot", "Snapshot selector", "Models audited", "Reason"}
+
+
 def _audit_reports_bundle_payload(sync):
     """What each Forward-backed audit last found: its summary figures and the size
     of its tables. Never the rows, which name devices; open the audit for those.
@@ -585,6 +593,11 @@ def _audit_reports_bundle_payload(sync):
                     {"label": row["label"], "value": row["value"]}
                     for row in sections["summary"]
                     if isinstance(row["value"], (int, float, bool))
+                    or (
+                        row["label"] in _AUDIT_TEXT_FIGURES
+                        and isinstance(row["value"], str)
+                        and len(row["value"]) <= 200
+                    )
                 ]
                 entry["tables"] = [
                     {"title": table["title"], "total": table["total"]}

@@ -22,7 +22,13 @@ PAGES = {
     "Module readiness": "forwardsync_module_readiness.html",
     "Dependency preview": "forwardsync_dependency_preview.html",
     "Audits": "forwardsync_audits.html",
+    "Counts explained (one reason)": "forwardsync_explained.html",
+    "Types the sync created": "forwardsync_types.html",
+    "Ingestion issue": "forwardingestionissue.html",
 }
+# Pages whose card heading is data (`{{ title }}`): their rows are checked, not
+# their cards.
+DATA_HEADING_PAGES = {"Counts explained (one reason)", "Types the sync created"}
 CARD_HEADING = re.compile(
     r'<h5[^>]*class="card-header[^>]*>\s*{% trans "([^"]+)" %}', re.S
 )
@@ -84,7 +90,7 @@ class BundleLabelIndexTest(TestCase):
         # something the bundle does not hold.
         for page, label, path in self.all_paths():
             for key in path.split("."):
-                if key == "<integration>":
+                if key.startswith("<"):
                     continue
                 self.assertEqual(
                     export_safe_payload({key: 1}),
@@ -103,6 +109,8 @@ class BundleLabelIndexTest(TestCase):
         # A card holds tables labelled from data and figures written inside
         # sentences, which no row label reaches; its heading leads to them.
         for page, name in PAGES.items():
+            if page in DATA_HEADING_PAGES:
+                continue
             text = (TEMPLATES / name).read_text()
             headings = set(CARD_HEADING.findall(text))
             headings |= set(INCLUDE_TITLE.findall(text))
@@ -205,9 +213,33 @@ class BundleMatchesPagesTest(TestCase):
             deleted_change_count=1,
             snapshot_info={"state": "PROCESSED"},
             snapshot_metrics={"numSuccessfulDevices": 3829},
+            model_results=[
+                {
+                    "model": "dcim.device",
+                    "query_name": "Forward Devices",
+                    "execution_mode": "query_path",
+                    "fetch_mode": "nqe_parameters",
+                    "row_count": 40,
+                    "delete_count": 2,
+                    "applied_count": 38,
+                    "failed_count": 3,
+                    "skipped_count": 1,
+                }
+            ],
         )
         now = timezone.now()
         content_type = ContentType.objects.get_for_model(ForwardSync)
+        cls.ingestion.job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardIngestion),
+            object_id=cls.ingestion.pk,
+            name="pages ingestion",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id="123e4567-e89b-12d3-a456-426614174900",
+            created=now,
+            started=now,
+            completed=now,
+        )
+        cls.ingestion.save(update_fields=["job"])
 
         def job(name, data, serial):
             Job.objects.create(
@@ -360,6 +392,13 @@ class BundleMatchesPagesTest(TestCase):
                     )
         self.assertFalse(wrong, "\n".join(wrong))
         # A page that compared nothing proves nothing.
-        for page in pages:
-            self.assertGreaterEqual(compared.get(page, 0), 3, page)
-        self.assertGreaterEqual(compared.get("Health", 0), 3)
+        floors = {
+            "Scope Reconciliation": 8,
+            "Module readiness": 4,
+            "Dependency preview": 10,
+            "Health": 15,
+            "Drift report": 5,
+            "Ingestion": 5,
+        }
+        for page, floor in floors.items():
+            self.assertGreaterEqual(compared.get(page, 0), floor, compared)
