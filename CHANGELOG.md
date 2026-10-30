@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v3.0.10
+
+Release candidate; Support bundle carries every page figure under the page's own label with an index from label to path; unmanaged-device accounting with shared-address owners; netbox-routing 0.5.1; audit button jobs no longer export names
+
 ## v3.0.9
 
 Support bundle records why each device has no primary IP; Site page lists Forward Network Maps; forward-sdk 0.1.27 picks the latest processed snapshot by creation date; change control can propose CLI commands and ask Forward to predict them (off by default, advisory, checked once against a live Forward)
