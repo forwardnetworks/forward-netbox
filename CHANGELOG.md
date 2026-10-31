@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v3.0.11
 
-Release candidate; Failed syncs explain themselves (linked validation run, reasons and next steps, outcome slugs in the bundle); NQE system errors retry; device lists paginate with bulk edit and delete, including an opt-in routing-record cascade; forward-sdk 0.1.29
+Failed syncs explain themselves (linked validation run, reasons and next steps, outcome slugs in the bundle); NQE system errors retry; device lists paginate with bulk edit and delete, including an opt-in routing-record cascade; forward-sdk 0.1.29
 
 ## v3.0.10
 
