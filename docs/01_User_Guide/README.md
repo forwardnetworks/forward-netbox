@@ -86,13 +86,14 @@ migrations, e.g. netbox-dlm `0.2.0+`; older builds need
 
 ## Release Compatibility
 
-The `3.0.10` release requires NetBox `4.7.x` (tested on `4.7.1`) and `netbox-branching` `1.2.x` (tested on `1.2.0`). Expand for the published release history and release notes.
+The `3.0.11` release candidate requires NetBox `4.7.x` (tested on `4.7.1`) and `netbox-branching` `1.2.x` (tested on `1.2.0`). Expand for the published release history and candidate notes.
 
 <details>
 <summary>Release compatibility history</summary>
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
+| `v3.0.11` | NetBox `4.7.x` supported, tested on `4.7.1`; needs netbox-branching `1.2.x`, tested on `1.2.0` | Release candidate; Failed syncs explain themselves (linked validation run, reasons and next steps, outcome slugs in the bundle); NQE system errors retry; device lists paginate with bulk edit and delete, including an opt-in routing-record cascade; forward-sdk 0.1.29 |
 | `v3.0.10` | NetBox `4.7.x` supported, tested on `4.7.1`; needs netbox-branching `1.2.x`, tested on `1.2.0` | Current release; Support bundle carries every page figure under the page's own label with an index from label to path; unmanaged-device accounting with shared-address owners; netbox-routing 0.5.1; audit button jobs no longer export names |
 | `v3.0.9` | NetBox `4.7.x` supported, tested on `4.7.1`; needs netbox-branching `1.2.x`, tested on `1.2.0` | Superseded by `v3.0.10`; Support bundle records why each device has no primary IP; Site page lists Forward Network Maps; forward-sdk 0.1.27 picks the latest processed snapshot by creation date; change control can propose CLI commands and ask Forward to predict them (off by default, advisory, checked once against a live Forward) |
 | `v3.0.8` | NetBox `4.7.x` supported, tested on `4.7.1`; needs netbox-branching `1.2.x`, tested on `1.2.0` | Superseded by `v3.0.9`; Reasons and actions for the counts that look wrong, existing NetBox types reused, drift table explained, BGP neighbour tagging, snapshot collection from a change |
