@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v3.0.11
+
+Release candidate; Failed syncs explain themselves (linked validation run, reasons and next steps, outcome slugs in the bundle); NQE system errors retry; device lists paginate with bulk edit and delete, including an opt-in routing-record cascade; forward-sdk 0.1.29
+
 ## v3.0.10
 
 Support bundle carries every page figure under the page's own label with an index from label to path; unmanaged-device accounting with shared-address owners; netbox-routing 0.5.1; audit button jobs no longer export names
