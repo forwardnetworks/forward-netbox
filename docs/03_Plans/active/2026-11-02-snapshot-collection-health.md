@@ -14,6 +14,9 @@ When validation refuses a run because row counts fell, say whether the cause is 
 
 ## Touched Surfaces
 
+- `bundle_diagnostics.py`: `snapshot_collection_trend` (in-scope completed and not-collected devices, run over run, with failure-reason deltas, from the stored scope reports, no Forward call) and `include_tag_timeline` (devices that gained or lost the sync's include tags by hour, split by sync run or other, counts only).
+- `scope_reconciliation.py`: the failure-reason token no longer keeps a trailing bracket and reads processing failures.
+
 - `forward_netbox/utilities/snapshot_collection_health.py` (new): per-scope collection counts, the comparison, the reason sentence.
 - `forward_netbox/utilities/validation.py`: leads a blocked run's reasons with the snapshot finding; stores the counts on the run.
 - `forward_netbox/utilities/validation_guidance.py`: the next step for the new reason.
@@ -40,6 +43,9 @@ When validation refuses a run because row counts fell, say whether the cause is 
 Revert the change. The reason is additive; older runs keep their reasons.
 
 ## Decision Log
+
+- Per-model change counts after a merge are already exported in `health.recent_ingestions` (from the change log by request id); no second recorder.
+- Include-tag changes are attributed by the sync's ingestion request ids, not by user, because a manual merge replays under the operator's user.
 
 - forward-sdk moves 0.1.29 to 0.1.31 (0.1.30 adds `nqe.execution`, `execute_and_wait` and `forward_sdk.testing`; 0.1.31 adds unpublished licensing, Tenable and FDB routes; nothing the plugin calls changed). `development/constraints-upgrade-from.txt` moves to 0.1.29, the pin 3.0.11 shipped.
 

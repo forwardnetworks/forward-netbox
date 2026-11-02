@@ -33,7 +33,9 @@ SAMPLE_LIMIT = 25
 # Pull the specific DeviceCollectionError token so operators can see *why* a
 # device is backfilled (auth vs timeout vs incomplete setup) without a manual
 # Forward API probe.
-_COLLECTION_ERROR_RE = re.compile(r"DeviceCollectionError\.([A-Za-z0-9_]+)")
+_COLLECTION_ERROR_RE = re.compile(
+    r"Device(?:Collection|Processing)Error\.([A-Za-z0-9_]+)"
+)
 
 
 def _collection_failure_reason(reason_str):
@@ -48,7 +50,7 @@ def _collection_failure_reason(reason_str):
     match = _COLLECTION_ERROR_RE.search(str(reason_str))
     if match:
         return match.group(1)
-    token = str(reason_str).rsplit(".", 1)[-1].strip()
+    token = str(reason_str).rsplit(".", 1)[-1].strip().rstrip(")")
     return token or "unknown"
 
 
