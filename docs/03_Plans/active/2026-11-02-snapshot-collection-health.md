@@ -41,6 +41,8 @@ Revert the change. The reason is additive; older runs keep their reasons.
 
 ## Decision Log
 
+- forward-sdk moves 0.1.29 to 0.1.31 (0.1.30 adds `nqe.execution`, `execute_and_wait` and `forward_sdk.testing`; 0.1.31 adds unpublished licensing, Tenable and FDB routes; nothing the plugin calls changed). `development/constraints-upgrade-from.txt` moves to 0.1.29, the pin 3.0.11 shipped.
+
 - The finding keys on the rise in devices that did not complete, not the fall in completed: a retired site must not be told it is a collection problem.
 - The probe has a 60 s deadline so a slow Forward cannot turn a blocked run into a failed one.
 - SNMP endpoints are not counted; endpoint-owned shrinkage stays unexplained.
