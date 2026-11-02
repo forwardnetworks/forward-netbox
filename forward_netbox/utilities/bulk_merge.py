@@ -3012,6 +3012,12 @@ def _bulk_merge_changes_main(
         result_metadata.update(
             logical_total=len(logical_components),
             logical_action_counts=dict(Counter(logical_actions.values())),
+            # The same logical changes by model, so a run's staged deletes can be
+            # read against what the merge wrote (the change log) and what a
+            # protecting reference held back. Counts only.
+            logical_action_by_model=dict(
+                Counter(f"{key[0]}.{action}" for key, action in logical_actions.items())
+            ),
             # Schema identifiers and counts only — never the referencing rows.
             protected_blocked_deletes=[
                 {

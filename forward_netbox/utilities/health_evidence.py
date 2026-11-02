@@ -255,6 +255,114 @@ def _merged_changes(ingestion):
     }
 
 
+def _merge_accounting(ingestion):
+    """What the merge recorded about its staged changes, from whichever job ran it.
+
+    The merge job is checked first: after an auto-merge attempt and a retry it is
+    the later record."""
+    for job in (ingestion.merge_job, ingestion.job):
+        recorded = (getattr(job, "data", None) or {}).get("merge_accounting")
+        if isinstance(recorded, dict):
+            return recorded
+    return None
+
+
+def _written_deletes(ingestion):
+    """Deletes the merge wrote, by model, over ALL of them (never truncated)."""
+    if not ingestion.change_request_id:
+        return None
+    from core.models import ObjectChange
+
+    def query():
+        return list(
+            ObjectChange.objects.filter(
+                request_id=ingestion.change_request_id, action="delete"
+            )
+            .order_by()
+            .values("changed_object_type__app_label", "changed_object_type__model")
+            .annotate(total=Count("pk"))
+        )
+
+    rows, skipped = _guarded(query)
+    if skipped:
+        return None
+    return {
+        f"{row['changed_object_type__app_label']}.{row['changed_object_type__model']}": int(
+            row["total"]
+        )
+        for row in rows
+    }
+
+
+def _delete_accounting(ingestion, written=None):
+    """Reconcile the run's staged deletes with the deletes the merge wrote.
+
+    `deleted` on the ingestion counts LOGICAL deletes staged in the branch. The
+    change log counts the deletes the merge wrote. They differ legitimately, so
+    this reports the difference per model rather than calling it a loss:
+
+    - a delete a surviving PROTECT reference holds back is staged, never written
+      (`held_by_protecting_reference`);
+    - a delete of an object already gone from the destination succeeds without a
+      change-log row;
+    - a MAC address delete goes through a path that writes no change-log row;
+    - a delete that failed or was skipped as unsatisfiable (`failed`, `skipped`);
+    - a cascade logs deletes under other models, so logged can exceed staged.
+    """
+    staged = int(ingestion.deleted_change_count or 0)
+    out = {
+        "staged_deletes": staged,
+        "written_deletes": sum(written.values()) if written is not None else None,
+        "written_deletes_by_model": (
+            dict(sorted(written.items())) if written is not None else None
+        ),
+        "causes_of_a_difference": [
+            "held by a protecting reference (recorded below)",
+            "object already absent from the destination (no change-log row)",
+            "MAC address deletes (no change-log row)",
+            "failed or skipped delete (recorded below)",
+            "cascade: logged under other models, so logged can exceed staged",
+        ],
+    }
+    notes = []
+    if written is None:
+        notes.append("The change-log delete counts were not available.")
+    recorded = _merge_accounting(ingestion)
+    out["recorded_at_merge"] = recorded is not None
+    if recorded is None:
+        notes.append(
+            "Staged deletes by model and protected-reference holds were not "
+            "recorded for this ingestion (it ran before the record existed, it "
+            "merged with no staged changes, or it was merged outside a job)."
+        )
+        out["note"] = " ".join(notes)
+        return out
+    staged_by_model = {
+        label.rsplit(".", 1)[0]: count
+        for label, count in (recorded.get("logical_action_by_model") or {}).items()
+        if label.endswith(".delete")
+    }
+    out["staged_deletes_by_model"] = dict(sorted(staged_by_model.items()))
+    out["held_by_protecting_reference"] = recorded.get("held_deletes_by_model") or {}
+    out["failed_at_merge"] = int(recorded.get("failed") or 0)
+    out["skipped_at_merge"] = int(recorded.get("skipped") or 0)
+    if written is not None:
+        models = sorted(set(staged_by_model) | set(written))
+        out["staged_more_than_logged"] = {
+            model: staged_by_model.get(model, 0) - written.get(model, 0)
+            for model in models
+            if staged_by_model.get(model, 0) > written.get(model, 0)
+        }
+        out["logged_more_than_staged"] = {
+            model: written.get(model, 0) - staged_by_model.get(model, 0)
+            for model in models
+            if written.get(model, 0) > staged_by_model.get(model, 0)
+        }
+    if notes:
+        out["note"] = " ".join(notes)
+    return out
+
+
 def recent_ingestions_evidence(sync, *, limit=RECENT_INGESTION_LIMIT):
     ingestions = list(
         sync.forwardingestion_set.select_related("job", "merge_job", "branch").order_by(
@@ -278,6 +386,9 @@ def recent_ingestions_evidence(sync, *, limit=RECENT_INGESTION_LIMIT):
                 "merge": _merge_facts(ingestion),
                 "statistics_by_model": _job_statistics(job),
                 "merged_changes_by_model_action": _merged_changes(ingestion),
+                "delete_accounting": _delete_accounting(
+                    ingestion, _written_deletes(ingestion)
+                ),
             }
         )
     return {

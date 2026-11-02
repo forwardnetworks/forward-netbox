@@ -366,6 +366,22 @@ def _record_accepted_failures(ingestion, *, failed, user) -> None:
         ingestion.snapshot_info = snapshot_info
 
 
+def _held_deletes_by_model(entries):
+    """Deletes a surviving PROTECT reference held back, per model, with the
+    referencing rows per label. Counts and schema labels only."""
+    held = {}
+    for entry in entries or []:
+        model = str(entry.get("model") or "")
+        bucket = held.setdefault(model, {"deletes": 0, "referencing_rows": {}})
+        bucket["deletes"] += 1
+        for ref in entry.get("held_by") or []:
+            label = str(ref.get("model") or "")
+            bucket["referencing_rows"][label] = bucket["referencing_rows"].get(
+                label, 0
+            ) + int(ref.get("count") or 0)
+    return dict(sorted(held.items()))
+
+
 def merge_branch(
     ingestion: "ForwardIngestion",
     sync_logger: "SyncLogging | None" = None,
@@ -758,6 +774,24 @@ def merge_branch(
         updated=updated,
         deleted=deleted,
     )
+    accounting_target = getattr(sync_logger, "log_data", None)
+    if isinstance(accounting_target, dict):
+        # Kept on the job the logger owns so the support bundle can reconcile the
+        # staged deletes with what the merge wrote. Counts and schema labels only.
+        accounting_target["merge_accounting"] = {
+            "logical_total": int(merge_metadata.get("logical_total", 0)),
+            "logical_action_counts": dict(logical_action_counts),
+            "logical_action_by_model": dict(
+                merge_metadata.get("logical_action_by_model") or {}
+            ),
+            # Aggregated here: one entry per blocked object would grow the job
+            # data and be rewritten on every later log call.
+            "held_deletes_by_model": _held_deletes_by_model(
+                merge_metadata.get("protected_blocked_deletes")
+            ),
+            "failed": int(retryable_failed),
+            "skipped": int(unsatisfiable),
+        }
 
     if unsatisfiable:
         skipped_note = (

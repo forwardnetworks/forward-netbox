@@ -44,7 +44,7 @@ Revert the change. The reason is additive; older runs keep their reasons.
 
 ## Decision Log
 
-- Per-model change counts after a merge are already exported in `health.recent_ingestions` (from the change log by request id); no second recorder.
+- Per-model change counts after a merge are already exported in `health.recent_ingestions` (from the change log by request id). What was missing is the staged side: `merge.py` now records the merge's logical changes by model and the deletes a protecting reference held back (aggregated per model) on the job the logger owns, and `delete_accounting` reconciles them with the logged deletes per model and names the legitimate causes of a difference.
 - Include-tag changes are attributed by the sync's ingestion request ids, not by user, because a manual merge replays under the operator's user.
 
 - forward-sdk moves 0.1.29 to 0.1.31 (0.1.30 adds `nqe.execution`, `execute_and_wait` and `forward_sdk.testing`; 0.1.31 adds unpublished licensing, Tenable and FDB routes; nothing the plugin calls changed). `development/constraints-upgrade-from.txt` moves to 0.1.29, the pin 3.0.11 shipped.
