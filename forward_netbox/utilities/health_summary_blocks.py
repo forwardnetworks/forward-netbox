@@ -154,6 +154,25 @@ def blocking_reason_texts(validation_run, limit=20):
     ][:limit]
 
 
+_SNAPSHOT_COUNT_KEYS = (
+    "snapshotState",
+    "numSuccessfulDevices",
+    "numCollectionFailureDevices",
+    "numProcessingFailureDevices",
+)
+
+
+def snapshot_collection_summary(validation_run):
+    metrics = getattr(validation_run, "snapshot_metrics", None)
+    metrics = metrics if isinstance(metrics, dict) else {}
+    return {
+        "scope": metrics.get("scope_collection") or {},
+        "snapshot": {
+            key: metrics[key] for key in _SNAPSHOT_COUNT_KEYS if key in metrics
+        },
+    }
+
+
 def validation_summary(validation_run):
     if validation_run is None:
         return None
@@ -168,6 +187,11 @@ def validation_summary(validation_run):
         # the frame that raised, so the reason a customer needs is here or
         # nowhere. Plugin-written text (model labels, counts), no names.
         "blocking_reasons": blocking_reason_texts(validation_run),
+        # How many of this sync's scoped devices Forward collected in this
+        # snapshot and in the baseline, by failure type (counts, no names), and
+        # Forward's whole-snapshot device counts. Present on a run blocked by a
+        # row-count drop; empty otherwise.
+        "snapshot_collection": snapshot_collection_summary(validation_run),
         "created": (
             validation_run.created.isoformat() if validation_run.created else None
         ),

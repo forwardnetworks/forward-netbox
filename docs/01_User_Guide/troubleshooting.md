@@ -136,6 +136,25 @@ From the Forward device lists (Scope Reconciliation, then the list links), selec
 
 The Scope Reconciliation `Carry no include tag` count is the devices this sync does not manage: some were created by this sync and are now uncovered (needs attention), the rest are not managed by it (informational). Open `Not Managed by This Sync` for the full list. The `share a name with a device this sync manages` link lists likely older copies at another site; review them and delete the copy you do not want. To have the sync manage the rest, select them, use `Edit Selected` to add the include tag, then run the sync again. "Select all" on these lists acts on that list only.
 
+### `Snapshot collection problem:` Leads The Blocked Run
+
+When row counts fall and Forward did not collect some of the devices in the
+sync's scope, the blocked run's first reason begins `Snapshot collection problem:`.
+It gives how many in-scope devices completed collection in this snapshot and in
+the last baseline snapshot, and the failure types (for example
+`AUTHENTICATION_FAILED`). A device Forward did not collect
+returns no rows, so the modules, FHRP groups and routing it owns read as
+shrinkage, and the `Row-count drop:` reasons that follow are usually its
+consequence, not a query problem.
+
+- Fix collection in Forward (credentials, reachability) or wait for the next
+  snapshot, then run the sync again. A sync set to `latestProcessed` picks up the
+  newer snapshot by itself; a sync pinned to one snapshot does not.
+- Do **not** Force-Allow unless those devices are really gone: allowing the run
+  deletes everything they own.
+- The counts are in the support bundle under `health.latest_validation.snapshot_collection`.
+  The check runs only on a run already blocked by a row-count drop.
+
 ### `Row-count drop:` Blocked The Sync
 
 A blocking reason beginning `Row-count drop:` means one model returned far fewer
