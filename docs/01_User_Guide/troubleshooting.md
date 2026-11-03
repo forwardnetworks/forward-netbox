@@ -151,8 +151,9 @@ list.
 | Devices Forward could not collect | No | Fix the cause in Forward (credentials, reachability, onboarding); they return on the next collection. |
 
 **Delete (verified gone)** deletes a device only if no sync holds any record of it,
-Forward still returns no device by its name (case-insensitive) and does not list it
-as disabled or uncollected, and no other sync reads a different Forward network.
+Forward still returns no device by its name (case-insensitive) and its device
+configuration (device list and device tags, which is where SNMP endpoints live) does
+not list it in any state, including disabled, and no other sync reads a different Forward network.
 It refuses otherwise and lists what it refused in the job. At most 100 devices go in
 one run, and deleting a device also deletes its interfaces, IP addresses and cables.
 The bundle carries the same checklist under `diagnostics.cleanup_checklist`.

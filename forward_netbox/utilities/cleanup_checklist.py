@@ -55,10 +55,22 @@ def cleanup_items(payload, *, twin_count=0, relabel=None, urls=None):
                     "For a mergeable pair press Merge site-relabel duplicates: it "
                     "keeps the older device, moves it to the site Forward reports "
                     "and removes the newer copy.",
-                    "A held group names why it is held. Fix or delete the copy "
-                    "that is wrong in NetBox, then refresh the report.",
-                    "Run the sync again.",
-                ],
+                ]
+                + [
+                    f"{row['count']} held ({row['reason'].replace('_', ' ')}): "
+                    f"{row['remedy']}"
+                    for row in relabel.get("held_by_reason") or ()
+                    if row.get("remedy")
+                ]
+                + (
+                    []
+                    if relabel.get("held_by_reason")
+                    else [
+                        "A held group names why it is held. Fix or delete the "
+                        "copy that is wrong in NetBox, then refresh the report."
+                    ]
+                )
+                + ["Run the sync again."],
                 "url": "",
             }
         )

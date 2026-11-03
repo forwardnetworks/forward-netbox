@@ -3862,6 +3862,7 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
     def _cleanup_items(sync, payload):
         """The ordered "what do I do" checklist; see `cleanup_checklist`."""
         from .utilities.cleanup_checklist import cleanup_items
+        from .utilities.scope_reconciliation import site_relabel_held_by_reason
         from .utilities.scope_reconciliation import site_relabel_pairs
 
         if not payload:
@@ -3882,6 +3883,7 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
             relabel={
                 "pair_count": len(relabel.get("pairs") or ()),
                 "held_count": len(relabel.get("held") or ()),
+                "held_by_reason": site_relabel_held_by_reason(relabel),
             },
             urls={
                 "same_name_more_than_once": url("unclaimed_twins"),

@@ -1103,22 +1103,31 @@ def _configured_absence_details(names, *, client, network_id, include_tags):
 
 
 def _forward_configured_names(client, network_id):
-    """Casefolded names Forward's classic device list holds in ANY collect state.
+    """Casefolded names Forward's CONFIGURATION holds, in any state.
 
-    A device that is configured in Forward but disabled or uncollected is absent
-    from the snapshot exactly like a removed one, and an unmanaged device rarely
-    carries an include tag, so the tag-scoped evidence above never sees it.
-    Returns ``None`` when the read fails: callers must treat that as "unknown" and
-    refuse, never as "nothing configured"."""
+    Two reads, both needed. The classic device list holds network devices in any
+    collect state (a disabled device is configured but absent from the snapshot,
+    exactly like a removed one). SNMP endpoints are NOT in that list - checked
+    against a real network, none of its endpoints were - but every one of them is
+    in the device-tag configuration, so a failed endpoint that dropped out of the
+    snapshot is still listed there. Returns ``None`` when either read fails:
+    callers must treat that as "unknown" and refuse, never as "nothing
+    configured"."""
+    names = set()
     try:
         collect_by_name = get_classic_device_collection(client, network_id)
+        names_by_tag = get_configured_device_tags(client, network_id)
     except JobTimeoutException:
         raise
     except Exception:
         return None
-    if not isinstance(collect_by_name, dict):
+    if not isinstance(collect_by_name, dict) or not isinstance(names_by_tag, dict):
         return None
-    return {str(name).strip().casefold() for name in collect_by_name}
+    names.update(str(name).strip().casefold() for name in collect_by_name)
+    for members in names_by_tag.values():
+        if isinstance(members, (set, frozenset, list, tuple)):
+            names.update(str(name).strip().casefold() for name in members)
+    return names
 
 
 def _endpoint_scope_settings(sync, include_tags, exclude_tags, include_match):

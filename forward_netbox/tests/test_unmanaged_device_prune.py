@@ -21,7 +21,7 @@ CENSUS = [{"name": "in-scope", "vendor": "CISCO"}]
 
 
 class UnmanagedPruneTest(_Fixture):
-    def _prune(self, devices, *, census=None, classic=None, **kwargs):
+    def _prune(self, devices, *, census=None, classic=None, tags=None, **kwargs):
         # `classic` is Forward's configured device list {name: collect}; an
         # Exception instance makes the read fail.
         read = (
@@ -29,9 +29,15 @@ class UnmanagedPruneTest(_Fixture):
             if isinstance(classic, Exception)
             else {"return_value": {} if classic is None else classic}
         )
-        with patch(
-            "forward_netbox.utilities.scope_reconciliation.get_classic_device_collection",
-            **read,
+        with (
+            patch(
+                "forward_netbox.utilities.scope_reconciliation.get_classic_device_collection",
+                **read,
+            ),
+            patch(
+                "forward_netbox.utilities.scope_reconciliation.get_configured_device_tags",
+                return_value=tags or {},
+            ),
         ):
             report = self._report(IN_SCOPE, CENSUS if census is None else census)
             return prune_unmanaged_devices(
@@ -183,7 +189,7 @@ class UnmanagedPruneTest(_Fixture):
 class UnmanagedPruneSafetyTest(_Fixture):
     """The refusals a reviewer found missing: each could delete a live device."""
 
-    def _prune(self, devices, *, census=None, classic=None, **kwargs):
+    def _prune(self, devices, *, census=None, classic=None, tags=None, **kwargs):
         # `classic` is Forward's configured device list {name: collect}; an
         # Exception instance makes the read fail.
         read = (
@@ -191,9 +197,15 @@ class UnmanagedPruneSafetyTest(_Fixture):
             if isinstance(classic, Exception)
             else {"return_value": {} if classic is None else classic}
         )
-        with patch(
-            "forward_netbox.utilities.scope_reconciliation.get_classic_device_collection",
-            **read,
+        with (
+            patch(
+                "forward_netbox.utilities.scope_reconciliation.get_classic_device_collection",
+                **read,
+            ),
+            patch(
+                "forward_netbox.utilities.scope_reconciliation.get_configured_device_tags",
+                return_value=tags or {},
+            ),
         ):
             report = self._report(IN_SCOPE, CENSUS if census is None else census)
             return prune_unmanaged_devices(
@@ -301,4 +313,35 @@ class UnmanagedPruneSafetyTest(_Fixture):
 
         with self.assertRaises(ScopeCensusUnavailableError):
             self._prune([gone])
+        self.assertTrue(Device.objects.filter(pk=gone.pk).exists())
+
+    def test_an_snmp_endpoint_in_the_device_tag_configuration_is_refused(self):
+        # Endpoints are not in the classic device list but every one is in the
+        # device-tag configuration, so one that failed collection and dropped out
+        # of the snapshot is still listed there.
+        self._device("in-scope")
+        endpoint = self._device("pdu-9")
+
+        result = self._prune([endpoint], tags={"Console": {"PDU-9"}})
+
+        self.assertEqual(result["pruned_device_count"], 0)
+        self.assertEqual(result["refusals"]["not_absent"], [endpoint.pk])
+        self.assertTrue(Device.objects.filter(pk=endpoint.pk).exists())
+
+    def test_when_the_device_tag_configuration_cannot_be_read_nothing_is_deleted(self):
+        self._device("in-scope")
+        gone = self._device("gone")
+        with patch(
+            "forward_netbox.utilities.scope_reconciliation.get_classic_device_collection",
+            return_value={},
+        ), patch(
+            "forward_netbox.utilities.scope_reconciliation.get_configured_device_tags",
+            side_effect=RuntimeError("boom"),
+        ):
+            report = self._report(IN_SCOPE, CENSUS)
+            result = prune_unmanaged_devices(
+                self.sync, restrict_to_device_pks=[gone.pk], report=report
+            )
+
+        self.assertEqual(result["pruned_device_count"], 0)
         self.assertTrue(Device.objects.filter(pk=gone.pk).exists())

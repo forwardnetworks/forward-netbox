@@ -98,3 +98,10 @@ Revert the change. The reason is additive; older runs keep their reasons.
   are created and changed only by that step and are logged by NetBox's own change
   signals (an explicit emit recorded every create twice, found by the branch test).
   A real-branch test merges the copies into main.
+- Checked against a real Forward network (read-only): none of 21 stale devices a
+  customer listed is in Forward's device configuration either, so the unmanaged
+  delete would offer all of them and refuse the 55 devices that are configured but
+  disabled. The same check found that SNMP endpoints are NOT in the classic device
+  list (0 of 668) but ARE in the device-tag configuration (668 of 668), so the
+  "configured in Forward" evidence reads both and fails closed if either read
+  fails. Residual: an endpoint with no tags that dropped out of the snapshot.

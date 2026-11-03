@@ -204,3 +204,29 @@ class UnmanagedCountMatchesItsListTest(SimpleTestCase):
             NO_DELETE_FIX_IN_FORWARD,
         )
         self.assertEqual(items["unmanaged_not_in_forward_unverified"]["count"], 35)
+
+
+class HeldGroupAdviceTest(SimpleTestCase):
+    def test_a_held_group_carries_its_own_remedy(self):
+        item = _by_key(
+            cleanup_items(
+                {},
+                relabel={
+                    "pair_count": 0,
+                    "held_count": 1,
+                    "held_by_reason": [
+                        {
+                            "reason": "forward_site_matches_neither_device",
+                            "count": 1,
+                            "remedy": "Forward places this name at a third site.",
+                        }
+                    ],
+                },
+                urls=URLS,
+            )
+        )["site_relabel_duplicates"]
+
+        steps = " ".join(item["steps"])
+        self.assertIn("forward site matches neither device", steps)
+        self.assertIn("third site", steps)
+        self.assertNotIn("A held group names why", steps)
