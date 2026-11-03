@@ -12,6 +12,7 @@ from dcim.views import DeviceBulkDeleteView
 from dcim.views import DeviceBulkEditView
 from django.apps import apps
 from django.contrib import messages
+from django.contrib.auth.views import redirect_to_login
 from django.core.exceptions import PermissionDenied
 from django.core.exceptions import ValidationError
 from django.db import connection
@@ -29,6 +30,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.utils.translation import gettext as _
+from django.views import View
 from django.views.decorators.debug import sensitive_post_parameters
 from netbox.object_actions import AddObject
 from netbox.object_actions import BulkDelete
@@ -3232,12 +3234,32 @@ class ForwardDeviceBulkDelete(BulkDelete):
         return {"url_params": _device_list_params(cls, context)}
 
 
+class ForwardUnmanagedPrune(BulkDelete):
+    """Delete Selected, routed through the guarded unmanaged-device prune.
+
+    The ordinary bulk delete deletes whatever is selected. This one is offered
+    only on the list of unmanaged devices Forward does not report, and it posts
+    to a view that re-checks every selected device against Forward before
+    anything is queued."""
+
+    label = _("Delete (verified gone)")
+
+    @classmethod
+    def get_url(cls, model):
+        return reverse("plugins:forward_netbox:device_list_prune_unmanaged")
+
+    @classmethod
+    def get_context(cls, context, model):
+        return {"url_params": _device_list_params(cls, context)}
+
+
 # The four device lists, by the name their bulk actions carry back. Each is
 # (section of the stored report, key prefix of its `<half>_device_ids`).
 _DEVICE_LISTS = {
     "uncovered": ("unmanaged", "owned_untagged"),
     "unclaimed": ("unmanaged", "unclaimed"),
     "unclaimed_twins": ("unmanaged", "unclaimed_twins"),
+    "unclaimed_absent": ("unmanaged", "unclaimed_absent"),
     "out_of_scope": ("", "out_of_scope"),
     "present_backfilled": ("", "present_backfilled"),
 }
@@ -3385,9 +3407,32 @@ class ForwardSyncUnclaimedDevicesView(_ForwardSyncUncoveredDevicesView):
     guidance = (
         "Not a problem. This sync did not create these devices and makes no "
         "claim about them: another source, an operator or an old SNMP endpoint "
-        "import. To have this sync manage some of them, select them, use Edit "
-        "Selected to add the include tag, then run the sync again. Otherwise "
-        "leave them alone."
+        "import. To have this sync manage some of them, add the include tag "
+        "to the device in Forward (a tag added by hand in NetBox is removed on "
+        "the next run), then run the sync again. Otherwise leave them alone."
+    )
+
+
+@register_model_view(
+    ForwardSync, "unclaimed_absent_devices", path="unclaimed-absent-devices"
+)
+class ForwardSyncUnclaimedAbsentDevicesView(_ForwardSyncUncoveredDevicesView):
+    half = "unclaimed_absent"
+    list_name = "unclaimed_absent"
+    title = "Unmanaged devices Forward does not report"
+    actions = (ForwardUnmanagedPrune,)
+    guidance = (
+        "No sync manages these devices and Forward returned no device by "
+        "their name in the latest snapshot. That is normal for anything "
+        "Forward does not collect (patch panels, PDUs, servers, passive "
+        "kit), so absence alone does not mean a device is gone: only delete "
+        "the ones you have confirmed are decommissioned. "
+        "Select the ones to remove and use Delete (verified gone): every "
+        "selected device is checked against Forward again before anything is "
+        "queued. Deleting a device also deletes its interfaces, IP addresses, "
+        "cables and modules, and anything people or other plugins attached to "
+        "it. A device that is only disabled in Forward looks exactly like a "
+        "removed one, so confirm they are really gone."
     )
 
 
@@ -3465,6 +3510,138 @@ def _select_all_to_stored_list(request):
     post.setlist("pk", [str(device_id) for device_id in device_ids])
     request.POST = post
     return ""
+
+
+class ForwardDeviceListPruneUnmanagedView(View):
+    """Review, confirm and queue the guarded prune of unmanaged devices.
+
+    Two steps on one URL. A POST naming devices shows what will be deleted and
+    what that takes with it, and asks for the count to be typed. Only a POST
+    carrying `_confirm` and the right count queues the job, which re-checks
+    each device against Forward and refuses any it cannot prove is gone."""
+
+    template_name = "forward_netbox/forwardsync_prune_unmanaged.html"
+
+    def dispatch(self, request, *args, **kwargs):
+        if not request.user.is_authenticated:
+            return redirect_to_login(request.get_full_path())
+        if not request.user.has_perm("dcim.delete_device"):
+            raise PermissionDenied
+        return super().dispatch(request, *args, **kwargs)
+
+    def get(self, request):
+        return redirect(self._back(request))
+
+    @staticmethod
+    def _sync(request):
+        raw = request.GET.get("forward_sync") or ""
+        return ForwardSync.objects.filter(pk=raw).first() if raw.isdigit() else None
+
+    def _back(self, request):
+        sync = self._sync(request)
+        if sync is None:
+            return reverse("plugins:forward_netbox:forwardsync_list")
+        return reverse(
+            "plugins:forward_netbox:forwardsync_unclaimed_absent_devices",
+            kwargs={"pk": sync.pk},
+        )
+
+    def post(self, request):
+        from .utilities.scope_reconciliation import UNMANAGED_PRUNE_MAX_DEVICES
+        from .utilities.sync_facade import JobAlreadyActive
+        from .utilities.sync_facade import JobBlockedBySyncRun
+        from .utilities.sync_facade import enqueue_button_job
+
+        sync = self._sync(request)
+        error = _select_all_to_stored_list(request)
+        if sync is None or error:
+            messages.error(request, error or _("No sync was named."))
+            return redirect(self._back(request))
+        pks = sorted(
+            {int(pk) for pk in request.POST.getlist("pk") if str(pk).isdigit()}
+        )
+        if not pks:
+            messages.error(request, _("No devices were selected."))
+            return redirect(self._back(request))
+        devices = Device.objects.restrict(request.user, "delete").filter(pk__in=pks)
+        if devices.count() != len(pks):
+            messages.error(
+                request,
+                _(
+                    "Some selected devices no longer exist, or you may not delete "
+                    "them. Reload the list and select again."
+                ),
+            )
+            return redirect(self._back(request))
+        if "_confirm" in request.POST:
+            if request.POST.get("confirm_count", "").strip() != str(len(pks)):
+                messages.error(
+                    request,
+                    _("The count typed did not match. Nothing was queued."),
+                )
+            else:
+                try:
+                    job = enqueue_button_job(
+                        sync,
+                        "prune_unmanaged",
+                        request.user,
+                        job_kwargs={"restrict_to_device_pks": pks},
+                    )
+                except (JobAlreadyActive, JobBlockedBySyncRun):
+                    messages.warning(
+                        request,
+                        _(
+                            "A prune or a sync run is already active. Nothing was "
+                            "queued; try again when it finishes."
+                        ),
+                    )
+                else:
+                    messages.success(
+                        request,
+                        _(
+                            "Queued job #%(pk)d. Each device is checked against "
+                            "Forward again and only those proven gone are deleted; "
+                            "the job records any it refused."
+                        )
+                        % {"pk": job.pk},
+                    )
+                return redirect(
+                    reverse(
+                        "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                        kwargs={"pk": sync.pk},
+                    )
+                )
+        from dcim.models import Interface
+        from ipam.models import IPAddress
+
+        rows = [
+            {
+                "device": device,
+                "interfaces": Interface.objects.filter(device=device).count(),
+                "addresses": IPAddress.objects.filter(
+                    assigned_object_type__app_label="dcim",
+                    assigned_object_type__model="interface",
+                    assigned_object_id__in=Interface.objects.filter(
+                        device=device
+                    ).values("pk"),
+                ).count(),
+            }
+            for device in devices.select_related("site", "role").order_by("name")
+        ]
+        return render(
+            request,
+            self.template_name,
+            {
+                "sync": sync,
+                "rows": rows,
+                "count": len(pks),
+                "pks": pks,
+                "cap": UNMANAGED_PRUNE_MAX_DEVICES,
+                "over_cap": len(pks) > UNMANAGED_PRUNE_MAX_DEVICES,
+                "back_url": self._back(request),
+                "form_action": request.get_full_path(),
+            },
+        )
 
 
 class ForwardDeviceListBulkEditView(DeviceBulkEditView):
@@ -3653,6 +3830,41 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
     def get_required_permission(self):
         return "forward_netbox.view_forwardsync"
 
+    @staticmethod
+    def _cleanup_items(sync, payload):
+        """The ordered "what do I do" checklist; see `cleanup_checklist`."""
+        from .utilities.cleanup_checklist import cleanup_items
+        from .utilities.scope_reconciliation import site_relabel_pairs
+
+        if not payload:
+            return []
+
+        def url(name):
+            return reverse(
+                f"plugins:forward_netbox:forwardsync_{name}", kwargs={"pk": sync.pk}
+            )
+
+        try:
+            relabel = site_relabel_pairs(sync, check_protecting=False)
+        except Exception:  # noqa: BLE001 - the checklist must not sink the page
+            relabel = {}
+        return cleanup_items(
+            payload,
+            twin_count=len(_stored_device_ids(sync, "unmanaged", UNCLAIMED_TWINS)[0]),
+            relabel={
+                "pair_count": len(relabel.get("pairs") or ()),
+                "held_count": len(relabel.get("held") or ()),
+            },
+            urls={
+                "same_name_more_than_once": url("unclaimed_twins"),
+                "unmanaged_not_in_forward": url("unclaimed_absent_devices"),
+                "created_by_sync_not_in_forward": url("uncovered_devices"),
+                "out_of_scope_orphans": url("out_of_scope_devices"),
+                "in_forward_not_in_scope": url("uncovered_devices"),
+                "forward_could_not_collect": url("present_backfilled_devices"),
+            },
+        )
+
     def get(self, request, pk):
         # `compute_scope_reconciliation` is deliberately NOT imported here: this
         # view must never compute the report. `compute_upgrade_reconciliation`
@@ -3672,11 +3884,13 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
         device_list_url = reverse("dcim:device_list")
         backfilled_tag_url = f"{device_list_url}?tag={BACKFILLED_TAG_SLUG}"
         uncovered_tag_url = f"{device_list_url}?tag={UNCOVERED_TAG_SLUG}"
+        cleanup_items = self._cleanup_items(sync, payload)
         return render(
             request,
             self.template_name,
             {
                 "object": sync,
+                "cleanup_items": cleanup_items,
                 "payload": payload,
                 "report_generated_at": generated_at,
                 "report_error": report_error,
@@ -3716,6 +3930,10 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
                 ),
                 "unclaimed_devices_url": reverse(
                     "plugins:forward_netbox:forwardsync_unclaimed_devices",
+                    kwargs={"pk": sync.pk},
+                ),
+                "unclaimed_absent_devices_url": reverse(
+                    "plugins:forward_netbox:forwardsync_unclaimed_absent_devices",
                     kwargs={"pk": sync.pk},
                 ),
                 "out_of_scope_devices_url": reverse(

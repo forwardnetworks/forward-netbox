@@ -144,6 +144,7 @@ class ButtonJobAPIActionTest(TestCase):
     # every other kind must still accept an empty body, which is what this
     # test enforces for them.
     EXTRA_POST_DATA = {
+        "prune_unmanaged": {"device_pks": [1]},
         "release_foreign_delete_blockers": {
             "device": "1",
             "expected_blockers": {"netbox_routing.OSPFInstance": 1},
@@ -180,6 +181,17 @@ class ButtonJobAPIActionTest(TestCase):
             source=cls.source,
             parameters={"snapshot_id": "latestProcessed"},
         )
+        from dcim.models import Device, DeviceRole, DeviceType, Manufacturer, Site
+
+        maker = Manufacturer.objects.create(name="btn-mfr", slug="btn-mfr")
+        cls.sample_device = Device.objects.create(
+            name="btn-dev",
+            device_type=DeviceType.objects.create(
+                manufacturer=maker, model="btn", slug="btn"
+            ),
+            role=DeviceRole.objects.create(name="btn-role", slug="btn-role"),
+            site=Site.objects.create(name="btn-site", slug="btn-site"),
+        )
 
     def _post(self, user, action_name, data=None):
         from rest_framework.test import APIRequestFactory
@@ -211,9 +223,12 @@ class ButtonJobAPIActionTest(TestCase):
                     "forward_netbox.jobs.enqueue_forward_job",
                     return_value=real_job,
                 ) as enqueue:
-                    response = self._post(
-                        self.admin, kind, self.EXTRA_POST_DATA.get(kind)
-                    )
+                    extra = self.EXTRA_POST_DATA.get(kind)
+                    if kind == "prune_unmanaged":
+                        # Names a device that exists: the endpoint refuses a
+                        # pk the user may not delete, and a missing one is not.
+                        extra = {"device_pks": [self.sample_device.pk]}
+                    response = self._post(self.admin, kind, extra)
                 self.assertEqual(response.status_code, 201, kind)
                 self.assertEqual(response.data["name"], f"btn-api-sync - {suffix}")
                 enqueue.assert_called_once()
@@ -318,6 +333,7 @@ class ButtonJobRunnerParityTest(TestCase):
         "prune_orphans": "_prune_forward_orphans_work",
         "prune_stale_hardware_notices": "_prune_stale_hardware_notices_work",
         "prune_uncovered": "_prune_uncovered_devices_work",
+        "prune_unmanaged": "_prune_unmanaged_devices_work",
         "merge_site_relabel_duplicates": "_merge_site_relabel_duplicates_work",
         "prune_out_of_scope_catalogue": "_prune_out_of_scope_catalogue_work",
         "config_backup": "_run_forward_config_backup_work",

@@ -70,3 +70,21 @@ Revert the change. The reason is additive; older runs keep their reasons.
   a bundle group without a name. An empty group yields no filter (an empty query
   string would list every device). `outside_this_sync` also says why those devices
   are never pruned: no sync is bound to them.
+- Scope Reconciliation opens with one "What to do" checklist (`cleanup_checklist`,
+  also in the bundle as `diagnostics.cleanup_checklist`). Each row says what the
+  count is, whether anything is deleted, and the exact steps; nothing on the page
+  is deleted automatically.
+- New operator action `prune_unmanaged` deletes devices no sync is bound to that
+  Forward does not report. It has no unattended path and no quarantine history to
+  lean on, so it is the narrowest allowlist in the plugin: the pk must be in this
+  sync's unclaimed set, Forward's census must say absent with no configuration
+  evidence that it is only disabled, matched case-insensitively, and no sync may
+  hold ANY record of it (identity, tag claim, absence row, parent claim, preserved
+  tag). It refuses outright when another sync reads a different Forward network or
+  source, because absence is proven against one network only. One run deletes at
+  most 100; the operator reviews a list, sees the warnings, types the count, and
+  the job recomputes the report and re-checks every device before deleting. A
+  device is deleted only through `_delete_prunable_devices`, the one shared loop.
+  A reviewer rejected the first version for exactly these gaps (other networks,
+  claims and absence rows, configured-but-disabled devices, case, API object
+  permission); each now has a test.

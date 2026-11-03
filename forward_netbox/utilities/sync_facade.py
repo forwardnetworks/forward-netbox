@@ -558,6 +558,13 @@ BUTTON_JOB_SPECS = {
         "prune uncovered devices",
         "dcim.delete_device",
     ),
+    # Deletes devices NO sync is bound to that Forward does not report at all,
+    # for the leftovers no prune can reach. Operator-reviewed pks only.
+    "prune_unmanaged": (
+        "forward_netbox.jobs.PruneUnmanagedDevicesJob",
+        "prune unmanaged devices",
+        "dcim.delete_device",
+    ),
     # A one-time repair for the duplicate device pairs a site-relabel left
     # behind before the apply-path fix that stopped creating them. Deletes
     # the newer (sync-created) copy and moves the older one to its site, so
@@ -698,6 +705,7 @@ def enqueue_button_job(
         if kind in (
             "prune_orphans",
             "prune_uncovered",
+            "prune_unmanaged",
             "release_foreign_delete_blockers",
             "prune_out_of_scope_catalogue",
         ):

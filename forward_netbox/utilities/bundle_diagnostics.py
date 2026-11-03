@@ -52,6 +52,7 @@ SECTIONS = (
     "inventory_items",
     "duplicate_device_names",
     "site_relabel_pairs",
+    "cleanup_checklist",
     "routing_name_collisions",
 )
 
@@ -309,6 +310,28 @@ def _scope_trend_reports(sync):
             "not_collected": int(payload.get("forward_tagged_backfilled") or 0),
             "not_collected_by_reason": breakdown,
         }
+
+
+def _cleanup_checklist(sync):
+    """The "What to do" checklist the Scope Reconciliation page shows, as counts.
+
+    The same ordered items an operator reads on the page, with their titles, kind
+    (whether anything is deleted) and steps, so a report that says "276 uncovered"
+    carries the instruction that goes with it. No device names."""
+    from ..views import ForwardSyncScopeReconciliationView
+    from .scope_reconciliation import latest_scope_report
+
+    _job, payload, generated_at, _error = latest_scope_report(sync)
+    items = ForwardSyncScopeReconciliationView._cleanup_items(sync, payload)
+    return {
+        "scope_report_generated_at": (
+            generated_at.isoformat() if generated_at else None
+        ),
+        "items": [
+            {key: item[key] for key in ("key", "title", "count", "kind", "steps")}
+            for item in items
+        ],
+    }
 
 
 def _device_renames(sync):
@@ -670,6 +693,7 @@ _BUILDERS = {
     "inventory_items": _inventory_items,
     "duplicate_device_names": _duplicate_device_names,
     "site_relabel_pairs": _site_relabel_pairs,
+    "cleanup_checklist": _cleanup_checklist,
     "routing_name_collisions": _routing_name_collisions,
 }
 

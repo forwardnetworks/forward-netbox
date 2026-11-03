@@ -11,6 +11,33 @@
 {% endblock extra_controls %}
 
 {% block content %}
+{# One checklist for every cleanup count on this page: what it is, whether anything #}
+{# is deleted, and the exact steps. The plugin deletes nothing on its own here.      #}
+{% if cleanup_items %}
+<div class="card mb-3" id="cleanup-checklist">
+  <h5 class="card-header">{% trans "What to do" %}</h5>
+  <div class="card-body">
+    <p class="text-muted mt-0">{% trans "Nothing on this page is deleted automatically. Each row below says whether anything is deleted and exactly how to fix it. Work from the top." %}</p>
+    <div class="list-group">
+      {% for item in cleanup_items %}
+        <div class="list-group-item">
+          <div class="d-flex justify-content-between align-items-start">
+            <h6 class="mb-1">{{ forloop.counter }}. {{ item.title }} <span class="badge text-bg-secondary">{{ item.count }}</span></h6>
+            <span class="badge {% if item.kind == 'deletes after you review' %}text-bg-danger{% else %}text-bg-info{% endif %}">{{ item.kind }}</span>
+          </div>
+          <p class="mb-1">{{ item.what }}</p>
+          <ol class="mb-1">
+            {% for step in item.steps %}<li>{{ step }}</li>{% endfor %}
+          </ol>
+          {% if item.url %}
+            <a href="{{ item.url }}" class="btn btn-sm btn-outline-secondary"><i class="mdi mdi-format-list-bulleted" aria-hidden="true"></i>&nbsp;{% trans "Open the list" %}</a>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
 <div class="row mb-3">
   <div class="col col-12">
     <div class="card">
@@ -616,9 +643,12 @@
       <h5 class="card-header" id="uncovered-unclaimed">{% trans "Not Managed by This Sync" %}</h5>
       <div class="card-body">
         {% if payload.unmanaged.unclaimed_sample %}
-          <p class="text-muted mt-0">{% trans "Not a problem. This sync did not create these devices and makes no claim about them: another source, an operator, or an old SNMP endpoint import. It tags none of them and never prunes them. To have it manage some, select them in the list, use Edit Selected to add the include tag, then run the sync again. Otherwise leave them alone." %}</p>
+          <p class="text-muted mt-0">{% trans "Not a problem. This sync did not create these devices and makes no claim about them: another source, an operator, or an old SNMP endpoint import. It tags none of them and never prunes them on its own. To have it manage some, add the include tag to the device in Forward (a tag added by hand in NetBox is removed on the next run), then run the sync again. Otherwise leave them alone." %}</p>
           {% if unclaimed_twin_count %}
             <p class="mt-0"><a href="{{ unclaimed_twins_url }}" class="badge text-bg-warning text-decoration-none">{% blocktrans with count=unclaimed_twin_count %}{{ count }} share a name with a device this sync manages{% endblocktrans %}</a> <span class="text-muted small">{% trans "Likely older copies at another site. Review them and delete the copy you do not want." %}</span></p>
+          {% endif %}
+          {% if payload.unmanaged.unclaimed_absent_device_ids and perms.dcim.delete_device %}
+            <p class="mt-0"><a href="{{ unclaimed_absent_devices_url }}" class="badge text-bg-danger text-decoration-none">{% blocktrans with count=payload.unmanaged.unclaimed_absent_device_ids|length %}{{ count }} are not in Forward at all{% endblocktrans %}</a> <span class="text-muted small">{% trans "Forward returned no device by these names. That is normal for hardware Forward does not collect (patch panels, PDUs, servers), so review the list and delete only devices you have confirmed are decommissioned; each is checked against Forward again first." %}</span></p>
           {% endif %}
           <p><a href="{{ unclaimed_devices_url }}" class="btn btn-sm btn-outline-secondary"><i class="mdi mdi-format-list-bulleted" aria-hidden="true"></i>&nbsp;{% blocktrans with count=payload.unmanaged.unclaimed %}List all {{ count }}{% endblocktrans %}</a></p>
           <ul class="mb-0">
