@@ -54,3 +54,13 @@ Revert the change. The reason is additive; older runs keep their reasons.
 - SNMP endpoints are not counted; endpoint-owned shrinkage stays unexplained.
 - Probe only on a block, to respect the Forward call budget.
 - Reason text, not a new status: the block already exists and the sentence is what the operator reads.
+- The bundle now says why staged prefix deletes happened (`prefix_delete_cause`
+  per recent ingestion): how many deleted prefixes still contain an address on an
+  interface of an in-scope device Forward did not collect, matched on VRF and
+  network. Read from the deletes the merge wrote and from the first scope report
+  computed after the run began (its time is reported), never the newest report,
+  which may describe a later snapshot. An unmerged run, a missing or older report
+  and deletes with no recorded prefix each say so rather than reading as zero.
+  Counts only. Checked read-only against Forward on a real run: every prefix that
+  vanished between two snapshots was hosted only by devices the newer snapshot did
+  not collect.
