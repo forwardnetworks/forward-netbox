@@ -5,6 +5,8 @@ from rq.timeouts import JobTimeoutException
 
 from ..exceptions import ForwardDependencySkipError
 from ..exceptions import ForwardSearchError
+from .context_ip_copies import exclude_context_copies
+from .context_ip_copies import role_for_new_address
 from .sync_reporting import record_issue
 from .sync_reporting import UNOWNED_PRIMARY_IP_HOLDER_REASON
 
@@ -625,8 +627,8 @@ def apply_ipam_ipaddress(runner, row):
         # deterministically — prefer the copy already on this interface, else the
         # lowest pk — and warn so the duplicate is visible without breaking sync.
         global_matches = list(
-            IPAddress.objects.filter(
-                address__net_host=host_ip, vrf__isnull=True
+            exclude_context_copies(
+                IPAddress.objects.filter(address__net_host=host_ip, vrf__isnull=True)
             ).order_by("pk")
         )
         if len(global_matches) > 1:
@@ -655,6 +657,7 @@ def apply_ipam_ipaddress(runner, row):
                 status=row["status"],
                 assigned_object_type=desired_type,
                 assigned_object_id=interface.pk,
+                role=role_for_new_address(runner, row["address"], None),
             )
             existing.full_clean()
             existing.save()
@@ -700,16 +703,22 @@ def apply_ipam_ipaddress(runner, row):
                 previous_owner.save(update_fields=primary_fields)
             existing.save(update_fields=update_fields)
         return True
+    values = {
+        "address": row["address"],
+        "vrf": vrf,
+        "status": row["status"],
+        "assigned_object_type": runner._content_type_for(Interface),
+        "assigned_object_id": interface.pk,
+    }
+    # Only when per-context copies of this address exist, and then only the role
+    # NetBox requires for a duplicate; otherwise the role is not this apply's.
+    role = role_for_new_address(runner, row["address"], vrf)
+    if role:
+        values["role"] = role
     runner._upsert_values_from_defaults(
         "ipam.ipaddress",
         IPAddress,
-        values={
-            "address": row["address"],
-            "vrf": vrf,
-            "status": row["status"],
-            "assigned_object_type": runner._content_type_for(Interface),
-            "assigned_object_id": interface.pk,
-        },
+        values=values,
         coalesce_sets=runner._coalesce_sets_for(
             "ipam.ipaddress",
             [("address", "vrf")],

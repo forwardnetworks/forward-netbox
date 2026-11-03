@@ -11,6 +11,9 @@ from ipaddress import ip_interface
 
 from rq.timeouts import JobTimeoutException
 
+from .context_ip_copies import apply_context_copies
+from .context_ip_copies import context_copies_enabled
+from .context_ip_copies import exclude_context_copies
 from .diagnostics import failure_classifier
 from .forward_api import get_device_management_ips
 from .forward_api import get_device_mgmt_tags
@@ -339,7 +342,9 @@ def _devices_sharing_management_address(unresolved, device_management_ips):
         if len(hosts) != 1:
             continue
         host = str(next(iter(hosts)))
-        for ip in IPAddress.objects.filter(address__net_host=host)[:5]:
+        for ip in exclude_context_copies(
+            IPAddress.objects.filter(address__net_host=host)
+        )[:5]:
             owner = getattr(ip.assigned_object, "device", None)
             if owner is not None and owner.name != name:
                 shared[name] = owner.pk
@@ -550,14 +555,46 @@ def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
                 shared = _devices_sharing_management_address(
                     self_unresolved, device_management_ips
                 )
+                # Opt-in: a context whose one management address another device
+                # holds gets its own copy of it, as its primary IP.
+                copied_names, copy_outcomes = set(), {}
+                if shared and context_copies_enabled(sync):
+                    created_ips, changed_rows, primaries, copy_outcomes = (
+                        apply_context_copies(devices, shared, device_management_ips)
+                    )
+                    taken = []
+                    for _pk, (device, copy) in primaries.items():
+                        attr = "primary_ip6" if copy.family == 6 else "primary_ip4"
+                        device.snapshot()
+                        setattr(device, attr, copy)
+                        device.save(update_fields=[attr])
+                        taken.append(device)
+                        copied_names.add(device.name)
+                    # No emit_branch_object_changes here: these are ordinary
+                    # saves inside the branch request, which NetBox's own signals
+                    # already log. Emitting as well recorded every create twice.
+                    logger.log_info(
+                        f"primary_ip-from-tag: gave {len(taken)} device(s) their own "
+                        "copy of a shared management address."
+                    )
+                    updated.extend(taken)
                 counts = {}
                 for name, reason in self_unresolved.items():
-                    key = "shared" if name in shared else reason
-                    counts[key] = counts.get(key, 0) + 1
+                    if name in copied_names:
+                        continue
                     device = devices.get(name)
-                    if device is not None:
+                    key = "shared" if name in shared else reason
+                    if device is not None and device.pk in copy_outcomes:
+                        outcomes[device.pk] = copy_outcomes[device.pk]
+                        key = "shared"
+                    elif device is not None:
                         outcomes[device.pk] = (key, shared.get(name))
-                logger.log_info(format_fallback_summary(len(self_unresolved), counts))
+                    counts[key] = counts.get(key, 0) + 1
+                logger.log_info(
+                    format_fallback_summary(
+                        len(self_unresolved) - len(copied_names), counts
+                    )
+                )
             # The two ways a bare device got no code above: its Mgmt_ tag matched
             # no interface address, or Forward gave it no management address the
             # step could use.

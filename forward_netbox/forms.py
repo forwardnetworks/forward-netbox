@@ -1337,6 +1337,21 @@ class ForwardSyncForm(NetBoxModelForm):
             "address on no interface are left alone. Off by default."
         ),
     )
+    give_contexts_their_own_management_ip = forms.BooleanField(
+        required=False,
+        label="Give firewall contexts their own copy of a shared management IP",
+        help_text=(
+            "A virtual firewall context reports its chassis's management address, "
+            "and NetBox allows one primary-IP owner per address object, so only "
+            "one of them gets the primary IP. With this on, each context whose "
+            "only management address is held by another device gets its own copy "
+            "of that address on its own interface of the same name, marked "
+            "Anycast (NetBox allows duplicate addresses only when every copy has "
+            "a shared role) and tagged `forward-context-copy`, and that copy is "
+            "its primary IP. Needs the management-IP fallback above. Off by "
+            "default."
+        ),
+    )
     diff_fallback_mode = forms.ChoiceField(
         choices=tuple(
             (value, label)
@@ -1450,6 +1465,9 @@ class ForwardSyncForm(NetBoxModelForm):
         self.fields["set_primary_ip_from_forward_management_ip"].initial = (
             parameters.get("set_primary_ip_from_forward_management_ip", False)
         )
+        self.fields["give_contexts_their_own_management_ip"].initial = parameters.get(
+            "give_contexts_their_own_management_ip", False
+        )
         self.fields["diff_fallback_mode"].initial = parameters.get(
             "diff_fallback_mode",
             ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
@@ -1497,6 +1515,7 @@ class ForwardSyncForm(NetBoxModelForm):
                 "copy_sql_kill_switches",
                 "set_primary_ip_from_mgmt_tag",
                 "set_primary_ip_from_forward_management_ip",
+                "give_contexts_their_own_management_ip",
                 "diff_fallback_mode",
                 "scheduled",
                 "interval",
@@ -1518,6 +1537,14 @@ class ForwardSyncForm(NetBoxModelForm):
             raise forms.ValidationError("Scheduled time must be in the future.")
         if cleaned.get("interval") and not cleaned.get("scheduled"):
             cleaned["scheduled"] = local_now()
+        if cleaned.get("give_contexts_their_own_management_ip") and not cleaned.get(
+            "set_primary_ip_from_forward_management_ip"
+        ):
+            self.add_error(
+                "give_contexts_their_own_management_ip",
+                "Needs the management-IP fallback: the copy is made for a device "
+                "whose Forward management address another device holds.",
+            )
         source = cleaned.get("source")
         network_id = (source.parameters or {}).get("network_id") if source else None
         if not network_id:
@@ -1577,6 +1604,9 @@ class ForwardSyncForm(NetBoxModelForm):
             "set_primary_ip_from_forward_management_ip": bool(
                 cleaned.get("set_primary_ip_from_forward_management_ip", False)
             ),
+            "give_contexts_their_own_management_ip": bool(
+                cleaned.get("give_contexts_their_own_management_ip", False)
+            ),
             "diff_fallback_mode": cleaned.get("diff_fallback_mode")
             or ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
             "webhook_secret": str(cleaned.get("webhook_secret") or ""),
@@ -1616,6 +1646,9 @@ class ForwardSyncForm(NetBoxModelForm):
                 self.cleaned_data.get(
                     "set_primary_ip_from_forward_management_ip", False
                 )
+            ),
+            "give_contexts_their_own_management_ip": bool(
+                self.cleaned_data.get("give_contexts_their_own_management_ip", False)
             ),
             "diff_fallback_mode": self.cleaned_data.get("diff_fallback_mode")
             or ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,

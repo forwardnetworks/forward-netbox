@@ -802,6 +802,30 @@ that exact address is already on exactly one of the device's interfaces in
 NetBox. A device with a `Mgmt_` tag, several recorded addresses, or an address
 on no interface is left alone. The audit above reports tag resolution only.
 
+### Give firewall contexts their own management IP
+
+A virtual firewall context (a Palo Alto vsys, a Fortinet vdom) is its own device in
+Forward and reports its chassis's management address. NetBox allows one primary-IP
+owner per address object, so only one of them gets the primary IP and the rest are
+left without one. Forward has no per-context management address to tell them apart.
+
+**Give firewall contexts their own copy of a shared management IP**
+(`give_contexts_their_own_management_ip`, off by default, needs the management-IP
+fallback above) makes a copy of the address for each such context: same address and
+VRF, on the context's own interface of the same name as the chassis interface that
+holds it, role **Anycast**, tagged `forward-context-copy`, and set as the context's
+primary IP. NetBox accepts duplicate addresses only when every copy has a shared
+role, so the original synced address is also marked Anycast.
+
+- The sync's own address handling ignores the copies: it still sees one row per
+  address. Only this step creates or changes them.
+- A context with no interface named like the chassis's is left alone and the bundle
+  names the reason (`context-copy-no-matching-interface`).
+- Turning the parameter off stops new copies; existing copies stay until deleted
+  (filter IP addresses by the `forward-context-copy` tag).
+- The support bundle reports `primary_ip.context_copies` (on or off, copies, devices
+  holding one as primary).
+
 The support bundle's `primary_ip` section shows whether each source is on, how
 many devices the sync manages, and how many have no primary IP, by role.
 

@@ -9,6 +9,7 @@ from rq.timeouts import JobTimeoutException
 from ..exceptions import ForwardDependencySkipError
 from ..exceptions import ForwardQueryError
 from ..exceptions import ForwardSearchError
+from .context_ip_copies import exclude_context_copies
 from .sync_contracts import preserve_existing_on_blank_fields_for_model
 
 
@@ -290,7 +291,12 @@ def get_unique_or_raise(runner, model, lookup):
     cache_key = _unique_lookup_cache_key(model, lookup)
     if cache_key is not None and cache_key in runner._primed_missing_unique_lookup_keys:
         return None
-    matches = list(model.objects.filter(**lookup).order_by("pk")[:2])
+    queryset = model.objects.filter(**lookup)
+    if model._meta.label_lower == "ipam.ipaddress":
+        # Per-context copies of a shared management address share its address
+        # and VRF; the apply identifies the synced row only.
+        queryset = exclude_context_copies(queryset)
+    matches = list(queryset.order_by("pk")[:2])
     if not matches:
         return None
     if len(matches) > 1:
@@ -2078,7 +2084,10 @@ def _prime_ipam_coalesce_identity_cache(runner, model_string, rows):
                 filters["vrf_id__isnull"] = True
             else:
                 filters["vrf_id"] = vrf_id
-            for obj in model.objects.filter(**filters):
+            candidates = model.objects.filter(**filters)
+            if model_string == "ipam.ipaddress":
+                candidates = exclude_context_copies(candidates)
+            for obj in candidates:
                 pair = (str(getattr(obj, field_name)), obj.vrf_id)
                 if pair not in requested_pairs:
                     continue
@@ -2148,7 +2157,7 @@ def _prime_ipam_global_host_identity_cache(runner, model, rows):
         for host_value in chunk:
             host_query |= Q(address__net_host=host_value)
         query &= host_query
-        for obj in model.objects.filter(query):
+        for obj in exclude_context_copies(model.objects.filter(query)):
             host_value = _ipaddress_host_value_from_address(obj.address)
             if host_value is None or host_value not in host_values:
                 continue

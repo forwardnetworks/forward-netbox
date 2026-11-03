@@ -1056,6 +1056,10 @@ def _primary_ip_bundle_payload(sync):
         "netbox_devices_without_primary_ip": all_missing.count(),
         # The part of that count this sync does not manage, split by what they are.
         "outside_this_sync": _primary_ip_outside_this_sync(sync, all_missing, missing),
+        # The opt-in per-context copy of a shared management address: whether it
+        # is on, and how many copies exist, so "every context has a primary IP"
+        # can be read off a bundle.
+        "context_copies": _primary_ip_context_copies(sync),
         # Every device by reason, not just ten: which devices a reason means.
         "without_primary_ip_device_keys": _primary_ip_reason_keys(classified),
         # What mask the primary addresses carry. A customer asked whether primary
@@ -1150,6 +1154,30 @@ def _shared_holder_pairs(recorded_here, outcomes):
             for holder, devices in holders.most_common(50)
         ],
         "pairs": pairs[:_BUNDLE_DEVICE_KEY_LIMIT],
+    }
+
+
+def _primary_ip_context_copies(sync):
+    from ipam.models import IPAddress
+
+    from .utilities.context_ip_copies import context_copies_enabled
+    from .utilities.context_ip_copies import CONTEXT_COPY_TAG_SLUG
+
+    return {
+        "enabled": context_copies_enabled(sync),
+        "copies": IPAddress.objects.filter(tags__slug=CONTEXT_COPY_TAG_SLUG).count(),
+        "devices_holding_a_copy_as_primary": len(
+            set(
+                Device.objects.filter(
+                    primary_ip4__tags__slug=CONTEXT_COPY_TAG_SLUG
+                ).values_list("pk", flat=True)
+            )
+            | set(
+                Device.objects.filter(
+                    primary_ip6__tags__slug=CONTEXT_COPY_TAG_SLUG
+                ).values_list("pk", flat=True)
+            )
+        ),
     }
 
 

@@ -88,3 +88,13 @@ Revert the change. The reason is additive; older runs keep their reasons.
   A reviewer rejected the first version for exactly these gaps (other networks,
   claims and absence rows, configured-but-disabled devices, case, API object
   permission); each now has a test.
+- Firewall contexts (opt-in `give_contexts_their_own_management_ip`): Forward gives
+  every vsys its chassis's interface list and no per-context management address,
+  and NetBox allows one primary-IP owner per address object, so 514 contexts had no
+  primary IP. The management step now gives each such context its own copy of the
+  shared address (Anycast, tagged `forward-context-copy`, on its own same-named
+  interface) as its primary. The sync's apply is unchanged except that every
+  lookup that assumes one row per (address, vrf) excludes tagged copies; the copies
+  are created and changed only by that step and are logged by NetBox's own change
+  signals (an explicit emit recorded every create twice, found by the branch test).
+  A real-branch test merges the copies into main.
