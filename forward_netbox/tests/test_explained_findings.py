@@ -2,6 +2,7 @@ from dcim.models import Device
 from dcim.models import Interface
 from django.contrib.auth import get_user_model
 from django.contrib.contenttypes.models import ContentType
+from django.test import SimpleTestCase
 from django.urls import reverse
 from extras.models import Tag
 from ipam.models import IPAddress
@@ -518,6 +519,20 @@ class BundleTest(DevicesWithoutAPrimaryIp):
             unmanaged.pk, outside["device_keys"]["managed_by_no_sync"]["keys"]
         )
         self.assertFalse(outside["device_keys"]["managed_by_no_sync"]["truncated"])
+        # Each group carries a pk-only device-list filter, so a row seen on the
+        # NetBox device list can be matched to the group without a name.
+        no_sync = outside["device_keys"]["managed_by_no_sync"]
+        self.assertEqual(
+            no_sync["device_list_filter"].split("&"),
+            [f"id={pk}" for pk in no_sync["keys"]],
+        )
+        self.assertFalse(no_sync["filter_truncated"])
+        self.assertIn("No sync is bound", outside["why_these_are_not_pruned"])
+        for group in payload["without_primary_ip_device_keys"].values():
+            self.assertEqual(
+                group["device_list_filter"].split("&"),
+                [f"id={pk}" for pk in group["device_keys"]],
+            )
         # Every device by reason, not ten.
         self.assertEqual(
             payload["without_primary_ip_device_keys"][
@@ -1066,3 +1081,18 @@ class AllDevicesWithoutAPrimaryIpTest(PrimaryIpFixture):
         response = self.client.get(health)
 
         self.assertContains(response, f"{self.url}?reason=all")
+
+
+class DeviceListFilterTest(SimpleTestCase):
+    def test_the_filter_names_keys_only_and_is_capped(self):
+        from forward_netbox.views import _BUNDLE_FILTER_KEY_LIMIT
+        from forward_netbox.views import _device_list_filter
+
+        keys = list(range(1, _BUNDLE_FILTER_KEY_LIMIT + 50))
+
+        rendered = _device_list_filter(keys)
+
+        self.assertEqual(len(rendered.split("&")), _BUNDLE_FILTER_KEY_LIMIT)
+        self.assertTrue(rendered.startswith("id=1&id=2"))
+        self.assertIsNone(_device_list_filter([]))
+        self.assertGreater(len(keys), _BUNDLE_FILTER_KEY_LIMIT)

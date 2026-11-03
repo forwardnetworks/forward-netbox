@@ -1112,6 +1112,20 @@ def _primary_ip_outcome_detail(classified, outcomes):
 
 
 _BUNDLE_DEVICE_KEY_LIMIT = 5000
+# A device-list URL longer than a few KB is refused by proxies, so the filter
+# names the first keys only and says it did.
+_BUNDLE_FILTER_KEY_LIMIT = 300
+
+
+def _device_list_filter(keys):
+    """A NetBox device-list query string for these keys, pks only (no names).
+
+    Pasted after `/dcim/devices/?` it lists exactly these devices, so a row seen
+    on the device list can be matched to the bundle's group without a name ever
+    leaving the instance."""
+    keys = list(keys)[:_BUNDLE_FILTER_KEY_LIMIT]
+    # None, not "": an empty query string pasted after the path lists every device.
+    return "&".join(f"id={pk}" for pk in keys) or None
 
 
 def _shared_holder_pairs(recorded_here, outcomes):
@@ -1192,13 +1206,24 @@ def _primary_ip_outside_this_sync(sync, all_missing, this_sync_missing):
                 "count": len(elsewhere),
                 "truncated": len(elsewhere) > _BUNDLE_DEVICE_KEY_LIMIT,
                 "keys": elsewhere[:_BUNDLE_DEVICE_KEY_LIMIT],
+                "device_list_filter": _device_list_filter(elsewhere),
+                "filter_truncated": len(elsewhere) > _BUNDLE_FILTER_KEY_LIMIT,
             },
             "managed_by_no_sync": {
                 "count": len(nowhere),
                 "truncated": len(nowhere) > _BUNDLE_DEVICE_KEY_LIMIT,
                 "keys": nowhere[:_BUNDLE_DEVICE_KEY_LIMIT],
+                "device_list_filter": _device_list_filter(nowhere),
+                "filter_truncated": len(nowhere) > _BUNDLE_FILTER_KEY_LIMIT,
             },
         },
+        "why_these_are_not_pruned": (
+            "No sync is bound to a device listed under managed_by_no_sync, so no "
+            "prune reaches it: pruning works only from a sync's own device "
+            "bindings, and absence from Forward is not evidence a device is gone. "
+            "Such a device usually predates the sync or is no longer in Forward; "
+            "remove it in NetBox once you have confirmed it is gone."
+        ),
     }
 
 
@@ -1211,6 +1236,8 @@ def _primary_ip_reason_keys(classified):
             "count": len(pks),
             "truncated": len(pks) > _BUNDLE_DEVICE_KEY_LIMIT,
             "device_keys": pks[:_BUNDLE_DEVICE_KEY_LIMIT],
+            "device_list_filter": _device_list_filter(pks),
+            "filter_truncated": len(pks) > _BUNDLE_FILTER_KEY_LIMIT,
         }
         for reason, pks in keys.items()
     }

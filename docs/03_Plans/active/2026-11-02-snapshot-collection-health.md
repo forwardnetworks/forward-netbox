@@ -64,3 +64,9 @@ Revert the change. The reason is additive; older runs keep their reasons.
   Counts only. Checked read-only against Forward on a real run: every prefix that
   vanished between two snapshots was hosted only by devices the newer snapshot did
   not collect.
+- Every no-primary-IP group and every `outside_this_sync` group in the bundle now
+  carries a pks-only `device_list_filter` (first 300 keys, `filter_truncated` says
+  so) to paste after `/dcim/devices/?`, so a row on the NetBox device list maps to
+  a bundle group without a name. An empty group yields no filter (an empty query
+  string would list every device). `outside_this_sync` also says why those devices
+  are never pruned: no sync is bound to them.

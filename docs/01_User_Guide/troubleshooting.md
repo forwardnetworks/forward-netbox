@@ -605,6 +605,11 @@ the device list shows and this sync does not manage: by role, status and scope
 tag, split by whether another sync manages them (`managed_by_another_sync`) or none
 does, with their ids. `netbox_devices_without_primary_ip` equals
 `without_primary_ip` plus `outside_this_sync.count`.
+Each of those id lists, and each reason in `without_primary_ip_device_keys`, also
+carries a `device_list_filter` (the first 300 ids as `id=..&id=..`, `filter_truncated`
+says when there are more): paste it after `/dcim/devices/?` to see exactly those
+devices on the NetBox device list. `outside_this_sync.why_these_are_not_pruned` says
+why devices no sync is bound to are never pruned.
 
 For the `scope_reconciliation` split of uncovered devices: **unclaimed** devices
 were not created by this sync (another source or an operator did), so adopt or
