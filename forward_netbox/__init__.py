@@ -21,6 +21,14 @@ class NetboxForwardConfig(PluginConfig):
         from .change_control.branch_gate import register_branch_gate
         from .change_control.events import register_event_types
 
+        from django.db.models.signals import pre_migrate
+
+        from .utilities.device_guard_triggers import rebuild_before_migrate
+
+        pre_migrate.connect(
+            rebuild_before_migrate,
+            dispatch_uid="forward_netbox_rebuild_device_guards",
+        )
         _check_runtime_dependencies()
         register_branch_gate()
         register_event_types()
