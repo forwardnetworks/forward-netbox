@@ -22,7 +22,15 @@ def _count(value):
         return 0
 
 
-def cleanup_items(payload, *, twin_count=0, relabel=None, urls=None):
+def cleanup_items(
+    payload,
+    *,
+    twin_count=0,
+    relabel=None,
+    urls=None,
+    shared_primary=0,
+    context_copies_on=False,
+):
     """The ordered checklist for one stored scope report.
 
     ``payload`` is the stored report, ``twin_count`` the unmanaged devices that
@@ -262,6 +270,39 @@ def cleanup_items(payload, *, twin_count=0, relabel=None, urls=None):
                     "Wait for the next snapshot, then run the sync again.",
                 ],
                 "url": urls.get("forward_could_not_collect", ""),
+            }
+        )
+    shared = _count(shared_primary)
+    if shared:
+        items.append(
+            {
+                "key": "shared_management_address",
+                "title": "Devices with no primary IP because they share one address",
+                "count": shared,
+                "kind": NO_DELETE_FIX_IN_NETBOX,
+                "what": (
+                    "Their only management address is another device's primary "
+                    "IP: usually a firewall context (vsys, vdom) and its "
+                    "chassis, or HA peers. NetBox allows one primary-IP owner "
+                    "per address, and Forward gives a context no address of its "
+                    "own."
+                ),
+                "steps": (
+                    [
+                        "Edit the sync and turn on Give firewall contexts their "
+                        "own copy of a shared management IP (Execution section; "
+                        "needs Fall back to Forward's management IP).",
+                        "Run the sync again: each context gets its own Anycast "
+                        "copy of the address as its primary IP.",
+                    ]
+                    if not context_copies_on
+                    else [
+                        "The per-context copy is on. These still have none: the "
+                        "Explained tab names why (usually no interface named "
+                        "like the chassis's)."
+                    ]
+                ),
+                "url": urls.get("shared_management_address", ""),
             }
         )
     return items

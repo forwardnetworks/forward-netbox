@@ -1668,6 +1668,9 @@ def _delete_prunable_devices(sync, device_pks):
                         Device,
                         using=Device.objects.db,
                     )
+                    device = Device.objects.filter(pk=device_id).first()
+                    if device is not None:
+                        _detach_addresses_foreign_routing_holds(device, device_pks)
                     deleted, _ = Device.objects.filter(pk=device_id).delete()
                     deleted_total += deleted
                     pruned_device_ids.append(device_id)
@@ -2966,6 +2969,63 @@ def _delete_releasable_object(obj, released, *, depth=0, releasable=None):
     label = obj._meta.label_lower
     released[label] = released.get(label, 0) + 1
     return None
+
+
+def _detach_addresses_foreign_routing_holds(device, selected_ids, using=None):
+    """Unassign this device's addresses that another device's routing row uses.
+
+    A BGP peer on a surviving device names a neighbour address that sits on an
+    interface of the device being deleted, and netbox-routing PROTECTs that
+    address, so the delete is refused. The peer is not this delete's to remove.
+    The address is kept and only taken off the dead device's interface: the
+    peer keeps its neighbour, which is how this plugin already models a BGP
+    neighbour address it cannot place on an interface. Nothing is deleted here.
+
+    Returns the number of addresses detached. Only `netbox_routing` rows whose
+    owner is not among ``selected_ids`` trigger it, and only addresses assigned
+    to one of ``device``'s own interfaces are touched.
+    """
+    from dcim.models import Interface
+    from django.contrib.contenttypes.models import ContentType
+    from ipam.models import IPAddress
+
+    from .device_cascade_delete import owning_device_ids
+
+    interface_type = ContentType.objects.get_for_model(Interface)
+    own_interfaces = set(
+        Interface.objects.filter(device_id=device.pk).values_list("pk", flat=True)
+    )
+    detached = 0
+    cache = {}
+    for obj in _objects_protecting_device(device, using=using):
+        if not obj._meta.label_lower.startswith("netbox_routing."):
+            continue
+        owners = owning_device_ids(obj, _cache=cache)
+        if owners and owners <= set(selected_ids):
+            continue
+        for field in obj._meta.concrete_fields:
+            if not (field.many_to_one and field.related_model is IPAddress):
+                continue
+            address = getattr(obj, field.name, None)
+            if (
+                address is None
+                or address.assigned_object_type_id != interface_type.pk
+                or address.assigned_object_id not in own_interfaces
+            ):
+                continue
+            # The dead device may still name it primary; clear that first or
+            # NetBox refuses to move it. The device is deleted next.
+            for attr in ("primary_ip4", "primary_ip6", "oob_ip"):
+                if getattr(device, f"{attr}_id", None) == address.pk:
+                    device.snapshot()
+                    setattr(device, attr, None)
+                    device.save(update_fields=[attr])
+            address.snapshot()
+            address.assigned_object_type = None
+            address.assigned_object_id = None
+            address.save()
+            detached += 1
+    return detached
 
 
 def _release_routing_rows_protecting(device, releasable=None, using=None):

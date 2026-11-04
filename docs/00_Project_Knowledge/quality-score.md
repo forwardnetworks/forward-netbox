@@ -9,8 +9,8 @@ not replace the final release gate or customer-equivalent acceptance run.
 
 ## Strengths
 
-- The supported matrix is NetBox `4.7.x`, tested on `4.7.2`, and
-  `netbox-branching` `1.2.x`, tested on `1.2.1`.
+- The supported matrix is NetBox `4.7.x`, tested on `4.7.4`, and
+  `netbox-branching` `1.2.x`, tested on `1.2.3`.
 - Every production sync uses one reviewable native Branching branch. There is no
   direct-write fast-bootstrap lane.
 - The custom merge has an explicit incomplete state: failed rows produce issues,

@@ -61,6 +61,7 @@ from .utilities.forward_api import MAX_NQE_FETCH_ALL_MAX_PAGES
 from .utilities.forward_api import MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
 from .utilities.forward_api import MAX_NQE_PAGE_SIZE
 from .utilities.forward_api import MAX_QUERY_FETCH_CONCURRENCY
+from .utilities.primary_ip import overlay_rerun_needed
 from .utilities.query_registry import missing_query_specs_message
 from .utilities.query_registry import models_without_query_specs
 from .utilities.runtime_guidance import DEFAULT_PUSHDOWN_DIFF_WARN_RATIO
@@ -1253,6 +1254,32 @@ class ForwardValidationRunForceAllowForm(ConfirmationForm):
     )
 
 
+def _sync_row_busy(instance):
+    """A sentence when a running job holds this sync's row, else ``""``.
+
+    Saving the sync updates its row. A job that holds the row (a post-sync step,
+    a merge) makes that UPDATE wait, and a wait longer than the gateway allows
+    loses the save behind a 504 with nothing on screen. Checking with NOWAIT
+    turns that into an immediate, readable refusal."""
+    from django.db import DatabaseError
+    from django.db import transaction
+
+    if not getattr(instance, "pk", None):
+        return ""
+    try:
+        with transaction.atomic():
+            ForwardSync.objects.select_for_update(nowait=True, no_key=True).filter(
+                pk=instance.pk
+            ).exists()
+    except DatabaseError:
+        return (
+            "This sync is busy: a running job (a sync, merge or post-sync step) "
+            "holds it, so the change could not be saved. Nothing was changed. "
+            "Save again when the job finishes; the Jobs tab shows it."
+        )
+    return ""
+
+
 class ForwardSyncForm(NetBoxModelForm):
     source = forms.ModelChoiceField(
         queryset=ForwardSource.objects.all(),
@@ -1437,6 +1464,9 @@ class ForwardSyncForm(NetBoxModelForm):
                 initial[name] = value[-1]
         kwargs["initial"] = initial
         super().__init__(*args, **kwargs)
+        # What is stored now, before `clean()` replaces `instance.parameters`
+        # with the submitted values: the primary-IP marker compares against this.
+        self._stored_parameters = dict(self.instance.parameters or {})
         parameters = self.instance.parameters or {}
         self.fields["auto_merge"].initial = parameters.get("auto_merge", True)
         self.fields["enable_bulk_orm"].initial = parameters.get(
@@ -1537,6 +1567,9 @@ class ForwardSyncForm(NetBoxModelForm):
             raise forms.ValidationError("Scheduled time must be in the future.")
         if cleaned.get("interval") and not cleaned.get("scheduled"):
             cleaned["scheduled"] = local_now()
+        busy = _sync_row_busy(self.instance)
+        if busy:
+            raise forms.ValidationError(busy)
         if cleaned.get("give_contexts_their_own_management_ip") and not cleaned.get(
             "set_primary_ip_from_forward_management_ip"
         ):
@@ -1662,6 +1695,13 @@ class ForwardSyncForm(NetBoxModelForm):
         }
         for model_string in forward_configured_models():
             parameters[model_string] = self.cleaned_data.get(model_string, False)
+        # The primary-IP step runs only in a run's branch stage, which a run with
+        # no Forward changes skips. Changing one of its settings must therefore
+        # make the next run stage it, or "turn it on and run the sync" does
+        # nothing until Forward data happens to change. The marker is set here and
+        # cleared by the executor once the step has run.
+        if overlay_rerun_needed(self._stored_parameters, parameters):
+            parameters["overlay_rerun_pending"] = True
         self.instance.parameters = parameters
         self.instance.auto_merge = self.cleaned_data.get("auto_merge", False)
         self.instance.status = ForwardSyncStatusChoices.NEW

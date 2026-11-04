@@ -84,6 +84,59 @@ class ForwardSingleBranchExecutor(ForwardExecutorBase):
         )
         return True
 
+    def _overlay_rerun_pending(self):
+        """A primary-IP setting changed since the step last ran (and one is on)."""
+        return bool(
+            primary_ip_step_enabled(self.sync)
+            and (self.sync.parameters or {}).get("overlay_rerun_pending")
+        )
+
+    def _clear_overlay_rerun_pending(self):
+        # From the stored parameters, not this run's copy: a form saved while the
+        # run was staging must not be reverted by writing the old dict back.
+        stored = (
+            self.sync.__class__.objects.filter(pk=self.sync.pk)
+            .values_list("parameters", flat=True)
+            .first()
+        )
+        self.sync.parameters = {
+            key: value
+            for key, value in (self.sync.parameters or {}).items()
+            if key != "overlay_rerun_pending"
+        }
+        if stored and "overlay_rerun_pending" in stored:
+            self.sync.__class__.objects.filter(pk=self.sync.pk).update(
+                parameters={
+                    key: value
+                    for key, value in stored.items()
+                    if key != "overlay_rerun_pending"
+                }
+            )
+
+    def _finish_noop_run(self, fetcher, context):
+        self.logger.log_info("No Forward changes were returned for this run.")
+        ingestion = create_noop_ingestion(self, context.as_dict())
+        staged_contributor_relations = fetcher.stage_pending_contributor_baseline(
+            ingestion, context
+        )
+        if staged_contributor_relations:
+            self.logger.log_info(
+                "Staged "
+                f"{staged_contributor_relations} contributor relation(s) "
+                "for merge-gated no-op promotion.",
+                obj=ingestion,
+            )
+        promoted = stage_and_promote_noop_workload_states(
+            ingestion,
+            fetcher.pending_workload_states,
+        )
+        if promoted:
+            self.logger.log_info(
+                f"Promoted {promoted} durable workload state(s) without branch provisioning.",
+                obj=ingestion,
+            )
+        return [ingestion]
+
     def run(self):
         self.logger.log_info("Starting single-branch readiness checks.", obj=self.sync)
         # Fail in seconds — before the expensive fetch and before provisioning
@@ -167,28 +220,16 @@ class ForwardSingleBranchExecutor(ForwardExecutorBase):
                     ),
                 }
                 raise error
-            self.logger.log_info("No Forward changes were returned for this run.")
-            ingestion = create_noop_ingestion(self, context.as_dict())
-            staged_contributor_relations = fetcher.stage_pending_contributor_baseline(
-                ingestion, context
+            if not self._overlay_rerun_pending():
+                return self._finish_noop_run(fetcher, context)
+            # Forward has nothing new, but a primary-IP setting changed since the
+            # primary-IP step last ran. That step lives in the branch stage, which
+            # a no-op run skips, so changing the setting would otherwise do
+            # nothing until Forward data happened to change.
+            self.logger.log_info(
+                "No Forward changes were returned, but a primary-IP setting "
+                "changed since it last ran: staging that step in a branch."
             )
-            if staged_contributor_relations:
-                self.logger.log_info(
-                    "Staged "
-                    f"{staged_contributor_relations} contributor relation(s) "
-                    "for merge-gated no-op promotion.",
-                    obj=ingestion,
-                )
-            promoted = stage_and_promote_noop_workload_states(
-                ingestion,
-                fetcher.pending_workload_states,
-            )
-            if promoted:
-                self.logger.log_info(
-                    f"Promoted {promoted} durable workload state(s) without branch provisioning.",
-                    obj=ingestion,
-                )
-            return [ingestion]
 
         from .fast_baseline import fast_baseline_static_decision, run_fast_baseline_load
 
@@ -367,7 +408,9 @@ class ForwardSingleBranchExecutor(ForwardExecutorBase):
             return [ingestion]
 
         if not self.sync.auto_merge:
-            # Leave the single branch staged for operator review.
+            # Leave the single branch staged for operator review. The step has
+            # run in that branch, so the marker is spent.
+            self._clear_overlay_rerun_pending()
             self.sync.status = ForwardSyncStatusChoices.READY_TO_MERGE
             self.sync.__class__.objects.filter(pk=self.sync.pk).update(
                 status=self.sync.status
@@ -380,6 +423,9 @@ class ForwardSingleBranchExecutor(ForwardExecutorBase):
         # Auto-merge: bulk-merge the one branch into main (bulk_merge.py).
         self.logger.log_info("Bulk-merging the single sync branch.", obj=self.sync)
         ingestion.sync_merge(remove_branch=True)
+        # Cleared once the merge succeeded: a held or failed run keeps it, so the
+        # next run stages the step again.
+        self._clear_overlay_rerun_pending()
         self.logger.log_info(
             "Forward single-branch ingestion completed.", obj=ingestion
         )

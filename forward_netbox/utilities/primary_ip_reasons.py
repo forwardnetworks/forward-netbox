@@ -148,6 +148,16 @@ _OUTCOME_ADVICE = (
         "Forward the step could use: set one in Forward, or set a primary IP by hand.",
     ),
     (
+        "shared",
+        "{n} share their only management address with another device that "
+        "already holds it as its primary IP: usually a firewall context (vsys, "
+        "vdom) and its chassis, or HA peers. NetBox allows one primary-IP owner "
+        "per address. To give each its own primary IP, edit the sync, turn on "
+        "Give firewall contexts their own copy of a shared management IP "
+        "(Execution section; needs Fall back to Forward's management IP), and "
+        "run the sync again.",
+    ),
+    (
         "context-copy-no-matching-interface",
         "{n} share a management address and have no interface named like the "
         "one that holds it, so they got no per-context copy: the context's "

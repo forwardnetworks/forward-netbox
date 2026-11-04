@@ -28,7 +28,7 @@ internal systems.
 - High-risk production, query, package, workflow, and migration changes include
   a versioned implementation plan.
 - The runtime gate uses the NetBox and `netbox-branching` versions declared in
-  `scripts/tested_runtime.py` (NetBox `4.7.2`, Branching `1.2.1`).
+  `scripts/tested_runtime.py` (NetBox `4.7.4`, Branching `1.2.3`).
 - Sync tests enforce one branch per sync and no direct-write bootstrap path.
 - Merge tests enforce that partial application cannot become a completed
   baseline and remains inspectable/retryable.

@@ -240,6 +240,33 @@ def primary_ip_log_facts(sync):
     return summary, outcomes
 
 
+OVERLAY_RERUN_PARAMETER = "overlay_rerun_pending"
+_OVERLAY_WATCHED = (
+    PRIMARY_IP_FROM_MGMT_TAG_PARAMETER,
+    PRIMARY_IP_FROM_MANAGEMENT_IP_PARAMETER,
+    "give_contexts_their_own_management_ip",
+)
+
+
+def overlay_rerun_needed(previous, new):
+    """Whether saving ``new`` over ``previous`` must make the next run stage the
+    primary-IP step.
+
+    That step runs in a run's branch stage, which a run with no Forward changes
+    skips, so changing one of its settings would otherwise do nothing until the
+    data happened to change. A pending marker stays pending until the executor
+    clears it after the step has run."""
+    previous = previous or {}
+    if not (
+        new.get(PRIMARY_IP_FROM_MGMT_TAG_PARAMETER)
+        or new.get(PRIMARY_IP_FROM_MANAGEMENT_IP_PARAMETER)
+    ):
+        return False
+    return bool(previous.get(OVERLAY_RERUN_PARAMETER)) or any(
+        bool(previous.get(key)) != bool(new.get(key)) for key in _OVERLAY_WATCHED
+    )
+
+
 def primary_ip_step_enabled(sync):
     """Either source turns the post-staging primary-IP step on."""
     return primary_ip_from_mgmt_tag_enabled(

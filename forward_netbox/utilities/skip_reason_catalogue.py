@@ -7,6 +7,7 @@
 # are an open set (`missing-<model>`, `still-referenced-by-<model>`, and named ones
 # the raisers define), so anything not listed gets an honest generic answer rather
 # than none.
+from .primary_ip_reasons import BY_DESIGN
 from .primary_ip_reasons import NEEDS_A_PERSON
 
 # slug -> (why, fixable, what to do)
@@ -22,10 +23,10 @@ KNOWN = {
         "NetBox already holds a top-level interface with the subinterface's dotted "
         "name, and the sync neither rewrites an existing interface nor creates a "
         "duplicate. Dotted names are legitimate on some platforms.",
-        NEEDS_A_PERSON,
-        "Usually nothing to do. If the subinterface's addresses are missing, send "
-        "the support bundle's interface-state section to support. Do not set a "
-        "parent by hand: the interface is a real top-level one.",
+        BY_DESIGN,
+        "Nothing to do: the top-level interface is real and stays. Do not set a "
+        "parent by hand. If the subinterface's addresses are missing, send the "
+        "support bundle's interface-state section to support.",
     ),
     "subinterface-name-taken-by-top-level-row": (
         "Forward lists a top-level interface with the same name in the same run, so "
@@ -52,6 +53,14 @@ KNOWN = {
         "one level.",
         NEEDS_A_PERSON,
         "Nothing to fix in NetBox; the nested subinterface is not represented.",
+    ),
+    "static-route-duplicate-in-netbox": (
+        "NetBox holds more than one identical static route (same VRF, prefix, "
+        "next hop and interface), so the sync cannot tell which one the device "
+        "belongs to and skipped the row.",
+        NEEDS_A_PERSON,
+        "Delete the extra copies of that route in NetBox, keeping one. The next "
+        "sync attaches the devices to it.",
     ),
     "dependency-unnamed": (
         "A row was skipped waiting on something the sync did not name.",
@@ -90,3 +99,8 @@ def explain_skip_reason(reason):
             f"Move or remove the {what} that uses it, then run the cleanup again.",
         )
     return GENERIC
+
+
+def is_informational(reason):
+    """Whether a skip reason is expected behaviour that needs no action."""
+    return explain_skip_reason(reason)[1] == BY_DESIGN

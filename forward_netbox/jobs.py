@@ -1336,16 +1336,23 @@ def _run_forward_config_backup_work(job, *args, **kwargs):
             # Forward call belongs. Resolved before the post-sync guard so the
             # guard has something to compare.
             snapshot_id = sync.resolve_snapshot_id(sync.source.get_client())
+        # Prove the generation is current, then let go. The backup reads Forward
+        # and writes a git repository for most of an hour on a large estate and
+        # changes no NetBox state, so it must not hold the sync and source rows
+        # or the global ownership lock while it runs: it used to, and every
+        # sync, merge, prune and sync-form save waited behind it (a customer's
+        # sync edit timed out at the gateway and was lost).
         with current_post_sync_snapshot(
             sync,
             kwargs.get("snapshot_id"),
             ingestion_id=kwargs.get("ingestion_id"),
         ):
-            result = run_config_backup(
-                sync,
-                snapshot_id=snapshot_id,
-                logger=sync.logger,
-            )
+            pass
+        result = run_config_backup(
+            sync,
+            snapshot_id=snapshot_id,
+            logger=sync.logger,
+        )
         job.data = _overlay_job_data(result.as_dict(), kwargs)
         job.save(update_fields=["data"])
     except StalePostSyncSnapshotError:

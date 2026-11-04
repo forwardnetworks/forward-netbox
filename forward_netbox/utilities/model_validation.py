@@ -429,6 +429,9 @@ def clean_forward_sync(sync):
             "validation_schedule_interval",
             "preview_schedule_interval",
             "stuck_recovery",
+            # Set by the sync form when a primary-IP setting changes, cleared by
+            # the executor once the step has run; see `_overlay_rerun_pending`.
+            "overlay_rerun_pending",
             # Post-sync controls. Device status-tag ownership is mandatory;
             # vsys parent linking defaults on and can be explicitly disabled.
             "auto_refresh_device_analysis",

@@ -652,9 +652,15 @@ class DeviceCascadeSafetyTest(_ListFixture):
 
         response = self._post_cascade(a)
 
-        self.assertTrue(Device.objects.filter(pk=a.pk).exists())
+        # A goes; B's peer and its neighbour address stay, the address only
+        # leaves A's interface. A customer could not delete any device that was
+        # a BGP neighbour of a surviving one.
+        self.assertFalse(Device.objects.filter(pk=a.pk).exists())
         self.assertTrue(BGPPeer.objects.filter(pk=peer.pk).exists())
-        self.assertContains(response, "netbox_routing.bgppeer")
+        ip.refresh_from_db()
+        self.assertIsNone(ip.assigned_object_id)
+        self.assertEqual(BGPPeer.objects.get(pk=peer.pk).peer_id, ip.pk)
+        self.assertContains(response, "neighbour")
 
     def _bgp_peer_on(self, owner, address_device, *, scope=True):
         """A BGP peer on ``owner`` that uses an address on ``address_device``."""
@@ -682,16 +688,48 @@ class DeviceCascadeSafetyTest(_ListFixture):
             bgp_scope = BGPScope.objects.create(router=router)
         return BGPPeer.objects.create(scope=bgp_scope, peer=ip, remote_as=asn)
 
-    def test_a_peer_with_no_established_owner_is_refused(self):
+    def test_a_peer_with_no_established_owner_is_kept_and_only_its_address_moves(
+        self,
+    ):
         from netbox_routing.models import BGPPeer
 
         self._stored_report()
         a = Device.objects.get(name="someone-elses")
         peer = self._bgp_peer_on(None, a, scope=False)
-        response = self._post_cascade(a)
-        self.assertTrue(Device.objects.filter(pk=a.pk).exists())
+        self._post_cascade(a)
+        self.assertFalse(Device.objects.filter(pk=a.pk).exists())
+        kept = BGPPeer.objects.get(pk=peer.pk)
+        self.assertIsNone(kept.peer.assigned_object_id)
+
+    def test_a_primary_address_used_as_a_neighbour_is_cleared_and_kept(self):
+        from netbox_routing.models import BGPPeer
+
+        self._stored_report()
+        a = Device.objects.get(name="someone-elses")
+        b = self._device("bgp-owner")
+        peer = self._bgp_peer_on(b, a)
+        a.primary_ip4 = peer.peer
+        a.save(update_fields=["primary_ip4"])
+
+        self._post_cascade(a)
+
+        self.assertFalse(Device.objects.filter(pk=a.pk).exists())
         self.assertTrue(BGPPeer.objects.filter(pk=peer.pk).exists())
-        self.assertContains(response, "netbox_routing.bgppeer")
+
+    def test_without_the_cascade_box_nothing_is_detached(self):
+        from netbox_routing.models import BGPPeer
+
+        self._stored_report()
+        a = Device.objects.get(name="someone-elses")
+        b = self._device("bgp-owner")
+        peer = self._bgp_peer_on(b, a)
+        self._client().post(
+            self._urls()[0],
+            {"pk": a.pk, "_confirm": "1", "confirm": "True"},
+            follow=True,
+        )
+        self.assertTrue(Device.objects.filter(pk=a.pk).exists())
+        self.assertIsNotNone(BGPPeer.objects.get(pk=peer.pk).peer.assigned_object_id)
 
     def test_selecting_both_devices_releases_the_peer_that_belongs_to_one_of_them(
         self,
@@ -720,11 +758,18 @@ class DeviceCascadeSafetyTest(_ListFixture):
 
         self._stored_report()
         a = Device.objects.get(name="someone-elses")
-        b = self._device("bgp-owner")
-        self._bgp_peer_on(b, a)
-        with patch("core.signals.clear_events.send") as clear:
+        self._ospf_on(a)
+        with (
+            patch(
+                "forward_netbox.utilities.device_cascade_delete."
+                "_release_routing_rows_protecting",
+                return_value=({}, {"some_plugin.blocker": 1}),
+            ),
+            patch("core.signals.clear_events.send") as clear,
+        ):
             self._post_cascade(a)
         clear.assert_called()
+        self.assertTrue(Device.objects.filter(pk=a.pk).exists())
 
     def test_owner_of_a_row_is_found_through_its_own_links(self):
         from dcim.models import Interface

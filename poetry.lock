@@ -1628,19 +1628,20 @@ docs = ["mkdocs (==1.6.1)", "mkdocs-include-markdown-plugin (==7.3.0)", "mkdocs-
 
 [[package]]
 name = "netboxlabs-netbox-branching"
-version = "1.2.1"
+version = "1.2.3"
 description = "A git-like branching implementation for NetBox"
 optional = false
 python-versions = ">=3.12"
 groups = ["main"]
 files = [
-    {file = "netboxlabs_netbox_branching-1.2.1-py3-none-any.whl", hash = "sha256:56ce02b1ab0aecb39f740f75378ecb46c58dc9463834998ca15a6b7b16d153a2"},
-    {file = "netboxlabs_netbox_branching-1.2.1.tar.gz", hash = "sha256:931b247d24fc7c32d89d428944cefa2b74781a4aed12faa66dc618af40425e32"},
+    {file = "netboxlabs_netbox_branching-1.2.3-py3-none-any.whl", hash = "sha256:609a0509015a74bd5ab01531caed2c0a742c7dca00b56849d70fef9356e64e5f"},
+    {file = "netboxlabs_netbox_branching-1.2.3.tar.gz", hash = "sha256:254cc8b0c00d48b0af8342ffa7de07c317bc5baed1c6cf8f728fabd4ef8d5974"},
 ]
 
 [package.extras]
-dev = ["check-manifest", "mkdocs", "mkdocs-material", "ruff (==0.15.2)"]
-test = ["coverage", "pytest", "pytest-cov"]
+dev = ["build (==1.2.2)", "twine (==6.1.0)"]
+docs = ["zensical (==0.0.73)"]
+test = ["check-manifest (==0.51)", "coverage[toml] (==7.6.10)"]
 
 [[package]]
 name = "netmiko"
