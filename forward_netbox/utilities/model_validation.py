@@ -423,6 +423,7 @@ def clean_forward_sync(sync):
             "copy_sql_kill_switches",
             "set_primary_ip_from_mgmt_tag",
             "set_primary_ip_from_forward_management_ip",
+            "give_contexts_their_own_management_ip",
             "diff_fallback_mode",
             "webhook_secret",
             "validation_schedule_interval",
@@ -468,6 +469,9 @@ def clean_forward_sync(sync):
     )
     parameters["set_primary_ip_from_forward_management_ip"] = bool(
         parameters.get("set_primary_ip_from_forward_management_ip", False)
+    )
+    parameters["give_contexts_their_own_management_ip"] = bool(
+        parameters.get("give_contexts_their_own_management_ip", False)
     )
     diff_fallback_mode = parameters.get(
         "diff_fallback_mode",

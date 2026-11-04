@@ -132,9 +132,54 @@ netbox-routing makes an OSPF interface protect its OSPF instance, and a device d
 
 From the Forward device lists (Scope Reconciliation, then the list links), select the devices and use `Delete Selected`. The confirmation page lists what blocks the delete and offers `Also delete the routing records attached to these devices`. Tick it to remove only those routing records first, in the same step. If anything outside the routing plugin still blocks a device, nothing is deleted and the records are restored. Unticked, the delete is NetBox's own.
 
+
+## Cleaning up devices that are gone
+
+Open Scope Reconciliation. The **What to do** card at the top lists every cleanup
+count in order, says whether anything is deleted, and gives the steps. The plugin
+never deletes on its own here: every delete is a button you press after reviewing a
+list.
+
+| Row | Deletes? | What to do |
+| --- | --- | --- |
+| Duplicate devices left by a site relabel | After you review | Press **Merge site-relabel duplicates** for a mergeable pair (keeps the older device, moves it to the site Forward reports). A held group names why; fix or delete the wrong copy, refresh, run the sync again. |
+| Same name as a device this sync manages | After you review | The list shows the extra copies, not the one the sync manages. Check the managed copy is the one you want, delete the extra copies, run the sync again. |
+| Devices no sync manages that are not in Forward | After you review | Select only devices you have confirmed are decommissioned, press **Delete (verified gone)**, read the warning and type the count. Patch panels, PDUs and servers Forward never collects are normally absent: leave them. |
+| Created by this sync, no longer in Forward | After you review | Press **Delete eligible now** once the quarantine has passed. |
+| Left this sync's scope | After you review | Check none should still be in scope, then **Prune orphans**. |
+| In Forward but outside the include tags | No | Add an include tag in Forward to keep them. A tag added by hand in NetBox is removed on the next run. |
+| Devices Forward could not collect | No | Fix the cause in Forward (credentials, reachability, onboarding); they return on the next collection. |
+
+**Delete (verified gone)** deletes a device only if no sync holds any record of it,
+Forward still returns no device by its name (case-insensitive) and its device
+configuration (device list and device tags, which is where SNMP endpoints live) does
+not list it in any state, including disabled, and no other sync reads a different Forward network.
+It refuses otherwise and lists what it refused in the job. At most 100 devices go in
+one run, and deleting a device also deletes its interfaces, IP addresses and cables.
+The bundle carries the same checklist under `diagnostics.cleanup_checklist`.
+
 ## Devices That Carry No Include Tag
 
-The Scope Reconciliation `Carry no include tag` count is the devices this sync does not manage: some were created by this sync and are now uncovered (needs attention), the rest are not managed by it (informational). Open `Not Managed by This Sync` for the full list. The `share a name with a device this sync manages` link lists likely older copies at another site; review them and delete the copy you do not want. To have the sync manage the rest, select them, use `Edit Selected` to add the include tag, then run the sync again. "Select all" on these lists acts on that list only.
+The Scope Reconciliation `Carry no include tag` count is the devices this sync does not manage: some were created by this sync and are now uncovered (needs attention), the rest are not managed by it (informational). Open `Not Managed by This Sync` for the full list. The `share a name with a device this sync manages` link lists likely older copies at another site; review them and delete the copy you do not want. To have the sync manage the rest, add the include tag to the device in Forward (a tag added by hand in NetBox is removed on the next run), then run the sync again. "Select all" on these lists acts on that list only.
+
+### `Snapshot collection problem:` Leads The Blocked Run
+
+When row counts fall and Forward did not collect some of the devices in the
+sync's scope, the blocked run's first reason begins `Snapshot collection problem:`.
+It gives how many in-scope devices completed collection in this snapshot and in
+the last baseline snapshot, and the failure types (for example
+`AUTHENTICATION_FAILED`). A device Forward did not collect
+returns no rows, so the modules, FHRP groups and routing it owns read as
+shrinkage, and the `Row-count drop:` reasons that follow are usually its
+consequence, not a query problem.
+
+- Fix collection in Forward (credentials, reachability) or wait for the next
+  snapshot, then run the sync again. A sync set to `latestProcessed` picks up the
+  newer snapshot by itself; a sync pinned to one snapshot does not.
+- Do **not** Force-Allow unless those devices are really gone: allowing the run
+  deletes everything they own.
+- The counts are in the support bundle under `health.latest_validation.snapshot_collection`.
+  The check runs only on a run already blocked by a row-count drop.
 
 ### `Row-count drop:` Blocked The Sync
 
@@ -586,6 +631,11 @@ the device list shows and this sync does not manage: by role, status and scope
 tag, split by whether another sync manages them (`managed_by_another_sync`) or none
 does, with their ids. `netbox_devices_without_primary_ip` equals
 `without_primary_ip` plus `outside_this_sync.count`.
+Each of those id lists, and each reason in `without_primary_ip_device_keys`, also
+carries a `device_list_filter` (the first 300 ids as `id=..&id=..`, `filter_truncated`
+says when there are more): paste it after `/dcim/devices/?` to see exactly those
+devices on the NetBox device list. `outside_this_sync.why_these_are_not_pruned` says
+why devices no sync is bound to are never pruned.
 
 For the `scope_reconciliation` split of uncovered devices: **unclaimed** devices
 were not created by this sync (another source or an operator did), so adopt or

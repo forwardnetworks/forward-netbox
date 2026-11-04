@@ -33,7 +33,9 @@ SAMPLE_LIMIT = 25
 # Pull the specific DeviceCollectionError token so operators can see *why* a
 # device is backfilled (auth vs timeout vs incomplete setup) without a manual
 # Forward API probe.
-_COLLECTION_ERROR_RE = re.compile(r"DeviceCollectionError\.([A-Za-z0-9_]+)")
+_COLLECTION_ERROR_RE = re.compile(
+    r"Device(?:Collection|Processing)Error\.([A-Za-z0-9_]+)"
+)
 
 
 def _collection_failure_reason(reason_str):
@@ -48,7 +50,7 @@ def _collection_failure_reason(reason_str):
     match = _COLLECTION_ERROR_RE.search(str(reason_str))
     if match:
         return match.group(1)
-    token = str(reason_str).rsplit(".", 1)[-1].strip()
+    token = str(reason_str).rsplit(".", 1)[-1].strip().rstrip(")")
     return token or "unknown"
 
 
@@ -643,8 +645,14 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
     # meaning what the prune assumes it means - and it is paid whether or not
     # endpoint sync is on, because turning it off is exactly the moment every
     # endpoint-derived device would otherwise become `absent` and prunable.
+    unclaimed_ids = list(unmanaged.get("unclaimed_device_ids") or ())
+    unclaimed_names = {
+        netbox_device_name_by_pk[device_id]
+        for device_id in unclaimed_ids
+        if netbox_device_name_by_pk.get(device_id)
+    }
     census = _absence_census(
-        out_of_scope | owned_untagged_names,
+        out_of_scope | owned_untagged_names | unclaimed_names,
         client=client,
         network_id=network_id,
         snapshot_id=snapshot_id,
@@ -718,6 +726,37 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         if kinds is not None
         else {"available": False}
     )
+    # The unmanaged half: devices this sync never claimed. They have no absence
+    # history to quarantine on, so nothing deletes them unattended; the operator
+    # action `prune_unmanaged_devices` is the only path and acts on the devices
+    # Forward does not report at all. Keys only - names stay in the sample.
+    unmanaged["unclaimed_absence"] = _absence_summary(unclaimed_names, kinds, details)
+    unclaimed_absent_pks = [
+        device_id
+        for device_id in unclaimed_ids
+        if kinds is not None
+        and (kinds or {}).get(netbox_device_name_by_pk.get(device_id)) == "absent"
+        # Forward's own configuration still lists it (disabled, uncollected or
+        # tagged but not collected), so it is not gone.
+        and not (details or {}).get(netbox_device_name_by_pk.get(device_id))
+    ]
+    # Absent from the snapshot is not the same as gone: a device configured in
+    # Forward but disabled is absent too. Drop every candidate Forward's device
+    # configuration still lists, and drop ALL of them when that cannot be read.
+    unmanaged["unclaimed_configuration_checked"] = False
+    if unclaimed_absent_pks:
+        configured = _forward_configured_names(client, network_id)
+        if configured is None:
+            unclaimed_absent_pks = []
+        else:
+            unmanaged["unclaimed_configuration_checked"] = True
+            unclaimed_absent_pks = [
+                device_id
+                for device_id in unclaimed_absent_pks
+                if (netbox_device_name_by_pk.get(device_id) or "").strip().casefold()
+                not in configured
+            ]
+    unmanaged["unclaimed_absent_device_ids"] = sorted(unclaimed_absent_pks)
 
     # Why are the in-scope devices backfilled? Group by the Forward collection
     # error so operators can act (rotate creds for AUTHENTICATION_FAILED, check
@@ -1063,6 +1102,34 @@ def _configured_absence_details(names, *, client, network_id, include_tags):
     return details
 
 
+def _forward_configured_names(client, network_id):
+    """Casefolded names Forward's CONFIGURATION holds, in any state.
+
+    Two reads, both needed. The classic device list holds network devices in any
+    collect state (a disabled device is configured but absent from the snapshot,
+    exactly like a removed one). SNMP endpoints are NOT in that list - checked
+    against a real network, none of its endpoints were - but every one of them is
+    in the device-tag configuration, so a failed endpoint that dropped out of the
+    snapshot is still listed there. Returns ``None`` when either read fails:
+    callers must treat that as "unknown" and refuse, never as "nothing
+    configured"."""
+    names = set()
+    try:
+        collect_by_name = get_classic_device_collection(client, network_id)
+        names_by_tag = get_configured_device_tags(client, network_id)
+    except JobTimeoutException:
+        raise
+    except Exception:
+        return None
+    if not isinstance(collect_by_name, dict) or not isinstance(names_by_tag, dict):
+        return None
+    names.update(str(name).strip().casefold() for name in collect_by_name)
+    for members in names_by_tag.values():
+        if isinstance(members, (set, frozenset, list, tuple)):
+            names.update(str(name).strip().casefold() for name in members)
+    return names
+
+
 def _endpoint_scope_settings(sync, include_tags, exclude_tags, include_match):
     """The endpoint-scope rules, as the census needs them to explain a miss."""
     parameters = dict(getattr(sync.source, "parameters", {}) or {})
@@ -1204,10 +1271,27 @@ def _absence_census(
         if name:
             endpoint_by_name[name] = row
 
+    # NetBox identifies a device by name case-insensitively, so Forward reporting
+    # `CORE-RTR1` makes a NetBox `core-rtr1` present, not absent. Matching exactly
+    # alone would let a case-only difference read as "Forward does not have it".
+    vendor_by_folded = {
+        name.casefold(): vendor for name, vendor in vendor_by_name.items()
+    }
+    endpoint_folded = {name.casefold() for name in endpoint_by_name}
     kinds = {}
     details = {}
     for name in names:
         vendor = vendor_by_name.get(name)
+        if (
+            vendor is None
+            and name not in endpoint_by_name
+            and (
+                name.casefold() in vendor_by_folded
+                or name.casefold() in endpoint_folded
+            )
+        ):
+            kinds[name] = "untagged"
+            continue
         if vendor is None:
             # Forward has no DEVICE by this name. Before calling it absent,
             # check the endpoint table: an endpoint-derived device that left
@@ -1927,6 +2011,181 @@ def prune_uncovered_devices(
     # device another plugin's rows refuse - ten netbox_routing BGP peers on its
     # addresses, in the case that found this - counted as protected and named
     # nothing. The operator needs the model to act on it.
+    if protected_tally:
+        result["protected_by_model"] = protected_tally
+    return result
+
+
+def _require_single_forward_network(sync):
+    """Refuse when any other sync reads a different Forward network or source.
+
+    Absence is proven against THIS sync's network only. A device that is live in
+    another network looks absent here, and nothing binds it to a sync if an
+    operator created it, so with more than one network in play "Forward does not
+    report it" proves nothing. Fail closed."""
+    from ..models import ForwardSync
+
+    mine = (sync.source_id, str(sync.get_network_id() or ""))
+    others = {
+        (other.source_id, str(other.get_network_id() or ""))
+        for other in ForwardSync.objects.exclude(pk=sync.pk).select_related("source")
+    }
+    if any(pair != mine for pair in others):
+        raise ScopeCensusUnavailableError(
+            "Refusing to delete unmanaged devices: other syncs read a different "
+            "Forward network or source, so a device missing from this sync's "
+            "network may be live in another. Remove them in NetBox once you have "
+            "confirmed each is gone."
+        )
+
+
+# One run deletes at most this many unmanaged devices. These devices carry no
+# ownership claim and no absence history, so the cap bounds what one confirmed
+# click can do; the rest stay listed for the next run.
+UNMANAGED_PRUNE_MAX_DEVICES = 100
+
+
+def prune_unmanaged_devices(
+    sync,
+    *,
+    restrict_to_device_pks,
+    report=None,
+    max_devices=UNMANAGED_PRUNE_MAX_DEVICES,
+) -> dict:
+    """Delete devices NO sync is bound to that Forward does not report at all.
+
+    The operator action for the leftovers nothing else can reach: devices that
+    predate the sync, or whose binding is gone, and that Forward no longer has.
+    Absence from Forward is not proof a device is gone (a device disabled in
+    Forward vanishes the same way), and there is no absence history to quarantine
+    on, so this has no unattended path and acts only on the pks an operator
+    names after seeing the list. It can only INTERSECT what is eligible.
+
+    A pk is eligible only when all hold:
+
+      * it is in this sync's `unclaimed` set (not carrying this sync's identity);
+      * no sync at all holds a `ForwardDeviceIdentity` for it. A device another
+        sync manages belongs to that sync's own prune, never this one;
+      * the Forward census says `absent`: Forward returned no device by that
+        name. A device Forward still reports without a matching tag is a scoping
+        decision and is never touched;
+      * it is not part of an unmerged site-relabel pair.
+
+    The empty-scope refusal and the missing-census refusal apply as for the other
+    prunes. Deletion goes through `_delete_prunable_devices`, the one shared
+    delete loop, which respects PROTECT and ownership.
+    """
+    from ..models import ForwardChangeDevice
+    from ..models import ForwardDeviceAbsence
+    from ..models import ForwardDeviceAnalysis
+    from ..models import ForwardDeviceIdentity
+    from ..models import ForwardDeviceTagClaim
+    from ..models import ForwardPreservedDeviceTagAssignment
+    from ..models import ForwardVirtualParentClaim
+
+    _require_single_forward_network(sync)
+    selector = str((sync.parameters or {}).get("snapshot_id") or "latestProcessed")
+    if selector != "latestProcessed":
+        raise ScopeCensusUnavailableError(
+            "Refusing to delete unmanaged devices: this sync does not read the "
+            "latest processed snapshot, and a device added to Forward since then "
+            "reads as absent. Point the sync at the latest processed snapshot "
+            "first."
+        )
+    if report is None:
+        report = compute_scope_reconciliation(sync)
+    _require_nonempty_forward_scope(report, operation="prune unmanaged devices")
+    # The same shrink guard the other prunes pass: a partial collection that is
+    # green and processed makes every device it missed read as absent.
+    _require_survivable_scope_shrink(report, allow_scope_shrink=False)
+    kinds = report.get("_absence_kinds")
+    if kinds is None:
+        raise ScopeCensusUnavailableError(
+            "Refusing to delete unmanaged devices: the Forward census that says "
+            "whether each device is absent from Forward did not run, so "
+            "eligibility cannot be established."
+        )
+
+    wanted = sorted({int(pk) for pk in (restrict_to_device_pks or ())})
+    refusals = {
+        "not_unclaimed": [],
+        "not_absent": [],
+        "bound_to_a_sync": [],
+        "site_relabel_pending": [],
+        "over_cap": [],
+    }
+    empty = {
+        "pruned_device_count": 0,
+        "pruned_object_count": 0,
+        "protected_device_count": 0,
+        "ownership_blocked_device_count": 0,
+        "refusals": refusals,
+        "cap": max_devices,
+    }
+    if not wanted:
+        return empty
+
+    unmanaged = (report.get("unmanaged") or {}) if isinstance(report, dict) else {}
+    unclaimed_ids = set(unmanaged.get("unclaimed_device_ids") or ())
+    absent_ids = set(unmanaged.get("unclaimed_absent_device_ids") or ())
+    # Bound means ANY record of a sync touching the device, this one included: an
+    # identity, a scope-tag claim, an absence row (it is in a quarantine), a
+    # virtual-parent claim or a preserved tag assignment. A device this sync only
+    # claimed by name is in its orphan quarantine, and deleting it here would skip
+    # the quarantine that exists for devices merely disabled in Forward.
+    bound_ids = set()
+    for model, fields in (
+        (ForwardDeviceIdentity, ("device_id",)),
+        (ForwardDeviceTagClaim, ("device_id",)),
+        (ForwardDeviceAbsence, ("device_id",)),
+        # Forward knew the device and an open change or analysis refers to it.
+        (ForwardChangeDevice, ("device_id",)),
+        (ForwardDeviceAnalysis, ("device_id",)),
+        (ForwardPreservedDeviceTagAssignment, ("device_id",)),
+        (ForwardVirtualParentClaim, ("device_id", "parent_device_id")),
+    ):
+        for field in fields:
+            bound_ids.update(
+                model.objects.filter(**{f"{field}__in": wanted}).values_list(
+                    field, flat=True
+                )
+            )
+    eligible = []
+    for pk in wanted:
+        if pk not in unclaimed_ids:
+            refusals["not_unclaimed"].append(pk)
+        elif pk not in absent_ids:
+            # Not in the stored-for-this-run absent set: Forward reports it, or
+            # its own configuration still lists it as disabled or uncollected.
+            refusals["not_absent"].append(pk)
+        elif pk in bound_ids:
+            refusals["bound_to_a_sync"].append(pk)
+        else:
+            eligible.append(pk)
+    kept = _exclude_site_relabel_pending_pks(sync, eligible)
+    refusals["site_relabel_pending"] = [pk for pk in eligible if pk not in set(kept)]
+    eligible = kept
+    if len(eligible) > max_devices:
+        refusals["over_cap"] = eligible[max_devices:]
+        eligible = eligible[:max_devices]
+    if not eligible:
+        return empty
+
+    (
+        pruned_device_ids,
+        deleted_total,
+        protected_tally,
+        ownership_blocked_ids,
+    ) = _delete_prunable_devices(sync, eligible)
+    result = dict(empty)
+    result.update(
+        pruned_device_count=len(pruned_device_ids),
+        pruned_object_count=deleted_total,
+        ownership_blocked_device_count=len(ownership_blocked_ids),
+        protected_device_count=len(eligible)
+        - len(pruned_device_ids)
+        - len(ownership_blocked_ids),
+    )
     if protected_tally:
         result["protected_by_model"] = protected_tally
     return result

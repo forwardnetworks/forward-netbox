@@ -7,6 +7,7 @@
 #
 # Matched on the plugin's own sentence openings (`validation.py`), never on
 # anything Forward said, so it works the same for every deployment.
+from .snapshot_collection_health import SNAPSHOT_COLLECTION_REASON_PREFIX
 from .validation import COLLECTION_COLLAPSE_REASON_PREFIX
 from .validation import ROW_SHRINK_REASON_PREFIX
 
@@ -43,6 +44,14 @@ _GUIDANCE = (
         "More of this run would be deletions than the drift policy allows. Review "
         "the pending removals on the Drift report. If they are expected, raise "
         "the limit or Force-Allow this run once.",
+    ),
+    (
+        SNAPSHOT_COLLECTION_REASON_PREFIX,
+        "Forward did not collect some devices in this snapshot. Fix collection "
+        "in Forward (credentials, reachability) or wait for the next snapshot, "
+        "then run the sync again; the row-count drops listed with this should "
+        "clear. Do not Force-Allow unless those devices are really gone, "
+        "because allowing it deletes everything they own.",
     ),
     (
         ROW_SHRINK_REASON_PREFIX,

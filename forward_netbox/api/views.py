@@ -1033,6 +1033,94 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
                     '"job_id": N}'
                 )
             ),
+            400: OpenApiResponse(description="missing or malformed `device_pks`"),
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="prune-unmanaged")
+    def prune_unmanaged(self, request, pk):
+        """Delete named devices no sync manages that Forward does not report.
+
+        Has no whole-set meaning: the devices are named, and the job re-checks
+        each against Forward and refuses any it cannot prove is gone, so this
+        validates its own body instead of going through
+        `_enqueue_button_job_response`."""
+        from ..utilities.sync_facade import button_job_permission
+        from ..utilities.sync_facade import enqueue_button_job
+        from ..utilities.sync_facade import JobAlreadyActive
+        from ..utilities.sync_facade import JobBlockedBySyncRun
+
+        permission = button_job_permission("prune_unmanaged")
+        if not request.user.has_perm(permission):
+            raise PermissionDenied(
+                f"This user does not have the `{permission}` permission."
+            )
+        data = request.data if isinstance(request.data, dict) else {}
+        device_pks = data.get("device_pks")
+        if (
+            not isinstance(device_pks, list)
+            or not device_pks
+            or len(device_pks) > 500
+            or not all(
+                isinstance(value, int) and not isinstance(value, bool)
+                for value in device_pks
+            )
+        ):
+            return Response(
+                {"detail": ("`device_pks` must be a list of 1 to 500 device ids.")},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        from dcim.models import Device
+
+        deletable = Device.objects.restrict(request.user, "delete").filter(
+            pk__in=device_pks
+        )
+        if deletable.count() != len(set(device_pks)):
+            raise PermissionDenied(
+                "Some devices do not exist or this user may not delete them."
+            )
+        sync = self.get_object()
+        try:
+            job = enqueue_button_job(
+                sync,
+                "prune_unmanaged",
+                request.user,
+                job_kwargs={"restrict_to_device_pks": device_pks},
+            )
+        except JobBlockedBySyncRun as exc:
+            return Response(
+                {
+                    "status": "blocked_by_sync_run",
+                    "job_id": exc.job.pk,
+                    "detail": (
+                        "This operation is blocked while a Forward sync job "
+                        "is active."
+                    ),
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+        except JobAlreadyActive as exc:
+            return Response(
+                {
+                    "status": "already_running",
+                    "job_id": exc.job.pk,
+                    "detail": "An equivalent job is already queued or running.",
+                },
+                status=status.HTTP_202_ACCEPTED,
+            )
+        return Response(
+            JobSerializer(job, context={"request": request}).data, status=201
+        )
+
+    @extend_schema(
+        methods=["post"],
+        responses={
+            201: JobSerializer(),
+            202: OpenApiResponse(
+                description=(
+                    '{"status": "already_running"|"blocked_by_sync_run", '
+                    '"job_id": N}'
+                )
+            ),
             400: OpenApiResponse(
                 description="missing or malformed `device`/`expected_blockers`"
             ),

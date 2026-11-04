@@ -42,6 +42,8 @@ SECTIONS = (
     "uncovered",
     "uncovered_tag_timeline",
     "scope_trend",
+    "snapshot_collection_trend",
+    "include_tag_timeline",
     "device_renames",
     "recent_devices",
     "console_servers",
@@ -50,6 +52,7 @@ SECTIONS = (
     "inventory_items",
     "duplicate_device_names",
     "site_relabel_pairs",
+    "cleanup_checklist",
     "routing_name_collisions",
 )
 
@@ -176,6 +179,159 @@ def _scope_trend(sync):
         if len(out) >= TREND_JOBS:
             break
     return out
+
+
+def _include_tag_timeline(sync):
+    """Devices that gained or lost one of this sync's include tags, by hour.
+
+    Counts only: the tag names are people's names and stay out of the bundle.
+    Split by whether the change was written by one of this sync's own runs (its
+    ingestions' change request ids) or by anyone else, because an operator
+    tagging a device by hand and the sync reconciling it away look identical
+    otherwise."""
+    from core.models import ObjectChange
+    from dcim.models import Device
+    from django.contrib.contenttypes.models import ContentType
+    from django.utils.text import slugify
+
+    from .sync_facade import device_tag_scope
+
+    include_tags, _exclude, _match = device_tag_scope(sync)
+    wanted = {slugify(tag) for tag in include_tags}
+    sync_requests = {
+        str(request_id)
+        for request_id in sync.forwardingestion_set.exclude(
+            change_request_id=None
+        ).values_list("change_request_id", flat=True)
+    }
+    since = timezone.now() - timedelta(days=WINDOW_DAYS)
+    ct = ContentType.objects.get_for_model(Device)
+    gained, lost = {}, {}
+    totals = {
+        "gained_by_sync_run": 0,
+        "gained_by_other": 0,
+        "lost_by_sync_run": 0,
+        "lost_by_other": 0,
+    }
+
+    def _count(bucket, key, hour, actor):
+        by_actor = bucket.setdefault(hour, {"sync_run": 0, "other": 0})
+        by_actor[actor] += 1
+        totals[f"{key}_by_{actor}"] += 1
+
+    for time, request_id, pre, post in (
+        ObjectChange.objects.filter(changed_object_type=ct, time__gte=since)
+        .values_list("time", "request_id", "prechange_data", "postchange_data")
+        .iterator(chunk_size=2000)
+    ):
+        before = {slugify(tag) for tag in _tag_slugs(pre)}
+        after = {slugify(tag) for tag in _tag_slugs(post)}
+        hour = time.strftime("%Y-%m-%d %H:00")
+        actor = "sync_run" if str(request_id) in sync_requests else "other"
+        if wanted & (after - before):
+            _count(gained, "gained", hour, actor)
+        if wanted & (before - after):
+            _count(lost, "lost", hour, actor)
+    return {
+        "window_days": WINDOW_DAYS,
+        "include_tag_count": len(include_tags),
+        **totals,
+        "gained_by_hour": sorted(gained.items()),
+        "lost_by_hour": sorted(lost.items()),
+    }
+
+
+def _snapshot_collection_trend(sync):
+    """How many in-scope devices Forward collected, run over run, and why not.
+
+    Read from the post-sync scope reports already stored on the sync's jobs, so
+    it costs no Forward call. `change_vs_previous` names the devices that
+    stopped being collected between the last two reports by failure type."""
+    runs = []
+    for entry in _scope_trend_reports(sync):
+        # Several post-sync jobs store the same report; keep one of each.
+        if runs and _same_report(runs[-1], entry):
+            continue
+        runs.append(entry)
+        if len(runs) >= 6:
+            break
+    out = {"runs": runs, "change_vs_previous": None}
+    if len(runs) >= 2:
+        latest, previous = runs[0], runs[1]
+        reasons = {}
+        for key in set(latest["not_collected_by_reason"]) | set(
+            previous["not_collected_by_reason"]
+        ):
+            delta = latest["not_collected_by_reason"].get(key, 0) - previous[
+                "not_collected_by_reason"
+            ].get(key, 0)
+            if delta:
+                reasons[key] = delta
+        out["change_vs_previous"] = {
+            "completed_delta": latest["in_scope_completed"]
+            - previous["in_scope_completed"],
+            "not_collected_delta": latest["not_collected"] - previous["not_collected"],
+            "reason_deltas": dict(sorted(reasons.items(), key=lambda i: -abs(i[1]))),
+        }
+    return out
+
+
+def _same_report(left, right):
+    return all(
+        left[key] == right[key]
+        for key in ("in_scope_completed", "not_collected", "not_collected_by_reason")
+    )
+
+
+def _scope_trend_reports(sync):
+    from core.choices import JobStatusChoices
+    from core.models import Job
+    from django.contrib.contenttypes.models import ContentType
+
+    from ..models import ForwardSync
+    from .scope_reconciliation import stored_scope_report
+
+    ct = ContentType.objects.get_for_model(ForwardSync)
+    for job in Job.objects.filter(
+        object_type=ct, object_id=sync.pk, status=JobStatusChoices.STATUS_COMPLETED
+    ).order_by("-completed")[: TREND_JOBS * 3]:
+        payload, _generated_at, _error = stored_scope_report(job)
+        if not payload or "forward_in_scope_completed" not in payload:
+            continue
+        breakdown = {
+            str(key).rstrip(")"): int(value)
+            for key, value in (payload.get("backfilled_reason_breakdown") or {}).items()
+            if isinstance(value, int)
+        }
+        yield {
+            "job_pk": job.pk,
+            "completed": job.completed.isoformat() if job.completed else None,
+            "in_scope_completed": int(payload.get("forward_in_scope_completed") or 0),
+            "not_collected": int(payload.get("forward_tagged_backfilled") or 0),
+            "not_collected_by_reason": breakdown,
+        }
+
+
+def _cleanup_checklist(sync):
+    """The "What to do" checklist the Scope Reconciliation page shows, as counts.
+
+    The same ordered items an operator reads on the page, with their titles, kind
+    (whether anything is deleted) and steps, so a report that says "276 uncovered"
+    carries the instruction that goes with it. No device names."""
+    from ..views import ForwardSyncScopeReconciliationView
+    from .scope_reconciliation import latest_scope_report
+
+    _job, payload, generated_at, _error = latest_scope_report(sync)
+    items = ForwardSyncScopeReconciliationView._cleanup_items(sync, payload)
+    return {
+        "scope_report_generated_at": (
+            generated_at.isoformat() if generated_at else None
+        ),
+        "items": [
+            {key: item[key] for key in ("key", "title", "count", "kind", "steps")}
+            for item in items
+        ],
+    }
 
 
 def _device_renames(sync):
@@ -527,6 +683,8 @@ _BUILDERS = {
     "uncovered": _uncovered,
     "uncovered_tag_timeline": _uncovered_tag_timeline,
     "scope_trend": _scope_trend,
+    "snapshot_collection_trend": _snapshot_collection_trend,
+    "include_tag_timeline": _include_tag_timeline,
     "device_renames": _device_renames,
     "recent_devices": _recent_devices,
     "console_servers": _console_servers,
@@ -535,6 +693,7 @@ _BUILDERS = {
     "inventory_items": _inventory_items,
     "duplicate_device_names": _duplicate_device_names,
     "site_relabel_pairs": _site_relabel_pairs,
+    "cleanup_checklist": _cleanup_checklist,
     "routing_name_collisions": _routing_name_collisions,
 }
 

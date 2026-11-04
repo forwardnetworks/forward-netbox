@@ -94,6 +94,19 @@ _OUTCOME_PHRASES = {
     "holder": "lost the address to a device that already owned it",
     "tag-unresolved": "have a Mgmt_ tag that matched no interface address",
     "no-management-address": "have no usable management address from Forward",
+    "context-copy-no-matching-interface": (
+        "share the address and have no interface named like the one that holds "
+        "it, so no per-context copy was made"
+    ),
+    "context-copy-original-unassigned": (
+        "share an address whose holder is not on an interface, so no per-context "
+        "copy was made"
+    ),
+    "context-copy-original-not-found": (
+        "share an address whose synced row could not be found, so no per-context "
+        "copy was made"
+    ),
+    "context-copy-failed": "could not be given a per-context copy of the address",
 }
 
 
@@ -133,6 +146,13 @@ _OUTCOME_ADVICE = (
         "no-management-address",
         "{n} have neither a Mgmt_ tag that resolved nor a management address from "
         "Forward the step could use: set one in Forward, or set a primary IP by hand.",
+    ),
+    (
+        "context-copy-no-matching-interface",
+        "{n} share a management address and have no interface named like the "
+        "one that holds it, so they got no per-context copy: the context's "
+        "interface list differs from its chassis's in Forward. Rename or add the "
+        "matching interface, or set a primary IP by hand.",
     ),
     (
         "multiple-addresses",

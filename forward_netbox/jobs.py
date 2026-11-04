@@ -1005,6 +1005,53 @@ def _prune_uncovered_devices_work(
         raise
 
 
+def _prune_unmanaged_devices_work(job, *, restrict_to_device_pks=()):
+    """Run the reviewed prune of devices no sync is bound to.
+
+    Operator button only, with the pks the operator reviewed and confirmed;
+    nothing schedules it. See `prune_unmanaged_devices` for the eligibility
+    allowlist and the per-run cap. Counts and pks are recorded, never names.
+    """
+    from .utilities.scope_reconciliation import compute_scope_reconciliation
+    from .utilities.scope_reconciliation import EmptyForwardScopeError
+    from .utilities.scope_reconciliation import prune_unmanaged_devices
+    from .utilities.scope_reconciliation import ScopeCensusUnavailableError
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    try:
+        report = compute_scope_reconciliation(sync)
+        result = prune_unmanaged_devices(
+            sync,
+            report=report,
+            restrict_to_device_pks=restrict_to_device_pks,
+        )
+        job.data = {
+            "pruned_device_count": result["pruned_device_count"],
+            "pruned_object_count": result["pruned_object_count"],
+            "restricted_to_device_pks": list(restrict_to_device_pks or []),
+            "refused_device_pks_by_reason": result["refusals"],
+            "ownership_blocked_device_count": result["ownership_blocked_device_count"],
+            "protected_device_count": result["protected_device_count"],
+            "protected_by_model": result.get("protected_by_model", {}),
+            "per_run_cap": result["cap"],
+        }
+        job.save(update_fields=["data"])
+    except (ScopeCensusUnavailableError, EmptyForwardScopeError) as exc:
+        job.data = {"error": str(exc), "error_type": exception_type(exc)}
+        job.save(update_fields=["data"])
+        logger.error(
+            "Forward unmanaged-device pruning refused (%s).", exception_type(exc)
+        )
+        raise
+    except Exception as exc:
+        job.data = {
+            "error": safe_operation_failure("Forward unmanaged-device pruning", exc),
+            "error_type": exception_type(exc),
+        }
+        job.save(update_fields=["data"])
+        raise
+
+
 def _merge_site_relabel_duplicates_work(job):
     """Repair existing site-relabel duplicate device pairs for this sync.
 
@@ -2467,6 +2514,25 @@ class PruneUncoveredDevicesJob(ForwardJobRunner):
                 int(pk) for pk in kwargs["restrict_to_device_pks"]
             ]
         _prune_uncovered_devices_work(self.job, **extra)
+
+
+class PruneUnmanagedDevicesJob(ForwardJobRunner):
+    """Reviewed prune of devices no sync is bound to; used by the HTML action."""
+
+    class Meta:
+        # Byte-identical to BUTTON_JOB_SPECS["prune_unmanaged"][1]: the overlap
+        # guard's exact-name arm depends on it.
+        name = "prune unmanaged devices"
+
+    def run(self, *args, **kwargs):
+        extra = {}
+        if kwargs.get("restrict_to_device_pks"):
+            # Forwarded only when named, so the default lives in the work
+            # function's signature; naming nothing deletes nothing.
+            extra["restrict_to_device_pks"] = [
+                int(pk) for pk in kwargs["restrict_to_device_pks"]
+            ]
+        _prune_unmanaged_devices_work(self.job, **extra)
 
 
 class MergeSiteRelabelDuplicatesJob(ForwardJobRunner):

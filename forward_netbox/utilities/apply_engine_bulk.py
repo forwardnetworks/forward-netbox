@@ -8,6 +8,8 @@ from netbox_branching.models import ChangeDiff
 from rq.timeouts import JobTimeoutException
 
 from .constraint_diagnosis import annotate_integrity_error
+from .context_ip_copies import exclude_context_copies
+from .context_ip_copies import role_for_new_address
 
 # Fields the bulk engines must set on CREATE but preserve on UPDATE, matching the
 # adapter's intent. Platform-map manufacturer values are authoritative in this
@@ -3098,7 +3100,9 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]], *, preview=Fals
             )
             # order_by("pk") + first-wins so a duplicate global IP (same host,
             # same VRF) resolves to the lowest pk deterministically.
-            for ip in IPAddress.objects.filter(host_filter).order_by("pk"):
+            for ip in exclude_context_copies(
+                IPAddress.objects.filter(host_filter)
+            ).order_by("pk"):
                 key = (str(ip.address.ip), ip.vrf_id)
                 if key not in existing_by_key:
                     existing_by_key[key] = ip
@@ -3200,6 +3204,7 @@ def bulk_orm_apply_ipaddress(runner, rows: list[dict[str, Any]], *, preview=Fals
                 address=row["address"],
                 vrf=vrf,
                 status=row["status"],
+                role=role_for_new_address(runner, row["address"], vrf),
             )
             # Assign through the descriptor so the generic-FK fields_cache is
             # primed. Passing assigned_object_type/_id to the constructor leaves

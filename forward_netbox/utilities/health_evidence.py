@@ -255,6 +255,248 @@ def _merged_changes(ingestion):
     }
 
 
+def _merge_accounting(ingestion):
+    """What the merge recorded about its staged changes, from whichever job ran it.
+
+    The merge job is checked first: after an auto-merge attempt and a retry it is
+    the later record."""
+    for job in (ingestion.merge_job, ingestion.job):
+        recorded = (getattr(job, "data", None) or {}).get("merge_accounting")
+        if isinstance(recorded, dict):
+            return recorded
+    return None
+
+
+def _written_deletes(ingestion):
+    """Deletes the merge wrote, by model, over ALL of them (never truncated)."""
+    if not ingestion.change_request_id:
+        return None
+    from core.models import ObjectChange
+
+    def query():
+        return list(
+            ObjectChange.objects.filter(
+                request_id=ingestion.change_request_id, action="delete"
+            )
+            .order_by()
+            .values("changed_object_type__app_label", "changed_object_type__model")
+            .annotate(total=Count("pk"))
+        )
+
+    rows, skipped = _guarded(query)
+    if skipped:
+        return None
+    return {
+        f"{row['changed_object_type__app_label']}.{row['changed_object_type__model']}": int(
+            row["total"]
+        )
+        for row in rows
+    }
+
+
+def _uncollected_device_networks(device_ids):
+    """`(vrf id, network)` for every address on an interface of these devices."""
+    from dcim.models import Interface
+    from django.contrib.contenttypes.models import ContentType
+    from ipam.models import IPAddress
+
+    interface_ct = ContentType.objects.get_for_model(Interface)
+    interface_ids = Interface.objects.filter(device_id__in=device_ids).values("pk")
+    networks = set()
+    for vrf_id, address in IPAddress.objects.filter(
+        assigned_object_type=interface_ct, assigned_object_id__in=interface_ids
+    ).values_list("vrf_id", "address"):
+        networks.add((vrf_id, str(address.cidr)))
+    return networks
+
+
+def _scope_report_after_run(ingestion):
+    """The first completed scope report computed after this run began, or None.
+
+    A run's own cause has to be read from a report that saw the run's result: the
+    newest report may describe a later snapshot, and one computed before the run
+    describes the world the run replaced."""
+    from core.choices import JobStatusChoices
+    from core.models import Job
+    from django.contrib.contenttypes.models import ContentType
+    from django.db.models import Q
+
+    from ..models import ForwardSync
+
+    started = getattr(ingestion.job, "started", None)
+    if started is None:
+        return None
+    return (
+        Job.objects.filter(
+            Q(name__icontains="scope reconciliation")
+            | Q(
+                name__icontains="reconcile device scope tags",
+                data__has_key="scope_reconciliation",
+            ),
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=ingestion.sync_id,
+            status=JobStatusChoices.STATUS_COMPLETED,
+            completed__gte=started,
+        )
+        .order_by("completed", "pk")
+        .first()
+    )
+
+
+def _prefix_delete_cause(ingestion):
+    """Why the merge deleted prefixes: did a device Forward did not collect host them?
+
+    A prefix is derived from the addresses on in-scope device interfaces. When a
+    device fails collection its prefixes stop coming back and read as deletes.
+    Devices the scope report lists as in scope and uncollected stay in NetBox with
+    their addresses, so a deleted prefix that one of those addresses still falls
+    in was hosted by an uncollected device. Counts only: no prefix, VRF or device
+    is named. Read from the deletes the merge wrote and from the first scope
+    report computed after the run, whose time is reported."""
+    if not ingestion.change_request_id:
+        return None
+    if ingestion.merge_applied_at is None and ingestion.merge_job_id is None:
+        return {
+            "note": (
+                "The run is not merged, so its prefix deletes are staged in the "
+                "branch and not in the change log yet; no cause was derived."
+            )
+        }
+    from core.models import ObjectChange
+    from django.contrib.contenttypes.models import ContentType
+    from ipam.models import Prefix
+
+    from .scope_reconciliation import stored_scope_report
+
+    def report():
+        job = _scope_report_after_run(ingestion)
+        payload, generated_at, error = stored_scope_report(job)
+        return job, payload, generated_at, error
+
+    found, skipped = _guarded(report)
+    if skipped:
+        return {"note": skipped}
+    job, payload, generated_at, error = found
+    if job is None or error or "present_backfilled_device_ids" not in (payload or {}):
+        return {
+            "note": (
+                "No scope report computed after this run carries the uncollected "
+                "devices, so no cause was derived."
+                + (f" The report errored: {error}" if error else "")
+            )
+        }
+    device_ids = list(payload["present_backfilled_device_ids"] or [])
+
+    def query():
+        networks = _uncollected_device_networks(device_ids) if device_ids else set()
+        total = hosted = no_data = 0
+        for prefix, vrf in (
+            ObjectChange.objects.filter(
+                request_id=ingestion.change_request_id,
+                action="delete",
+                changed_object_type=ContentType.objects.get_for_model(Prefix),
+            )
+            .values_list("prechange_data__prefix", "prechange_data__vrf")
+            .iterator(chunk_size=2000)
+        ):
+            total += 1
+            if prefix is None:
+                no_data += 1
+            elif (vrf, str(prefix)) in networks:
+                hosted += 1
+        return total, hosted, no_data
+
+    result, skipped = _guarded(query)
+    if skipped:
+        return {"note": skipped}
+    total, hosted, no_data = result
+    return {
+        "deleted_prefixes": total,
+        "hosted_by_uncollected_device": hosted,
+        "not_explained_by_uncollected_devices": total - hosted - no_data,
+        "deletes_without_recorded_prefix": no_data,
+        "uncollected_devices_in_scope": len(device_ids),
+        "scope_report_generated_at": _iso(generated_at),
+        "note": (
+            "A deleted prefix counts as hosted by an uncollected device when an "
+            "address on an interface of an in-scope device that Forward did not "
+            "collect still falls in it, in the same VRF. The remainder had no such "
+            "address: the device is gone, was retired or re-addressed, or its "
+            "address was removed in this run. The report is the first one "
+            "computed after the run began; its device list is by device name."
+        ),
+    }
+
+
+def _delete_accounting(ingestion, written=None):
+    """Reconcile the run's staged deletes with the deletes the merge wrote.
+
+    `deleted` on the ingestion counts LOGICAL deletes staged in the branch. The
+    change log counts the deletes the merge wrote. They differ legitimately, so
+    this reports the difference per model rather than calling it a loss:
+
+    - a delete a surviving PROTECT reference holds back is staged, never written
+      (`held_by_protecting_reference`);
+    - a delete of an object already gone from the destination succeeds without a
+      change-log row;
+    - a MAC address delete goes through a path that writes no change-log row;
+    - a delete that failed or was skipped as unsatisfiable (`failed`, `skipped`);
+    - a cascade logs deletes under other models, so logged can exceed staged.
+    """
+    staged = int(ingestion.deleted_change_count or 0)
+    out = {
+        "staged_deletes": staged,
+        "written_deletes": sum(written.values()) if written is not None else None,
+        "written_deletes_by_model": (
+            dict(sorted(written.items())) if written is not None else None
+        ),
+        "causes_of_a_difference": [
+            "held by a protecting reference (recorded below)",
+            "object already absent from the destination (no change-log row)",
+            "MAC address deletes (no change-log row)",
+            "failed or skipped delete (recorded below)",
+            "cascade: logged under other models, so logged can exceed staged",
+        ],
+    }
+    notes = []
+    if written is None:
+        notes.append("The change-log delete counts were not available.")
+    recorded = _merge_accounting(ingestion)
+    out["recorded_at_merge"] = recorded is not None
+    if recorded is None:
+        notes.append(
+            "Staged deletes by model and protected-reference holds were not "
+            "recorded for this ingestion (it ran before the record existed, it "
+            "merged with no staged changes, or it was merged outside a job)."
+        )
+        out["note"] = " ".join(notes)
+        return out
+    staged_by_model = {
+        label.rsplit(".", 1)[0]: count
+        for label, count in (recorded.get("logical_action_by_model") or {}).items()
+        if label.endswith(".delete")
+    }
+    out["staged_deletes_by_model"] = dict(sorted(staged_by_model.items()))
+    out["held_by_protecting_reference"] = recorded.get("held_deletes_by_model") or {}
+    out["failed_at_merge"] = int(recorded.get("failed") or 0)
+    out["skipped_at_merge"] = int(recorded.get("skipped") or 0)
+    if written is not None:
+        models = sorted(set(staged_by_model) | set(written))
+        out["staged_more_than_logged"] = {
+            model: staged_by_model.get(model, 0) - written.get(model, 0)
+            for model in models
+            if staged_by_model.get(model, 0) > written.get(model, 0)
+        }
+        out["logged_more_than_staged"] = {
+            model: written.get(model, 0) - staged_by_model.get(model, 0)
+            for model in models
+            if written.get(model, 0) > staged_by_model.get(model, 0)
+        }
+    if notes:
+        out["note"] = " ".join(notes)
+    return out
+
+
 def recent_ingestions_evidence(sync, *, limit=RECENT_INGESTION_LIMIT):
     ingestions = list(
         sync.forwardingestion_set.select_related("job", "merge_job", "branch").order_by(
@@ -278,6 +520,10 @@ def recent_ingestions_evidence(sync, *, limit=RECENT_INGESTION_LIMIT):
                 "merge": _merge_facts(ingestion),
                 "statistics_by_model": _job_statistics(job),
                 "merged_changes_by_model_action": _merged_changes(ingestion),
+                "delete_accounting": _delete_accounting(
+                    ingestion, _written_deletes(ingestion)
+                ),
+                "prefix_delete_cause": _prefix_delete_cause(ingestion),
             }
         )
     return {

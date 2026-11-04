@@ -12,7 +12,7 @@ REASON = (
 )
 
 
-def _run(reasons):
+def _run(reasons, metrics=None):
     return SimpleNamespace(
         pk=7,
         status="blocked",
@@ -22,6 +22,7 @@ def _run(reasons):
         blocking_reasons=reasons,
         created=None,
         completed=None,
+        snapshot_metrics=metrics or {},
     )
 
 
@@ -40,3 +41,33 @@ class ValidationReasonExportTest(SimpleTestCase):
     def test_an_unblocked_run_has_no_reasons_and_the_list_is_capped(self):
         self.assertEqual(blocking_reason_texts(_run(None)), [])
         self.assertEqual(len(blocking_reason_texts(_run(["r"] * 50))), 20)
+
+    def test_summary_carries_the_scope_collection_counts_and_snapshot_numbers(self):
+        scope = {
+            "current": {"total": 10, "completed": 7, "not_completed": 3},
+            "baseline": {"total": 10, "completed": 10, "not_completed": 0},
+        }
+        summary = validation_summary(
+            _run(
+                [REASON],
+                {
+                    "scope_collection": scope,
+                    "numSuccessfulDevices": 70,
+                    "numCollectionFailureDevices": 3,
+                    "collectionDuration": 99,
+                },
+            )
+        )
+
+        collection = summary["snapshot_collection"]
+        self.assertEqual(collection["scope"], scope)
+        self.assertEqual(
+            collection["snapshot"],
+            {"numSuccessfulDevices": 70, "numCollectionFailureDevices": 3},
+        )
+
+    def test_a_run_without_counts_exports_empty_collection(self):
+        self.assertEqual(
+            validation_summary(_run([]))["snapshot_collection"],
+            {"scope": {}, "snapshot": {}},
+        )

@@ -414,6 +414,26 @@ class BulkMergeIntegrationTest(CleanTransactionTestCase):
         sync_logger.init_statistics.assert_any_call("dcim.region", total=2)
         self.assertEqual(sync_logger.init_statistics.call_count, 2)
 
+    def test_the_merge_records_its_staged_changes_by_model_for_the_bundle(self):
+        branch = provision_branch(user=self.user, name="Merge Accounting Record")
+        with activate_branch(branch), event_tracking(self.request):
+            self.request.id = uuid.uuid4()
+            for index in range(2):
+                Site.objects.create(
+                    name=f"Accounted Site {index}", slug=f"accounted-site-{index}"
+                )
+
+        ingestion = self._ingestion_for_branch(branch, "merge-accounting")
+        sync_logger = Mock()
+        sync_logger.log_data = {}
+        merge_branch(ingestion, sync_logger=sync_logger, user=self.user)
+
+        accounting = sync_logger.log_data["merge_accounting"]
+        self.assertEqual(accounting["logical_total"], 2)
+        self.assertEqual(accounting["logical_action_counts"], {"create": 2})
+        self.assertEqual(accounting["logical_action_by_model"], {"dcim.site.create": 2})
+        self.assertEqual(accounting["held_deletes_by_model"], {})
+
     def test_owned_device_delete_preserves_provenance_until_atomic_merge(self):
         from forward_netbox.models import ForwardDeviceIdentity
 

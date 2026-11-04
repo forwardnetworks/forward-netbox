@@ -6,6 +6,9 @@ from ..choices import ForwardValidationStatusChoices
 from ..exceptions import ForwardSyncError
 from .diagnostics import safe_operation_failure
 from .query_fetch import ForwardQueryFetcher
+from .snapshot_collection_health import scope_collection_counts
+from .snapshot_collection_health import scope_collection_finding
+from .snapshot_collection_health import scope_collection_reason
 from .sync_primitives import DEPENDENCY_PARENT_DEVICE_MODELS
 
 
@@ -270,6 +273,7 @@ class ForwardValidationRunner:
         self.client = client
         self.logger = logger_
         self.job = job
+        self._scope_collection = {}
 
     def run_query_validation(self):
         from ..models import ForwardValidationRun
@@ -306,6 +310,7 @@ class ForwardValidationRunner:
     ):
         validation_run = validation_run or self._create_run()
         policy = self.sync.drift_policy
+        self._scope_collection = {}
         blocking_reasons = self._blocking_reasons(
             context,
             plan,
@@ -331,7 +336,14 @@ class ForwardValidationRunner:
             policy,
         )
         validation_run.snapshot_info = context["snapshot_info"]
-        validation_run.snapshot_metrics = context["snapshot_metrics"]
+        validation_run.snapshot_metrics = {
+            **(context["snapshot_metrics"] or {}),
+            **(
+                {"scope_collection": self._scope_collection}
+                if getattr(self, "_scope_collection", None)
+                else {}
+            ),
+        }
         validation_run.model_results = list(model_results or [])
         validation_run.drift_summary = drift_summary
         validation_run.blocking_reasons = blocking_reasons
@@ -411,13 +423,17 @@ class ForwardValidationRunner:
         # it replaces a source-hash check that used to run unconditionally. A
         # policy that exists can tune or disable it; the absence of a policy
         # must not.
-        reasons.extend(
-            self._row_shrink_reasons(
-                model_results,
-                policy,
-                validation_run=validation_run,
-            )
+        shrink_reasons = self._row_shrink_reasons(
+            model_results,
+            policy,
+            validation_run=validation_run,
         )
+        # Lead with the snapshot cause when there is one: the drops below it are
+        # then most likely its consequence. Probed only on a run that is already
+        # blocked on shrinkage, so a passing run makes no extra Forward call.
+        if shrink_reasons:
+            reasons.extend(self._scope_collection_reasons(context))
+        reasons.extend(shrink_reasons)
         # Also above the policy early return, and for a stronger reason than the
         # row-count floor: this is the only collapse check a DIFF run can trip.
         # The row-count floor compares full executions only, so without this a
@@ -532,6 +548,33 @@ class ForwardValidationRunner:
             row_shrink_reason(finding, max_shrink_percent=max_shrink_percent)
             for finding in findings
         ]
+
+    def _scope_collection_reasons(self, context):
+        """Say so when devices in this sync's scope were not collected.
+
+        Compares this snapshot's in-scope collection outcomes with the last
+        baseline ingestion's snapshot. Best effort: a probe that cannot run is
+        recorded as an error and never read as zero or as a pass.
+        """
+        self._scope_collection = {}
+        baseline = self.sync.latest_baseline_ingestion()
+        if baseline is None or not getattr(baseline, "snapshot_id", ""):
+            return []
+        scope = {
+            "network_id": context.get("network_id"),
+            "include_tags": context.get("device_tag_include_tags") or [],
+            "exclude_tags": context.get("device_tag_exclude_tags") or [],
+            "include_match": context.get("device_tag_include_match") or "any",
+        }
+        current = scope_collection_counts(
+            self.client, snapshot_id=context.get("snapshot_id"), **scope
+        )
+        baseline_counts = scope_collection_counts(
+            self.client, snapshot_id=baseline.snapshot_id, **scope
+        )
+        self._scope_collection = {"current": current, "baseline": baseline_counts}
+        finding = scope_collection_finding(current, baseline_counts)
+        return [scope_collection_reason(finding)] if finding else []
 
     def _collection_collapse_reasons(self, context):
         """Refuse a snapshot whose collection all but failed.

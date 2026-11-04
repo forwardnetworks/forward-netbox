@@ -19,6 +19,11 @@ urlpatterns = (
         name="device_list_bulk_delete",
     ),
     path(
+        "device-list/prune-unmanaged/",
+        views.ForwardDeviceListPruneUnmanagedView.as_view(),
+        name="device_list_prune_unmanaged",
+    ),
+    path(
         "source/",
         include(get_model_urls("forward_netbox", "forwardsource", detail=False)),
     ),

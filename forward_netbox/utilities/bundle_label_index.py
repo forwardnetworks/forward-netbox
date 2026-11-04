@@ -284,6 +284,7 @@ PAGE_CARD_PATHS = {
         "Backfill Reason Breakdown": "scope_reconciliation.report.backfilled_reason_breakdown",
         "Tagged-but-Backfilled Sample": "scope_reconciliation.device_keys",
         "Routing Policy Outside Scope": "scope_reconciliation.catalogue_cleanup",
+        "What to do": "diagnostics.cleanup_checklist",
         "Site-Relabel Duplicates": "diagnostics.site_relabel_pairs",
         "Uncovered, Created by This Sync": [
             "scope_reconciliation.report.unmanaged",
