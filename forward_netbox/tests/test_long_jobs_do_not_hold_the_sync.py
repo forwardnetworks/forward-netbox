@@ -90,3 +90,58 @@ class SyncFormRefusesWhenTheRowIsHeldTest(_Base):
 
     def test_a_new_sync_is_never_busy(self):
         self.assertEqual(_sync_row_busy(ForwardSync()), "")
+
+
+class OneConfigBackupPerSyncTest(_Base):
+    def test_a_second_backup_for_the_same_sync_is_refused_while_one_runs(self):
+        from django.db import connections
+
+        from forward_netbox.jobs import _CONFIG_BACKUP_LOCK_NAMESPACE
+        from forward_netbox.jobs import _one_config_backup_per_sync
+
+        other = connections.create_connection("default")
+        try:
+            with other.cursor() as cursor:
+                cursor.execute(
+                    "SELECT pg_advisory_lock(%s, %s)",
+                    [_CONFIG_BACKUP_LOCK_NAMESPACE, self.sync.pk],
+                )
+            with _one_config_backup_per_sync(self.sync.pk) as acquired:
+                self.assertFalse(acquired)
+        finally:
+            other.close()
+
+        with _one_config_backup_per_sync(self.sync.pk) as acquired:
+            self.assertTrue(acquired)
+
+    def test_a_skipped_backup_records_why_and_does_not_run(self):
+        from forward_netbox.jobs import _run_forward_config_backup_work
+
+        @contextmanager
+        def held(_pk):
+            yield False
+
+        @contextmanager
+        def guard(*args, **kwargs):
+            yield {}
+
+        job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name="lj config backup",
+            status=JobStatusChoices.STATUS_RUNNING,
+            job_id=uuid4(),
+        )
+        with (
+            patch(
+                "forward_netbox.utilities.post_sync.current_post_sync_snapshot", guard
+            ),
+            patch("forward_netbox.jobs._one_config_backup_per_sync", held),
+            patch("forward_netbox.utilities.config_backup.run_config_backup") as run,
+            patch("forward_netbox.jobs.SyncLogging", return_value=Mock()),
+        ):
+            _run_forward_config_backup_work(job, snapshot_id="s1", ingestion_id=1)
+
+        run.assert_not_called()
+        job.refresh_from_db()
+        self.assertTrue(job.data["skipped"])

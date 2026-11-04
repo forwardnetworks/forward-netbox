@@ -1,3 +1,4 @@
+import contextlib
 import functools
 import logging
 from datetime import datetime
@@ -1331,6 +1332,39 @@ def _refresh_forward_device_analysis_work(job, *args, **kwargs):
         raise
 
 
+# Namespace for the per-sync config-backup lock (two-int advisory lock key).
+_CONFIG_BACKUP_LOCK_NAMESPACE = 0x46574342  # "FWCB"
+
+
+@contextlib.contextmanager
+def _one_config_backup_per_sync(sync_pk):
+    """Yield True when this job may run the backup for ``sync_pk``, else False.
+
+    The backup no longer holds the ownership lock for its run, so two of them
+    (an automatic one after back-to-back syncs, or the button during one) could
+    overlap and the second git push would be refused as non-fast-forward with
+    an error that reads like a protected branch. A session advisory lock, taken
+    without waiting, keeps one per sync; Postgres releases it if the worker dies.
+    """
+    from django.db import connection
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT pg_try_advisory_lock(%s, %s)",
+            [_CONFIG_BACKUP_LOCK_NAMESPACE, int(sync_pk)],
+        )
+        acquired = bool(cursor.fetchone()[0])
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            with connection.cursor() as cursor:
+                cursor.execute(
+                    "SELECT pg_advisory_unlock(%s, %s)",
+                    [_CONFIG_BACKUP_LOCK_NAMESPACE, int(sync_pk)],
+                )
+
+
 def _run_forward_config_backup_work(job, *args, **kwargs):
     """Background config backup to the configured git data source.
 
@@ -1364,11 +1398,26 @@ def _run_forward_config_backup_work(job, *args, **kwargs):
             ingestion_id=kwargs.get("ingestion_id"),
         ):
             pass
-        result = run_config_backup(
-            sync,
-            snapshot_id=snapshot_id,
-            logger=sync.logger,
-        )
+        with _one_config_backup_per_sync(sync.pk) as acquired:
+            if not acquired:
+                job.data = _overlay_job_data(
+                    {
+                        "skipped": True,
+                        "reason": "another config backup for this sync is running",
+                    },
+                    kwargs,
+                )
+                job.save(update_fields=["data"])
+                sync.logger.log_info(
+                    "Config backup skipped: another backup for this sync is "
+                    "already running; it covers the latest configuration."
+                )
+                return
+            result = run_config_backup(
+                sync,
+                snapshot_id=snapshot_id,
+                logger=sync.logger,
+            )
         job.data = _overlay_job_data(result.as_dict(), kwargs)
         job.save(update_fields=["data"])
     except StalePostSyncSnapshotError:
