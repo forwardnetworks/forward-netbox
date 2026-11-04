@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v3.0.12
 
-Release candidate; Fix: a blocked run names a Forward snapshot collection problem; Scope Reconciliation opens with a What to do checklist; a guarded action deletes unmanaged devices Forward no longer has; opt-in per-context primary IPs for firewall contexts; the support bundle carries collection trend, delete accounting and device-list filters. forward-sdk 0.1.31. No migration.
+Fix: a blocked run names a Forward snapshot collection problem; Scope Reconciliation opens with a What to do checklist; a guarded action deletes unmanaged devices Forward no longer has; opt-in per-context primary IPs for firewall contexts; the support bundle carries collection trend, delete accounting and device-list filters. forward-sdk 0.1.31. No migration.
 
 ## v3.0.11
 
