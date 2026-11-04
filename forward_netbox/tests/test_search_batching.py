@@ -158,3 +158,49 @@ class JobsAreWrappedTest(SimpleTestCase):
         self.assertEqual(body(), "done")
         self.assertTrue(seen["active"])
         self.assertFalse(search_batching._active)
+
+
+class JobQueryCacheTest(TransactionTestCase):
+    """NetBox caches object-type and custom-field lookups only when a query
+    cache is set; plugin jobs now set one for the run."""
+
+    def test_object_type_lookups_hit_the_database_once_per_model(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from core.models import ObjectType
+        from forward_netbox.utilities.search_batching import job_query_cache
+
+        with job_query_cache():
+            ObjectType.objects.get_for_model(Site)
+            with CaptureQueriesContext(connection) as queries:
+                for _ in range(20):
+                    ObjectType.objects.get_for_model(Site)
+        self.assertEqual(len(queries), 0)
+
+    def test_without_it_every_lookup_queries(self):
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+
+        from core.models import ObjectType
+
+        with CaptureQueriesContext(connection) as queries:
+            for _ in range(5):
+                ObjectType.objects.get_for_model(Site)
+        self.assertGreaterEqual(len(queries), 5)
+
+    def test_an_existing_cache_is_left_alone_and_restored(self):
+        from netbox.context import query_cache
+
+        from forward_netbox.utilities.search_batching import job_query_cache
+
+        outer = {"marker": {}}
+        token = query_cache.set(outer)
+        try:
+            with job_query_cache():
+                self.assertIs(query_cache.get(), outer)
+        finally:
+            query_cache.reset(token)
+        with job_query_cache():
+            self.assertIsNotNone(query_cache.get())
+        self.assertIsNone(query_cache.get())

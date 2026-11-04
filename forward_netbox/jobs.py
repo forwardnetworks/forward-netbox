@@ -642,8 +642,9 @@ def _batch_search_indexing(function):
     @functools.wraps(function)
     def wrapper(*args, **kwargs):
         from .utilities.search_batching import batched_search_indexing
+        from .utilities.search_batching import job_query_cache
 
-        with batched_search_indexing():
+        with job_query_cache(), batched_search_indexing():
             return function(*args, **kwargs)
 
     return wrapper
@@ -2370,8 +2371,9 @@ class ForwardJobRunner(JobRunner):
         error = None
         try:
             from .utilities.search_batching import batched_search_indexing
+            from .utilities.search_batching import job_query_cache
 
-            with batched_search_indexing():
+            with job_query_cache(), batched_search_indexing():
                 cls(job).run(*args, **kwargs)
         except JobFailed:
             logger.warning("Job %s failed", job)

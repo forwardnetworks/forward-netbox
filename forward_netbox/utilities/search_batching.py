@@ -111,3 +111,31 @@ def batched_search_indexing():
         _active = False
         deferred._flush = real_flush
         buffer.flush_all()
+
+
+@contextmanager
+def job_query_cache():
+    """Give a plugin job the per-run lookup cache NetBox gives its own jobs.
+
+    NetBox caches the object-type and custom-field lookups it makes for every
+    saved object in `netbox.context.query_cache`, which its `event_tracking` sets
+    for a request "and the whole of a script or job run". The sync's staging runs
+    outside it, so every row queried both again: about 60% of the database's busy
+    time while staging a large estate. Both are definitions, not data the sync
+    changes. A cache already set (a caller inside `event_tracking`) is left alone.
+    """
+    try:
+        from collections import defaultdict
+
+        from netbox.context import query_cache
+    except ImportError:
+        yield
+        return
+    if query_cache.get() is not None:
+        yield
+        return
+    token = query_cache.set(defaultdict(dict))
+    try:
+        yield
+    finally:
+        query_cache.reset(token)
