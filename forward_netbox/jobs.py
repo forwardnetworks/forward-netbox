@@ -1,3 +1,4 @@
+import functools
 import logging
 from datetime import datetime
 from datetime import timedelta
@@ -633,6 +634,21 @@ def _complete_stale_post_sync_overlay(job, sync, **kwargs):
             return
 
 
+def _batch_search_indexing(function):
+    """Run a job body with NetBox's per-row search-index jobs collected into a few
+    bounded batches; see `utilities.search_batching`."""
+
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        from .utilities.search_batching import batched_search_indexing
+
+        with batched_search_indexing():
+            return function(*args, **kwargs)
+
+    return wrapper
+
+
+@_batch_search_indexing
 def sync_forwardsync(job, *args, **kwargs):
     sync = ForwardSync.objects.get(pk=job.object_id)
     with advisory_lock(ADVISORY_LOCK_KEYS["job-schedules"]):
@@ -1819,6 +1835,7 @@ def _complete_recovered_sync_producers(sync, producer_job_pks):
         _reconcile_sync_run_schedules(sync, producer, adhoc=True)
 
 
+@_batch_search_indexing
 def merge_forwardingestion(
     job,
     remove_branch=True,
@@ -2303,7 +2320,10 @@ class ForwardJobRunner(JobRunner):
         status = JobStatusChoices.STATUS_COMPLETED
         error = None
         try:
-            cls(job).run(*args, **kwargs)
+            from .utilities.search_batching import batched_search_indexing
+
+            with batched_search_indexing():
+                cls(job).run(*args, **kwargs)
         except JobFailed:
             logger.warning("Job %s failed", job)
             status = JobStatusChoices.STATUS_FAILED
