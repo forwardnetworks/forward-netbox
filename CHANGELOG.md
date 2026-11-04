@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v3.0.12
+
+Release candidate; Fix: a blocked run names a Forward snapshot collection problem; Scope Reconciliation opens with a What to do checklist; a guarded action deletes unmanaged devices Forward no longer has; opt-in per-context primary IPs for firewall contexts; the support bundle carries collection trend, delete accounting and device-list filters. forward-sdk 0.1.31. No migration.
+
 ## v3.0.11
 
 Failed syncs explain themselves (linked validation run, reasons and next steps, outcome slugs in the bundle); NQE system errors retry; device lists paginate with bulk edit and delete, including an opt-in routing-record cascade; forward-sdk 0.1.29
