@@ -67,6 +67,17 @@ services:
   postgres:
     image: postgres:16-alpine
     shm_size: ${FORWARD_NETBOX_POSTGRES_SHM_SIZE:-1gb}
+    # Durability stays on by default. A host whose disk flushes slowly (an Apple
+    # SSD under Linux stalls every commit) can turn it off for these disposable
+    # dev/test databases with FORWARD_NETBOX_POSTGRES_DURABLE=off.
+    command:
+      - postgres
+      - -c
+      - fsync=${FORWARD_NETBOX_POSTGRES_DURABLE:-on}
+      - -c
+      - synchronous_commit=${FORWARD_NETBOX_POSTGRES_DURABLE:-on}
+      - -c
+      - full_page_writes=${FORWARD_NETBOX_POSTGRES_DURABLE:-on}
     env_file: env/postgres.env
     environment:
       POSTGRES_PASSWORD_FILE: /run/secrets/db_password
