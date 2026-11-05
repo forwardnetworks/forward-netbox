@@ -35,6 +35,7 @@ from rq.timeouts import JobTimeoutException
 from ..choices import ForwardIngestionPhaseChoices
 from ..exceptions import ForwardPartialMergeError
 from ..models import ForwardIngestionIssue
+from .search_batching import keep_job_query_cache
 from .sync_events import reset_delete_signal_memory
 from .bulk_delete import lock_related_writes_for_delete
 from .bulk_merge import _ApplyOneFailure
@@ -599,7 +600,7 @@ def merge_branch(
                             model_class,
                             using=DEFAULT_DB_ALIAS,
                         )
-                with event_tracking(request):
+                with event_tracking(request), keep_job_query_cache():
                     dummy_change.apply(
                         branch,
                         using=DEFAULT_DB_ALIAS,

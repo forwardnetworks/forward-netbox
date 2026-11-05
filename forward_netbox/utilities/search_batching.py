@@ -18,6 +18,7 @@
 # the NetBox internals this reads are not present, nothing is patched.
 import logging
 from contextlib import contextmanager
+from contextvars import ContextVar
 
 from django.db import DEFAULT_DB_ALIAS
 
@@ -27,6 +28,10 @@ logger = logging.getLogger("forward_netbox.search_batching")
 FLUSH_CHUNK_SIZE = 5000
 
 _active = False
+
+# The cache `job_query_cache` installed, so code inside NetBox's `event_tracking`
+# (which installs its own empty one) can go back to it.
+_job_cache = ContextVar("forward_netbox_job_query_cache", default=None)
 
 
 def _alias_usable(alias):
@@ -134,7 +139,34 @@ def job_query_cache():
     if query_cache.get() is not None:
         yield
         return
-    token = query_cache.set(defaultdict(dict))
+    cache = defaultdict(dict)
+    token = query_cache.set(cache)
+    job_token = _job_cache.set(cache)
+    try:
+        yield
+    finally:
+        _job_cache.reset(job_token)
+        query_cache.reset(token)
+
+
+@contextmanager
+def keep_job_query_cache():
+    """Inside NetBox's `event_tracking`, keep using the job's lookup cache.
+
+    `event_tracking` installs a fresh, empty query cache each time it is
+    entered. The merge enters it once per row it applies on its own, so the
+    job's cache was replaced by an empty one for every such row. Use this just
+    inside it; with no job cache it does nothing."""
+    try:
+        from netbox.context import query_cache
+    except ImportError:
+        yield
+        return
+    outer = _job_cache.get()
+    if outer is None:
+        yield
+        return
+    token = query_cache.set(outer)
     try:
         yield
     finally:

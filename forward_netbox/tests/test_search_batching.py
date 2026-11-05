@@ -204,3 +204,34 @@ class JobQueryCacheTest(TransactionTestCase):
         with job_query_cache():
             self.assertIsNotNone(query_cache.get())
         self.assertIsNone(query_cache.get())
+
+
+class MergeRowKeepsTheJobCacheTest(TransactionTestCase):
+    def test_event_tracking_inside_a_job_reuses_the_job_cache(self):
+        from django.db import connection
+        from django.test import RequestFactory
+        from django.test.utils import CaptureQueriesContext
+        from netbox.context_managers import event_tracking
+
+        from core.models import ObjectType
+        from forward_netbox.utilities.search_batching import job_query_cache
+        from forward_netbox.utilities.search_batching import keep_job_query_cache
+
+        request = RequestFactory().get("/")
+        request.id = None
+        with job_query_cache():
+            ObjectType.objects.get_for_model(Site)
+            with CaptureQueriesContext(connection) as queries:
+                for _ in range(10):
+                    with event_tracking(request), keep_job_query_cache():
+                        ObjectType.objects.get_for_model(Site)
+        self.assertEqual(len(queries), 0)
+
+    def test_without_a_job_cache_it_changes_nothing(self):
+        from netbox.context import query_cache
+
+        from forward_netbox.utilities.search_batching import keep_job_query_cache
+
+        before = query_cache.get()
+        with keep_job_query_cache():
+            self.assertIs(query_cache.get(), before)
