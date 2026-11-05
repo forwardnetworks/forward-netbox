@@ -18,6 +18,7 @@
 # branch schemas), from the catalogue rather than from a guessed search_path.
 from django.db import connections
 from django.db import transaction
+from rq.timeouts import JobTimeoutException
 
 GUARD_FUNCTION = "forward_netbox_enforce_device_generic_relation"
 GUARD_TRIGGER = "forward_netbox_device_gfk_guard"
@@ -139,6 +140,8 @@ def rebuild_before_migrate(sender, using="default", **kwargs):
         return
     try:
         rebuild_column_bound_guards(using=using)
+    except JobTimeoutException:
+        raise
     except Exception:  # noqa: BLE001 - never stop a migrate; 0068 retries
         import logging
 

@@ -21,6 +21,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 
 from django.db import DEFAULT_DB_ALIAS
+from rq.timeouts import JobTimeoutException
 
 logger = logging.getLogger("forward_netbox.search_batching")
 
@@ -55,6 +56,8 @@ def _alias_usable(alias):
 
         CachedValue.objects.using(alias).exists()
         return True
+    except JobTimeoutException:
+        raise
     except Exception:  # noqa: BLE001 - a gone alias
         return False
 
@@ -87,6 +90,8 @@ class _Buffer:
             return
         try:
             self.real_flush(merged, alias)
+        except JobTimeoutException:
+            raise
         except Exception:  # noqa: BLE001 - indexing must never fail a job
             self.failed_aliases.add(alias)
             logger.exception(

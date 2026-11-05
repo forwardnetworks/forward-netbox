@@ -1368,6 +1368,8 @@ def _one_config_backup_per_sync(sync_pk):
                         "SELECT pg_advisory_unlock(%s, %s)",
                         [_CONFIG_BACKUP_LOCK_NAMESPACE, int(sync_pk)],
                     )
+            except JobTimeoutException:
+                raise
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "Config backup lock release failed: %s", type(exc).__name__
