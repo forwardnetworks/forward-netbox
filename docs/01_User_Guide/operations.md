@@ -340,6 +340,37 @@ These are different buckets — only one is removable:
 So a device showing `forward-backfilled` but not an included tag in NetBox is
 **not** an out-of-scope orphan — it is in scope and intentionally retained.
 
+## What the sync writes on a device
+
+Another plugin can add its own data to a device the sync covers. The sync writes
+a short, fixed list of device fields and leaves everything else alone:
+
+- **Written by the sync:** `name`, `site`, `role`, `device_type`, `platform`,
+  `serial`, `status`, and virtual-chassis membership. With the primary-IP options
+  on it also sets the device's primary IP, and with **Apply device scope tags**
+  on it adds and removes its own scope tags.
+- **Never written or cleared:** `rack`, `location`, `position`, `face`, latitude
+  and longitude, `description`, `comments`, `tenant`, `asset_tag`, custom fields,
+  and any tags or objects another plugin adds. A value Forward does not have for
+  one of these is not a reason to blank it; the sync only changes a field in the
+  list above, and only when Forward's value differs from NetBox's.
+
+Where a plugin can still compete with the sync:
+
+1. **`site` belongs to the sync.** A plugin that sets the site from other data
+   will see the next sync set it back to Forward's. Keep those devices out of the
+   sync's scope if the other plugin should decide the site.
+2. **A rack must stay in the device's site.** NetBox requires a device's rack and
+   location to belong to its site. If Forward moves a device to another site
+   while a plugin has it racked at the old one, that update is refused and the
+   device is left as it was; it is never moved with a rack in the wrong site and
+   never stripped of its rack.
+3. **A device Forward stops reporting can be deleted** by the sync's prune
+   settings, and its rack assignment goes with it. Disabling a device in Forward
+   counts as no longer reporting it.
+
+`test_device_fields_the_sync_owns` keeps this list true on both apply paths.
+
 ## Module synchronization
 
 Under the required NetBox 4.6.5 and Branching 1.1.1 matrix, module sync creates
