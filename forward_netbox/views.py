@@ -377,6 +377,7 @@ def _ingestion_issue_summary(queryset, limit=5000):
         :limit
     ]
     seen = 0
+    suppressed_total = 0
     for model, exception, raw_data, coalesce_fields in rows:
         seen += 1
         reason = (coalesce_fields or {}).get("skip_reason")
@@ -388,12 +389,28 @@ def _ingestion_issue_summary(queryset, limit=5000):
             (coalesce_fields or {}).get("beyond_cap_reasons") or {}
         ).items():
             by_reason[(model or "-", str(suppressed))] += int(count)
+            suppressed_total += int(count)
         by_model_exception[(model or "-", exception or "-")] += 1
         rules = (raw_data or {}).get("validation_rules") if raw_data else None
         for rule in rules or ():
             by_rule[(model or "-", str(rule))] += 1
+    from .utilities.skip_reason_catalogue import is_informational
+
+    informational = sum(
+        count
+        for (_model, reason), count in by_reason.items()
+        if is_informational(reason)
+    )
     return {
         "counted": seen,
+        # Expected behaviour (for example dotted names that are real top-level
+        # interfaces) is counted apart, so "83 issues" does not hide that only 2
+        # need anyone.
+        "informational": informational,
+        # Rows past the per-model cap have no issue row of their own, only a
+        # rollup carrying their count; they are in `informational`, so they must
+        # be in the total too or this reads 0 on a run that has both.
+        "needs_attention": max(seen + suppressed_total - informational, 0),
         "by_model_and_exception": [
             {"model": model, "exception": exception, "count": count}
             for (model, exception), count in by_model_exception.most_common(40)
@@ -1060,6 +1077,8 @@ def _primary_ip_bundle_payload(sync):
         # is on, and how many copies exist, so "every context has a primary IP"
         # can be read off a bundle.
         "context_copies": _primary_ip_context_copies(sync),
+        # The opt-in management interface for an address no interface carries.
+        "management_interfaces": _primary_ip_management_interfaces(sync),
         # Every device by reason, not just ten: which devices a reason means.
         "without_primary_ip_device_keys": _primary_ip_reason_keys(classified),
         # What mask the primary addresses carry. A customer asked whether primary
@@ -1154,6 +1173,27 @@ def _shared_holder_pairs(recorded_here, outcomes):
             for holder, devices in holders.most_common(50)
         ],
         "pairs": pairs[:_BUNDLE_DEVICE_KEY_LIMIT],
+    }
+
+
+def _primary_ip_management_interfaces(sync):
+    from dcim.models import Interface
+    from django.db.models import Q
+
+    from .utilities.management_interfaces import MANAGEMENT_INTERFACE_TAG_SLUG
+    from .utilities.management_interfaces import management_interfaces_enabled
+
+    tagged = Interface.objects.filter(tags__slug=MANAGEMENT_INTERFACE_TAG_SLUG)
+    return {
+        "enabled": management_interfaces_enabled(sync),
+        "interfaces": tagged.count(),
+        "devices_with_one": tagged.values("device_id").distinct().count(),
+        "devices_whose_primary_is_on_one": Device.objects.filter(
+            Q(primary_ip4__interface__tags__slug=MANAGEMENT_INTERFACE_TAG_SLUG)
+            | Q(primary_ip6__interface__tags__slug=MANAGEMENT_INTERFACE_TAG_SLUG)
+        )
+        .distinct()
+        .count(),
     }
 
 
@@ -3714,6 +3754,11 @@ def _delete_blockers(device_pks):
             ours = (
                 is_releasable_routing_row(label) and bool(owners) and owners <= selected
             )
+            # A routing row on a surviving device that merely uses this device's
+            # address is handled by the delete (the address is detached and kept),
+            # so it is not something the operator must remove first.
+            if not ours and label.startswith("netbox_routing."):
+                continue
             (routing if ours else other)[label] += 1
     return {"routing": dict(routing), "other": dict(other)}
 
@@ -3842,11 +3887,23 @@ class ForwardDeviceListBulkDeleteView(DeviceBulkDeleteView):
                 transaction.set_rollback(True, using=router.db_for_write(Device))
                 clear_events.send(sender=self.__class__)
             elif released:
-                messages.info(
-                    request,
-                    _("Also removed %(count)d routing record(s) first.")
-                    % {"count": sum(released.values())},
-                )
+                kept = released.pop("ipam.ipaddress (kept, unassigned)", 0)
+                if released:
+                    messages.info(
+                        request,
+                        _("Also removed %(count)d routing record(s) first.")
+                        % {"count": sum(released.values())},
+                    )
+                if kept:
+                    messages.info(
+                        request,
+                        _(
+                            "Kept %(count)d address(es) that a BGP peer on another "
+                            "device uses as its neighbour; they are no longer on "
+                            "an interface."
+                        )
+                        % {"count": kept},
+                    )
         return response
 
 
@@ -3877,8 +3934,20 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
             relabel = site_relabel_pairs(sync, check_protecting=False)
         except Exception:  # noqa: BLE001 - the checklist must not sink the page
             relabel = {}
+        from .utilities.context_ip_copies import context_copies_enabled
+        from .utilities.management_interfaces import management_interfaces_enabled
+        from .utilities.primary_ip import primary_ip_log_facts
+
+        try:
+            summary, _outcomes = primary_ip_log_facts(sync)
+        except Exception:  # noqa: BLE001 - the checklist must not sink the page
+            summary = None
         return cleanup_items(
             payload,
+            shared_primary=(summary or {}).get("shared_with_another_device", 0),
+            context_copies_on=context_copies_enabled(sync),
+            on_no_interface=(summary or {}).get("address_on_no_synced_interface", 0),
+            management_interfaces_on=management_interfaces_enabled(sync),
             twin_count=len(_stored_device_ids(sync, "unmanaged", UNCLAIMED_TWINS)[0]),
             relabel={
                 "pair_count": len(relabel.get("pairs") or ()),
@@ -3892,6 +3961,7 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
                 "out_of_scope_orphans": url("out_of_scope_devices"),
                 "in_forward_not_in_scope": url("uncovered_devices"),
                 "forward_could_not_collect": url("present_backfilled_devices"),
+                "shared_management_address": url("explained"),
             },
         )
 

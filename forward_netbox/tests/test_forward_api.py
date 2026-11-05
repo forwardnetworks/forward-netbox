@@ -2359,6 +2359,70 @@ class ManagementIpLookupTest(TestCase):
 
         self.assertEqual(result, {})
 
+    def test_several_addresses_narrow_to_the_one_forward_collected_on(self):
+        result, _query = self._run(
+            [
+                {"device": "fw", "address": "10.0.0.1", "collection": "10.0.0.2"},
+                {"device": "fw", "address": "10.0.0.2", "collection": "10.0.0.2"},
+                {"device": "r1", "address": "10.0.1.1", "collection": "10.0.1.1"},
+            ]
+        )
+
+        self.assertEqual(result, {"fw": ["10.0.0.2"], "r1": ["10.0.1.1"]})
+
+    def test_several_addresses_stay_several_when_collection_is_none_of_them(self):
+        result, _query = self._run(
+            [
+                {"device": "fw", "address": "10.0.0.1", "collection": "10.9.9.9"},
+                {"device": "fw", "address": "10.0.0.2", "collection": "10.9.9.9"},
+                {"device": "ha", "address": "10.0.2.1", "collection": None},
+                {"device": "ha", "address": "10.0.2.2", "collection": None},
+            ]
+        )
+
+        self.assertEqual(
+            result, {"fw": ["10.0.0.1", "10.0.0.2"], "ha": ["10.0.2.1", "10.0.2.2"]}
+        )
+
+    def test_endpoints_add_the_address_forward_collected_them_on(self):
+        def rows(*_args, **kwargs):
+            if "network.endpoints" in kwargs["query"]:
+                return [
+                    {"device": "console-1", "address": "10.5.0.1"},
+                    {"device": "r1", "address": "10.5.0.2"},
+                    {"device": "console-2", "address": None},
+                    {"device": "twin", "address": "10.5.0.3"},
+                    {"device": "twin", "address": "10.5.0.4"},
+                ]
+            return [{"device": "r1", "address": "10.0.1.1"}]
+
+        with patch.object(forward_api_impl, "run_nqe_query", side_effect=rows) as run:
+            result = forward_api_impl.get_device_management_ips(
+                self.client, "n", "s", exclude_tags=["Skip"], include_endpoints=True
+            )
+
+        # A modeled device keeps its own addresses over an endpoint of its name.
+        self.assertEqual(result, {"r1": ["10.0.1.1"], "console-1": ["10.5.0.1"]})
+        endpoint_query = next(
+            c.kwargs["query"]
+            for c in run.call_args_list
+            if "network.endpoints" in c.kwargs["query"]
+        )
+        self.assertIn("Skip", endpoint_query)
+        self.assertIn("collectionIp", endpoint_query)
+        # Any modeled device's name is refused in the query itself, not only the
+        # names with a management address: a device with a failed collection
+        # must not take an endpoint's address.
+        self.assertIn("!(endpoint.name in modeled)", endpoint_query)
+        self.assertNotIn("snapshotInfo.result", endpoint_query.split(";")[0])
+
+    def test_endpoints_are_not_read_unless_asked(self):
+        with patch.object(forward_api_impl, "run_nqe_query", return_value=[]) as run:
+            forward_api_impl.get_device_management_ips(self.client, "n", "s")
+
+        self.assertEqual(run.call_count, 1)
+        self.assertNotIn("network.endpoints", run.call_args.kwargs["query"])
+
     def test_the_query_reads_platform_management_ips_under_the_device_scope(self):
         _result, query = self._run([], include_tags=["Keep"], exclude_tags=["Skip"])
 

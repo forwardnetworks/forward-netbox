@@ -33,10 +33,10 @@ def main():
         raise SystemExit(
             f"forward-netbox {package_version} != expected {args.expected_version}"
         )
-    if netbox_version != "4.7.2":
-        raise SystemExit(f"NetBox {netbox_version} != required 4.7.2")
-    if branching_version != "1.2.1":
-        raise SystemExit(f"netbox-branching {branching_version} != required 1.2.1")
+    if netbox_version != "4.7.4":
+        raise SystemExit(f"NetBox {netbox_version} != required 4.7.4")
+    if branching_version != "1.2.3":
+        raise SystemExit(f"netbox-branching {branching_version} != required 1.2.3")
 
     print(
         json.dumps(

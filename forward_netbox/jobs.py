@@ -1,3 +1,5 @@
+import contextlib
+import functools
 import logging
 from datetime import datetime
 from datetime import timedelta
@@ -633,6 +635,22 @@ def _complete_stale_post_sync_overlay(job, sync, **kwargs):
             return
 
 
+def _batch_search_indexing(function):
+    """Run a job body with NetBox's per-row search-index jobs collected into a few
+    bounded batches; see `utilities.search_batching`."""
+
+    @functools.wraps(function)
+    def wrapper(*args, **kwargs):
+        from .utilities.search_batching import batched_search_indexing
+        from .utilities.search_batching import job_query_cache
+
+        with job_query_cache(), batched_search_indexing():
+            return function(*args, **kwargs)
+
+    return wrapper
+
+
+@_batch_search_indexing
 def sync_forwardsync(job, *args, **kwargs):
     sync = ForwardSync.objects.get(pk=job.object_id)
     with advisory_lock(ADVISORY_LOCK_KEYS["job-schedules"]):
@@ -1315,6 +1333,77 @@ def _refresh_forward_device_analysis_work(job, *args, **kwargs):
         raise
 
 
+# Namespace for the per-sync config-backup lock (two-int advisory lock key).
+_CONFIG_BACKUP_LOCK_NAMESPACE = 0x46574342  # "FWCB"
+
+
+@contextlib.contextmanager
+def _one_config_backup_per_sync(sync_pk):
+    """Yield True when this job may run the backup for ``sync_pk``, else False.
+
+    The backup no longer holds the ownership lock for its run, so two of them
+    (an automatic one after back-to-back syncs, or the button during one) could
+    overlap and the second git push would be refused as non-fast-forward with
+    an error that reads like a protected branch. A session advisory lock, taken
+    without waiting, keeps one per sync; Postgres releases it if the worker dies.
+    """
+    from django.db import connection
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "SELECT pg_try_advisory_lock(%s, %s)",
+            [_CONFIG_BACKUP_LOCK_NAMESPACE, int(sync_pk)],
+        )
+        acquired = bool(cursor.fetchone()[0])
+    try:
+        yield acquired
+    finally:
+        if acquired:
+            # A connection lost during an hour-long backup already released the
+            # lock; failing here would turn a pushed backup into an errored job
+            # or hide the exception that ended it.
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT pg_advisory_unlock(%s, %s)",
+                        [_CONFIG_BACKUP_LOCK_NAMESPACE, int(sync_pk)],
+                    )
+            except JobTimeoutException:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Config backup lock release failed: %s", type(exc).__name__
+                )
+
+
+def _queue_backup_of_newer_snapshot(sync, job, snapshot_id, kwargs):
+    """After an automatic backup, back up the newest synced snapshot if newer.
+
+    A sync that finishes while a backup runs gets no backup of its own: the
+    enqueue declines while one is active, and a job that does start finds the
+    lock held. Without this, git kept the older snapshot's configs until some
+    later sync happened to finish with no backup running.
+    """
+    if not kwargs.get("ingestion_id"):
+        return  # The operator button backs up what it was asked to.
+    try:
+        latest = sync.latest_baseline_ingestion()
+        latest_snapshot = str(getattr(latest, "snapshot_id", "") or "").strip()
+        if not latest_snapshot or latest_snapshot == str(snapshot_id or "").strip():
+            return
+        sync.refresh_from_db()
+        _maybe_enqueue_config_backup(
+            sync,
+            snapshot_id=latest_snapshot,
+            ingestion_id=latest.pk,
+            exclude_job_id=job.pk,
+        )
+    except JobTimeoutException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the backup itself succeeded
+        logger.warning("Follow-up config backup enqueue failed: %s", exc)
+
+
 def _run_forward_config_backup_work(job, *args, **kwargs):
     """Background config backup to the configured git data source.
 
@@ -1336,11 +1425,37 @@ def _run_forward_config_backup_work(job, *args, **kwargs):
             # Forward call belongs. Resolved before the post-sync guard so the
             # guard has something to compare.
             snapshot_id = sync.resolve_snapshot_id(sync.source.get_client())
+        # Prove the generation is current, then let go. The backup reads Forward
+        # and writes a git repository for most of an hour on a large estate and
+        # changes no NetBox state, so it must not hold the sync and source rows
+        # or the global ownership lock while it runs: it used to, and every
+        # sync, merge, prune and sync-form save waited behind it (a customer's
+        # sync edit timed out at the gateway and was lost).
         with current_post_sync_snapshot(
             sync,
             kwargs.get("snapshot_id"),
             ingestion_id=kwargs.get("ingestion_id"),
         ):
+            pass
+        with _one_config_backup_per_sync(sync.pk) as acquired:
+            if not acquired:
+                job.data = _overlay_job_data(
+                    {
+                        "skipped": True,
+                        # The key Health and the bundle read for a skip.
+                        "skipped_reason": (
+                            "another config backup for this sync is running"
+                        ),
+                    },
+                    kwargs,
+                )
+                job.save(update_fields=["data"])
+                sync.logger.log_info(
+                    "Config backup skipped: another backup for this sync is "
+                    "already running. When it finishes it queues a backup of "
+                    "the newest synced snapshot if that is not the one it took."
+                )
+                return
             result = run_config_backup(
                 sync,
                 snapshot_id=snapshot_id,
@@ -1348,6 +1463,7 @@ def _run_forward_config_backup_work(job, *args, **kwargs):
             )
         job.data = _overlay_job_data(result.as_dict(), kwargs)
         job.save(update_fields=["data"])
+        _queue_backup_of_newer_snapshot(sync, job, snapshot_id, kwargs)
     except StalePostSyncSnapshotError:
         _complete_stale_post_sync_overlay(job, sync, **kwargs)
     except ConfigBackupError as exc:
@@ -1812,6 +1928,7 @@ def _complete_recovered_sync_producers(sync, producer_job_pks):
         _reconcile_sync_run_schedules(sync, producer, adhoc=True)
 
 
+@_batch_search_indexing
 def merge_forwardingestion(
     job,
     remove_branch=True,
@@ -2296,7 +2413,11 @@ class ForwardJobRunner(JobRunner):
         status = JobStatusChoices.STATUS_COMPLETED
         error = None
         try:
-            cls(job).run(*args, **kwargs)
+            from .utilities.search_batching import batched_search_indexing
+            from .utilities.search_batching import job_query_cache
+
+            with job_query_cache(), batched_search_indexing():
+                cls(job).run(*args, **kwargs)
         except JobFailed:
             logger.warning("Job %s failed", job)
             status = JobStatusChoices.STATUS_FAILED

@@ -680,13 +680,23 @@ def get_device_management_ips(
     include_tags=None,
     exclude_tags=None,
     include_match="any",
+    include_endpoints=False,
 ):
     """Return ``{device_name: [address, ...]}`` of Forward's management IPs.
 
     The fallback source for a device with no ``Mgmt_<iface>`` tag. Forward
-    records the address it reached the device on as
-    ``platform.managementIps``; the device-tag scope mirrors the sync's so the
-    same devices are considered.
+    records the device's management addresses as ``platform.managementIps``;
+    the device-tag scope mirrors the sync's so the same devices are considered.
+
+    A device with several management addresses (a FortiGate's mgmt1 and mgmt2)
+    is narrowed to the one Forward collected it on, when that is one of them:
+    that is Forward's own answer to which address manages the device, and
+    without it the device got no primary IP at all.
+
+    ``include_endpoints`` adds the SNMP endpoints the sync imports as devices.
+    An endpoint has no ``platform``, so its one address is the one Forward
+    collected it on. Only exclude tags apply, as in `get_device_mgmt_tags`:
+    the caller sets a primary IP only on devices that exist in NetBox.
     """
     network_id = str(network_id or "").strip()
     if not network_id:
@@ -712,7 +722,8 @@ def get_device_management_ips(
             "where device.platform.vendor != Vendor.FORWARD_CUSTOM",
             *scope_where,
             "foreach address in device.platform.managementIps",
-            "select {device: device.name, address: toString(address)}",
+            "select {device: device.name, address: toString(address), "
+            "collection: device.snapshotInfo.collectionIp}",
         ]
     )
     rows = run_nqe_query(
@@ -723,6 +734,7 @@ def get_device_management_ips(
         fetch_all=True,
     )
     management_ips: dict[str, list[str]] = {}
+    collected_on: dict[str, str] = {}
     for row in rows or []:
         device = str(row.get("device") or "").strip()
         address = str(row.get("address") or "").strip()
@@ -731,6 +743,51 @@ def get_device_management_ips(
         addresses = management_ips.setdefault(device, [])
         if address not in addresses:
             addresses.append(address)
+        collection = str(row.get("collection") or "").strip()
+        if collection:
+            collected_on[device] = collection
+    for device, addresses in management_ips.items():
+        if len(addresses) < 2 or device not in collected_on:
+            continue
+        chosen = [
+            address
+            for address in addresses
+            if address.split("/", 1)[0] == collected_on[device]
+        ]
+        if len(chosen) == 1:
+            management_ips[device] = chosen
+    if include_endpoints:
+        endpoint_query = "\n".join(
+            [
+                # Every modeled device's name, whatever its collection or scope:
+                # an endpoint sharing one is not the device of that name.
+                "modeled = foreach d in network.devices select d.name;",
+                "foreach endpoint in network.endpoints",
+                "where !isEmpty(endpoint.snmpOutputs)",
+                "where !(endpoint.name in modeled)",
+                *build_endpoint_tag_scope_where([], exclude_tags, include_match),
+                "select {device: endpoint.name, "
+                "address: endpoint.snapshotInfo.collectionIp}",
+            ]
+        )
+        endpoint_rows = run_nqe_query(
+            client,
+            query=endpoint_query,
+            network_id=network_id,
+            snapshot_id=snapshot_id,
+            fetch_all=True,
+        )
+        endpoint_addresses: dict[str, set[str]] = {}
+        for row in endpoint_rows or []:
+            device = str(row.get("device") or "").strip()
+            address = str(row.get("address") or "").strip()
+            if device and address:
+                endpoint_addresses.setdefault(device, set()).add(address)
+        for device, addresses in endpoint_addresses.items():
+            # Several endpoints under one name, or one name with several
+            # addresses, is ambiguous: none of them is used.
+            if len(addresses) == 1 and device not in management_ips:
+                management_ips[device] = sorted(addresses)
     return management_ips
 
 

@@ -673,7 +673,9 @@ class IssueRowsTest(PrimaryIpFixture):
 
         self.assertEqual([r["count"] for r in rows], [3])
         self.assertIn("top-level interface", rows[0]["reason"])
-        self.assertEqual(rows[0]["fixable"], NEEDS_A_PERSON)
+        # Dotted names that are real top-level interfaces are expected behaviour,
+        # not a problem for a person to fix.
+        self.assertEqual(rows[0]["fixable"], BY_DESIGN)
         self.assertIn("model=dcim.interface", rows[0]["url"])
         # The link opens THIS ingestion's issues, not every ingestion's.
         self.assertTrue(

@@ -35,6 +35,8 @@ from rq.timeouts import JobTimeoutException
 from ..choices import ForwardIngestionPhaseChoices
 from ..exceptions import ForwardPartialMergeError
 from ..models import ForwardIngestionIssue
+from .search_batching import keep_job_query_cache
+from .sync_events import reset_delete_signal_memory
 from .bulk_delete import lock_related_writes_for_delete
 from .bulk_merge import _ApplyOneFailure
 from .bulk_merge import bulk_merge_changes
@@ -508,6 +510,10 @@ def merge_branch(
     request = RequestFactory().get(reverse("home"))
     request.user = user
     request.id = ingestion.change_request_id
+    # Staging is over and the merge begins in the same process. Without this the
+    # merge's delete of an object the branch also deleted is skipped by NetBox's
+    # once-per-object delete memory and never reaches the change log.
+    reset_delete_signal_memory()
 
     set_based_decision = set_based_merge_decision(
         sync=ingestion.sync,
@@ -594,7 +600,7 @@ def merge_branch(
                             model_class,
                             using=DEFAULT_DB_ALIAS,
                         )
-                with event_tracking(request):
+                with event_tracking(request), keep_job_query_cache():
                     dummy_change.apply(
                         branch,
                         using=DEFAULT_DB_ALIAS,

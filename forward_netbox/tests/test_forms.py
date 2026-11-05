@@ -1135,3 +1135,67 @@ class ForwardNQEMapBulkEditFormTest(TestCase):
         self.assertTrue(form.is_valid(), form.errors)
         self.assertFalse(form.has_query_binding_request())
         self.assertFalse(form.has_query_restore_request())
+
+
+class OverlayMarkerFormTest(TestCase):
+    """Saving a changed primary-IP setting marks the sync so the next run stages
+    the step even when Forward has no new data. The comparison is against what
+    was STORED, not against the submitted values."""
+
+    def setUp(self):
+        self.source = ForwardSource.objects.create(
+            name="omf-src",
+            type="saas",
+            url="https://fwd.app",
+            status="ready",
+            parameters={"network_id": "net-1"},
+        )
+        self.sync = ForwardSync.objects.create(
+            name="omf-sync",
+            source=self.source,
+            parameters={"snapshot_id": LATEST_PROCESSED_SNAPSHOT},
+        )
+
+    def _save(self, **extra):
+        data = {
+            "name": "omf-sync",
+            "source": self.source.pk,
+            "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+            "dcim.device": "on",
+            "auto_merge": "on",
+            "max_changes_per_staging_item": "10000",
+            **extra,
+        }
+        sync = ForwardSync.objects.get(pk=self.sync.pk)
+        form = ForwardSyncForm(data=data, instance=sync)
+        self.assertTrue(form.is_valid(), form.errors)
+        form.save()
+        return ForwardSync.objects.get(pk=self.sync.pk).parameters
+
+    def test_turning_the_fallback_on_marks_the_sync(self):
+        parameters = self._save(set_primary_ip_from_forward_management_ip="on")
+
+        self.assertTrue(parameters["overlay_rerun_pending"])
+
+    def test_saving_without_a_change_does_not_mark_it(self):
+        self._save(set_primary_ip_from_forward_management_ip="on")
+        stored = ForwardSync.objects.get(pk=self.sync.pk).parameters
+        ForwardSync.objects.filter(pk=self.sync.pk).update(
+            parameters={k: v for k, v in stored.items() if k != "overlay_rerun_pending"}
+        )
+
+        parameters = self._save(set_primary_ip_from_forward_management_ip="on")
+
+        self.assertNotIn("overlay_rerun_pending", parameters)
+
+    def test_a_pending_marker_survives_an_unrelated_save(self):
+        self._save(set_primary_ip_from_forward_management_ip="on")
+
+        parameters = self._save(set_primary_ip_from_forward_management_ip="on")
+
+        self.assertTrue(parameters["overlay_rerun_pending"])
+
+    def test_no_primary_ip_source_means_no_marker(self):
+        parameters = self._save()
+
+        self.assertNotIn("overlay_rerun_pending", parameters)

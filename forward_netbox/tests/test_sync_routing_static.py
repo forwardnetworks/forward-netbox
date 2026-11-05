@@ -337,3 +337,18 @@ class StaticRouteAdapterTest(TestCase):
             delete_netbox_routing_staticroute(runner, self._row("sr-a", args="garbage"))
         )
         self.assertEqual(self.StaticRoute.objects.count(), 1)
+
+    def test_identical_routes_in_netbox_skip_the_row_and_name_the_cause(self):
+        first = apply_netbox_routing_staticroute(self._runner(), self._row())
+        self.StaticRoute.objects.create(
+            prefix=first.prefix, next_hop=first.next_hop, metric=1
+        )
+        runner = self._runner()
+        runner._record_aggregated_skip_warning = Mock()
+
+        result = apply_netbox_routing_staticroute(runner, self._row(device="sr-b"))
+
+        self.assertIs(result, False)
+        reason = runner._record_aggregated_skip_warning.call_args.kwargs["reason"]
+        self.assertEqual(reason, "static-route-duplicate-in-netbox")
+        self.assertEqual(self.StaticRoute.objects.count(), 2)

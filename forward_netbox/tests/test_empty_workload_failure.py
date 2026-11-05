@@ -18,6 +18,7 @@ from forward_netbox.utilities.single_branch_executor import failed_model_strings
 class _Result:
     model_string: str
     failure_count: int = 0
+    failure_reason: str = ""
 
 
 class FailedModelStringsTest(SimpleTestCase):
@@ -58,3 +59,29 @@ class FailedModelStringsTest(SimpleTestCase):
     def test_empty_and_none_inputs_are_safe(self):
         self.assertEqual(failed_model_strings([]), [])
         self.assertEqual(failed_model_strings(None), [])
+
+    def test_a_model_with_no_enabled_map_is_configuration_not_a_failure(self):
+        # The sync enables a model whose NQE Map is off: a run with Forward
+        # changes skips it and goes on, so an unchanged re-run must too.
+        results = [
+            _Result("dcim.device"),
+            _Result("netbox_dlm.cve", 1, "no-enabled-query-maps"),
+            _Result("dcim.cable", 1, "ForwardQueryError"),
+        ]
+        self.assertEqual(failed_model_strings(results), ["dcim.cable"])
+
+    def test_with_nothing_fetched_even_unmapped_models_count(self):
+        results = [
+            _Result("dcim.device", 1, "no-enabled-query-maps"),
+            _Result("dcim.interface", 1, "no-enabled-query-maps"),
+        ]
+        self.assertEqual(
+            failed_model_strings(results), ["dcim.device", "dcim.interface"]
+        )
+
+    def test_one_fetched_model_and_one_unmapped_model_is_convergence(self):
+        results = [
+            _Result("dcim.device"),
+            _Result("netbox_dlm.cve", 1, "no-enabled-query-maps"),
+        ]
+        self.assertEqual(failed_model_strings(results), [])

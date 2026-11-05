@@ -88,13 +88,38 @@ def _copy_tag():
     return tag
 
 
-def give_context_a_copy(device, canonical):
+def give_context_a_copy(device, canonical, *, add_interface=False):
     """Make ``device`` a copy of ``canonical`` on its own same-named interface.
 
     Returns ``(copy, reason)``: the copy (existing or new) and ``None``, or
     ``None`` and a slug saying why no copy was made. Never guesses an interface:
     the context must carry one named like the interface that holds the address.
+    With ``add_interface``, a context with no such interface is given a
+    management interface of that name (`management_interfaces`) to carry it.
     """
+    if not add_interface:
+        return _give_context_a_copy(device, canonical)
+    from django.db import router
+    from django.db import transaction
+    from ipam.models import IPAddress
+
+    from .management_interfaces import ensure_management_interface
+
+    copy, reason = _give_context_a_copy(device, canonical)
+    if reason != "context-copy-no-matching-interface":
+        return copy, reason
+    # The interface and the copy land together or not at all: an added
+    # interface with no address on it would answer nothing.
+    with transaction.atomic(using=router.db_for_write(IPAddress)):
+        interface, reason = ensure_management_interface(
+            device, name=canonical.assigned_object.name
+        )
+        if interface is None:
+            return None, reason
+        return _give_context_a_copy(device, canonical)
+
+
+def _give_context_a_copy(device, canonical):
     from dcim.models import Interface
     from django.contrib.contenttypes.models import ContentType
     from ipam.models import IPAddress
@@ -164,7 +189,9 @@ def _canonical_address(owner_pk, host):
     return found[0] if len(found) == 1 else None
 
 
-def apply_context_copies(devices, shared, device_management_ips):
+def apply_context_copies(
+    devices, shared, device_management_ips, *, add_interfaces=False
+):
     """Give each device in ``shared`` its own copy of its management address.
 
     ``shared`` is ``{device name: owner pk}``: devices whose one management
@@ -199,7 +226,9 @@ def apply_context_copies(devices, shared, device_management_ips):
             continue
         role_before = canonical.role
         try:
-            copy, reason = give_context_a_copy(device, canonical)
+            copy, reason = give_context_a_copy(
+                device, canonical, add_interface=add_interfaces
+            )
         except JobTimeoutException:
             raise
         except Exception as exc:  # noqa: BLE001 - one device must not sink the step

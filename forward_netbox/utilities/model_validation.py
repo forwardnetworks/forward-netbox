@@ -424,11 +424,15 @@ def clean_forward_sync(sync):
             "set_primary_ip_from_mgmt_tag",
             "set_primary_ip_from_forward_management_ip",
             "give_contexts_their_own_management_ip",
+            "add_management_interface",
             "diff_fallback_mode",
             "webhook_secret",
             "validation_schedule_interval",
             "preview_schedule_interval",
             "stuck_recovery",
+            # Set by the sync form when a primary-IP setting changes, cleared by
+            # the executor once the step has run; see `_overlay_rerun_pending`.
+            "overlay_rerun_pending",
             # Post-sync controls. Device status-tag ownership is mandatory;
             # vsys parent linking defaults on and can be explicitly disabled.
             "auto_refresh_device_analysis",
@@ -472,6 +476,9 @@ def clean_forward_sync(sync):
     )
     parameters["give_contexts_their_own_management_ip"] = bool(
         parameters.get("give_contexts_their_own_management_ip", False)
+    )
+    parameters["add_management_interface"] = bool(
+        parameters.get("add_management_interface", False)
     )
     diff_fallback_mode = parameters.get(
         "diff_fallback_mode",

@@ -230,3 +230,129 @@ class HeldGroupAdviceTest(SimpleTestCase):
         self.assertIn("forward site matches neither device", steps)
         self.assertIn("third site", steps)
         self.assertNotIn("A held group names why", steps)
+
+
+class SharedManagementAddressTest(SimpleTestCase):
+    def test_it_tells_the_operator_which_setting_to_turn_on(self):
+        item = _by_key(cleanup_items({}, shared_primary=575, urls=URLS))[
+            "shared_management_address"
+        ]
+
+        self.assertEqual(item["count"], 575)
+        self.assertIn("Give firewall contexts their own copy", " ".join(item["steps"]))
+
+    def test_with_the_setting_on_it_points_at_the_reasons_instead(self):
+        item = _by_key(
+            cleanup_items(
+                {},
+                shared_primary=4,
+                context_copies_on=True,
+                management_interfaces_on=True,
+                urls=URLS,
+            )
+        )["shared_management_address"]
+
+        self.assertNotIn("turn on", " ".join(item["steps"]))
+
+
+class ManagementAddressOnNoInterfaceTest(SimpleTestCase):
+    def test_it_names_the_setting_that_adds_the_interface(self):
+        item = _by_key(cleanup_items({}, on_no_interface=76, urls=URLS))[
+            "management_address_on_no_interface"
+        ]
+
+        self.assertEqual(item["count"], 76)
+        self.assertIn("Add a management interface", " ".join(item["steps"]))
+
+    def test_with_the_setting_on_it_points_at_the_reasons_instead(self):
+        item = _by_key(
+            cleanup_items(
+                {}, on_no_interface=3, management_interfaces_on=True, urls=URLS
+            )
+        )["management_address_on_no_interface"]
+
+        self.assertNotIn("turn on", " ".join(item["steps"]))
+
+    def test_contexts_left_after_copies_are_pointed_at_it_too(self):
+        item = _by_key(
+            cleanup_items({}, shared_primary=4, context_copies_on=True, urls=URLS)
+        )["shared_management_address"]
+
+        self.assertIn("Add a management interface", " ".join(item["steps"]))
+
+
+class InformationalIssueSplitTest(SimpleTestCase):
+    def test_the_dotted_name_skip_is_expected_behaviour(self):
+        from forward_netbox.utilities.skip_reason_catalogue import is_informational
+
+        self.assertTrue(
+            is_informational("subinterface-name-taken-by-parentless-interface")
+        )
+        self.assertFalse(is_informational("static-route-duplicate-in-netbox"))
+        self.assertFalse(is_informational("subinterface-parent-not-found"))
+
+    def test_the_summary_counts_expected_rows_apart(self):
+        from forward_netbox.views import _ingestion_issue_summary
+
+        class _Rows(list):
+            def values_list(self, *args):
+                return self
+
+        rows = _Rows(
+            [
+                (
+                    "dcim.interface",
+                    "ForwardDependencySkipError",
+                    {},
+                    {"skip_reason": "subinterface-name-taken-by-parentless-interface"},
+                )
+            ]
+            * 81
+            + [("dcim.device", "ForwardSyncDataError", {}, {})]
+            + [("netbox_routing.staticroute", "ForwardSearchError", {}, {})]
+        )
+
+        summary = _ingestion_issue_summary(rows)
+
+        self.assertEqual(summary["counted"], 83)
+        self.assertEqual(summary["informational"], 81)
+        self.assertEqual(summary["needs_attention"], 2)
+
+
+class IssueSummaryWithSuppressedRowsTest(SimpleTestCase):
+    def test_a_rollup_row_does_not_hide_the_real_issues(self):
+        # Past the per-model cap the rows have no issue of their own: one rollup
+        # row carries 71 of them. 10 detail rows + the rollup + 2 real issues.
+        from forward_netbox.views import _ingestion_issue_summary
+
+        class _Rows(list):
+            def values_list(self, *args):
+                return self
+
+        reason = "subinterface-name-taken-by-parentless-interface"
+        rows = _Rows(
+            [
+                (
+                    "dcim.interface",
+                    "ForwardDependencySkipError",
+                    {},
+                    {"skip_reason": reason},
+                )
+            ]
+            * 10
+            + [
+                (
+                    "dcim.interface",
+                    "ForwardRollup",
+                    {},
+                    {"beyond_cap_reasons": {reason: 71}},
+                )
+            ]
+            + [("dcim.device", "ForwardSyncDataError", {}, {})]
+            + [("netbox_routing.staticroute", "ForwardSearchError", {}, {})]
+        )
+
+        summary = _ingestion_issue_summary(rows)
+
+        self.assertEqual(summary["informational"], 81)
+        self.assertEqual(summary["needs_attention"], 3)

@@ -74,26 +74,18 @@ def install_device_generic_relation_guards(*, using):
             )
             if cursor.fetchone()[0]:
                 continue
-            quoted_table = database.ops.quote_name(table_name)
-            quoted_trigger = database.ops.quote_name(
-                DEVICE_GENERIC_RELATION_GUARD_TRIGGER
-            )
-            quoted_content_type_column = database.ops.quote_name(content_type_column)
-            quoted_object_id_column = database.ops.quote_name(object_id_column)
-            content_type_argument = content_type_column.replace("'", "''")
-            object_id_argument = object_id_column.replace("'", "''")
+            from .device_guard_triggers import create_trigger_sql
+
+            # No column list: a list pins the columns and blocks NetBox's own
+            # migrations from altering them (see `device_guard_triggers`).
             cursor.execute(
-                f"""
-                CREATE TRIGGER {quoted_trigger}
-                BEFORE INSERT OR UPDATE OF
-                    {quoted_content_type_column}, {quoted_object_id_column}
-                ON {quoted_table}
-                FOR EACH ROW
-                EXECUTE FUNCTION {DEVICE_GENERIC_RELATION_GUARD_FUNCTION}(
-                    '{content_type_argument}',
-                    '{object_id_argument}'
+                create_trigger_sql(
+                    database.ops.quote_name,
+                    None,
+                    table_name,
+                    content_type_column,
+                    object_id_column,
                 )
-                """
             )
 
 

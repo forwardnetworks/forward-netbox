@@ -28,6 +28,7 @@ from ipaddress import ip_network
 
 from django.core.exceptions import ObjectDoesNotExist
 
+from .sync_reporting import STATIC_ROUTE_DUPLICATE_REASON
 from .sync_reporting import STATIC_ROUTE_UNREADABLE_REASON
 from .sync_routing_impl import lookup_device_for_routing
 from .sync_routing_impl import preview_leaf_outcome
@@ -35,7 +36,9 @@ from .sync_routing_impl import routing_vrf
 from .sync_routing_impl import VRF_ABSENT
 
 STATIC_ROUTE_MODEL = "netbox_routing.staticroute"
-ROUTING_STATIC_ROLLUP_REASONS = frozenset({STATIC_ROUTE_UNREADABLE_REASON})
+ROUTING_STATIC_ROLLUP_REASONS = frozenset(
+    {STATIC_ROUTE_UNREADABLE_REASON, STATIC_ROUTE_DUPLICATE_REASON}
+)
 STATIC_ROUTE_MARKER = "Observed by Forward from device configuration."
 _NAME_MAX_LENGTH = 50
 _DISTANCE_MAX = 255
@@ -172,6 +175,20 @@ def _route_lookup(vrf, parsed):
     return lookup
 
 
+def _skip_duplicate(runner, row, parsed, count):
+    warn = getattr(runner, "_record_aggregated_skip_warning", None)
+    if warn is not None:
+        warn(
+            model_string=STATIC_ROUTE_MODEL,
+            reason=STATIC_ROUTE_DUPLICATE_REASON,
+            warning_message=(
+                f"NetBox holds {count} identical static routes for this row; it "
+                "was skipped rather than attached to a guess."
+            ),
+            sample=f"{parsed['prefix']} via {parsed['next_hop']} ({count} copies)",
+        )
+
+
 def _existing_route(StaticRoute, vrf, parsed):
     return (
         StaticRoute.objects.filter(**_route_lookup(vrf, parsed)).order_by("pk").first()
@@ -197,6 +214,10 @@ def ensure_static_route(runner, row, *, preview=False):
     if vrf is VRF_ABSENT:
         return None
 
+    copies = StaticRoute.objects.filter(**_route_lookup(vrf, parsed)).count()
+    if copies > 1:
+        _skip_duplicate(runner, row, parsed, copies)
+        return False
     existing = _existing_route(StaticRoute, vrf, parsed)
     held_by = (
         set(existing.devices.values_list("name", flat=True)) if existing else set()

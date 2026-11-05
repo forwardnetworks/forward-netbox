@@ -193,6 +193,16 @@ def should_skip_unchanged_snapshot(sync, *, force_unchanged=False, client=None):
     """
     if force_unchanged:
         return None
+    # A primary-IP setting saved since the step last ran: that step runs only in
+    # a run that reaches the branch stage, so skipping here would leave the new
+    # setting doing nothing until Forward's data changed.
+    from .primary_ip import OVERLAY_RERUN_PARAMETER
+    from .primary_ip import primary_ip_step_enabled
+
+    if primary_ip_step_enabled(sync) and (sync.parameters or {}).get(
+        OVERLAY_RERUN_PARAMETER
+    ):
+        return None
     baseline = sync.latest_baseline_ingestion()
     baseline_snapshot = str(getattr(baseline, "snapshot_id", "") or "").strip()
     if not baseline_snapshot:

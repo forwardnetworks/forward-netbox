@@ -95,6 +95,9 @@ ROUTE_MAP_LINK_UNRESOLVED_REASON = "route-map-link-unresolved"
 # A configured static-route line the adapter will not guess at; see
 # sync_routing_static.py.
 STATIC_ROUTE_UNREADABLE_REASON = "static-route-line-unreadable"
+# NetBox already holds several identical static routes (same VRF, prefix, next
+# hop and interface), so the sync cannot tell which one this row belongs to.
+STATIC_ROUTE_DUPLICATE_REASON = "static-route-duplicate-in-netbox"
 # A BGP peer address family names a route map or prefix list that is not
 # imported under any spelling; see `ensure_bgp_peer_address_family`.
 BGP_PEER_POLICY_UNRESOLVED_REASON = "bgp-peer-policy-link-unresolved"
@@ -129,6 +132,12 @@ ROLLUP_SUMMARY_TEMPLATES = {
         "Skipped {total} {model} line(s) the adapter could not read as a static "
         "route (an unfamiliar destination or next-hop form); they were skipped "
         "rather than guessed. Lines: {examples}{suffix}."
+    ),
+    STATIC_ROUTE_DUPLICATE_REASON: (
+        "Skipped {total} {model} row(s) because NetBox holds more than one "
+        "identical static route (same VRF, prefix, next hop and interface), so "
+        "the sync cannot tell which to update. Delete the extra copies, keeping "
+        "one; the next sync attaches the devices to it. Routes: {examples}{suffix}."
     ),
     BGP_PEER_POLICY_UNRESOLVED_REASON: (
         "Stored {total} {model} row(s) without the route-map or prefix-list "

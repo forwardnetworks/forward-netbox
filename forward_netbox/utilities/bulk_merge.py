@@ -2275,7 +2275,11 @@ def _bulk_merge_changes_main(
             component_failures[component_key] = failure
             component_failure_order.append(component_key)
         required = logical_components[logical_key]
-        if not required.issubset(component_results):
+        # Membership per required key, not `required.issubset(component_results)`:
+        # handed a dict, issubset builds a set from ALL of it on every call, and
+        # it grows by one per change, so a 900k-change merge spent 84% of its
+        # time here. `required` holds one or two keys.
+        if not all(key in component_results for key in required):
             return
         if logical_key in accounted_logical_keys:
             raise RuntimeError(

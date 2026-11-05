@@ -61,6 +61,7 @@ from .utilities.forward_api import MAX_NQE_FETCH_ALL_MAX_PAGES
 from .utilities.forward_api import MAX_NQE_IDENTICAL_FULL_PAGE_STREAK_LIMIT
 from .utilities.forward_api import MAX_NQE_PAGE_SIZE
 from .utilities.forward_api import MAX_QUERY_FETCH_CONCURRENCY
+from .utilities.primary_ip import overlay_rerun_needed
 from .utilities.query_registry import missing_query_specs_message
 from .utilities.query_registry import models_without_query_specs
 from .utilities.runtime_guidance import DEFAULT_PUSHDOWN_DIFF_WARN_RATIO
@@ -1253,6 +1254,32 @@ class ForwardValidationRunForceAllowForm(ConfirmationForm):
     )
 
 
+def _sync_row_busy(instance):
+    """A sentence when a running job holds this sync's row, else ``""``.
+
+    Saving the sync updates its row. A job that holds the row (a post-sync step,
+    a merge) makes that UPDATE wait, and a wait longer than the gateway allows
+    loses the save behind a 504 with nothing on screen. Checking with NOWAIT
+    turns that into an immediate, readable refusal."""
+    from django.db import DatabaseError
+    from django.db import transaction
+
+    if not getattr(instance, "pk", None):
+        return ""
+    try:
+        with transaction.atomic():
+            ForwardSync.objects.select_for_update(nowait=True, no_key=True).filter(
+                pk=instance.pk
+            ).exists()
+    except DatabaseError:
+        return (
+            "This sync is busy: a running job (a sync, merge or post-sync step) "
+            "holds it, so the change could not be saved. Nothing was changed. "
+            "Save again when the job finishes; the Jobs tab shows it."
+        )
+    return ""
+
+
 class ForwardSyncForm(NetBoxModelForm):
     source = forms.ModelChoiceField(
         queryset=ForwardSource.objects.all(),
@@ -1352,6 +1379,22 @@ class ForwardSyncForm(NetBoxModelForm):
             "default."
         ),
     )
+    add_management_interface = forms.BooleanField(
+        required=False,
+        label="Add a management interface for an address no interface carries",
+        help_text=(
+            "Forward records some devices' management address on none of their "
+            "interfaces: a Palo Alto's management port, a FortiGate modeled with "
+            "no interfaces, a Fortinet vdom with no mgmt interface. NetBox sets a "
+            "primary IP only from an address on one of the device's interfaces, "
+            "so those devices get none. With this on, such a device gets a "
+            "virtual, management-only interface (mgmt, or the name of the "
+            "chassis interface that holds the address) tagged "
+            "`forward-management-interface`, carrying the address as its primary "
+            "IP. An interface of that name the sync did not add is never used. "
+            "Needs the management-IP fallback above. Off by default."
+        ),
+    )
     diff_fallback_mode = forms.ChoiceField(
         choices=tuple(
             (value, label)
@@ -1437,6 +1480,9 @@ class ForwardSyncForm(NetBoxModelForm):
                 initial[name] = value[-1]
         kwargs["initial"] = initial
         super().__init__(*args, **kwargs)
+        # What is stored now, before `clean()` replaces `instance.parameters`
+        # with the submitted values: the primary-IP marker compares against this.
+        self._stored_parameters = dict(self.instance.parameters or {})
         parameters = self.instance.parameters or {}
         self.fields["auto_merge"].initial = parameters.get("auto_merge", True)
         self.fields["enable_bulk_orm"].initial = parameters.get(
@@ -1467,6 +1513,9 @@ class ForwardSyncForm(NetBoxModelForm):
         )
         self.fields["give_contexts_their_own_management_ip"].initial = parameters.get(
             "give_contexts_their_own_management_ip", False
+        )
+        self.fields["add_management_interface"].initial = parameters.get(
+            "add_management_interface", False
         )
         self.fields["diff_fallback_mode"].initial = parameters.get(
             "diff_fallback_mode",
@@ -1516,6 +1565,7 @@ class ForwardSyncForm(NetBoxModelForm):
                 "set_primary_ip_from_mgmt_tag",
                 "set_primary_ip_from_forward_management_ip",
                 "give_contexts_their_own_management_ip",
+                "add_management_interface",
                 "diff_fallback_mode",
                 "scheduled",
                 "interval",
@@ -1537,6 +1587,9 @@ class ForwardSyncForm(NetBoxModelForm):
             raise forms.ValidationError("Scheduled time must be in the future.")
         if cleaned.get("interval") and not cleaned.get("scheduled"):
             cleaned["scheduled"] = local_now()
+        busy = _sync_row_busy(self.instance)
+        if busy:
+            raise forms.ValidationError(busy)
         if cleaned.get("give_contexts_their_own_management_ip") and not cleaned.get(
             "set_primary_ip_from_forward_management_ip"
         ):
@@ -1544,6 +1597,14 @@ class ForwardSyncForm(NetBoxModelForm):
                 "give_contexts_their_own_management_ip",
                 "Needs the management-IP fallback: the copy is made for a device "
                 "whose Forward management address another device holds.",
+            )
+        if cleaned.get("add_management_interface") and not cleaned.get(
+            "set_primary_ip_from_forward_management_ip"
+        ):
+            self.add_error(
+                "add_management_interface",
+                "Needs the management-IP fallback: the interface carries the "
+                "management address Forward records for the device.",
             )
         source = cleaned.get("source")
         network_id = (source.parameters or {}).get("network_id") if source else None
@@ -1607,6 +1668,9 @@ class ForwardSyncForm(NetBoxModelForm):
             "give_contexts_their_own_management_ip": bool(
                 cleaned.get("give_contexts_their_own_management_ip", False)
             ),
+            "add_management_interface": bool(
+                cleaned.get("add_management_interface", False)
+            ),
             "diff_fallback_mode": cleaned.get("diff_fallback_mode")
             or ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
             "webhook_secret": str(cleaned.get("webhook_secret") or ""),
@@ -1650,6 +1714,9 @@ class ForwardSyncForm(NetBoxModelForm):
             "give_contexts_their_own_management_ip": bool(
                 self.cleaned_data.get("give_contexts_their_own_management_ip", False)
             ),
+            "add_management_interface": bool(
+                self.cleaned_data.get("add_management_interface", False)
+            ),
             "diff_fallback_mode": self.cleaned_data.get("diff_fallback_mode")
             or ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
             "webhook_secret": str(self.cleaned_data.get("webhook_secret") or ""),
@@ -1662,6 +1729,13 @@ class ForwardSyncForm(NetBoxModelForm):
         }
         for model_string in forward_configured_models():
             parameters[model_string] = self.cleaned_data.get(model_string, False)
+        # The primary-IP step runs only in a run's branch stage, which a run with
+        # no Forward changes skips. Changing one of its settings must therefore
+        # make the next run stage it, or "turn it on and run the sync" does
+        # nothing until Forward data happens to change. The marker is set here and
+        # cleared by the executor once the step has run.
+        if overlay_rerun_needed(self._stored_parameters, parameters):
+            parameters["overlay_rerun_pending"] = True
         self.instance.parameters = parameters
         self.instance.auto_merge = self.cleaned_data.get("auto_merge", False)
         self.instance.status = ForwardSyncStatusChoices.NEW

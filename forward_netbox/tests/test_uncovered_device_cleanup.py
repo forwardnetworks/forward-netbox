@@ -470,3 +470,56 @@ class RestrictedPruneAllowlistTest(_Fixture):
             result["restricted_refusals"],
             {"not_owned": [], "not_absent": [], "held": []},
         )
+
+
+class NeighbourOfASurvivingDeviceTest(_Fixture):
+    """A device that was a BGP neighbour of a surviving device could not be
+    pruned: the surviving device's BGP peer PROTECTs the neighbour address on
+    the gone device. The prune keeps the peer and the address and only takes
+    the address off the gone device's interface."""
+
+    def test_the_prune_deletes_it_and_keeps_the_other_devices_peer(self):
+        from dcim.models import Interface
+        from django.contrib.contenttypes.models import ContentType
+        from ipam.models import ASN
+        from ipam.models import IPAddress
+        from ipam.models import RIR
+        from netbox_routing.models import BGPPeer
+        from netbox_routing.models import BGPRouter
+        from netbox_routing.models import BGPScope
+
+        self._device("in-scope")
+        survivor = self._device("survivor")
+        gone = self._own(self._device("gone"))
+        self._served_quarantine(gone)
+        interface = Interface.objects.create(
+            device=gone, name="Eth9", type="1000base-t"
+        )
+        address = IPAddress.objects.create(
+            address="10.1.1.1/32",
+            assigned_object_type=ContentType.objects.get_for_model(Interface),
+            assigned_object_id=interface.pk,
+        )
+        asn = ASN.objects.create(asn=65001, rir=RIR.objects.create(name="r", slug="r"))
+        router = BGPRouter.objects.create(name="r1", assigned_object=survivor, asn=asn)
+        peer = BGPPeer.objects.create(
+            scope=BGPScope.objects.create(router=router), peer=address, remote_as=asn
+        )
+
+        report = self._report(
+            [
+                {"name": "in-scope", "completed": True},
+                {"name": "survivor", "completed": True},
+            ],
+            [
+                {"name": "in-scope", "vendor": "CISCO"},
+                {"name": "survivor", "vendor": "CISCO"},
+            ],
+        )
+        result = prune_uncovered_devices(self.sync, report=report)
+
+        self.assertEqual(result["pruned_device_count"], 1)
+        self.assertFalse(Device.objects.filter(pk=gone.pk).exists())
+        address.refresh_from_db()
+        self.assertIsNone(address.assigned_object_id)
+        self.assertEqual(BGPPeer.objects.get(pk=peer.pk).peer_id, address.pk)

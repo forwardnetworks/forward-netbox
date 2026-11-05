@@ -11,6 +11,7 @@
 # the sync builds per device and rebuilds on the next run. The duplicate-device
 # repair keeps its own narrower list. Anything else that protects the device
 # still refuses the delete.
+from .scope_reconciliation import _detach_addresses_foreign_routing_holds
 from .scope_reconciliation import _release_routing_rows_protecting
 from .scope_reconciliation import SITE_RELABEL_RELEASABLE_ROUTING_MODELS
 
@@ -122,6 +123,16 @@ def release_routing_rows(devices, using=None):
 
     released = {}
     for device in devices:
+        # A BGP peer on a surviving device that uses this device's address as
+        # its neighbour keeps the peer and the address; the address only leaves
+        # this device's interface.
+        detached = _detach_addresses_foreign_routing_holds(
+            device, selected, using=using
+        )
+        if detached:
+            released["ipam.ipaddress (kept, unassigned)"] = (
+                released.get("ipam.ipaddress (kept, unassigned)", 0) + detached
+            )
         done, refused = _release_routing_rows_protecting(device, releasable=releasable)
         for label, count in done.items():
             released[label] = released.get(label, 0) + count
