@@ -523,3 +523,45 @@ class NeighbourOfASurvivingDeviceTest(_Fixture):
         address.refresh_from_db()
         self.assertIsNone(address.assigned_object_id)
         self.assertEqual(BGPPeer.objects.get(pk=peer.pk).peer_id, address.pk)
+
+    def test_a_device_with_its_own_bgp_router_is_pruned_with_it(self):
+        """Found by running the prune on a customer-shaped estate: a synced
+        device that has its own BGP router and scope was refused on
+        `netbox_routing.bgpscope`, so it could never be pruned."""
+        from ipam.models import ASN
+        from ipam.models import RIR
+        from netbox_routing.models import BGPRouter
+        from netbox_routing.models import BGPScope
+
+        self._device("in-scope")
+        survivor = self._device("survivor")
+        gone = self._own(self._device("gone"))
+        self._served_quarantine(gone)
+        asn = ASN.objects.create(
+            asn=65002, rir=RIR.objects.create(name="r2", slug="r2")
+        )
+        gone_router = BGPRouter.objects.create(name="g1", assigned_object=gone, asn=asn)
+        gone_scope = BGPScope.objects.create(router=gone_router)
+        kept_router = BGPRouter.objects.create(
+            name="s1", assigned_object=survivor, asn=asn
+        )
+        kept_scope = BGPScope.objects.create(router=kept_router)
+
+        report = self._report(
+            [
+                {"name": "in-scope", "completed": True},
+                {"name": "survivor", "completed": True},
+            ],
+            [
+                {"name": "in-scope", "vendor": "CISCO"},
+                {"name": "survivor", "vendor": "CISCO"},
+            ],
+        )
+        prune_uncovered_devices(self.sync, report=report)
+
+        self.assertFalse(Device.objects.filter(pk=gone.pk).exists())
+        self.assertFalse(BGPScope.objects.filter(pk=gone_scope.pk).exists())
+        self.assertFalse(BGPRouter.objects.filter(pk=gone_router.pk).exists())
+        # The surviving device's routing is untouched.
+        self.assertTrue(BGPScope.objects.filter(pk=kept_scope.pk).exists())
+        self.assertTrue(BGPRouter.objects.filter(pk=kept_router.pk).exists())

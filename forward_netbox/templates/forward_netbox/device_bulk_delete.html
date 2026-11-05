@@ -92,6 +92,11 @@ Context:
                 {% trans "Blocking these devices now:" %}
                 {% for label, count in blockers.routing.items %}<code>{{ label }}</code> &times;{{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}
               {% endif %}
+              {% if blockers.foreign %}
+                <br>
+                {% trans "Routing records on other devices use these devices' addresses and also block the delete. They are kept, and their addresses only leave these devices' interfaces:" %}
+                {% for label, count in blockers.foreign.items %}<code>{{ label }}</code> &times;{{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}
+              {% endif %}
             </div>
           </div>
         {% endwith %}

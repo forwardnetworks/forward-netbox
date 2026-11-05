@@ -3730,8 +3730,11 @@ _BLOCKER_PREVIEW_LIMIT = 25
 
 
 def _delete_blockers(device_pks):
-    """``{"routing": {label: n}, "other": {label: n}}`` of what blocks these
-    devices' deletion, or ``None`` when the selection is too large to check."""
+    """``{"routing": {label: n}, "other": {label: n}, "foreign": {label: n}}``
+    of what blocks these devices' deletion, or ``None`` when the selection is
+    too large to check. ``foreign`` is routing rows on devices that stay, which
+    use these devices' addresses: they block NetBox's own delete, and the
+    cascade keeps them and only detaches the addresses."""
     from collections import Counter
 
     from .utilities.device_cascade_delete import is_releasable_routing_row
@@ -3741,7 +3744,7 @@ def _delete_blockers(device_pks):
     if len(device_pks) > _BLOCKER_PREVIEW_LIMIT:
         return None
     selected = set(device_pks)
-    routing, other = Counter(), Counter()
+    routing, other, foreign = Counter(), Counter(), Counter()
     cache = {}
     for device in Device.objects.filter(pk__in=device_pks):
         for blocker in _objects_protecting_device(
@@ -3758,9 +3761,14 @@ def _delete_blockers(device_pks):
             # address is handled by the delete (the address is detached and kept),
             # so it is not something the operator must remove first.
             if not ours and label.startswith("netbox_routing."):
+                foreign[label] += 1
                 continue
             (routing if ours else other)[label] += 1
-    return {"routing": dict(routing), "other": dict(other)}
+    return {
+        "routing": dict(routing),
+        "other": dict(other),
+        "foreign": dict(foreign),
+    }
 
 
 def _delete_blocked_explanation(device_pks):
@@ -3781,6 +3789,16 @@ def _delete_blocked_explanation(device_pks):
                 "records."
             )
             % {"labels": _blocker_labels(blockers["routing"])}
+        )
+    if blockers.get("foreign"):
+        parts.append(
+            _(
+                "Routing records on other devices (%(labels)s) use these "
+                "devices' addresses, which blocks the delete. Select the "
+                "devices again and tick the box: those records are kept and "
+                "the addresses only leave these devices' interfaces."
+            )
+            % {"labels": _blocker_labels(blockers["foreign"])}
         )
     if blockers["other"]:
         parts.append(

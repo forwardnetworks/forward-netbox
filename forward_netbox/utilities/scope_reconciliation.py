@@ -1621,6 +1621,37 @@ def _prune_result(
     }
 
 
+class _PruneRefused(Exception):
+    """A device's routing rows could not all be released; ``refused`` says what."""
+
+    def __init__(self, refused):
+        super().__init__("a device is protected by rows outside the allowlist")
+        self.refused = dict(refused)
+
+
+def _release_routing_rows_owned_by(device, selected_ids):
+    """Delete the routing rows that hang off ``device`` and only off devices
+    being pruned in this call, so the device can be deleted.
+
+    The same allowlist and owner rule as the device list's routing cascade
+    (`device_cascade_delete.release_routing_rows`): a row that belongs to a
+    device that stays is never removed. Returns ``(released, refused)``.
+    """
+    from .device_cascade_delete import is_releasable_routing_row
+    from .device_cascade_delete import owning_device_ids
+
+    selected = set(selected_ids)
+    cache = {}
+
+    def releasable(row):
+        if not is_releasable_routing_row(row._meta.label_lower):
+            return False
+        owners = owning_device_ids(row, _cache=cache)
+        return bool(owners) and owners <= selected
+
+    return _release_routing_rows_protecting(device, releasable=releasable)
+
+
 def _delete_prunable_devices(sync, device_pks):
     """Delete devices, releasing ownership first and respecting PROTECT.
 
@@ -1671,6 +1702,14 @@ def _delete_prunable_devices(sync, device_pks):
                     device = Device.objects.filter(pk=device_id).first()
                     if device is not None:
                         _detach_addresses_foreign_routing_holds(device, device_pks)
+                        _, refused_rows = _release_routing_rows_owned_by(
+                            device, device_pks
+                        )
+                        if refused_rows:
+                            # Something outside the routing allowlist also
+                            # protects it: undo the release, ownership
+                            # included, and report what refused.
+                            raise _PruneRefused(refused_rows)
                     deleted, _ = Device.objects.filter(pk=device_id).delete()
                     deleted_total += deleted
                     pruned_device_ids.append(device_id)
@@ -1679,6 +1718,9 @@ def _delete_prunable_devices(sync, device_pks):
                 for obj in exc.protected_objects:
                     label = obj._meta.label_lower
                     protected_tally[label] = protected_tally.get(label, 0) + 1
+            except _PruneRefused as exc:
+                for label, count in exc.refused.items():
+                    protected_tally[label] = protected_tally.get(label, 0) + count
         if not retry_device_ids:
             break
         if not pass_progress:
