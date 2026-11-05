@@ -799,8 +799,41 @@ management address Forward records for it. Turn on **Fall back to Forward's
 management IP** (`set_primary_ip_from_forward_management_ip`, off by default).
 The address is used only when Forward records exactly one for the device and
 that exact address is already on exactly one of the device's interfaces in
-NetBox. A device with a `Mgmt_` tag, several recorded addresses, or an address
-on no interface is left alone. The audit above reports tag resolution only.
+NetBox. A device with several recorded addresses uses the one Forward collected
+it on, when that is one of them (a FortiGate's mgmt1 and mgmt2). With **Import
+SNMP Endpoints as Devices** on, an imported endpoint uses the address Forward
+collected it on. A device with a `Mgmt_` tag that resolved, several addresses
+none of which Forward collected it on, or an address on no interface is left
+alone. The audit above reports tag resolution only.
+
+### Add a management interface for an address no interface carries
+
+Forward records a device's management address apart from its interfaces, and on
+some platforms none of them carries it: a Palo Alto's out-of-band management port
+is not in its interface list, Forward models some FortiGates with no interfaces at
+all, and a Fortinet vdom has no `mgmt` interface while its chassis holds the
+address there. NetBox sets a primary IP only from an address on one of the
+device's own interfaces, so these devices get none.
+
+**Add a management interface for an address no interface carries**
+(`add_management_interface`, off by default, needs the management-IP fallback
+above) gives such a device a virtual, management-only interface tagged
+`forward-management-interface`, carrying the address as its primary IP:
+
+- A device whose address NetBox does not hold anywhere gets an interface named
+  `mgmt` with the address as a host address (/32 or /128).
+- With the per-context copy below also on, a context whose chassis holds the
+  address on an interface the context lacks gets an interface of that name, and
+  its copy of the address goes there.
+- An interface of that name the sync did not add is never used, and an address
+  NetBox already holds elsewhere (unassigned, or in another VRF) is never moved
+  or duplicated; the bundle names the reason
+  (`management-interface-name-taken`, `management-interface-address-elsewhere`).
+- No Forward query emits these interfaces, so no sync deletes them; they go with
+  their device. Turning the parameter off stops new ones; existing ones stay
+  until deleted (filter interfaces by the `forward-management-interface` tag).
+- The support bundle reports `primary_ip.management_interfaces` (on or off,
+  interfaces, devices with one, devices whose primary IP is on one).
 
 ### Give firewall contexts their own management IP
 

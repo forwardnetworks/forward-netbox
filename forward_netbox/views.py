@@ -1077,6 +1077,8 @@ def _primary_ip_bundle_payload(sync):
         # is on, and how many copies exist, so "every context has a primary IP"
         # can be read off a bundle.
         "context_copies": _primary_ip_context_copies(sync),
+        # The opt-in management interface for an address no interface carries.
+        "management_interfaces": _primary_ip_management_interfaces(sync),
         # Every device by reason, not just ten: which devices a reason means.
         "without_primary_ip_device_keys": _primary_ip_reason_keys(classified),
         # What mask the primary addresses carry. A customer asked whether primary
@@ -1171,6 +1173,27 @@ def _shared_holder_pairs(recorded_here, outcomes):
             for holder, devices in holders.most_common(50)
         ],
         "pairs": pairs[:_BUNDLE_DEVICE_KEY_LIMIT],
+    }
+
+
+def _primary_ip_management_interfaces(sync):
+    from dcim.models import Interface
+    from django.db.models import Q
+
+    from .utilities.management_interfaces import MANAGEMENT_INTERFACE_TAG_SLUG
+    from .utilities.management_interfaces import management_interfaces_enabled
+
+    tagged = Interface.objects.filter(tags__slug=MANAGEMENT_INTERFACE_TAG_SLUG)
+    return {
+        "enabled": management_interfaces_enabled(sync),
+        "interfaces": tagged.count(),
+        "devices_with_one": tagged.values("device_id").distinct().count(),
+        "devices_whose_primary_is_on_one": Device.objects.filter(
+            Q(primary_ip4__interface__tags__slug=MANAGEMENT_INTERFACE_TAG_SLUG)
+            | Q(primary_ip6__interface__tags__slug=MANAGEMENT_INTERFACE_TAG_SLUG)
+        )
+        .distinct()
+        .count(),
     }
 
 
@@ -3912,6 +3935,7 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
         except Exception:  # noqa: BLE001 - the checklist must not sink the page
             relabel = {}
         from .utilities.context_ip_copies import context_copies_enabled
+        from .utilities.management_interfaces import management_interfaces_enabled
         from .utilities.primary_ip import primary_ip_log_facts
 
         try:
@@ -3922,6 +3946,8 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
             payload,
             shared_primary=(summary or {}).get("shared_with_another_device", 0),
             context_copies_on=context_copies_enabled(sync),
+            on_no_interface=(summary or {}).get("address_on_no_synced_interface", 0),
+            management_interfaces_on=management_interfaces_enabled(sync),
             twin_count=len(_stored_device_ids(sync, "unmanaged", UNCLAIMED_TWINS)[0]),
             relabel={
                 "pair_count": len(relabel.get("pairs") or ()),

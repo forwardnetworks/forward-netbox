@@ -30,6 +30,8 @@ def cleanup_items(
     urls=None,
     shared_primary=0,
     context_copies_on=False,
+    on_no_interface=0,
+    management_interfaces_on=False,
 ):
     """The ordered checklist for one stored scope report.
 
@@ -299,7 +301,52 @@ def cleanup_items(
                     else [
                         "The per-context copy is on. These still have none: the "
                         "Explained tab names why (usually no interface named "
-                        "like the chassis's)."
+                        "like the chassis's).",
+                        *(
+                            []
+                            if management_interfaces_on
+                            else [
+                                "For a context with no interface named like the "
+                                "chassis's (a vdom has no mgmt), edit the sync, "
+                                "turn on Add a management interface for an "
+                                "address no interface carries, and run the sync "
+                                "again."
+                            ]
+                        ),
+                    ]
+                ),
+                "url": urls.get("shared_management_address", ""),
+            }
+        )
+    on_none = _count(on_no_interface)
+    if on_none:
+        items.append(
+            {
+                "key": "management_address_on_no_interface",
+                "title": "Devices with no primary IP because no interface carries "
+                "their management address",
+                "count": on_none,
+                "kind": NO_DELETE_FIX_IN_NETBOX,
+                "what": (
+                    "Forward records their management address on none of their "
+                    "interfaces: a Palo Alto's management port, a FortiGate "
+                    "Forward models with no interfaces. NetBox sets a primary IP "
+                    "only from an address on one of the device's interfaces."
+                ),
+                "steps": (
+                    [
+                        "Edit the sync and turn on Add a management interface for "
+                        "an address no interface carries (Execution section; "
+                        "needs Fall back to Forward's management IP).",
+                        "Run the sync again: each gets a virtual mgmt interface "
+                        "tagged forward-management-interface carrying the address "
+                        "as its primary IP.",
+                    ]
+                    if not management_interfaces_on
+                    else [
+                        "The management interface is on. These still have none: "
+                        "the Explained tab names why (an interface named mgmt "
+                        "already exists, or NetBox holds the address elsewhere)."
                     ]
                 ),
                 "url": urls.get("shared_management_address", ""),

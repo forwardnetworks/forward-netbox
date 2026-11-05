@@ -107,6 +107,16 @@ _OUTCOME_PHRASES = {
         "copy was made"
     ),
     "context-copy-failed": "could not be given a per-context copy of the address",
+    "management-interface-name-taken": (
+        "already have an interface of the name the management interface would "
+        "take (mgmt, or the chassis's) that the sync did not add, so none was "
+        "added"
+    ),
+    "management-interface-address-elsewhere": (
+        "have the address on no interface while NetBox holds it elsewhere (an "
+        "unassigned row or another VRF), so no management interface was added"
+    ),
+    "management-interface-failed": "could not be given a management interface",
 }
 
 
@@ -133,8 +143,12 @@ _OUTCOME_ADVICE = (
     (
         "no-interface",
         "{n} have a management address from Forward that matched no interface of "
-        "the device in NetBox: the interface may not have synced (see the ingestion "
-        "issues), or Forward's collection holds an address no interface carries.",
+        "the device in NetBox: usually Forward records the address on no interface "
+        "(a Palo Alto's management port, a FortiGate modeled with no interfaces), "
+        "or the interface did not sync (see the ingestion issues). To give each a "
+        "primary IP, edit the sync, turn on Add a management interface for an "
+        "address no interface carries (Execution section; needs Fall back to "
+        "Forward's management IP), and run the sync again.",
     ),
     (
         "tag-unresolved",
@@ -161,8 +175,23 @@ _OUTCOME_ADVICE = (
         "context-copy-no-matching-interface",
         "{n} share a management address and have no interface named like the "
         "one that holds it, so they got no per-context copy: the context's "
-        "interface list differs from its chassis's in Forward. Rename or add the "
-        "matching interface, or set a primary IP by hand.",
+        "interface list differs from its chassis's in Forward (a vdom has no mgmt "
+        "interface). Turn on Add a management interface for an address no "
+        "interface carries (Execution section) and run the sync again, or set a "
+        "primary IP by hand.",
+    ),
+    (
+        "management-interface-name-taken",
+        "{n} already have an interface of the name the management interface would "
+        "take (mgmt, or the chassis interface that holds the address) that the "
+        "sync did not add, and the address is not on it: put the address on that "
+        "interface, or set a primary IP by hand.",
+    ),
+    (
+        "management-interface-address-elsewhere",
+        "{n} have their management address on no interface while NetBox holds "
+        "that address elsewhere (unassigned, or in another VRF): assign that "
+        "address to the device, or set a primary IP by hand.",
     ),
     (
         "multiple-addresses",

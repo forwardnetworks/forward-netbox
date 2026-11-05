@@ -19,6 +19,7 @@ from .forward_api import get_device_management_ips
 from .forward_api import get_device_mgmt_tags
 from .interface_naming import parse_mgmt_tag
 from .interface_naming import resolve_mgmt_interface_names
+from .management_interfaces import management_interfaces_enabled
 
 PRIMARY_IP_FROM_MGMT_TAG_PARAMETER = "set_primary_ip_from_mgmt_tag"
 PRIMARY_IP_FROM_MANAGEMENT_IP_PARAMETER = "set_primary_ip_from_forward_management_ip"
@@ -245,6 +246,7 @@ _OVERLAY_WATCHED = (
     PRIMARY_IP_FROM_MGMT_TAG_PARAMETER,
     PRIMARY_IP_FROM_MANAGEMENT_IP_PARAMETER,
     "give_contexts_their_own_management_ip",
+    "add_management_interface",
 )
 
 
@@ -327,6 +329,54 @@ def _branch_interface_ips(device_names):
         device_interface_ips[name] = per_interface
         ip_lookup.update(lookup)
     return devices, device_interface_ips, ip_lookup
+
+
+def _add_management_interfaces(devices, unresolved, device_management_ips, logger):
+    """Give each ``no-interface`` device a management interface carrying its address.
+
+    Returns ``(names given one, {device pk: (reason slug, None)})``. A device
+    with a primary IP of that family keeps it: one set by hand is a person's.
+    """
+    from .management_interfaces import give_device_a_management_address
+
+    added, outcomes = set(), {}
+    for name in sorted(unresolved):
+        if unresolved[name] != "no-interface":
+            continue
+        device = devices.get(name)
+        if device is None:
+            continue
+        hosts = {
+            host
+            for host in (_host_ip(raw) for raw in device_management_ips.get(name) or ())
+            if host is not None
+        }
+        if len(hosts) != 1:
+            continue
+        host = next(iter(hosts))
+        attr = "primary_ip6" if host.version == 6 else "primary_ip4"
+        if getattr(device, f"{attr}_id"):
+            continue
+        try:
+            address, reason = give_device_a_management_address(device, host)
+        except JobTimeoutException:
+            raise
+        except Exception as exc:  # noqa: BLE001 - one device must not sink the step
+            logger.log_warning(
+                "primary_ip-from-tag: a management interface could not be added "
+                f"({type(exc).__name__})."
+            )
+            address, reason = None, "management-interface-failed"
+        if address is None:
+            outcomes[device.pk] = (reason, None)
+            continue
+        added.add(name)
+    if added:
+        logger.log_info(
+            f"primary_ip-from-tag: added a management interface to {len(added)} "
+            "device(s) whose management address was on none of their interfaces."
+        )
+    return added, outcomes
 
 
 def _existing_primary_ip_owners():
@@ -460,6 +510,7 @@ def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
             )
         device_management_ips = {}
         if primary_ip_from_management_ip_enabled(sync):
+            source_parameters = getattr(sync.source, "parameters", None) or {}
             device_management_ips = get_device_management_ips(
                 executor.client,
                 network_id,
@@ -467,6 +518,7 @@ def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
                 include_tags=include_tags,
                 exclude_tags=exclude_tags,
                 include_match=include_match,
+                include_endpoints=bool(source_parameters.get("sync_endpoints")),
             )
         if not device_mgmt_tags and not device_management_ips:
             logger.log_info(
@@ -579,15 +631,37 @@ def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
             }
             outcomes = dict(lost_to_holder)
             if self_unresolved:
+                # Opt-in: a device whose one management address is on none of its
+                # interfaces, and that no device holds, gets a management
+                # interface carrying it. Before the shared check, so a second
+                # device naming the same address reads as sharing it with the
+                # first and takes the copy path below.
+                added_names, added_outcomes = set(), {}
+                add_interfaces = management_interfaces_enabled(sync)
+                if add_interfaces:
+                    added_names, added_outcomes = _add_management_interfaces(
+                        devices, self_unresolved, device_management_ips, logger
+                    )
+                    updated.extend(devices[name] for name in sorted(added_names))
                 shared = _devices_sharing_management_address(
-                    self_unresolved, device_management_ips
+                    {
+                        name: reason
+                        for name, reason in self_unresolved.items()
+                        if name not in added_names
+                    },
+                    device_management_ips,
                 )
                 # Opt-in: a context whose one management address another device
                 # holds gets its own copy of it, as its primary IP.
                 copied_names, copy_outcomes = set(), {}
                 if shared and context_copies_enabled(sync):
                     created_ips, changed_rows, primaries, copy_outcomes = (
-                        apply_context_copies(devices, shared, device_management_ips)
+                        apply_context_copies(
+                            devices,
+                            shared,
+                            device_management_ips,
+                            add_interfaces=add_interfaces,
+                        )
                     )
                     taken = []
                     for _pk, (device, copy) in primaries.items():
@@ -606,22 +680,27 @@ def apply_primary_ip_from_mgmt_tags(executor, branch, *, snapshot_id):
                     )
                     updated.extend(taken)
                 counts = {}
+                left = 0
                 for name, reason in self_unresolved.items():
-                    if name in copied_names:
+                    if name in copied_names or name in added_names:
                         continue
                     device = devices.get(name)
+                    # A name Forward reports and NetBox has no device for (an SNMP
+                    # endpoint the sync does not import, a device out of scope)
+                    # is no NetBox device left without a primary IP.
+                    if device is None:
+                        continue
+                    left += 1
                     key = "shared" if name in shared else reason
-                    if device is not None and device.pk in copy_outcomes:
+                    if device.pk in copy_outcomes:
                         outcomes[device.pk] = copy_outcomes[device.pk]
                         key = "shared"
-                    elif device is not None:
+                    elif device.pk in added_outcomes and name not in shared:
+                        outcomes[device.pk] = added_outcomes[device.pk]
+                    else:
                         outcomes[device.pk] = (key, shared.get(name))
                     counts[key] = counts.get(key, 0) + 1
-                logger.log_info(
-                    format_fallback_summary(
-                        len(self_unresolved) - len(copied_names), counts
-                    )
-                )
+                logger.log_info(format_fallback_summary(left, counts))
             # The two ways a bare device got no code above: its Mgmt_ tag matched
             # no interface address, or Forward gave it no management address the
             # step could use.

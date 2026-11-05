@@ -23,6 +23,13 @@ COPIES = "give_contexts_their_own_management_ip"
 
 
 class OverlayMarkerRuleTest(SimpleTestCase):
+    def test_turning_on_the_management_interface_forces_the_step(self):
+        self.assertTrue(
+            overlay_rerun_needed(
+                {FALLBACK: True}, {FALLBACK: True, "add_management_interface": True}
+            )
+        )
+
     def test_turning_a_setting_on_asks_for_the_step(self):
         self.assertTrue(
             overlay_rerun_needed({FALLBACK: True}, {FALLBACK: True, COPIES: True})

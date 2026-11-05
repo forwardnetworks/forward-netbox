@@ -34,15 +34,31 @@ def failed_model_strings(model_results) -> list[str]:
     An empty workload set means one of two very different things: the source
     genuinely converged, or every fetch failed and produced nothing. They are
     indistinguishable from the workload alone, so the failure results decide it.
+
+    A model skipped because the sync has no NQE Map enabled for it is the sync's
+    configuration, not a failed fetch: a run with Forward changes logs it and
+    goes on, so a run without them must too, or every manual re-run of an
+    unchanged snapshot failed on it. Only when no model fetched at all does it
+    count, since then nothing ran.
     """
+    results = list(model_results or [])
+    failed = [result for result in results if getattr(result, "failure_count", 0)]
+    if any(not getattr(result, "failure_count", 0) for result in results):
+        failed = [
+            result
+            for result in failed
+            if str(getattr(result, "failure_reason", "") or "")
+            not in CONFIGURED_OFF_REASONS
+        ]
     return sorted(
-        {
-            str(getattr(result, "model_string", "") or "")
-            for result in model_results or []
-            if getattr(result, "failure_count", 0)
-        }
-        - {""}
+        {str(getattr(result, "model_string", "") or "") for result in failed} - {""}
     )
+
+
+# Failure reasons that mean the sync is configured not to fetch the model.
+CONFIGURED_OFF_REASONS = frozenset({"no-enabled-query-maps"})
+# `no-resolved-query-maps` stays a failure: a map the sync enabled that did not
+# resolve is not a choice the operator made.
 
 
 class ForwardSingleBranchExecutor(ForwardExecutorBase):
@@ -215,6 +231,7 @@ class ForwardSingleBranchExecutor(ForwardExecutorBase):
                             str(getattr(result, "failure_reason", "") or "")
                             for result in fetcher.model_results
                             if getattr(result, "failure_count", 0)
+                            and getattr(result, "model_string", "") in failed_models
                         }
                         - {""}
                     ),

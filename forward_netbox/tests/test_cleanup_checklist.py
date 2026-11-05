@@ -243,10 +243,42 @@ class SharedManagementAddressTest(SimpleTestCase):
 
     def test_with_the_setting_on_it_points_at_the_reasons_instead(self):
         item = _by_key(
-            cleanup_items({}, shared_primary=4, context_copies_on=True, urls=URLS)
+            cleanup_items(
+                {},
+                shared_primary=4,
+                context_copies_on=True,
+                management_interfaces_on=True,
+                urls=URLS,
+            )
         )["shared_management_address"]
 
         self.assertNotIn("turn on", " ".join(item["steps"]))
+
+
+class ManagementAddressOnNoInterfaceTest(SimpleTestCase):
+    def test_it_names_the_setting_that_adds_the_interface(self):
+        item = _by_key(cleanup_items({}, on_no_interface=76, urls=URLS))[
+            "management_address_on_no_interface"
+        ]
+
+        self.assertEqual(item["count"], 76)
+        self.assertIn("Add a management interface", " ".join(item["steps"]))
+
+    def test_with_the_setting_on_it_points_at_the_reasons_instead(self):
+        item = _by_key(
+            cleanup_items(
+                {}, on_no_interface=3, management_interfaces_on=True, urls=URLS
+            )
+        )["management_address_on_no_interface"]
+
+        self.assertNotIn("turn on", " ".join(item["steps"]))
+
+    def test_contexts_left_after_copies_are_pointed_at_it_too(self):
+        item = _by_key(
+            cleanup_items({}, shared_primary=4, context_copies_on=True, urls=URLS)
+        )["shared_management_address"]
+
+        self.assertIn("Add a management interface", " ".join(item["steps"]))
 
 
 class InformationalIssueSplitTest(SimpleTestCase):

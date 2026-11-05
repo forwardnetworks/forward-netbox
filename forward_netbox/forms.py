@@ -1379,6 +1379,22 @@ class ForwardSyncForm(NetBoxModelForm):
             "default."
         ),
     )
+    add_management_interface = forms.BooleanField(
+        required=False,
+        label="Add a management interface for an address no interface carries",
+        help_text=(
+            "Forward records some devices' management address on none of their "
+            "interfaces: a Palo Alto's management port, a FortiGate modeled with "
+            "no interfaces, a Fortinet vdom with no mgmt interface. NetBox sets a "
+            "primary IP only from an address on one of the device's interfaces, "
+            "so those devices get none. With this on, such a device gets a "
+            "virtual, management-only interface (mgmt, or the name of the "
+            "chassis interface that holds the address) tagged "
+            "`forward-management-interface`, carrying the address as its primary "
+            "IP. An interface of that name the sync did not add is never used. "
+            "Needs the management-IP fallback above. Off by default."
+        ),
+    )
     diff_fallback_mode = forms.ChoiceField(
         choices=tuple(
             (value, label)
@@ -1498,6 +1514,9 @@ class ForwardSyncForm(NetBoxModelForm):
         self.fields["give_contexts_their_own_management_ip"].initial = parameters.get(
             "give_contexts_their_own_management_ip", False
         )
+        self.fields["add_management_interface"].initial = parameters.get(
+            "add_management_interface", False
+        )
         self.fields["diff_fallback_mode"].initial = parameters.get(
             "diff_fallback_mode",
             ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
@@ -1546,6 +1565,7 @@ class ForwardSyncForm(NetBoxModelForm):
                 "set_primary_ip_from_mgmt_tag",
                 "set_primary_ip_from_forward_management_ip",
                 "give_contexts_their_own_management_ip",
+                "add_management_interface",
                 "diff_fallback_mode",
                 "scheduled",
                 "interval",
@@ -1577,6 +1597,14 @@ class ForwardSyncForm(NetBoxModelForm):
                 "give_contexts_their_own_management_ip",
                 "Needs the management-IP fallback: the copy is made for a device "
                 "whose Forward management address another device holds.",
+            )
+        if cleaned.get("add_management_interface") and not cleaned.get(
+            "set_primary_ip_from_forward_management_ip"
+        ):
+            self.add_error(
+                "add_management_interface",
+                "Needs the management-IP fallback: the interface carries the "
+                "management address Forward records for the device.",
             )
         source = cleaned.get("source")
         network_id = (source.parameters or {}).get("network_id") if source else None
@@ -1640,6 +1668,9 @@ class ForwardSyncForm(NetBoxModelForm):
             "give_contexts_their_own_management_ip": bool(
                 cleaned.get("give_contexts_their_own_management_ip", False)
             ),
+            "add_management_interface": bool(
+                cleaned.get("add_management_interface", False)
+            ),
             "diff_fallback_mode": cleaned.get("diff_fallback_mode")
             or ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,
             "webhook_secret": str(cleaned.get("webhook_secret") or ""),
@@ -1682,6 +1713,9 @@ class ForwardSyncForm(NetBoxModelForm):
             ),
             "give_contexts_their_own_management_ip": bool(
                 self.cleaned_data.get("give_contexts_their_own_management_ip", False)
+            ),
+            "add_management_interface": bool(
+                self.cleaned_data.get("add_management_interface", False)
             ),
             "diff_fallback_mode": self.cleaned_data.get("diff_fallback_mode")
             or ForwardDiffFallbackModeChoices.ALLOW_FALLBACK,

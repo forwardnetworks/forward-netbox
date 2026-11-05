@@ -406,6 +406,37 @@ class SkipUnchangedSnapshotTest(TestCase):
             "snapshot-1",
         )
 
+    def test_a_saved_primary_ip_setting_is_not_skipped_on_an_unchanged_snapshot(
+        self,
+    ):
+        # The step runs only in a run that reaches the branch stage: a skipped
+        # run would leave the new setting doing nothing.
+        self.sync.parameters = {
+            **self.sync.parameters,
+            "set_primary_ip_from_forward_management_ip": True,
+            "overlay_rerun_pending": True,
+        }
+        self._set_baseline("snapshot-1")
+        self.sync.resolve_snapshot_id = Mock(return_value="snapshot-1")
+
+        self.assertIsNone(
+            should_skip_unchanged_snapshot(
+                self.sync, force_unchanged=False, client=object()
+            )
+        )
+
+    def test_a_marker_with_the_step_off_still_skips(self):
+        self.sync.parameters = {**self.sync.parameters, "overlay_rerun_pending": True}
+        self._set_baseline("snapshot-1")
+        self.sync.resolve_snapshot_id = Mock(return_value="snapshot-1")
+
+        self.assertEqual(
+            should_skip_unchanged_snapshot(
+                self.sync, force_unchanged=False, client=object()
+            ),
+            "snapshot-1",
+        )
+
     def test_does_not_skip_when_no_baseline(self):
         self.sync.latest_baseline_ingestion = Mock(return_value=None)
         self.sync.resolve_snapshot_id = Mock(return_value="snapshot-1")
