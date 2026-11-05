@@ -1359,11 +1359,47 @@ def _one_config_backup_per_sync(sync_pk):
         yield acquired
     finally:
         if acquired:
-            with connection.cursor() as cursor:
-                cursor.execute(
-                    "SELECT pg_advisory_unlock(%s, %s)",
-                    [_CONFIG_BACKUP_LOCK_NAMESPACE, int(sync_pk)],
+            # A connection lost during an hour-long backup already released the
+            # lock; failing here would turn a pushed backup into an errored job
+            # or hide the exception that ended it.
+            try:
+                with connection.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT pg_advisory_unlock(%s, %s)",
+                        [_CONFIG_BACKUP_LOCK_NAMESPACE, int(sync_pk)],
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "Config backup lock release failed: %s", type(exc).__name__
                 )
+
+
+def _queue_backup_of_newer_snapshot(sync, job, snapshot_id, kwargs):
+    """After an automatic backup, back up the newest synced snapshot if newer.
+
+    A sync that finishes while a backup runs gets no backup of its own: the
+    enqueue declines while one is active, and a job that does start finds the
+    lock held. Without this, git kept the older snapshot's configs until some
+    later sync happened to finish with no backup running.
+    """
+    if not kwargs.get("ingestion_id"):
+        return  # The operator button backs up what it was asked to.
+    try:
+        latest = sync.latest_baseline_ingestion()
+        latest_snapshot = str(getattr(latest, "snapshot_id", "") or "").strip()
+        if not latest_snapshot or latest_snapshot == str(snapshot_id or "").strip():
+            return
+        sync.refresh_from_db()
+        _maybe_enqueue_config_backup(
+            sync,
+            snapshot_id=latest_snapshot,
+            ingestion_id=latest.pk,
+            exclude_job_id=job.pk,
+        )
+    except JobTimeoutException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the backup itself succeeded
+        logger.warning("Follow-up config backup enqueue failed: %s", exc)
 
 
 def _run_forward_config_backup_work(job, *args, **kwargs):
@@ -1404,14 +1440,18 @@ def _run_forward_config_backup_work(job, *args, **kwargs):
                 job.data = _overlay_job_data(
                     {
                         "skipped": True,
-                        "reason": "another config backup for this sync is running",
+                        # The key Health and the bundle read for a skip.
+                        "skipped_reason": (
+                            "another config backup for this sync is running"
+                        ),
                     },
                     kwargs,
                 )
                 job.save(update_fields=["data"])
                 sync.logger.log_info(
                     "Config backup skipped: another backup for this sync is "
-                    "already running; it covers the latest configuration."
+                    "already running. When it finishes it queues a backup of "
+                    "the newest synced snapshot if that is not the one it took."
                 )
                 return
             result = run_config_backup(
@@ -1421,6 +1461,7 @@ def _run_forward_config_backup_work(job, *args, **kwargs):
             )
         job.data = _overlay_job_data(result.as_dict(), kwargs)
         job.save(update_fields=["data"])
+        _queue_backup_of_newer_snapshot(sync, job, snapshot_id, kwargs)
     except StalePostSyncSnapshotError:
         _complete_stale_post_sync_overlay(job, sync, **kwargs)
     except ConfigBackupError as exc:

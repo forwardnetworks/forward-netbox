@@ -145,3 +145,34 @@ class OneConfigBackupPerSyncTest(_Base):
         run.assert_not_called()
         job.refresh_from_db()
         self.assertTrue(job.data["skipped"])
+        # The key the Health tab and the bundle read for a skip's reason.
+        self.assertIn("another config backup", job.data["skipped_reason"])
+
+    def _finished_backup(self, backed_up, latest_snapshot, ingestion_id=1):
+        from forward_netbox.jobs import _queue_backup_of_newer_snapshot
+
+        job = Mock(pk=99)
+        self.sync.latest_baseline_ingestion = Mock(
+            return_value=Mock(snapshot_id=latest_snapshot, pk=7)
+        )
+        with patch("forward_netbox.jobs._maybe_enqueue_config_backup") as enqueue:
+            _queue_backup_of_newer_snapshot(
+                self.sync,
+                job,
+                backed_up,
+                {"ingestion_id": ingestion_id} if ingestion_id else {},
+            )
+        return enqueue
+
+    def test_a_sync_that_finished_during_the_backup_gets_its_own_after_it(self):
+        enqueue = self._finished_backup("s1", "s2")
+
+        enqueue.assert_called_once()
+        self.assertEqual(enqueue.call_args.kwargs["snapshot_id"], "s2")
+        self.assertEqual(enqueue.call_args.kwargs["exclude_job_id"], 99)
+
+    def test_no_follow_up_when_the_backup_took_the_newest_snapshot(self):
+        self._finished_backup("s2", "s2").assert_not_called()
+
+    def test_no_follow_up_after_the_operator_button(self):
+        self._finished_backup("s1", "s2", ingestion_id=None).assert_not_called()

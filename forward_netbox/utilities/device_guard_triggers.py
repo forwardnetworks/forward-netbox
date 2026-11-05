@@ -9,10 +9,15 @@
 # creates the trigger.
 #
 # The guard now fires on every INSERT and UPDATE and returns at once when an
-# update leaves both columns unchanged, which is what the column list did. It is
+# update leaves both columns unchanged. That is slightly looser than the column
+# list, which also fired for an update that SET them to their old values: a
+# re-save of a row that already pointed at a missing device was refused, and is
+# now allowed. Inserting or repointing a row at a missing device is still
+# refused, and those are the cases the guard exists for. It is
 # rebuilt in every schema that carries it (netbox-branching copies triggers into
 # branch schemas), from the catalogue rather than from a guessed search_path.
 from django.db import connections
+from django.db import transaction
 
 GUARD_FUNCTION = "forward_netbox_enforce_device_generic_relation"
 GUARD_TRIGGER = "forward_netbox_device_gfk_guard"
@@ -85,7 +90,9 @@ def rebuild_column_bound_guards(using="default"):
     if database.vendor != "postgresql":
         return 0
     quote = database.ops.quote_name
-    with database.cursor() as cursor:
+    # One transaction: a CREATE that failed after its DROP would otherwise
+    # leave the table with no guard, and nothing would ever put it back.
+    with transaction.atomic(using=using), database.cursor() as cursor:
         cursor.execute("SELECT to_regproc(%s) IS NOT NULL", [GUARD_FUNCTION])
         if not cursor.fetchone()[0]:
             return 0

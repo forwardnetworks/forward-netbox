@@ -38,12 +38,24 @@ def _alias_usable(alias):
     """Whether ``alias`` still reaches a schema holding the search cache table."""
     if alias == DEFAULT_DB_ALIAS:
         return True
+    # A branch alias's search_path is "<schema>,<main schema>", and Postgres
+    # skips a missing schema in it, so a query on a dropped branch's alias
+    # silently reads main's table. Ask the catalogue for the schema itself.
+    schema = alias.removeprefix("schema_") if alias.startswith("schema_") else None
     try:
+        from django.db import connections
+
+        with connections[DEFAULT_DB_ALIAS].cursor() as cursor:
+            if schema is not None:
+                cursor.execute(
+                    "SELECT 1 FROM pg_namespace WHERE nspname = %s", [schema]
+                )
+                return cursor.fetchone() is not None
         from extras.models import CachedValue
 
         CachedValue.objects.using(alias).exists()
         return True
-    except Exception:  # noqa: BLE001 - a dropped branch schema, a gone alias
+    except Exception:  # noqa: BLE001 - a gone alias
         return False
 
 

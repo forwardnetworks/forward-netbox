@@ -235,3 +235,13 @@ class MergeRowKeepsTheJobCacheTest(TransactionTestCase):
         before = query_cache.get()
         with keep_job_query_cache():
             self.assertIs(query_cache.get(), before)
+
+
+class AliasUsableTest(TransactionTestCase):
+    def test_a_dropped_branch_schema_is_not_usable(self):
+        # Its search_path falls back to main, so only the catalogue can tell.
+        self.assertFalse(search_batching._alias_usable("schema_branch_gone0000"))
+
+    def test_an_existing_schema_and_main_are_usable(self):
+        self.assertTrue(search_batching._alias_usable("default"))
+        self.assertTrue(search_batching._alias_usable("schema_public"))
