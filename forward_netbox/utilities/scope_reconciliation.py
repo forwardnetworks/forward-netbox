@@ -1652,7 +1652,7 @@ def _release_routing_rows_owned_by(device, selected_ids):
     return _release_routing_rows_protecting(device, releasable=releasable)
 
 
-def _delete_prunable_devices(sync, device_pks):
+def _delete_prunable_devices(sync, device_pks, *, release_routing=True):
     """Delete devices, releasing ownership first and respecting PROTECT.
 
     One implementation, shared by every prune. A second copy of this loop is
@@ -1701,10 +1701,18 @@ def _delete_prunable_devices(sync, device_pks):
                     )
                     device = Device.objects.filter(pk=device_id).first()
                     if device is not None:
-                        _detach_addresses_foreign_routing_holds(device, device_pks)
-                        _, refused_rows = _release_routing_rows_owned_by(
-                            device, device_pks
-                        )
+                        # Each device commits on its own, so "the devices being
+                        # pruned" means this one and those already deleted. A
+                        # co-selected device that is still pending may yet be
+                        # refused and stay; its routing is not this delete's to
+                        # remove, and a peer of it gets the detach instead.
+                        gone = {device_id, *pruned_device_ids}
+                        _detach_addresses_foreign_routing_holds(device, gone)
+                        refused_rows = {}
+                        if release_routing:
+                            _, refused_rows = _release_routing_rows_owned_by(
+                                device, gone
+                            )
                         if refused_rows:
                             # Something outside the routing allowlist also
                             # protects it: undo the release, ownership
@@ -2221,7 +2229,15 @@ def prune_unmanaged_devices(
         deleted_total,
         protected_tally,
         ownership_blocked_ids,
-    ) = _delete_prunable_devices(sync, eligible)
+    ) = _delete_prunable_devices(
+        sync,
+        eligible,
+        # No sync claims these devices, so their routing rows may be a
+        # person's: they are never removed here. A device they protect is
+        # refused and says so; the device list's routing box is the way to
+        # take them with it.
+        release_routing=False,
+    )
     result = dict(empty)
     result.update(
         pruned_device_count=len(pruned_device_ids),
@@ -3013,6 +3029,22 @@ def _delete_releasable_object(obj, released, *, depth=0, releasable=None):
     return None
 
 
+def _own_addresses_held_by(obj, own_interfaces, interface_type):
+    """The addresses ``obj`` refers to that sit on one of ``own_interfaces``."""
+    from ipam.models import IPAddress
+
+    for field in obj._meta.concrete_fields:
+        if not (field.many_to_one and field.related_model is IPAddress):
+            continue
+        address = getattr(obj, field.name, None)
+        if (
+            address is not None
+            and address.assigned_object_type_id == interface_type.pk
+            and address.assigned_object_id in own_interfaces
+        ):
+            yield address
+
+
 def _detach_addresses_foreign_routing_holds(device, selected_ids, using=None):
     """Unassign this device's addresses that another device's routing row uses.
 
@@ -3029,7 +3061,6 @@ def _detach_addresses_foreign_routing_holds(device, selected_ids, using=None):
     """
     from dcim.models import Interface
     from django.contrib.contenttypes.models import ContentType
-    from ipam.models import IPAddress
 
     from .device_cascade_delete import owning_device_ids
 
@@ -3045,16 +3076,7 @@ def _detach_addresses_foreign_routing_holds(device, selected_ids, using=None):
         owners = owning_device_ids(obj, _cache=cache)
         if owners and owners <= set(selected_ids):
             continue
-        for field in obj._meta.concrete_fields:
-            if not (field.many_to_one and field.related_model is IPAddress):
-                continue
-            address = getattr(obj, field.name, None)
-            if (
-                address is None
-                or address.assigned_object_type_id != interface_type.pk
-                or address.assigned_object_id not in own_interfaces
-            ):
-                continue
+        for address in _own_addresses_held_by(obj, own_interfaces, interface_type):
             # The dead device may still name it primary; clear that first or
             # NetBox refuses to move it. The device is deleted next.
             for attr in ("primary_ip4", "primary_ip6", "oob_ip"):

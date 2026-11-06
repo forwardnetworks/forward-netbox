@@ -565,3 +565,142 @@ class NeighbourOfASurvivingDeviceTest(_Fixture):
         # The surviving device's routing is untouched.
         self.assertTrue(BGPScope.objects.filter(pk=kept_scope.pk).exists())
         self.assertTrue(BGPRouter.objects.filter(pk=kept_router.pk).exists())
+
+
+class PruneNeverTakesASurvivorsRoutingTest(_Fixture):
+    """Each pruned device commits on its own, so a device pruned in the same
+    batch that is then refused must keep every routing row it owns. Found by
+    review: the set "being pruned" was the whole batch, so pruning A deleted the
+    BGP peer of B (which used A's address) and B was then refused and stayed."""
+
+    def _rir_asn(self, asn=65010):
+        from ipam.models import ASN
+        from ipam.models import RIR
+
+        return ASN.objects.create(
+            asn=asn, rir=RIR.objects.create(name=f"r{asn}", slug=f"r{asn}")
+        )
+
+    def _address_on(self, device, ip, name="Eth1"):
+        from dcim.models import Interface
+        from django.contrib.contenttypes.models import ContentType
+        from ipam.models import IPAddress
+
+        interface = Interface.objects.create(
+            device=device, name=name, type="1000base-t"
+        )
+        return interface, IPAddress.objects.create(
+            address=ip,
+            assigned_object_type=ContentType.objects.get_for_model(Interface),
+            assigned_object_id=interface.pk,
+        )
+
+    def _held_by_a_survivor(self, device, survivor):
+        """An OSPF instance on ``device`` used by an OSPF interface on
+        ``survivor``: owned by both, so no prune of ``device`` may take it."""
+        from netbox_routing.models import OSPFArea
+        from netbox_routing.models import OSPFInstance
+        from netbox_routing.models import OSPFInterface
+
+        instance = OSPFInstance.objects.create(
+            name=f"{device.name}-ospf",
+            router_id="10.9.9.9",
+            process_id=1,
+            device=device,
+        )
+        survivor_interface, _ = self._address_on(survivor, "10.9.0.1/31", name="Eth7")
+        return OSPFInterface.objects.create(
+            instance=instance,
+            area=OSPFArea.objects.create(area_id="0.0.0.0"),
+            interface=survivor_interface,
+        )
+
+    def test_a_co_pruned_device_that_is_refused_keeps_its_bgp_peer(self):
+        from netbox_routing.models import BGPPeer
+        from netbox_routing.models import BGPRouter
+        from netbox_routing.models import BGPScope
+
+        from forward_netbox.utilities.scope_reconciliation import (
+            _delete_prunable_devices,
+        )
+
+        survivor = self._device("survivor")
+        a = self._own(self._device("a-gone"))
+        b = self._own(self._device("b-refused"))
+        _, a_address = self._address_on(a, "10.8.0.1/31")
+        asn = self._rir_asn()
+        b_router = BGPRouter.objects.create(name="b1", assigned_object=b, asn=asn)
+        b_peer = BGPPeer.objects.create(
+            scope=BGPScope.objects.create(router=b_router),
+            peer=a_address,
+            remote_as=asn,
+        )
+        blocker = self._held_by_a_survivor(b, survivor)
+
+        deleted, _total, refused, _blocked = _delete_prunable_devices(
+            self.sync, [a.pk, b.pk]
+        )
+
+        self.assertIn(a.pk, deleted)
+        self.assertNotIn(b.pk, deleted)
+        self.assertTrue(Device.objects.filter(pk=b.pk).exists())
+        # B stays, and so does everything B owns.
+        self.assertTrue(BGPPeer.objects.filter(pk=b_peer.pk).exists())
+        self.assertTrue(BGPRouter.objects.filter(pk=b_router.pk).exists())
+        self.assertTrue(type(blocker).objects.filter(pk=blocker.pk).exists())
+        # A's address that B's peer names is kept, only off A's interface.
+        a_address.refresh_from_db()
+        self.assertIsNone(a_address.assigned_object_id)
+        self.assertEqual(BGPPeer.objects.get(pk=b_peer.pk).peer_id, a_address.pk)
+        self.assertTrue(refused)
+
+    def test_a_row_a_survivor_also_owns_refuses_and_rolls_back_everything(self):
+        from netbox_routing.models import BGPRouter
+        from netbox_routing.models import BGPScope
+
+        from forward_netbox.utilities.scope_reconciliation import (
+            _delete_prunable_devices,
+        )
+
+        survivor = self._device("survivor")
+        gone = self._own(self._device("gone"))
+        asn = self._rir_asn(65011)
+        own_router = BGPRouter.objects.create(name="g1", assigned_object=gone, asn=asn)
+        own_scope = BGPScope.objects.create(router=own_router)
+        blocker = self._held_by_a_survivor(gone, survivor)
+
+        deleted, _total, refused, _blocked = _delete_prunable_devices(
+            self.sync, [gone.pk]
+        )
+
+        self.assertEqual(deleted, [])
+        self.assertTrue(Device.objects.filter(pk=gone.pk).exists())
+        # The refusal undid the release: its own routing and its ownership stay.
+        self.assertTrue(BGPRouter.objects.filter(pk=own_router.pk).exists())
+        self.assertTrue(BGPScope.objects.filter(pk=own_scope.pk).exists())
+        self.assertTrue(type(blocker).objects.filter(pk=blocker.pk).exists())
+        self.assertTrue(
+            ForwardDeviceIdentity.objects.filter(sync=self.sync, device=gone).exists()
+        )
+        self.assertIn("netbox_routing.ospfinterface", refused)
+
+    def test_prune_unmanaged_never_removes_routing_rows(self):
+        from netbox_routing.models import BGPRouter
+        from netbox_routing.models import BGPScope
+
+        from forward_netbox.utilities.scope_reconciliation import (
+            _delete_prunable_devices,
+        )
+
+        unclaimed = self._device("unclaimed")
+        asn = self._rir_asn(65012)
+        router = BGPRouter.objects.create(name="u1", assigned_object=unclaimed, asn=asn)
+        BGPScope.objects.create(router=router)
+
+        deleted, _total, refused, _blocked = _delete_prunable_devices(
+            self.sync, [unclaimed.pk], release_routing=False
+        )
+
+        self.assertEqual(deleted, [])
+        self.assertTrue(BGPRouter.objects.filter(pk=router.pk).exists())
+        self.assertTrue(refused)

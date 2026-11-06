@@ -13,6 +13,7 @@ from dcim.models import Location
 from dcim.models import Manufacturer
 from dcim.models import Rack
 from dcim.models import Site
+from django.core.exceptions import ValidationError
 from django.test import TestCase
 from extras.models import CustomField
 from extras.models import Tag
@@ -170,7 +171,10 @@ class DeviceFieldsTheSyncOwnsTest(TestCase):
         ):
             try:
                 apply()
-            except Exception:  # noqa: BLE001 - a refusal is the expected outcome
+            except ValidationError:
+                # The per-row path refuses with NetBox's own validation error;
+                # the bulk path records it as an issue instead. Anything else
+                # (a crash) must fail this test.
                 pass
             fresh = Device.objects.get(pk=self.device.pk)
             self.assertEqual(fresh.site_id, self.site.pk)

@@ -3739,14 +3739,22 @@ def _delete_blockers(device_pks):
 
     from .utilities.device_cascade_delete import is_releasable_routing_row
     from .utilities.device_cascade_delete import owning_device_ids
+    from dcim.models import Interface
+    from django.contrib.contenttypes.models import ContentType
+
     from .utilities.scope_reconciliation import _objects_protecting_device
+    from .utilities.scope_reconciliation import _own_addresses_held_by
 
     if len(device_pks) > _BLOCKER_PREVIEW_LIMIT:
         return None
     selected = set(device_pks)
     routing, other, foreign = Counter(), Counter(), Counter()
     cache = {}
+    interface_type = ContentType.objects.get_for_model(Interface)
     for device in Device.objects.filter(pk__in=device_pks):
+        own_interfaces = set(
+            Interface.objects.filter(device_id=device.pk).values_list("pk", flat=True)
+        )
         for blocker in _objects_protecting_device(
             device, using=router.db_for_write(Device)
         ):
@@ -3759,8 +3767,14 @@ def _delete_blockers(device_pks):
             )
             # A routing row on a surviving device that merely uses this device's
             # address is handled by the delete (the address is detached and kept),
-            # so it is not something the operator must remove first.
-            if not ours and label.startswith("netbox_routing."):
+            # so it is not something the operator must remove first. Only a row
+            # that holds one of this device's addresses is; any other routing
+            # row the cascade cannot take still refuses, so it is "other".
+            if (
+                not ours
+                and label.startswith("netbox_routing.")
+                and any(_own_addresses_held_by(blocker, own_interfaces, interface_type))
+            ):
                 foreign[label] += 1
                 continue
             (routing if ours else other)[label] += 1
