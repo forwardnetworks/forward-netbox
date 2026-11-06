@@ -723,13 +723,29 @@ class DeviceCascadeSafetyTest(_ListFixture):
         a = Device.objects.get(name="someone-elses")
         b = self._device("bgp-owner")
         peer = self._bgp_peer_on(b, a)
-        self._client().post(
+        response = self._client().post(
             self._urls()[0],
             {"pk": a.pk, "_confirm": "1", "confirm": "True"},
             follow=True,
         )
         self.assertTrue(Device.objects.filter(pk=a.pk).exists())
         self.assertIsNotNone(BGPPeer.objects.get(pk=peer.pk).peer.assigned_object_id)
+        # Found by running it on a customer-shaped estate: the refusal said only
+        # "NetBox's message above lists the dependent objects". It now says what
+        # blocks it and to tick the box.
+        self.assertContains(response, "netbox_routing.bgppeer")
+        self.assertContains(response, "tick the box")
+
+    def test_the_confirmation_page_names_the_neighbour_records_and_the_box(self):
+        self._stored_report()
+        a = Device.objects.get(name="someone-elses")
+        b = self._device("bgp-owner")
+        self._bgp_peer_on(b, a)
+
+        response = self._client().post(self._urls()[0], {"pk": a.pk}, follow=True)
+
+        self.assertContains(response, "use these devices")
+        self.assertContains(response, "netbox_routing.bgppeer")
 
     def test_selecting_both_devices_releases_the_peer_that_belongs_to_one_of_them(
         self,
