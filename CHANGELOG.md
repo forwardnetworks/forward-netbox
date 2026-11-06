@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v3.0.13
+
+Release candidate; Every device gets a primary IP Forward can name (endpoints, collection-IP tie-break, opt-in management interface); deleting or pruning a device that has BGP routing works and never removes another device's routing; NetBox 4.7.4 migrates an existing install; search-index jobs batched, per-run lookup cache and a linear merge make large syncs much faster; one config backup per sync; the device fields the sync owns are pinned and documented; forward-sdk 0.1.35. Run migrate after upgrading.
+
 ## v3.0.12
 
 Fix: a blocked run names a Forward snapshot collection problem; Scope Reconciliation opens with a What to do checklist; a guarded action deletes unmanaged devices Forward no longer has; opt-in per-context primary IPs for firewall contexts; the support bundle carries collection trend, delete accounting and device-list filters. forward-sdk 0.1.31. No migration.
