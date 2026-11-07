@@ -1491,3 +1491,55 @@ class ScopeChangeStillDeletesTest(TestCase):
 
         self.assertEqual(summaries[0]["mode"], "contract_reset")
         self.assertEqual(workloads[0].delete_rows, [])
+
+    def test_a_cable_is_judged_while_either_end_is_in_scope(self):
+        # Recorded from the end that leaves scope, so the check must read both.
+        cable = {
+            "device": "router-2",
+            "interface": "Ethernet1",
+            "remote_device": "router-1",
+            "remote_interface": "Ethernet1",
+        }
+        coalesce = [["device", "interface", "remote_device", "remote_interface"]]
+        _, pending, _ = self._run(
+            [cable],
+            {"router-1", "router-2"},
+            model_string="dcim.cable",
+            coalesce_fields=coalesce,
+        )
+        self._promote(pending)
+
+        # router-2 leaves scope and the cable is gone from Forward: router-1 is
+        # still fetched, and it no longer reports the cable, so it is deleted.
+        workloads, _, summaries = self._run(
+            [], {"router-1"}, model_string="dcim.cable", coalesce_fields=coalesce
+        )
+
+        self.assertEqual(summaries[0]["mode"], "local_delta")
+        self.assertEqual(len(workloads[0].delete_rows), 1)
+
+    def test_a_model_with_an_unscoped_map_still_resets(self):
+        # One map fetched the whole network: there is no device list to judge
+        # rows against, so a scope change behaves as before.
+        _, pending, _ = self._run(
+            [{"device": "router-1", "name": "Ethernet1"}], {"router-1"}
+        )
+        self._promote(pending)
+
+        workloads, _, summaries = apply_durable_workload_deltas(
+            self.sync,
+            [
+                _workload(
+                    [],
+                    parameters={"forward_netbox_shard_keys": ["router-1", "router-2"]},
+                ),
+                _workload(
+                    [],
+                    parameters={"forward_netbox_shard_keys": []},
+                    query_name="Forward rows, unscoped",
+                ),
+            ],
+        )
+
+        self.assertEqual(summaries[0]["mode"], "contract_reset")
+        self.assertEqual(workloads, [])

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from dataclasses import field
 from dataclasses import replace
 from threading import Lock
+from types import MappingProxyType
 from typing import Any
 
 from django.db import close_old_connections
@@ -96,6 +97,7 @@ from .query_registry import missing_query_specs_message
 from .query_registry import only_legacy_safe_default_parameters
 from .query_registry import QuerySpec
 from .query_registry import resolve_query_specs_for_client
+from .query_registry import SHARD_QUERY_PARAMETER_NAME
 from .sync import ForwardSyncRunner
 from .sync_contracts import validate_row_shape_for_model
 from .sync_facade import effective_scope_endpoints_by_include_tags
@@ -131,6 +133,11 @@ DEVICE_NAME_SCOPED_MODELS = DEVICE_SHARD_MODELS | {
 # failed shard is dropped from the rebuilt plan and desyncs the resumable
 # branching executor's claimed index (the class of crash Partner hit on ipam.vlan).
 DEFAULT_WORKLOAD_FETCH_RETRY_ATTEMPTS = 2
+# A device-scoped query Forward stops at its own NQE time limit is fetched again
+# in halves of its device list, at most this many times deep (up to 16 parts).
+# A query that spent its whole budget would spend it again, so the outcome is
+# never retried as is (see NQE_RETRYABLE_OUTCOMES).
+TIME_LIMIT_SPLIT_MAX_DEPTH = 4
 DEFAULT_WORKLOAD_FETCH_RETRY_BACKOFF_SECONDS = 3.0
 DEFAULT_WORKLOAD_FETCH_TIMEOUT_SECONDS = 0
 DEFAULT_DIFF_FETCH_TIMEOUT_SECONDS = 60
@@ -2015,15 +2022,16 @@ class ForwardQueryFetcher:
         attempts, backoff = self._workload_fetch_retry_config()
         for attempt in range(attempts + 1):
             try:
-                rows, delete_rows, sync_mode, fetch_meta = self._fetch_spec_rows(
-                    model_string,
-                    contract,
-                    baseline,
-                    context,
-                    coalesce_fields,
-                    shard_scope=shard_scope,
-                    return_fetch_meta=True,
-                    deadline=deadline,
+                rows, delete_rows, sync_mode, fetch_meta = (
+                    self._fetch_spec_rows_splitting_on_time_limit(
+                        model_string,
+                        contract,
+                        baseline,
+                        context,
+                        coalesce_fields,
+                        shard_scope=shard_scope,
+                        deadline=deadline,
+                    )
                 )
                 if validate_rows:
                     self.validate_rows(
@@ -2669,6 +2677,122 @@ class ForwardQueryFetcher:
             },
         )
 
+    @staticmethod
+    def _time_limit_split_keys(exc, contract, baseline, shard_scope):
+        """The device names to split a timed-out fetch over, or None.
+
+        Only a full fetch whose rows are a function of the device list can be
+        fetched in parts and merged: a diff or contributor fetch is not, and a
+        fetch that already carries a shard has its own key set.
+        """
+        if getattr(exc, "outcome", "") != "TIMED_OUT":
+            return None
+        if shard_scope or not isinstance(contract, ResolvedExecutionContract):
+            return None
+        if contract.diff_eligible and (
+            baseline is not None or is_tier3_reducer(contract.reducer_id)
+        ):
+            return None
+        keys = list(
+            contract.full_effective_parameters.get(SHARD_QUERY_PARAMETER_NAME) or ()
+        )
+        return keys if len(keys) > 1 else None
+
+    def _fetch_spec_rows_splitting_on_time_limit(
+        self,
+        model_string,
+        contract,
+        baseline,
+        context,
+        coalesce_fields,
+        *,
+        shard_scope=None,
+        deadline=None,
+        skip_full_run_removals=False,
+        depth=0,
+    ):
+        """``_fetch_spec_rows``, fetched in halves of its device list when
+        Forward stops the query at its NQE time limit.
+
+        A large estate's cable or BGP query can run past Forward's limit as one
+        execution while each half finishes well inside it. The parts are merged
+        into the result the single query would have returned (a row both halves
+        return, such as a cable between them, is kept once), and the comparison
+        that finds removed rows runs once, on the whole result.
+        """
+        try:
+            return self._fetch_spec_rows(
+                model_string,
+                contract,
+                baseline,
+                context,
+                coalesce_fields,
+                shard_scope=shard_scope,
+                return_fetch_meta=True,
+                deadline=deadline,
+                skip_full_run_removals=skip_full_run_removals,
+            )
+        except ForwardClientError as exc:
+            keys = self._time_limit_split_keys(exc, contract, baseline, shard_scope)
+            if keys is None or depth >= TIME_LIMIT_SPLIT_MAX_DEPTH:
+                raise
+        middle = len(keys) // 2
+        self.logger.log_warning(
+            f"Forward stopped the {model_string} query at its NQE time limit; "
+            f"fetching it again in two parts of {middle} and "
+            f"{len(keys) - middle} device(s).",
+            obj=self.sync,
+        )
+        rows, delete_rows, seen, fetch_meta = [], [], set(), None
+        skipped_types = 0
+        for part in (keys[:middle], keys[middle:]):
+            part_contract = replace(
+                contract,
+                full_effective_parameters=MappingProxyType(
+                    {
+                        **dict(contract.full_effective_parameters),
+                        SHARD_QUERY_PARAMETER_NAME: part,
+                    }
+                ),
+            )
+            part_rows, part_deletes, _mode, part_meta = (
+                self._fetch_spec_rows_splitting_on_time_limit(
+                    model_string,
+                    part_contract,
+                    baseline,
+                    context,
+                    coalesce_fields,
+                    deadline=deadline,
+                    skip_full_run_removals=True,
+                    depth=depth + 1,
+                )
+            )
+            for row in part_rows:
+                key = json.dumps(row, sort_keys=True, default=str)
+                if key not in seen:
+                    seen.add(key)
+                    rows.append(row)
+            delete_rows.extend(part_deletes)
+            skipped_types += int(part_meta.get("matched_type_rows_skipped") or 0)
+            fetch_meta = fetch_meta or dict(part_meta)
+        fetch_meta = {
+            **fetch_meta,
+            # The whole device list: what this workload covers, and what its
+            # durable state is recorded against.
+            "query_parameters": dict(contract.full_effective_parameters),
+            "matched_type_rows_skipped": skipped_types,
+            "time_limit_split_depth": depth + 1,
+        }
+        if not skip_full_run_removals:
+            delete_rows = delete_rows + self._full_run_removals(
+                model_string=model_string,
+                current_rows=rows,
+                coalesce_fields=coalesce_fields,
+                already_removed=delete_rows,
+                shard_scope=None,
+            )
+        return rows, delete_rows, "full", fetch_meta
+
     def _fetch_spec_rows(
         self,
         model_string,
@@ -2680,6 +2804,7 @@ class ForwardQueryFetcher:
         shard_scope=None,
         return_fetch_meta=False,
         deadline=None,
+        skip_full_run_removals=False,
     ):
         original_shard_scope = dict(shard_scope or {}) if shard_scope else None
         if isinstance(spec, ResolvedExecutionContract):
@@ -3091,13 +3216,16 @@ class ForwardQueryFetcher:
                     "for. The rows stay in NetBox.",
                     obj=self.sync,
                 )
-        delete_rows = delete_rows + self._full_run_removals(
-            model_string=model_string,
-            current_rows=filtered_rows,
-            coalesce_fields=coalesce_fields,
-            already_removed=delete_rows,
-            shard_scope=original_shard_scope,
-        )
+        if not skip_full_run_removals:
+            # A part of a split fetch holds part of the model, like a shard;
+            # the whole result is compared once the parts are merged.
+            delete_rows = delete_rows + self._full_run_removals(
+                model_string=model_string,
+                current_rows=filtered_rows,
+                coalesce_fields=coalesce_fields,
+                already_removed=delete_rows,
+                shard_scope=original_shard_scope,
+            )
         return _return(
             filtered_rows,
             delete_rows,

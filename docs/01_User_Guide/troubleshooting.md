@@ -160,7 +160,7 @@ The bundle carries the same checklist under `diagnostics.cleanup_checklist`.
 
 ## Devices That Carry No Include Tag
 
-The Scope Reconciliation `Carry no include tag` count is the devices this sync does not manage: some were created by this sync and are now uncovered (needs attention), the rest are not managed by it (informational). Open `Not Managed by This Sync` for the full list. The `share a name with a device this sync manages` link lists likely older copies at another site; review them and delete the copy you do not want. To have the sync manage the rest, add the include tag to the device in Forward (a tag added by hand in NetBox is removed on the next run), then run the sync again. "Select all" on these lists acts on that list only.
+The Scope Reconciliation `No include tag (uncovered + not managed)` count is the devices this sync does not manage: some were created by this sync and are now uncovered (needs attention), the rest are not managed by it (informational). Open `Not Managed by This Sync` for the full list. The `share a name with a device this sync manages` link lists likely older copies at another site; review them and delete the copy you do not want. To have the sync manage the rest, add the include tag to the device in Forward (a tag added by hand in NetBox is removed on the next run), then run the sync again. "Select all" on these lists acts on that list only.
 
 ### `Snapshot collection problem:` Leads The Blocked Run
 

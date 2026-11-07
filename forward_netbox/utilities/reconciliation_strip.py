@@ -167,7 +167,7 @@ def reconciliation_strip(sync):
         )
     netbox += [
         _step(
-            "Carry no include tag",
+            "No include tag (uncovered + not managed)",
             untagged,
             "Named devices not matched to a tagged Forward device now: the two "
             "groups below, which add up to this.",
