@@ -17,7 +17,10 @@ rule except the one under test.
 """
 
 import uuid
+from datetime import timedelta
+from pathlib import Path
 from unittest.mock import Mock
+from unittest.mock import patch
 
 from core.choices import JobStatusChoices
 from core.models import Job
@@ -28,9 +31,15 @@ from dcim.models import DeviceRole
 from dcim.models import DeviceType
 from dcim.models import Interface
 from dcim.models import InterfaceTemplate
+from dcim.models import InventoryItem
 from dcim.models import Manufacturer
+from dcim.models import Module
+from dcim.models import ModuleBay
+from dcim.models import ModuleType
 from dcim.models import Site
+from django.apps import apps
 from django.contrib.contenttypes.models import ContentType
+from django.test import RequestFactory
 from django.test import TestCase
 from django.utils import timezone
 from extras.models import Tag
@@ -47,6 +56,16 @@ from forward_netbox.utilities.full_removal_reconciliation import (
     BASELINE_REMOVAL_MODELS,
 )
 from forward_netbox.utilities.stale_row_cleanup import HOLD_ATTACHED_ROWS_STAY
+from forward_netbox.utilities.stale_row_cleanup import HOLD_MODULE_HAS_COMPONENTS
+from forward_netbox.utilities.stale_row_cleanup import HOLD_OLDER_THAN_CHANGE_LOG
+from forward_netbox.utilities.stale_row_cleanup import (
+    REFUSED_CHILD_STATE_UNAVAILABLE,
+)
+from forward_netbox.utilities.stale_row_cleanup import (
+    REFUSED_OPTION_WIDER_THAN_PREVIEW,
+)
+from forward_netbox.utilities.stale_row_cleanup import state_row_keys
+from forward_netbox.utilities.stale_row_cleanup import STALE_ROW_CLEANUP_LEFT_OUT
 from forward_netbox.utilities.stale_row_cleanup import HOLD_CHANGED_OUTSIDE_SYNC
 from forward_netbox.utilities.stale_row_cleanup import HOLD_NO_CREATE_RECORD
 from forward_netbox.utilities.stale_row_cleanup import HOLD_TEMPLATE_COMPONENT
@@ -62,6 +81,7 @@ from forward_netbox.utilities.stale_row_cleanup import (
     HOLD_CASCADE_REACHES_OTHER_ROWS,
 )
 from forward_netbox.utilities.stale_row_cleanup import HOLD_MANAGEMENT_INTERFACE
+from forward_netbox.utilities.stale_row_cleanup import REFUSED_STATE_MISMATCH
 from forward_netbox.utilities.stale_row_cleanup import REFUSED_STATE_ROW_WITHOUT_KEY
 from forward_netbox.utilities.stale_row_cleanup import REFUSED_STATE_STALE
 from forward_netbox.utilities.stale_row_cleanup import REFUSED_UNREPRESENTED_PEER
@@ -77,12 +97,57 @@ from forward_netbox.utilities.workload_state import encode_state_entries
 IFACE = "dcim.interface"
 IP = "ipam.ipaddress"
 CABLE = "dcim.cable"
+INVENTORY = "dcim.inventoryitem"
+MODULE = "dcim.module"
+BGP_PEER = "netbox_routing.bgppeer"
+BGP_AF = "netbox_routing.bgpaddressfamily"
+BGP_PEER_AF = "netbox_routing.bgppeeraddressfamily"
+OSPF_INSTANCE = "netbox_routing.ospfinstance"
+OSPF_INTERFACE = "netbox_routing.ospfinterface"
+PEERING_SESSION = "netbox_peering_manager.peeringsession"
+# Every model the 3.0.14 extension added, plus the parents and children they
+# interact with; the tests below switch exactly the ones they exercise on, so
+# no other model's refusal leaks into a result.
+EXTENDED_MODELS = (
+    INVENTORY,
+    MODULE,
+    BGP_PEER,
+    BGP_AF,
+    BGP_PEER_AF,
+    OSPF_INSTANCE,
+    OSPF_INTERFACE,
+    PEERING_SESSION,
+)
 COALESCE = {
     "dcim.device": [["name"]],
     "dcim.macaddress": [["mac_address"]],
     IFACE: [["device", "name"]],
     IP: [["address", "vrf"], ["address"]],
     CABLE: [["device", "interface", "remote_device", "remote_interface"]],
+    INVENTORY: [
+        ["device", "name", "part_id", "serial"],
+        ["device", "name", "part_id"],
+        ["device", "name"],
+    ],
+    MODULE: [["device", "module_bay"]],
+    BGP_PEER: [
+        ["device", "vrf", "neighbor_address"],
+        ["device", "neighbor_address"],
+    ],
+    BGP_AF: [
+        ["device", "vrf", "local_asn", "afi_safi"],
+        ["device", "local_asn", "afi_safi"],
+    ],
+    BGP_PEER_AF: [
+        ["device", "vrf", "neighbor_address", "afi_safi"],
+        ["device", "neighbor_address", "afi_safi"],
+    ],
+    OSPF_INSTANCE: [["device", "vrf", "process_id"], ["device", "process_id"]],
+    OSPF_INTERFACE: [["device", "process_id", "local_interface"]],
+    PEERING_SESSION: [
+        ["device", "vrf", "neighbor_address"],
+        ["device", "neighbor_address"],
+    ],
 }
 
 
@@ -814,3 +879,1398 @@ class StaleRowOperatorSurfaceTest(StaleRowCleanupFixture):
             preview.data["generated_at"],
         )
         self.assertEqual(payload["preview_job"], preview.pk)
+
+
+# --- rows the change log no longer remembers (opt-in) ----------------------
+
+
+class OlderThanChangeLogFixture(StaleRowCleanupFixture):
+    """A change log that begins ten days ago, and rows on either side of it."""
+
+    def setUp(self):
+        super().setUp()
+        now = timezone.now()
+        self.log_start = now - timedelta(days=10)
+        self.before_log = now - timedelta(days=100)
+        self.after_log = now - timedelta(days=5)
+        self._retain_changes_since(self.log_start)
+
+    def _retain_changes_since(self, when):
+        """Make ``when`` the time of the oldest retained change, from anyone."""
+        anchor = ObjectChange.objects.create(
+            request_id=uuid.uuid4(),
+            user_name="someone-else",
+            changed_object_type=ContentType.objects.get_for_model(Site),
+            changed_object_id=self.edge1.site_id,
+            object_repr="anchor",
+            action="update",
+        )
+        ObjectChange.objects.filter(pk=anchor.pk).update(time=when)
+        self.anchor = anchor
+
+    def _unrecorded(self, name, created, device=None):
+        """An interface with no create record, made at ``created``."""
+        iface = self._interface(device or self.edge1, name, created_by_sync=False)
+        Interface.objects.filter(pk=iface.pk).update(created=created)
+        return iface
+
+    def _plan(self, include=True):
+        return plan_stale_row_cleanup(self.sync, include_older_than_change_log=include)[
+            IFACE
+        ]
+
+    def _preview_with(self, include):
+        return Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name=f"{self.sync.name} - preview stale device rows",
+            status=JobStatusChoices.STATUS_COMPLETED,
+            job_id=uuid.uuid4(),
+            data=preview_stale_row_cleanup(
+                self.sync, include_older_than_change_log=include
+            ),
+        )
+
+
+class OlderThanChangeLogRulesTest(OlderThanChangeLogFixture):
+    def test_a_row_older_than_the_oldest_retained_change_is_reached_only_by_the_option(
+        self,
+    ):
+        old = self._unrecorded("Ethernet9", self.before_log)
+        self._interface_state()
+
+        off = self._plan(include=False)
+        on = self._plan(include=True)
+
+        self.assertNotIn(old.pk, off["deletable"])
+        self.assertEqual(off["held"], {HOLD_OLDER_THAN_CHANGE_LOG: 1})
+        self.assertEqual(off["older_than_change_log"], 0)
+        self.assertEqual(set(on["deletable"]), {old.pk})
+        self.assertEqual(on["older_than_change_log"], 1)
+
+    def test_a_row_newer_than_the_oldest_retained_change_is_never_reached(self):
+        recent = self._unrecorded("Ethernet9", self.after_log)
+        self._interface_state()
+
+        plan = self._plan(include=True)
+
+        self.assertNotIn(recent.pk, plan["deletable"])
+        self.assertEqual(plan["held"], {HOLD_NO_CREATE_RECORD: 1})
+        self.assertEqual(plan["older_than_change_log"], 0)
+
+    def test_a_row_created_at_the_oldest_retained_change_is_not_older_than_it(self):
+        edge = self._unrecorded("Ethernet9", self.log_start)
+        self._interface_state()
+
+        plan = self._plan(include=True)
+
+        self.assertNotIn(edge.pk, plan["deletable"])
+        self.assertEqual(plan["held"], {HOLD_NO_CREATE_RECORD: 1})
+
+    def test_a_row_with_another_users_retained_update_is_never_removed(self):
+        touched = self._unrecorded("Ethernet9", self.before_log)
+        self._created(touched, request_id=uuid.uuid4(), action="update")
+        self._interface_state()
+
+        plan = self._plan(include=True)
+
+        self.assertNotIn(touched.pk, plan["deletable"])
+        self.assertEqual(plan["held"], {HOLD_NO_CREATE_RECORD: 1})
+
+    def test_a_row_with_another_users_retained_create_is_never_removed(self):
+        theirs = self._unrecorded("Ethernet9", self.before_log)
+        self._created(theirs, request_id=uuid.uuid4(), action="create")
+        self._interface_state()
+
+        plan = self._plan(include=True)
+
+        self.assertNotIn(theirs.pk, plan["deletable"])
+        self.assertEqual(plan["held"], {HOLD_NO_CREATE_RECORD: 1})
+
+    def test_a_retained_change_by_this_sync_alone_does_not_hold_an_older_row(self):
+        old = self._unrecorded("Ethernet9", self.before_log)
+        self._created(old, action="update")  # this sync's own, retained
+        self._interface_state()
+
+        self.assertEqual(set(self._plan(include=True)["deletable"]), {old.pk})
+
+    def test_an_empty_change_log_reaches_nothing(self):
+        old = self._unrecorded("Ethernet9", self.before_log)
+        self._interface_state()
+        ObjectChange.objects.all().delete()
+
+        plan = self._plan(include=True)
+
+        self.assertNotIn(old.pk, plan["deletable"])
+        self.assertEqual(plan["held"], {HOLD_NO_CREATE_RECORD: 1})
+
+    def test_a_sync_created_row_is_removable_with_or_without_the_option(self):
+        mine = self._interface(self.edge1, "Ethernet9")
+        self._interface_state()
+
+        for include in (False, True):
+            plan = self._plan(include=include)
+            self.assertEqual(set(plan["deletable"]), {mine.pk}, include)
+            self.assertEqual(plan["older_than_change_log"], 0, include)
+
+    # -- every other rule still applies ------------------------------------
+
+    def test_the_option_does_not_reach_a_row_a_state_still_holds(self):
+        old = self._unrecorded("Ethernet9", self.before_log)
+        self._interface_state(extra=[{"device": "edge-1", "name": "Ethernet9"}])
+
+        self.assertNotIn(old.pk, self._plan(include=True)["deletable"])
+
+    def test_the_option_does_not_reach_a_row_of_a_device_outside_the_device_list(self):
+        outside = Device.objects.create(
+            name="edge-3",
+            site=self.edge1.site,
+            device_type=self.device_type,
+            role=self.edge1.role,
+        )
+        self._own(outside)
+        old = self._unrecorded("Ethernet9", self.before_log, device=outside)
+        self._interface_state(extra=[{"device": "edge-3", "name": "Ethernet1"}])
+
+        self.assertNotIn(old.pk, self._plan(include=True)["deletable"])
+
+    def test_the_option_does_not_reach_a_device_type_template_interface(self):
+        InterfaceTemplate.objects.create(
+            device_type=self.device_type, name="mgmt0", type="1000base-t"
+        )
+        templated = self._unrecorded("mgmt0", self.before_log)
+        self._interface_state()
+
+        plan = self._plan(include=True)
+
+        self.assertNotIn(templated.pk, plan["deletable"])
+        self.assertEqual(plan["held"], {HOLD_TEMPLATE_COMPONENT: 1})
+
+    def test_the_option_still_keeps_an_interface_that_carries_a_staying_address(self):
+        old = self._unrecorded("Ethernet9", self.before_log)
+        address = IPAddress.objects.create(address="10.9.9.1/24", assigned_object=old)
+        self._created(address)
+        self._interface_state()
+        self._state(
+            IP,
+            [{"device": "edge-1", "interface": "Ethernet9", "address": "10.9.9.1/24"}],
+        )
+
+        plans = plan_stale_row_cleanup(self.sync, include_older_than_change_log=True)
+
+        self.assertNotIn(old.pk, plans[IFACE]["deletable"])
+        self.assertEqual(plans[IFACE]["held"], {HOLD_ATTACHED_ROWS_STAY: 1})
+
+
+class OlderThanChangeLogPreviewAndRemovalTest(OlderThanChangeLogFixture):
+    def test_the_preview_records_the_choice_the_counts_and_the_change_log_point(self):
+        self._unrecorded("Ethernet9", self.before_log)
+        self._interface_state()
+
+        off = preview_stale_row_cleanup(self.sync)
+        on = preview_stale_row_cleanup(self.sync, include_older_than_change_log=True)
+
+        self.assertEqual(off["options"], {"older_than_change_log": False})
+        self.assertEqual(on["options"], {"older_than_change_log": True})
+        self.assertEqual(on["oldest_change_logged_at"], self.log_start.isoformat())
+        self.assertEqual(on["models"][IFACE]["older_than_change_log"], 1)
+        self.assertEqual(on["totals"]["older_than_change_log"], 1)
+        self.assertEqual(off["totals"]["older_than_change_log"], 0)
+        self.assertEqual(on["totals"]["removable"], off["totals"]["removable"] + 1)
+
+    def test_the_removal_uses_the_previews_choice_and_the_preview_without_it_removes_none(
+        self,
+    ):
+        old = self._unrecorded("Ethernet9", self.before_log)
+        self._interface_state()
+        self._preview_with(False)
+
+        result = remove_stale_rows(self.sync)
+
+        self.assertEqual(result["options"], {"older_than_change_log": False})
+        self.assertEqual(result["models"][IFACE]["deleted"], 0)
+        self.assertTrue(Interface.objects.filter(pk=old.pk).exists())
+
+    def test_the_removal_with_a_preview_that_opted_in_removes_the_older_row(self):
+        old = self._unrecorded("Ethernet9", self.before_log)
+        mine = self._interface(self.edge1, "Ethernet8")
+        self._interface_state()
+        self._preview_with(True)
+
+        result = remove_stale_rows(self.sync)
+
+        self.assertEqual(result["options"], {"older_than_change_log": True})
+        self.assertEqual(result["models"][IFACE]["deleted"], 2)
+        self.assertEqual(result["models"][IFACE]["deleted_older_than_change_log"], 1)
+        self.assertEqual(result["totals"]["deleted_older_than_change_log"], 1)
+        for gone in (old, mine):
+            self.assertFalse(Interface.objects.filter(pk=gone.pk).exists())
+
+    def test_the_removal_cannot_widen_the_previews_choice(self):
+        old = self._unrecorded("Ethernet9", self.before_log)
+        self._interface_state()
+        self._preview_with(False)
+
+        with self.assertRaisesMessage(
+            StaleRowCleanupRefused, REFUSED_OPTION_WIDER_THAN_PREVIEW
+        ):
+            remove_stale_rows(self.sync, include_older_than_change_log=True)
+        self.assertTrue(Interface.objects.filter(pk=old.pk).exists())
+
+    def test_the_removal_can_narrow_the_previews_choice(self):
+        old = self._unrecorded("Ethernet9", self.before_log)
+        self._interface_state()
+        self._preview_with(True)
+
+        result = remove_stale_rows(self.sync, include_older_than_change_log=False)
+
+        self.assertEqual(result["options"], {"older_than_change_log": False})
+        self.assertEqual(result["models"][IFACE]["deleted"], 0)
+        self.assertTrue(Interface.objects.filter(pk=old.pk).exists())
+
+    def test_the_removal_is_pinned_to_the_change_log_point_the_preview_recorded(self):
+        # The log is pruned between preview and removal: its oldest change is
+        # now three days old, so a row from five days ago has become "older
+        # than the log". The operator reviewed a preview that did not count it.
+        old = self._unrecorded("Ethernet9", self.before_log)
+        between = self._unrecorded("Ethernet8", self.after_log)
+        self._interface_state()
+        self._preview_with(True)
+        ObjectChange.objects.filter(pk=self.anchor.pk).update(
+            time=timezone.now() - timedelta(days=3)
+        )
+
+        result = remove_stale_rows(self.sync)
+
+        self.assertEqual(result["models"][IFACE]["deleted"], 1)
+        self.assertFalse(Interface.objects.filter(pk=old.pk).exists())
+        self.assertTrue(Interface.objects.filter(pk=between.pk).exists())
+
+    def test_a_preview_that_recorded_no_change_log_point_reaches_nothing(self):
+        old = self._unrecorded("Ethernet9", self.before_log)
+        self._interface_state()
+        ObjectChange.objects.all().delete()
+        self._preview_with(True)
+        self._retain_changes_since(self.log_start)
+
+        result = remove_stale_rows(self.sync)
+
+        self.assertEqual(result["models"][IFACE]["deleted"], 0)
+        self.assertTrue(Interface.objects.filter(pk=old.pk).exists())
+
+    def test_the_removal_refuses_a_model_whose_option_reach_grew_since_the_preview(
+        self,
+    ):
+        first = self._unrecorded("Ethernet9", self.before_log)
+        self._interface_state()
+        self._preview_with(True)
+        second = self._unrecorded("Ethernet8", self.before_log)
+
+        result = remove_stale_rows(self.sync)
+
+        self.assertEqual(result["models"][IFACE]["refused"], REFUSED_GREW_SINCE_PREVIEW)
+        for iface in (first, second):
+            self.assertTrue(Interface.objects.filter(pk=iface.pk).exists())
+
+
+class OlderThanChangeLogSameCountsTest(OlderThanChangeLogFixture):
+    def test_the_removal_refuses_an_option_row_the_preview_did_not_list(self):
+        # Same totals as the preview (one option row, one sync-created row), but
+        # the option row is a different one: a row the operator never saw.
+        reviewed = self._unrecorded("Ethernet9", self.before_log)
+        mine = self._interface(self.edge1, "Ethernet8")
+        self._interface_state()
+        self._preview_with(True)
+        reviewed.delete()
+        unseen = self._unrecorded("Ethernet7", self.before_log)
+
+        result = remove_stale_rows(self.sync)
+
+        self.assertEqual(result["models"][IFACE]["refused"], REFUSED_GREW_SINCE_PREVIEW)
+        for iface in (mine, unseen):
+            self.assertTrue(Interface.objects.filter(pk=iface.pk).exists())
+
+    def test_the_preview_lists_the_primary_keys_of_the_option_rows(self):
+        reached = self._unrecorded("Ethernet9", self.before_log)
+        self._interface(self.edge1, "Ethernet8")
+        self._interface_state()
+
+        data = preview_stale_row_cleanup(self.sync, include_older_than_change_log=True)
+
+        self.assertEqual(data["models"][IFACE]["option_row_pks"], [reached.pk])
+
+
+class OlderThanChangeLogSurfaceTest(OlderThanChangeLogFixture):
+    def test_the_preview_job_stores_the_choice(self):
+        from forward_netbox.jobs import _preview_stale_device_rows_work
+
+        self._unrecorded("Ethernet9", self.before_log)
+        self._interface_state()
+        job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name=f"{self.sync.name} - preview stale device rows",
+            status=JobStatusChoices.STATUS_RUNNING,
+            job_id=uuid.uuid4(),
+        )
+
+        _preview_stale_device_rows_work(job, include_older_than_change_log=True)
+        job.refresh_from_db()
+
+        self.assertEqual(job.data["options"], {"older_than_change_log": True})
+        self.assertEqual(job.data["totals"]["older_than_change_log"], 1)
+
+    def test_the_job_runners_forward_the_choice_only_when_it_is_given(self):
+        from forward_netbox.jobs import PreviewStaleDeviceRowsJob
+        from forward_netbox.jobs import RemoveStaleDeviceRowsJob
+
+        job = Job.objects.create(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=self.sync.pk,
+            name="runner",
+            status=JobStatusChoices.STATUS_RUNNING,
+            job_id=uuid.uuid4(),
+        )
+        with patch("forward_netbox.jobs._preview_stale_device_rows_work") as work:
+            PreviewStaleDeviceRowsJob(job).run()
+            work.assert_called_once_with(job)
+        with patch("forward_netbox.jobs._preview_stale_device_rows_work") as work:
+            PreviewStaleDeviceRowsJob(job).run(include_older_than_change_log=True)
+            work.assert_called_once_with(job, include_older_than_change_log=True)
+        with patch("forward_netbox.jobs._remove_stale_device_rows_work") as work:
+            RemoveStaleDeviceRowsJob(job).run()
+            work.assert_called_once_with(job)
+        with patch("forward_netbox.jobs._remove_stale_device_rows_work") as work:
+            RemoveStaleDeviceRowsJob(job).run(
+                preview_job_pk=4, include_older_than_change_log=True
+            )
+            work.assert_called_once_with(
+                job, preview_job_pk=4, include_older_than_change_log=True
+            )
+
+    def test_the_page_checkbox_becomes_the_preview_jobs_parameter(self):
+        from forward_netbox.views import ForwardSyncPreviewStaleDeviceRowsView
+        from forward_netbox.views import ForwardSyncRemoveStaleDeviceRowsView
+
+        factory = RequestFactory()
+        preview = ForwardSyncPreviewStaleDeviceRowsView()
+        self.assertEqual(
+            preview.job_kwargs(
+                factory.post("/", {"include_older_than_change_log": "1"})
+            ),
+            {"include_older_than_change_log": True},
+        )
+        self.assertIsNone(preview.job_kwargs(factory.post("/", {})))
+        # The removal never takes the choice from the page: the preview's wins.
+        self.assertEqual(
+            ForwardSyncRemoveStaleDeviceRowsView().job_kwargs(
+                factory.post(
+                    "/", {"preview_job": "7", "include_older_than_change_log": "1"}
+                )
+            ),
+            {"preview_job_pk": 7},
+        )
+
+    def test_the_card_offers_the_option_and_the_confirm_says_the_operator_attests(self):
+        template = (
+            Path(__file__).resolve().parents[1]
+            / "templates"
+            / "forward_netbox"
+            / "forwardsync_scope_reconciliation.html"
+        ).read_text()
+
+        self.assertIn('name="include_older_than_change_log"', template)
+        self.assertIn("Also remove rows older than the change log", template)
+        start = template.index("forwardsync_remove_stale_device_rows")
+        confirm = template[start:].split("</form>")[0]
+        self.assertIn("you attest that nobody edited those rows by hand", confirm)
+
+    def test_the_bundle_carries_the_option_the_added_counts_and_the_log_point(self):
+        from forward_netbox.views import _stale_row_cleanup_payload
+        from forward_netbox.views import STALE_ROW_CLEANUP_COLUMNS
+
+        self._unrecorded("Ethernet9", self.before_log)
+        self._interface_state()
+        preview = self._preview_with(True)
+
+        payload = _stale_row_cleanup_payload(self.sync)
+
+        self.assertIs(payload["older_than_change_log"], True)
+        self.assertEqual(payload["removable_only_by_option"], 1)
+        self.assertEqual(payload["oldest_change_logged_at"], self.log_start.isoformat())
+        figures = {
+            (figure["model"], figure["label"]): figure
+            for figure in payload["ui_figures"]
+        }
+        computed = preview.data["generated_at"]
+        for label, value in (
+            ("Also remove rows older than the change log (preview)", True),
+            ("Oldest change NetBox retained (preview)", self.log_start.isoformat()),
+            ("Preview computed ... older than change log (option)", 1),
+        ):
+            self.assertEqual(figures[(None, label)]["value"], value, label)
+            self.assertEqual(figures[(None, label)]["computed_at"], computed, label)
+        self.assertIn((IFACE, "Older than change log (option)"), figures)
+        self.assertEqual(figures[(IFACE, "Older than change log (option)")]["value"], 1)
+        self.assertIn(
+            "Older than change log (option)",
+            [label for label, _ in STALE_ROW_CLEANUP_COLUMNS],
+        )
+
+    def test_the_rest_api_takes_the_choice_as_a_boolean(self):
+        from django.contrib.auth import get_user_model
+        from rest_framework.test import APIRequestFactory
+        from rest_framework.test import force_authenticate
+
+        from forward_netbox.api.views import ForwardSyncViewSet
+
+        admin = get_user_model().objects.create_superuser(
+            username="stale_admin", password="TestPassword123!", email="a@example.com"
+        )
+
+        def post(action_name, data):
+            request = APIRequestFactory().post("/x/", data=data, format="json")
+            force_authenticate(request, user=admin)
+            return ForwardSyncViewSet.as_view({"post": action_name})(
+                request, pk=self.sync.pk
+            )
+
+        def enqueued(action_name, suffix, data):
+            real_job = Job.objects.create(
+                object_type=ContentType.objects.get_for_model(ForwardSync),
+                object_id=self.sync.pk,
+                name=f"{self.sync.name} - {suffix}",
+                status=JobStatusChoices.STATUS_COMPLETED,
+                job_id=uuid.uuid4(),
+            )
+            with patch(
+                "forward_netbox.jobs.enqueue_forward_job", return_value=real_job
+            ) as enqueue:
+                response = post(action_name, data)
+            return response, enqueue
+
+        response, enqueue = enqueued(
+            "preview_stale_device_rows",
+            "preview stale device rows",
+            {"include_older_than_change_log": True},
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertIs(enqueue.call_args.kwargs["include_older_than_change_log"], True)
+
+        response, enqueue = enqueued(
+            "preview_stale_device_rows", "preview stale device rows", {}
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertNotIn("include_older_than_change_log", enqueue.call_args.kwargs)
+
+        response, enqueue = enqueued(
+            "remove_stale_device_rows",
+            "remove stale device rows",
+            {"include_older_than_change_log": True},
+        )
+        self.assertEqual(response.status_code, 201)
+        self.assertIs(enqueue.call_args.kwargs["include_older_than_change_log"], True)
+
+        for action_name, suffix in (
+            ("preview_stale_device_rows", "preview stale device rows"),
+            ("remove_stale_device_rows", "remove stale device rows"),
+        ):
+            response, enqueue = enqueued(
+                action_name, suffix, {"include_older_than_change_log": "yes"}
+            )
+            self.assertEqual(response.status_code, 400, action_name)
+            enqueue.assert_not_called()
+
+
+# --- more models --------------------------------------------------------------
+
+
+class StaleRowCoverageTest(TestCase):
+    def test_every_device_shard_model_is_covered_or_named_as_left_out(self):
+        covered = set(STALE_ROW_CLEANUP_MODELS)
+        left_out = set(STALE_ROW_CLEANUP_LEFT_OUT)
+
+        self.assertFalse(covered & left_out)
+        self.assertLessEqual(DEVICE_SHARD_MODELS, covered | left_out)
+        for model in left_out:
+            with self.subTest(model=model):
+                self.assertFalse(sync_may_delete(model))
+        for model in covered:
+            with self.subTest(model=model):
+                self.assertTrue(sync_may_delete(model))
+
+    def test_the_delete_order_puts_what_hangs_off_a_row_before_the_row(self):
+        order = {model: index for index, model in enumerate(STALE_ROW_CLEANUP_MODELS)}
+        for child, parent in (
+            (BGP_PEER_AF, BGP_AF),
+            (BGP_PEER_AF, BGP_PEER),
+            (OSPF_INTERFACE, OSPF_INSTANCE),
+            (BGP_PEER, IP),
+            (CABLE, IFACE),
+            (IP, IFACE),
+            ("dcim.macaddress", IFACE),
+            (OSPF_INTERFACE, IFACE),
+            (INVENTORY, IFACE),
+        ):
+            self.assertLess(order[child], order[parent], (child, parent))
+
+
+class StateRowKeyTest(TestCase):
+    def test_a_bgp_address_family_matches_under_every_spelling_the_sync_accepts(self):
+        stored = state_row_keys(
+            BGP_AF, {"device": "edge-1", "vrf": None, "afi_safi": "ipv4-unicast"}
+        )
+        for spelling in ("AfiSafiType.IPV4_UNICAST", "ipv4-any", "IPV4_UNICAST"):
+            with self.subTest(spelling=spelling):
+                row = {"device": "edge-1", "vrf": None, "afi_safi": spelling}
+                self.assertTrue(state_row_keys(BGP_AF, row) & stored)
+
+    def test_a_bgp_address_family_in_another_vrf_is_a_different_key(self):
+        default = state_row_keys(
+            BGP_AF, {"device": "edge-1", "vrf": None, "afi_safi": "ipv4-unicast"}
+        )
+        blue = state_row_keys(
+            BGP_AF, {"device": "edge-1", "vrf": "Blue", "afi_safi": "ipv4-unicast"}
+        )
+        shouted = state_row_keys(
+            BGP_AF, {"device": "edge-1", "vrf": "BLUE", "afi_safi": "ipv4-unicast"}
+        )
+        self.assertFalse(default & blue)
+        self.assertTrue(blue & shouted)
+
+    def test_a_row_the_cleanup_cannot_key_has_no_keys(self):
+        self.assertEqual(state_row_keys(BGP_AF, {"device": "edge-1"}), set())
+        self.assertEqual(state_row_keys(BGP_PEER_AF, {"device": "edge-1"}), set())
+        self.assertEqual(state_row_keys(INVENTORY, {"device": "edge-1"}), set())
+        self.assertEqual(state_row_keys(MODULE, {"module_bay": "Slot 1"}), set())
+        self.assertEqual(state_row_keys(OSPF_INTERFACE, {"device": "edge-1"}), set())
+
+    def test_a_module_bay_matches_as_reported_and_as_stored(self):
+        long_name = "Slot " + "x" * 70
+        reported = state_row_keys(MODULE, {"device": "edge-1", "module_bay": long_name})
+        stored = state_row_keys(
+            MODULE, {"device": "edge-1", "module_bay": long_name.strip()[:64]}
+        )
+        self.assertTrue(reported & stored)
+        self.assertTrue(
+            state_row_keys(MODULE, {"device": "edge-1", "module_bay": "Slot 1 "})
+            & state_row_keys(MODULE, {"device": "edge-1", "module_bay": "slot 1"})
+        )
+
+    def test_an_ospf_interface_matches_under_the_abbreviations_routing_accepts(self):
+        stored = state_row_keys(
+            OSPF_INTERFACE, {"device": "edge-1", "local_interface": "Ethernet2"}
+        )
+        for spelling in ("Eth2", "ethernet2", "Ethernet2"):
+            with self.subTest(spelling=spelling):
+                row = {"device": "edge-1", "local_interface": spelling}
+                self.assertTrue(state_row_keys(OSPF_INTERFACE, row) & stored)
+
+
+class ExtendedModelsFixture(StaleRowCleanupFixture):
+    def _enable(self, *models):
+        parameters = dict(self.sync.parameters)
+        for model in EXTENDED_MODELS:
+            parameters[model] = model in models
+        self.sync.parameters = parameters
+        self.sync.save()
+
+    def _plan(self, model):
+        return plan_stale_row_cleanup(self.sync)[model]
+
+    def _outside_device(self):
+        """A device the last run did not return (not in the device list)."""
+        device = Device.objects.create(
+            name="edge-3",
+            site=self.edge1.site,
+            device_type=self.device_type,
+            role=self.edge1.role,
+        )
+        self._own(device)
+        return device
+
+    def _remove(self, **kwargs):
+        self._preview()
+        return remove_stale_rows(self.sync, **kwargs)
+
+    def _recording_runner(self, handler_name, calls):
+        sync = self.sync
+
+        class RecordingRunner(ForwardSyncRunner):
+            pass
+
+        def handler(runner, row):
+            calls.append(dict(row))
+            return getattr(ForwardSyncRunner, handler_name)(runner, row)
+
+        setattr(RecordingRunner, handler_name, handler)
+        return lambda: RecordingRunner(
+            sync=sync, ingestion=None, client=None, logger_=Mock()
+        )
+
+
+class StaleInventoryItemTest(ExtendedModelsFixture):
+    def setUp(self):
+        super().setUp()
+        self._enable(INVENTORY)
+        self.kept = self._item(self.edge1, "Fan 1")
+
+    @staticmethod
+    def _row(device, name, serial=""):
+        return {
+            "device": device,
+            "name": name,
+            "part_id": f"P-{name}",
+            "serial": serial,
+        }
+
+    def _item(self, device, name, *, recorded=True, serial=""):
+        item = InventoryItem.objects.create(
+            device=device, name=name, part_id=f"P-{name}", serial=serial
+        )
+        if recorded:
+            self._created(item)
+        return item
+
+    def _inventory_state(self, *extra):
+        return self._state(INVENTORY, [self._row("edge-1", "Fan 1"), *extra])
+
+    def test_a_forgotten_sync_created_item_is_removable_and_a_listed_one_is_kept(self):
+        stale = self._item(self.edge1, "PSU 1")
+        self._inventory_state()
+
+        plan = self._plan(INVENTORY)
+
+        self.assertEqual(set(plan["deletable"]), {stale.pk})
+        self.assertNotIn(self.kept.pk, plan["deletable"])
+        self.assertEqual(plan["netbox_rows"], 2)
+
+    def test_a_hand_added_item_is_never_a_candidate(self):
+        hand = self._item(self.edge1, "PSU 1", recorded=False)
+        self._inventory_state()
+
+        plan = self._plan(INVENTORY)
+
+        self.assertNotIn(hand.pk, plan["deletable"])
+        self.assertEqual(plan["held"], {HOLD_NO_CREATE_RECORD: 1})
+
+    def test_an_item_whose_serial_changed_is_present_by_device_and_name(self):
+        changed = self._item(self.edge1, "PSU 1", serial="NEW")
+        self._inventory_state(self._row("edge-1", "PSU 1", serial="OLD"))
+
+        self.assertNotIn(changed.pk, self._plan(INVENTORY)["deletable"])
+
+    def test_an_item_of_a_device_the_last_run_did_not_return_is_never_judged(self):
+        outside = self._outside_device()
+        stale = self._item(outside, "PSU 1")
+        self._inventory_state(self._row("edge-3", "Fan 1"))
+
+        self.assertNotIn(stale.pk, self._plan(INVENTORY)["deletable"])
+
+    def test_a_module_native_state_row_is_not_expected_in_netbox(self):
+        # With modules enabled the sync never makes an inventory item of a line
+        # card; twenty of them must not read as "the state does not match NetBox".
+        stale = self._item(self.edge1, "PSU 1")
+        cards = [
+            {**self._row("edge-1", f"Card {index}"), "part_type": "LINE CARD"}
+            for index in range(21)
+        ]
+        self._inventory_state(*cards)
+
+        self.assertEqual(self._plan(INVENTORY)["refused"], REFUSED_STATE_MISMATCH)
+
+        self._enable(INVENTORY, MODULE)
+        plan = self._plan(INVENTORY)
+
+        self.assertIsNone(plan["refused"])
+        self.assertEqual(set(plan["deletable"]), {stale.pk})
+
+    def test_an_interface_carrying_an_item_that_stays_is_held(self):
+        stale_iface = self._interface(self.edge1, "Ethernet2")
+        InventoryItem.objects.create(
+            device=self.edge1, name="Optic", component=stale_iface
+        )
+        self._interface_state()
+        self._inventory_state()
+
+        plans = plan_stale_row_cleanup(self.sync)
+
+        self.assertNotIn(stale_iface.pk, plans[IFACE]["deletable"])
+        self.assertEqual(plans[IFACE]["held"], {HOLD_ATTACHED_ROWS_STAY: 1})
+
+    def test_removal_goes_through_the_sync_delete_adapter(self):
+        stale = self._item(self.edge1, "PSU 1", serial="S9")
+        hand = self._item(self.edge1, "PSU 2", recorded=False)
+        self._inventory_state()
+        calls = []
+
+        result = self._remove(
+            runner_factory=self._recording_runner("_delete_dcim_inventoryitem", calls)
+        )
+
+        self.assertEqual(
+            calls,
+            [
+                {
+                    "device": "edge-1",
+                    "name": "PSU 1",
+                    "part_id": "P-PSU 1",
+                    "serial": "S9",
+                }
+            ],
+        )
+        self.assertEqual(result["models"][INVENTORY]["deleted"], 1)
+        self.assertFalse(InventoryItem.objects.filter(pk=stale.pk).exists())
+        for kept in (hand, self.kept):
+            self.assertTrue(InventoryItem.objects.filter(pk=kept.pk).exists())
+
+
+class StaleModuleTest(ExtendedModelsFixture):
+    def setUp(self):
+        super().setUp()
+        self._enable(MODULE)
+        self.module_type = ModuleType.objects.create(
+            manufacturer=self.device_type.manufacturer,
+            model="Stale Line Card",
+            part_number="LC-1",
+        )
+        self.kept = self._module(self.edge1, "Slot 1")
+
+    @staticmethod
+    def _row(device, bay):
+        return {"device": device, "module_bay": bay, "model": "Stale Line Card"}
+
+    def _module(self, device, bay_name, *, recorded=True):
+        bay = ModuleBay.objects.create(device=device, name=bay_name)
+        module = Module.objects.create(
+            device=device, module_bay=bay, module_type=self.module_type, status="active"
+        )
+        if recorded:
+            self._created(module)
+        return module
+
+    def _module_state(self, *extra):
+        return self._state(MODULE, [self._row("edge-1", "Slot 1"), *extra])
+
+    def test_a_forgotten_sync_created_module_is_removable_and_a_listed_one_is_kept(
+        self,
+    ):
+        stale = self._module(self.edge1, "Slot 2")
+        self._module_state()
+
+        plan = self._plan(MODULE)
+
+        self.assertEqual(set(plan["deletable"]), {stale.pk})
+        self.assertNotIn(self.kept.pk, plan["deletable"])
+
+    def test_a_hand_added_module_is_never_a_candidate(self):
+        hand = self._module(self.edge1, "Slot 2", recorded=False)
+        self._module_state()
+
+        plan = self._plan(MODULE)
+
+        self.assertNotIn(hand.pk, plan["deletable"])
+        self.assertEqual(plan["held"], {HOLD_NO_CREATE_RECORD: 1})
+
+    def test_a_module_whose_bay_name_was_cleaned_is_present(self):
+        cleaned = self._module(self.edge1, "Slot 2")
+        self._module_state(self._row("edge-1", "Slot 2 "))
+
+        self.assertNotIn(cleaned.pk, self._plan(MODULE)["deletable"])
+
+    def test_a_module_of_a_device_the_last_run_did_not_return_is_never_judged(self):
+        outside = self._outside_device()
+        stale = self._module(outside, "Slot 2")
+        self._module_state(self._row("edge-3", "Slot 1"))
+
+        self.assertNotIn(stale.pk, self._plan(MODULE)["deletable"])
+
+    def test_a_module_with_a_component_installed_is_held(self):
+        # Deleting it would delete that component, which Forward may still list.
+        stale = self._module(self.edge1, "Slot 2")
+        Interface.objects.create(
+            device=self.edge1, name="LC2/1", type="1000base-t", module=stale
+        )
+        self._module_state()
+
+        plan = self._plan(MODULE)
+
+        self.assertNotIn(stale.pk, plan["deletable"])
+        self.assertEqual(plan["held"], {HOLD_MODULE_HAS_COMPONENTS: 1})
+
+    def test_removal_goes_through_the_sync_delete_adapter_and_leaves_the_bay(self):
+        stale = self._module(self.edge1, "Slot 2")
+        hand = self._module(self.edge1, "Slot 3", recorded=False)
+        self._module_state()
+        calls = []
+
+        result = self._remove(
+            runner_factory=self._recording_runner("_delete_dcim_module", calls)
+        )
+
+        self.assertEqual(calls, [{"device": "edge-1", "module_bay": "Slot 2"}])
+        self.assertEqual(result["models"][MODULE]["deleted"], 1)
+        self.assertFalse(Module.objects.filter(pk=stale.pk).exists())
+        self.assertTrue(ModuleBay.objects.filter(name="Slot 2").exists())
+        for kept in (hand, self.kept):
+            self.assertTrue(Module.objects.filter(pk=kept.pk).exists())
+
+
+class RoutingFixture(ExtendedModelsFixture):
+    def setUp(self):
+        if not apps.is_installed("netbox_routing"):
+            self.skipTest("netbox-routing optional plugin is not installed")
+        super().setUp()
+        from ipam.models import ASN
+        from ipam.models import RIR
+
+        ASN.objects.create(rir=RIR.objects.create(name="Stale RIR"), asn=64512)
+        self.runner = ForwardSyncRunner(
+            sync=self.sync, ingestion=None, client=Mock(), logger_=Mock()
+        )
+
+    @staticmethod
+    def model(name):
+        return apps.get_model("netbox_routing", name)
+
+    def _new(self, model_name, apply, *, recorded=True):
+        """Run ``apply`` and return the one row of ``model_name`` it created."""
+        model = self.model(model_name)
+        before = set(model.objects.values_list("pk", flat=True))
+        apply()
+        created = model.objects.exclude(pk__in=before).get()
+        if recorded:
+            self._created(created)
+        return created
+
+    @staticmethod
+    def af_row(device, afi="AfiSafiType.IPV4_UNICAST", vrf=None):
+        return {"device": device, "vrf": vrf, "local_asn": 64512, "afi_safi": afi}
+
+    @staticmethod
+    def peer_af_row(device, host, afi="AfiSafiType.IPV4_UNICAST", vrf=None):
+        return {
+            "device": device,
+            "vrf": vrf,
+            "local_asn": 64512,
+            "neighbor_address": host,
+            "peer_asn": 64513,
+            "enabled": True,
+            "status": "active",
+            "peer_type": "PeerType.EXTERNAL",
+            "afi_safi": afi,
+            "has_adj_rib_in": False,
+            "has_adj_rib_out": True,
+        }
+
+    @staticmethod
+    def peer_row(device, host, vrf=None):
+        return {
+            "device": device,
+            "vrf": vrf,
+            "local_asn": 64512,
+            "neighbor_address": host,
+            "peer_asn": 64513,
+            "enabled": True,
+            "status": "active",
+        }
+
+    @staticmethod
+    def ospf_instance_row(device, process):
+        return {
+            "device": device,
+            "vrf": None,
+            "process_id": process,
+            "domain": "fabric",
+            "router_id": "192.0.2.254",
+        }
+
+    @classmethod
+    def ospf_interface_row(cls, device, process, interface):
+        return {
+            **cls.ospf_instance_row(device, process),
+            "area_id": "0",
+            "area_type": "OspfAreaType.BACKBONE",
+            "local_interface": interface,
+            "remote_router_id": "192.0.2.253",
+            "remote_interface_ip": "192.0.2.253/31",
+            "cost": 1,
+            "role": "OspfRole.DESIGNATED_ROUTER",
+            "remote_device": "edge-2",
+            "remote_interface": "Ethernet1",
+        }
+
+
+class StaleBgpAddressFamilyTest(RoutingFixture):
+    def setUp(self):
+        super().setUp()
+        self._enable(BGP_AF)
+        self.kept = self._new(
+            "BGPAddressFamily",
+            lambda: self.runner._apply_netbox_routing_bgpaddressfamily(
+                self.af_row("edge-1")
+            ),
+        )
+
+    def _address_family(self, device, afi, *, recorded=True):
+        return self._new(
+            "BGPAddressFamily",
+            lambda: self.runner._apply_netbox_routing_bgpaddressfamily(
+                self.af_row(device, afi)
+            ),
+            recorded=recorded,
+        )
+
+    def _af_state(self, *extra):
+        return self._state(BGP_AF, [self.af_row("edge-1"), *extra])
+
+    def test_a_forgotten_sync_created_family_is_removable_and_a_listed_one_is_kept(
+        self,
+    ):
+        stale = self._address_family("edge-1", "AfiSafiType.IPV6_UNICAST")
+        self._af_state()
+
+        plan = self._plan(BGP_AF)
+
+        self.assertEqual(set(plan["deletable"]), {stale.pk})
+        self.assertNotIn(self.kept.pk, plan["deletable"])
+
+    def test_a_hand_added_family_is_never_a_candidate(self):
+        hand = self._address_family(
+            "edge-1", "AfiSafiType.IPV6_UNICAST", recorded=False
+        )
+        self._af_state()
+
+        plan = self._plan(BGP_AF)
+
+        self.assertNotIn(hand.pk, plan["deletable"])
+        self.assertEqual(plan["held"], {HOLD_NO_CREATE_RECORD: 1})
+
+    def test_a_family_the_state_lists_under_an_alias_is_present(self):
+        listed = self._address_family("edge-1", "AfiSafiType.IPV6_UNICAST")
+        self._af_state(self.af_row("edge-1", "ipv6-any"))
+
+        self.assertNotIn(listed.pk, self._plan(BGP_AF)["deletable"])
+
+    def test_a_family_on_a_device_the_last_run_did_not_return_is_never_judged(self):
+        self._outside_device()
+        stale = self._address_family("edge-3", "AfiSafiType.IPV6_UNICAST")
+        self._af_state(self.af_row("edge-3"))
+
+        self.assertNotIn(stale.pk, self._plan(BGP_AF)["deletable"])
+
+    def test_a_family_a_peer_address_family_state_still_names_is_present(self):
+        self._enable(BGP_AF, BGP_PEER_AF)
+        wanted = self._address_family("edge-1", "AfiSafiType.IPV6_UNICAST")
+        self._af_state()
+        self._state(
+            BGP_PEER_AF,
+            [self.peer_af_row("edge-1", "192.0.2.9", "AfiSafiType.IPV6_UNICAST")],
+        )
+
+        self.assertNotIn(wanted.pk, self._plan(BGP_AF)["deletable"])
+
+    def test_a_family_with_a_peer_address_family_that_stays_is_held(self):
+        self._enable(BGP_AF, BGP_PEER_AF)
+        row = self.peer_af_row("edge-1", "192.0.2.9", "AfiSafiType.IPV6_UNICAST")
+        # The peer address family writes its family too; only the family has a
+        # create record, so the peer address family itself is held and stays.
+        self.runner._apply_netbox_routing_bgppeeraddressfamily(row)
+        stale = self.model("BGPAddressFamily").objects.get(
+            address_family="ipv6-unicast"
+        )
+        self._created(stale)
+        self._af_state()
+        self._state(BGP_PEER_AF, [self.peer_af_row("edge-1", "192.0.2.1")])
+
+        plans = plan_stale_row_cleanup(self.sync)
+
+        self.assertNotIn(stale.pk, plans[BGP_AF]["deletable"])
+        self.assertEqual(plans[BGP_AF]["held"], {HOLD_ATTACHED_ROWS_STAY: 1})
+        self.assertEqual(plans[BGP_PEER_AF]["held"], {HOLD_NO_CREATE_RECORD: 1})
+
+    def test_removal_goes_through_the_sync_delete_adapter(self):
+        stale = self._address_family("edge-1", "AfiSafiType.IPV6_UNICAST")
+        self._af_state()
+        calls = []
+
+        result = self._remove(
+            runner_factory=self._recording_runner(
+                "_delete_netbox_routing_bgpaddressfamily", calls
+            )
+        )
+
+        self.assertEqual(
+            calls,
+            [
+                {
+                    "device": "edge-1",
+                    "local_asn": 64512,
+                    "vrf": None,
+                    "afi_safi": "ipv6-unicast",
+                }
+            ],
+        )
+        self.assertEqual(result["models"][BGP_AF]["deleted"], 1)
+        self.assertFalse(
+            self.model("BGPAddressFamily").objects.filter(pk=stale.pk).exists()
+        )
+        self.assertTrue(
+            self.model("BGPAddressFamily").objects.filter(pk=self.kept.pk).exists()
+        )
+
+
+class StaleBgpPeerAddressFamilyTest(RoutingFixture):
+    def setUp(self):
+        super().setUp()
+        self._enable(BGP_PEER_AF)
+        self.kept = self._peer_af("edge-1", "192.0.2.1")
+
+    def _peer_af(self, device, host, afi="AfiSafiType.IPV4_UNICAST", *, recorded=True):
+        return self._new(
+            "BGPPeerAddressFamily",
+            lambda: self.runner._apply_netbox_routing_bgppeeraddressfamily(
+                self.peer_af_row(device, host, afi)
+            ),
+            recorded=recorded,
+        )
+
+    def _peer_af_state(self, *extra):
+        return self._state(
+            BGP_PEER_AF, [self.peer_af_row("edge-1", "192.0.2.1"), *extra]
+        )
+
+    def test_a_forgotten_sync_created_peer_family_is_removable_and_a_listed_one_is_kept(
+        self,
+    ):
+        stale = self._peer_af("edge-1", "192.0.2.1", "AfiSafiType.IPV6_UNICAST")
+        self._peer_af_state()
+
+        plan = self._plan(BGP_PEER_AF)
+
+        self.assertEqual(set(plan["deletable"]), {stale.pk})
+        self.assertNotIn(self.kept.pk, plan["deletable"])
+
+    def test_a_hand_added_peer_family_is_never_a_candidate(self):
+        hand = self._peer_af(
+            "edge-1", "192.0.2.1", "AfiSafiType.IPV6_UNICAST", recorded=False
+        )
+        self._peer_af_state()
+
+        plan = self._plan(BGP_PEER_AF)
+
+        self.assertNotIn(hand.pk, plan["deletable"])
+        self.assertEqual(plan["held"], {HOLD_NO_CREATE_RECORD: 1})
+
+    def test_a_peer_family_the_state_lists_under_an_alias_is_present(self):
+        listed = self._peer_af("edge-1", "192.0.2.1", "AfiSafiType.IPV6_UNICAST")
+        self._peer_af_state(self.peer_af_row("edge-1", "192.0.2.1", "ipv6-any"))
+
+        self.assertNotIn(listed.pk, self._plan(BGP_PEER_AF)["deletable"])
+
+    def test_a_peer_family_of_another_neighbour_is_not_kept_by_this_ones(self):
+        other = self._peer_af("edge-1", "192.0.2.77")
+        self._peer_af_state()
+
+        self.assertIn(other.pk, self._plan(BGP_PEER_AF)["deletable"])
+
+    def test_a_peer_family_on_a_device_the_last_run_did_not_return_is_never_judged(
+        self,
+    ):
+        self._outside_device()
+        stale = self._peer_af("edge-3", "192.0.2.1")
+        self._peer_af_state(self.peer_af_row("edge-3", "192.0.2.50"))
+
+        self.assertNotIn(stale.pk, self._plan(BGP_PEER_AF)["deletable"])
+
+    def test_removal_goes_through_the_sync_delete_adapter(self):
+        stale = self._peer_af("edge-1", "192.0.2.1", "AfiSafiType.IPV6_UNICAST")
+        self._peer_af_state()
+        calls = []
+
+        result = self._remove(
+            runner_factory=self._recording_runner(
+                "_delete_netbox_routing_bgppeeraddressfamily", calls
+            )
+        )
+
+        self.assertEqual(
+            calls,
+            [
+                {
+                    "device": "edge-1",
+                    "local_asn": 64512,
+                    "vrf": None,
+                    "neighbor_address": "192.0.2.1",
+                    "afi_safi": "ipv6-unicast",
+                }
+            ],
+        )
+        self.assertEqual(result["models"][BGP_PEER_AF]["deleted"], 1)
+        model = self.model("BGPPeerAddressFamily")
+        self.assertFalse(model.objects.filter(pk=stale.pk).exists())
+        self.assertTrue(model.objects.filter(pk=self.kept.pk).exists())
+
+
+class BgpPeerNamedByItsChildrenTest(RoutingFixture):
+    def setUp(self):
+        super().setUp()
+        self.kept = self._new(
+            "BGPPeer",
+            lambda: self.runner._apply_netbox_routing_bgppeer(
+                self.peer_row("edge-1", "192.0.2.1")
+            ),
+        )
+        self.other = self._new(
+            "BGPPeer",
+            lambda: self.runner._apply_netbox_routing_bgppeer(
+                self.peer_row("edge-1", "192.0.2.9")
+            ),
+        )
+        self._state(BGP_PEER, [self.peer_row("edge-1", "192.0.2.1")])
+
+    def test_a_peer_with_no_state_of_its_own_and_no_child_naming_it_is_removable(self):
+        self._enable(BGP_PEER)
+
+        self.assertEqual(set(self._plan(BGP_PEER)["deletable"]), {self.other.pk})
+
+    def test_a_peer_a_peer_address_family_state_still_names_is_kept(self):
+        self._enable(BGP_PEER, BGP_PEER_AF)
+        self._state(
+            BGP_PEER_AF,
+            [
+                self.peer_af_row("edge-1", "192.0.2.1"),
+                self.peer_af_row("edge-1", "192.0.2.9"),
+            ],
+        )
+
+        self.assertEqual(self._plan(BGP_PEER)["deletable"], {})
+
+    def test_a_child_model_with_no_state_refuses_the_peer_model(self):
+        self._enable(BGP_PEER, BGP_PEER_AF)
+
+        plan = self._plan(BGP_PEER)
+
+        self.assertEqual(plan["refused"], REFUSED_CHILD_STATE_UNAVAILABLE)
+        self.assertEqual(plan["deletable"], {})
+
+    def test_a_peering_session_state_still_naming_a_peer_keeps_it(self):
+        if not apps.is_installed("netbox_peering_manager"):
+            self.skipTest("netbox-peering-manager optional plugin is not installed")
+        self._enable(BGP_PEER, PEERING_SESSION)
+        self._state(PEERING_SESSION, [self.peer_row("edge-1", "192.0.2.9")])
+
+        self.assertEqual(self._plan(BGP_PEER)["deletable"], {})
+
+
+class StaleOspfInstanceTest(RoutingFixture):
+    def setUp(self):
+        super().setUp()
+        self._enable(OSPF_INSTANCE)
+        self.kept = self._instance("edge-1", "UNDERLAY")
+
+    def _instance(self, device, process, *, recorded=True):
+        return self._new(
+            "OSPFInstance",
+            lambda: self.runner._apply_netbox_routing_ospfinstance(
+                self.ospf_instance_row(device, process)
+            ),
+            recorded=recorded,
+        )
+
+    def _instance_state(self, *extra):
+        return self._state(
+            OSPF_INSTANCE, [self.ospf_instance_row("edge-1", "UNDERLAY"), *extra]
+        )
+
+    def test_a_forgotten_sync_created_instance_is_removable_and_a_listed_one_is_kept(
+        self,
+    ):
+        # Non-numeric process names are stored as a hash of the row; the key
+        # must be the number the apply stored, not the text Forward reported.
+        stale = self._instance("edge-1", "RETIRED")
+        self._instance_state()
+
+        plan = self._plan(OSPF_INSTANCE)
+
+        self.assertEqual(set(plan["deletable"]), {stale.pk})
+        self.assertNotIn(self.kept.pk, plan["deletable"])
+
+    def test_numeric_process_ids_match_too(self):
+        listed = self._instance("edge-1", "10")
+        stale = self._instance("edge-1", "11")
+        self._instance_state(self.ospf_instance_row("edge-1", "10"))
+
+        plan = self._plan(OSPF_INSTANCE)
+
+        self.assertEqual(set(plan["deletable"]), {stale.pk})
+        self.assertNotIn(listed.pk, plan["deletable"])
+
+    def test_a_hand_added_instance_is_never_a_candidate(self):
+        hand = self._instance("edge-1", "RETIRED", recorded=False)
+        self._instance_state()
+
+        plan = self._plan(OSPF_INSTANCE)
+
+        self.assertNotIn(hand.pk, plan["deletable"])
+        self.assertEqual(plan["held"], {HOLD_NO_CREATE_RECORD: 1})
+
+    def test_an_instance_on_a_device_the_last_run_did_not_return_is_never_judged(self):
+        self._outside_device()
+        stale = self._instance("edge-3", "RETIRED")
+        self._instance_state(self.ospf_instance_row("edge-3", "UNDERLAY"))
+
+        self.assertNotIn(stale.pk, self._plan(OSPF_INSTANCE)["deletable"])
+
+    def test_an_instance_an_ospf_interface_state_still_names_is_present(self):
+        self._enable(OSPF_INSTANCE, OSPF_INTERFACE)
+        wanted = self._instance("edge-1", "RETIRED")
+        self._instance_state()
+        self._state(
+            OSPF_INTERFACE,
+            [self.ospf_interface_row("edge-1", "RETIRED", "Ethernet1")],
+        )
+
+        self.assertNotIn(wanted.pk, self._plan(OSPF_INSTANCE)["deletable"])
+
+    def test_an_instance_with_an_ospf_interface_that_stays_is_held(self):
+        self._enable(OSPF_INSTANCE, OSPF_INTERFACE)
+        # The interface row writes its instance. The OSPF interface it also
+        # wrote is listed in the state, so it stays, and the instance with it.
+        self.runner._apply_netbox_routing_ospfinterface(
+            self.ospf_interface_row("edge-1", "RETIRED", "Ethernet1")
+        )
+        stale = self.model("OSPFInstance").objects.get(
+            device=self.edge1, name__contains="RETIRED"
+        )
+        self._created(stale)
+        self._instance_state()
+        self._state(
+            OSPF_INTERFACE, [self.ospf_interface_row("edge-1", "UNDERLAY", "Ethernet1")]
+        )
+
+        plans = plan_stale_row_cleanup(self.sync)
+
+        self.assertNotIn(stale.pk, plans[OSPF_INSTANCE]["deletable"])
+        self.assertEqual(plans[OSPF_INSTANCE]["held"], {HOLD_ATTACHED_ROWS_STAY: 1})
+
+    def test_removal_goes_through_the_sync_delete_adapter(self):
+        stale = self._instance("edge-1", "RETIRED")
+        self._instance_state()
+        calls = []
+
+        result = self._remove(
+            runner_factory=self._recording_runner(
+                "_delete_netbox_routing_ospfinstance", calls
+            )
+        )
+
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0]["device"], "edge-1")
+        self.assertEqual(calls[0]["process_id"], str(stale.process_id))
+        self.assertEqual(result["models"][OSPF_INSTANCE]["deleted"], 1)
+        self.assertFalse(
+            self.model("OSPFInstance").objects.filter(pk=stale.pk).exists()
+        )
+        self.assertTrue(
+            self.model("OSPFInstance").objects.filter(pk=self.kept.pk).exists()
+        )
+
+
+class StaleOspfInterfaceTest(RoutingFixture):
+    def setUp(self):
+        super().setUp()
+        self._enable(OSPF_INTERFACE)
+        self.kept = self._ospf_interface("edge-1", "Ethernet1", recorded=True)
+
+    def _ospf_interface(self, device, interface, *, recorded=True):
+        if not Interface.objects.filter(device__name=device, name=interface).exists():
+            Interface.objects.create(
+                device=Device.objects.get(name=device),
+                name=interface,
+                type="1000base-t",
+            )
+        return self._new(
+            "OSPFInterface",
+            lambda: self.runner._apply_netbox_routing_ospfinterface(
+                self.ospf_interface_row(device, "UNDERLAY", interface)
+            ),
+            recorded=recorded,
+        )
+
+    def _ospf_state(self, *extra):
+        return self._state(
+            OSPF_INTERFACE,
+            [self.ospf_interface_row("edge-1", "UNDERLAY", "Ethernet1"), *extra],
+        )
+
+    def test_a_forgotten_sync_created_ospf_interface_is_removable_and_a_listed_one_is_kept(
+        self,
+    ):
+        stale = self._ospf_interface("edge-1", "Ethernet2")
+        self._ospf_state()
+
+        plan = self._plan(OSPF_INTERFACE)
+
+        self.assertEqual(set(plan["deletable"]), {stale.pk})
+        self.assertNotIn(self.kept.pk, plan["deletable"])
+
+    def test_a_hand_added_ospf_interface_is_never_a_candidate(self):
+        hand = self._ospf_interface("edge-1", "Ethernet2", recorded=False)
+        self._ospf_state()
+
+        plan = self._plan(OSPF_INTERFACE)
+
+        self.assertNotIn(hand.pk, plan["deletable"])
+        self.assertEqual(plan["held"], {HOLD_NO_CREATE_RECORD: 1})
+
+    def test_an_abbreviated_local_interface_in_the_state_keeps_the_full_name(self):
+        listed = self._ospf_interface("edge-1", "Ethernet3")
+        self._ospf_state(self.ospf_interface_row("edge-1", "UNDERLAY", "Eth3"))
+
+        self.assertNotIn(listed.pk, self._plan(OSPF_INTERFACE)["deletable"])
+
+    def test_an_ospf_interface_on_a_device_the_last_run_did_not_return_is_never_judged(
+        self,
+    ):
+        outside = self._outside_device()
+        Interface.objects.create(device=outside, name="Ethernet2", type="1000base-t")
+        stale = self._ospf_interface("edge-3", "Ethernet2")
+        self._ospf_state(self.ospf_interface_row("edge-3", "UNDERLAY", "Ethernet1"))
+
+        self.assertNotIn(stale.pk, self._plan(OSPF_INTERFACE)["deletable"])
+
+    def test_an_interface_carrying_an_ospf_interface_that_stays_is_held(self):
+        hand = self._ospf_interface("edge-1", "Ethernet2", recorded=False)
+        self._ospf_state()
+        self._interface_state()
+        stale_iface = hand.interface
+        self._created(stale_iface)
+
+        plans = plan_stale_row_cleanup(self.sync)
+
+        self.assertNotIn(stale_iface.pk, plans[IFACE]["deletable"])
+        self.assertEqual(plans[IFACE]["held"], {HOLD_ATTACHED_ROWS_STAY: 1})
+
+    def test_removal_takes_the_ospf_interface_before_the_interface_it_sits_on(self):
+        stale = self._ospf_interface("edge-1", "Ethernet2")
+        self._created(stale.interface)
+        self._ospf_state()
+        self._interface_state()
+        calls = []
+
+        result = self._remove(
+            runner_factory=self._recording_runner(
+                "_delete_netbox_routing_ospfinterface", calls
+            )
+        )
+
+        self.assertEqual(calls, [{"device": "edge-1", "local_interface": "Ethernet2"}])
+        self.assertEqual(result["models"][OSPF_INTERFACE]["deleted"], 1)
+        self.assertEqual(result["models"][IFACE]["deleted"], 1)
+        self.assertFalse(
+            Interface.objects.filter(device=self.edge1, name="Ethernet2").exists()
+        )
+        self.assertTrue(
+            self.model("OSPFInterface").objects.filter(pk=self.kept.pk).exists()
+        )

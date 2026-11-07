@@ -236,9 +236,11 @@ those devices as removable. CLI: add `--prune-orphans` (dry run) then `--apply`.
 
 Before 3.0.14, a run in which the set of in-scope devices changed (a device
 entered or left the include tags) forgot every interface, IP address, MAC
-address, cable and BGP peer Forward stopped returning on that run, so no later
-run could delete them. 3.0.14 stops new ones. The **Stale Rows Forward No
-Longer Returns** card on Scope Reconciliation clears the ones already there:
+address, cable, inventory item, module, BGP peer, BGP address family, BGP peer
+address family and OSPF instance and interface Forward stopped returning on that
+run, so no later run could delete them. 3.0.14 stops new ones. The **Stale Rows
+Forward No Longer Returns** card on Scope Reconciliation clears the ones already
+there:
 
 1. **Preview stale rows** queues a read-only job. It compares the stored sync
    state against NetBox and NetBox's change log; it makes no Forward call.
@@ -252,32 +254,84 @@ Longer Returns** card on Scope Reconciliation clears the ones already there:
 
 A row is removable only when all of these hold:
 
-- it is an interface, IP address, MAC address, cable or BGP peer;
+- it is one of the models above;
 - its device is still in this sync's scope and Forward returned that device on
   the last finalized run (rows of devices that left scope are kept on purpose).
   SNMP endpoints the sync imports as devices count as devices here. Without a
   device list from the latest run, the preview refuses every model and says
   so;
 - no sync's current state still holds it (matched loosely: by interface name
-  or abbreviation, address host, MAC value, or device and neighbour address);
+  or abbreviation, address host, MAC value, device and neighbour address,
+  device and inventory item name, device and module bay, BGP address family
+  under any spelling of the family, OSPF process as the sync stores it). A
+  BGP peer, BGP address family or OSPF instance is also kept while a child
+  model's state (peer address families, peering sessions, OSPF interfaces) still
+  names it, because applying the child writes the parent;
 - the change log shows this sync created it and nobody else changed it.
 
 Held, never removed: rows added or edited by hand, interfaces from the device
 type or a module, a primary or out-of-band address, an interface that still
-carries an address, MAC, cable, child or LAG member that stays, and a row
-whose create record is gone because NetBox's change-log retention removed it.
+carries an address, MAC, cable, child, LAG member, OSPF interface or inventory
+item that stays, a BGP address family or OSPF instance that still has a peer
+address family or OSPF interface on it, a module with any component installed
+in it (NetBox adopts a device's existing interfaces into a module, so most
+real modules are held and module cleanup will rarely remove anything), and a
+row whose create record is gone because NetBox's change-log
+retention removed it (see the option below).
 Also held: a row whose delete would take or blank anything else that is not
 this sync's own (an FHRP assignment, OSPF interface or L2VPN termination added
 by hand, another address's NAT link), and a BGP peer whose scope or router
 another source made. A whole model is refused when its stored state is
 missing, unreadable or older than the latest run, when another sync with the
-model enabled has no comparable state yet, when the state and NetBox disagree
-about most rows, or when 20 or more rows and more than 30% of the model's rows
-would go (a scope or query fault looks like that). The counts, the hold reasons and when the preview ran are in the
-support bundle under `scope_reconciliation.stale_row_cleanup`, and the last
-preview and removal jobs under `operator_action_jobs`. API:
-`POST /api/plugins/forward/sync/<id>/preview-stale-device-rows/` then
-`.../remove-stale-device-rows/` (removes within the latest completed preview).
+model enabled has no comparable state yet, when a child model that names its
+rows (peer address families, peering sessions, OSPF interfaces) is enabled with
+no state, when the state and NetBox disagree about most rows, or when 20 or more
+rows and more than 30% of the model's rows would go (a scope or query fault
+looks like that).
+
+**Rows the change log no longer remembers.** NetBox keeps 90 days of change log
+by default, so on an estate with months of stale rows most of them are held as
+`no_create_record_from_this_sync`. Tick **Also remove rows older than the change
+log** before **Preview stale rows** to reach them. It applies only to a row with
+no create record whose own created time is older than the oldest change NetBox
+still retains (anywhere, by anyone): the log provably cannot say who made it. A
+row created after that point that lacks a create record stays held, and so does
+any row with a retained change by anyone but this sync, always. Every other rule
+above applies unchanged, including the BGP scope and router ownership check
+(an old peer whose scope or router also lack a create record is held). By
+ticking it you attest that nobody edited those rows by hand; the removal
+confirmation says so again. The preview records your choice and the oldest
+retained change it measured against, and shows the rows only the option reaches
+as their own **Older than change log (option)** count. The removal uses the
+preview's choice and that same point and never widens it: a preview run without
+the option removes none of them, whatever the removal asks for. Without the
+option the preview still counts what it would add, as the hold
+`no_create_record_older_than_the_change_log`.
+
+Left out on purpose, and why:
+
+- FHRP groups (`ipam.fhrpgroup`): a group is shared by several devices, its
+  virtual IP is a separate address that two groups can share and attach to only
+  one of them, and removing the last member deletes the group and the IP. A
+  group without that IP cannot be mapped back to its row, and the side effects
+  land on objects no single device owns.
+- OSPF areas (`netbox_routing.ospfarea`): a global catalogue row shared by every
+  device that uses the area, not a device row.
+- Peering sessions (`netbox_peering_manager.peeringsession`): the sync never
+  removes one by absence, only through a Forward diff or its BGP peer. A session
+  on a stale peer holds that peer.
+- Tag assignments (`extras.taggeditem`): owned by the device-scope tag job,
+  which decides what stays.
+
+The counts, the hold reasons, your choice on the option, the oldest retained
+change and when the preview ran are in the support bundle under
+`scope_reconciliation.stale_row_cleanup`, and the last preview and removal jobs
+under `operator_action_jobs`. API:
+`POST /api/plugins/forward/sync/<id>/preview-stale-device-rows/` (optional JSON
+body `{"include_older_than_change_log": true}`) then
+`.../remove-stale-device-rows/` (removes within the latest completed preview and
+takes its choice; `true` against a preview that did not opt in is refused,
+`false` narrows).
 
 ### Post-upgrade catalog reconciliation
 
