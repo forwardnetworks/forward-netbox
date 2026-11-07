@@ -556,6 +556,73 @@
     </div>
   </div>
 </div>
+<div class="row mt-3">
+  <div class="col col-md-12">
+    <div class="card" id="platform-restore">
+      <h5 class="card-header">{% trans "Platforms a Sync Run Blanked" %}</h5>
+      <div class="card-body">
+        <p class="text-muted mt-0">
+          {% trans "Before 3.0.14, a run in which the include tag matched no device read every platform as gone and cleared the platform on every device that had one. The next normal run puts it back on the devices it covers, but a device outside the sync's scope stays blank. The preview finds those devices from NetBox's change log: a device is restorable only when this sync's own run took its platform away, nobody has touched its platform since, and the platform can be found again by its slug. It makes no Forward call and changes nothing." %}
+        </p>
+        {% if platform_restore.available %}
+          {% if platform_restore.blanked_by_this_sync %}
+            <p class="small mb-2">
+              {% blocktrans with when=platform_restore.generated_at %}Preview computed {{ when }}:{% endblocktrans %}
+            </p>
+            <table class="table table-sm table-hover mb-2 w-auto">
+              <tbody>
+                {% for label, value in platform_restore.figures %}
+                  <tr><th scope="row" class="fw-normal">{% trans label %}</th><td>{{ value }}</td></tr>
+                {% endfor %}
+                {% if platform_restore.held_by_reason %}
+                  <tr><td colspan="2" class="small text-muted">{% for reason, count in platform_restore.held_by_reason %}<code>{{ reason }}</code>: {{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+            {% if platform_restore.preview_refused %}
+              <p class="small text-warning mb-2">{% blocktrans with reason=platform_restore.preview_refused %}This preview can no longer be restored from (<code>{{ reason }}</code>). Preview again.{% endblocktrans %}</p>
+            {% endif %}
+          {% else %}
+            <p class="small text-muted mb-2">
+              {% blocktrans with when=platform_restore.generated_at %}Preview computed {{ when }}: no device had its platform blanked by this sync.{% endblocktrans %}
+            </p>
+          {% endif %}
+        {% elif platform_restore.error %}
+          <p class="text-danger small mb-2">{{ platform_restore.error }}</p>
+        {% else %}
+          <p class="text-muted small mb-2">{% trans "No preview yet." %}</p>
+        {% endif %}
+        {% if platform_restore.last_restore.job %}
+          <p class="small text-muted mb-2">
+            {% blocktrans with pk=platform_restore.last_restore.job status=platform_restore.last_restore.status restored=platform_restore.last_restore.restored|default:0 %}Last restore: job #{{ pk }} ({{ status }}), {{ restored }} restored.{% endblocktrans %}
+            {% if platform_restore.last_restore.refused %}<code>{{ platform_restore.last_restore.refused }}</code>{% endif %}
+          </p>
+        {% endif %}
+        <div class="d-flex gap-2">
+          {% if perms.forward_netbox.run_forwardsync %}
+            <form method="post" action="{% url 'plugins:forward_netbox:forwardsync_preview_platform_restore' pk=object.pk %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm btn-outline-primary">
+                <i class="mdi mdi-magnify" aria-hidden="true"></i>&nbsp;{% trans "Preview platforms" %}
+              </button>
+            </form>
+          {% endif %}
+          {% if platform_restore.restorable and not platform_restore.preview_refused and perms.dcim.change_device %}
+            <form method="post"
+                  action="{% url 'plugins:forward_netbox:forwardsync_restore_platforms' pk=object.pk %}"
+                  onsubmit="return confirm('{% blocktrans with count=platform_restore.restorable %}Restore the platform on up to {{ count }} devices? The plan is recomputed first and nothing beyond this preview is restored. Each change is logged to you.{% endblocktrans %}');">
+              {% csrf_token %}
+              <input type="hidden" name="preview_job" value="{{ platform_restore.preview_job }}">
+              <button type="submit" class="btn btn-sm btn-primary">
+                <i class="mdi mdi-backup-restore" aria-hidden="true"></i>&nbsp;{% blocktrans with count=platform_restore.restorable %}Restore {{ count }} platforms{% endblocktrans %}
+              </button>
+            </form>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 {% if site_relabel_pairs.available and site_relabel_pairs.pair_count or site_relabel_pairs.available and site_relabel_pairs.held_count %}
 <div class="row mt-3">
   <div class="col col-md-12">

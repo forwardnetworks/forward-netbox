@@ -333,6 +333,42 @@ body `{"include_older_than_change_log": true}`) then
 takes its choice; `true` against a preview that did not opt in is refused,
 `false` narrows).
 
+### Platforms a sync run blanked
+
+Before 3.0.14, a run in which the include tag matched no collected device read
+every platform as gone. NetBox lets a platform be deleted while devices use it,
+so the platform list was emptied and the platform was cleared on every device
+that had one. The next normal run puts it back on the devices it covers, but a
+device outside the sync's scope is never revisited, so it stays blank.
+
+The **Platforms a Sync Run Blanked** card on Scope Reconciliation puts those
+back. **Preview platforms** reads NetBox's change log and the device table; it
+makes no Forward call and changes nothing. It shows, under the card's labels:
+
+- **Blanked by this sync**: devices with no platform whose latest change to the
+  platform was one of this sync's own runs taking it away;
+- **Restorable**: of those, the devices where nobody has touched the platform
+  since and the platform that was removed can be found again, by its pk or, if
+  it was deleted and recreated, by its slug;
+- **Held**, with the reason for each: `platform_not_found_again`,
+  `several_platforms_with_that_slug`, `platform_changed_by_someone_else_since`.
+
+A preview that finds nothing blanked shows one line and no buttons. Otherwise
+**Restore N platforms** (needs `dcim.change_device`) puts the platform back. It
+is refused without a completed preview, when a run finalized after the preview,
+and while a sync run is active; it recomputes the plan and restores no more
+than the preview counted. Each edit is change-logged to the person who pressed
+the button. A platform someone else removed, or one a person set and cleared
+again, is never touched.
+
+While a preview says something is restorable, **What to do** lists "Devices a
+sync run blanked the platform on". The card's figures, the hold split, when the
+preview ran and the last restore are in the support bundle under
+`scope_reconciliation.platform_restore`, and the last preview and restore jobs
+under `operator_action_jobs`. API:
+`POST /api/plugins/forward/sync/<id>/preview-platform-restore/` then
+`.../restore-platforms/` (restores within the latest completed preview).
+
 ### Post-upgrade catalog reconciliation
 
 The **Post-Upgrade Catalog Reconciliation** panel on Scope Reconciliation is a

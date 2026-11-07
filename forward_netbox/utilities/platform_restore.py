@@ -30,6 +30,7 @@ HOLD_PLATFORM_AMBIGUOUS = "several_platforms_with_that_slug"
 HOLD_CHANGED_SINCE = "platform_changed_by_someone_else_since"
 
 REFUSED_NO_PREVIEW = "no_completed_preview"
+REFUSED_PREVIEW_STALE = "preview_older_than_the_latest_run"
 REFUSED_GREW_SINCE_PREVIEW = "more_restorable_than_the_preview_showed"
 REFUSED_SYNC_RUNNING = "a_sync_run_is_active"
 
@@ -231,3 +232,88 @@ def restore_platforms(sync, *, user=None, preview_restorable=None):
     summary = summarize_plan(plan)
     summary["restored"] = restored
     return summary
+
+
+# --- the operator action -----------------------------------------------------
+
+
+def latest_preview_job(sync):
+    """The sync's newest completed preview job, or ``None``."""
+    from core.choices import JobStatusChoices
+    from core.models import Job
+    from django.contrib.contenttypes.models import ContentType
+
+    from ..models import ForwardSync
+
+    return (
+        Job.objects.filter(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=sync.pk,
+            name__icontains=PREVIEW_JOB_SUFFIX,
+            status=JobStatusChoices.STATUS_COMPLETED,
+        )
+        .order_by("-created")
+        .first()
+    )
+
+
+def reviewed_preview(sync, preview_job_pk=None):
+    """``(job pk, restorable count)`` of the preview the operator reviewed.
+
+    Refused without a completed preview that carries its counts, and when a run
+    finalized after the preview computed them: the figures the operator saw
+    describe a state NetBox has left. ``preview_job_pk`` names the preview they
+    clicked from; it must still be this sync's completed preview.
+    """
+    from datetime import datetime
+
+    from core.choices import JobStatusChoices
+    from core.models import Job
+
+    from ..models import ForwardIngestion
+
+    job = latest_preview_job(sync)
+    if preview_job_pk:
+        job = Job.objects.filter(
+            pk=preview_job_pk,
+            object_id=sync.pk,
+            name__icontains=PREVIEW_JOB_SUFFIX,
+            status=JobStatusChoices.STATUS_COMPLETED,
+        ).first()
+    data = job.data if job is not None and isinstance(job.data, dict) else {}
+    if "restorable" not in data or not data.get("generated_at"):
+        raise PlatformRestoreRefused(REFUSED_NO_PREVIEW)
+    generated_at = datetime.fromisoformat(data["generated_at"])
+    latest = (
+        ForwardIngestion.objects.filter(sync=sync, merge_finalized_at__isnull=False)
+        .order_by("-merge_finalized_at")
+        .values_list("merge_finalized_at", flat=True)
+        .first()
+    )
+    if latest is not None and generated_at < latest:
+        raise PlatformRestoreRefused(REFUSED_PREVIEW_STALE)
+    return job.pk, int(data["restorable"] or 0)
+
+
+def run_platform_restore(sync, *, user, preview_job_pk=None):
+    """Restore within the reviewed preview, under ``user``. What the job stores.
+
+    Refused while a sync run is active (the enqueue guard checked when the job
+    was queued; a run may have started since), without a completed preview, and
+    when a run finalized after it.
+    """
+    from core.choices import JobStatusChoices
+    from django.utils import timezone
+
+    from .sync_facade import sync_run_job_names
+
+    if sync.jobs.filter(
+        name__in=sync_run_job_names(sync),
+        status__in=(JobStatusChoices.STATUS_PENDING, JobStatusChoices.STATUS_RUNNING),
+    ).exists():
+        raise PlatformRestoreRefused(REFUSED_SYNC_RUNNING)
+    preview_pk, previewed = reviewed_preview(sync, preview_job_pk)
+    result = restore_platforms(sync, user=user, preview_restorable=previewed)
+    result["preview_job"] = preview_pk
+    result["finished_at"] = timezone.now().isoformat()
+    return result

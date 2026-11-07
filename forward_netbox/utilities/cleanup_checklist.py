@@ -32,13 +32,15 @@ def cleanup_items(
     context_copies_on=False,
     on_no_interface=0,
     management_interfaces_on=False,
+    platform_restorable=0,
 ):
     """The ordered checklist for one stored scope report.
 
     ``payload`` is the stored report, ``twin_count`` the unmanaged devices that
     share a name with a managed one, ``relabel`` the `site_relabel_pairs`
     summary (``pair_count``/``held_count``) and ``urls`` maps an item key to the
-    page that lists its devices. Items with nothing to do are left out.
+    page that lists its devices. ``platform_restorable`` is the restorable count of
+    the stored platform-restore preview. Items with nothing to do are left out.
     """
     payload = payload or {}
     unmanaged = payload.get("unmanaged") or {}
@@ -350,6 +352,30 @@ def cleanup_items(
                     ]
                 ),
                 "url": urls.get("shared_management_address", ""),
+            }
+        )
+    blanked = _count(platform_restorable)
+    if blanked:
+        items.append(
+            {
+                "key": "platform_blanked_by_sync",
+                "title": "Devices a sync run blanked the platform on",
+                "count": blanked,
+                "kind": NO_DELETE_FIX_IN_NETBOX,
+                "what": (
+                    "Before 3.0.14 a run in which the include tag matched no "
+                    "device cleared the platform on every device that had one. "
+                    "A device outside the sync's scope is never revisited, so "
+                    "it stays blank. NetBox's change log shows which devices "
+                    "this sync's own runs blanked; nothing is deleted."
+                ),
+                "steps": [
+                    "Open the Platforms a Sync Run Blanked card below.",
+                    "Press Preview to recount from NetBox's change log.",
+                    "Press Restore: it puts back only what the preview counted, "
+                    "and each edit is change-logged to you.",
+                ],
+                "url": "",
             }
         )
     return items

@@ -1212,6 +1212,59 @@ def _remove_stale_device_rows_work(
         raise
 
 
+def _preview_platform_restore_work(job):
+    """Count the devices a sync run blanked the platform on, and what is restorable.
+
+    Read-only: the NetBox change log and the device table, no Forward call.
+    Stores counts and hold reasons only - see `platform_restore`.
+    """
+    from .utilities.platform_restore import preview_platform_restore
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    try:
+        job.data = preview_platform_restore(sync)
+        job.save(update_fields=["data"])
+    except Exception as exc:
+        job.data = {
+            "error": safe_operation_failure("Platform restore preview", exc),
+            "error_type": exception_type(exc),
+        }
+        job.save(update_fields=["data"])
+        raise
+
+
+def _restore_platforms_work(job, *, preview_job_pk=None):
+    """Put back the platforms a reviewed preview counted.
+
+    Operator-initiated only. Needs a completed preview newer than the latest
+    finalized ingestion, restores no more than that preview counted, runs under
+    the invoking user so each edit is change-logged to them, and is refused while
+    a sync run is active.
+    """
+    from .utilities.platform_restore import PlatformRestoreRefused
+    from .utilities.platform_restore import run_platform_restore
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    try:
+        job.data = run_platform_restore(
+            sync,
+            user=_resolve_request_user(sync=sync, job=job),
+            preview_job_pk=preview_job_pk,
+        )
+        job.save(update_fields=["data"])
+    except PlatformRestoreRefused as exc:
+        job.data = {"refused": exc.reason, "error_type": exception_type(exc)}
+        job.save(update_fields=["data"])
+        raise
+    except Exception as exc:
+        job.data = {
+            "error": safe_operation_failure("Platform restore", exc),
+            "error_type": exception_type(exc),
+        }
+        job.save(update_fields=["data"])
+        raise
+
+
 def _release_foreign_delete_blockers_work(
     job, *, device_pk=None, expected_blockers=None
 ):
@@ -2787,6 +2840,34 @@ class RemoveStaleDeviceRowsJob(ForwardJobRunner):
                 kwargs["include_older_than_change_log"]
             )
         _remove_stale_device_rows_work(self.job, **extra)
+
+
+class PreviewPlatformRestoreJob(ForwardJobRunner):
+    """Counts the devices a sync run blanked the platform on."""
+
+    class Meta:
+        # Byte-identical to BUTTON_JOB_SPECS["preview_platform_restore"][1],
+        # and to platform_restore.PREVIEW_JOB_SUFFIX, which finds it.
+        name = "preview platform restore"
+
+    def run(self, *args, **kwargs):
+        _preview_platform_restore_work(self.job)
+
+
+class RestorePlatformsJob(ForwardJobRunner):
+    """Puts back the platforms a reviewed preview counted."""
+
+    class Meta:
+        # Byte-identical to BUTTON_JOB_SPECS["restore_platforms"][1].
+        name = "restore platforms"
+
+    def run(self, *args, **kwargs):
+        # Forwarded only when the caller named a preview, so the default (the
+        # latest completed preview) lives in the work function's signature.
+        extra = {}
+        if kwargs.get("preview_job_pk"):
+            extra["preview_job_pk"] = int(kwargs["preview_job_pk"])
+        _restore_platforms_work(self.job, **extra)
 
 
 class ReleaseForeignDeleteBlockersJob(ForwardJobRunner):

@@ -569,6 +569,11 @@ def _scope_reconciliation_bundle_payload(sync):
         "stale_row_cleanup": _guarded_bundle_section(
             lambda: json_safe_value(_stale_row_cleanup_payload(sync))
         ),
+        # The "Platforms a Sync Run Blanked" card: the preview's counts, the hold
+        # split, when it was computed, and the last restore.
+        "platform_restore": _guarded_bundle_section(
+            lambda: json_safe_value(_platform_restore_payload(sync))
+        ),
     }
 
 
@@ -3407,6 +3412,138 @@ def _stale_row_cleanup_payload(sync):
     }
 
 
+# The "Platforms a Sync Run Blanked" card's figures, in page order, and the stored
+# key behind each. The card renders these labels and the bundle repeats them
+# (`ui_figures`), so a number read off the card can be found there by its words.
+PLATFORM_RESTORE_FIGURES = (
+    ("Blanked by this sync", "blanked_by_this_sync"),
+    ("Restorable", "restorable"),
+    ("Held", "held_total"),
+)
+PLATFORM_RESTORE_CARD = "Platforms a Sync Run Blanked"
+
+
+def _platform_restore_payload(sync):
+    """The latest platform-restore preview and restore, as the card shows them.
+
+    A local read of the stored jobs: the preview job computed the counts (the
+    figure's "when" is its `generated_at`), and the restore job recomputes its
+    own plan and restores no more than the preview showed.
+    """
+    from core.choices import JobStatusChoices
+    from core.models import Job
+    from django.contrib.contenttypes.models import ContentType
+
+    from .utilities.platform_restore import latest_preview_job
+    from .utilities.platform_restore import PlatformRestoreRefused
+    from .utilities.platform_restore import PREVIEW_JOB_SUFFIX
+    from .utilities.platform_restore import reviewed_preview
+
+    object_type = ContentType.objects.get_for_model(ForwardSync)
+    preview = latest_preview_job(sync)
+    data = (
+        preview.data if preview is not None and isinstance(preview.data, dict) else {}
+    )
+    available = "restorable" in data and bool(data.get("generated_at"))
+    held = dict(data.get("held") or {})
+    values = {
+        "blanked_by_this_sync": int(data.get("blanked_by_this_sync") or 0),
+        "restorable": int(data.get("restorable") or 0),
+        "held_total": sum(int(count or 0) for count in held.values()),
+    }
+    # A run that finalized after the preview makes it too old to restore from.
+    refused = None
+    if available:
+        try:
+            reviewed_preview(sync, preview.pk)
+        except PlatformRestoreRefused as exc:
+            refused = exc.reason
+    restore = (
+        Job.objects.filter(
+            object_type=object_type,
+            object_id=sync.pk,
+            name__icontains="restore platforms",
+        )
+        .exclude(status__in=(JobStatusChoices.STATUS_PENDING,))
+        .order_by("-created")
+        .first()
+    )
+    restore_data = (
+        restore.data if restore is not None and isinstance(restore.data, dict) else {}
+    )
+    failed = (
+        Job.objects.filter(
+            object_type=object_type,
+            object_id=sync.pk,
+            name__icontains=PREVIEW_JOB_SUFFIX,
+            status__in=(
+                JobStatusChoices.STATUS_FAILED,
+                JobStatusChoices.STATUS_ERRORED,
+            ),
+        )
+        .order_by("-created")
+        .first()
+    )
+    error = None
+    if failed is not None and (preview is None or failed.created > preview.created):
+        error = (
+            (failed.data or {}).get("error") if isinstance(failed.data, dict) else None
+        )
+        error = error or "The last preview failed; see its job."
+    generated_at = data.get("generated_at")
+    card = {"page": "Scope Reconciliation", "card": PLATFORM_RESTORE_CARD}
+    figures = [(label, values[key]) for label, key in PLATFORM_RESTORE_FIGURES]
+    return {
+        "available": available,
+        "preview_job": getattr(preview, "pk", None),
+        "generated_at": generated_at,
+        "error": error,
+        "preview_refused": refused,
+        "blanked_by_this_sync": values["blanked_by_this_sync"],
+        "restorable": values["restorable"],
+        "held": values["held_total"],
+        "held_by_reason": sorted(held.items()),
+        "figures": figures,
+        "last_restore": {
+            "job": getattr(restore, "pk", None),
+            "status": getattr(restore, "status", None),
+            "finished_at": restore_data.get("finished_at"),
+            "refused": restore_data.get("refused"),
+            "restored": restore_data.get("restored"),
+        },
+        # The card's figures under the card's labels, for the support bundle.
+        "ui_figures": [
+            {
+                **card,
+                "model": None,
+                "label": label,
+                "value": value,
+                "computed_at": generated_at,
+            }
+            for label, value in figures
+        ]
+        + [
+            {
+                **card,
+                "model": None,
+                "label": f"Held: {reason}",
+                "value": count,
+                "computed_at": generated_at,
+            }
+            for reason, count in sorted(held.items())
+        ]
+        + [
+            {
+                **card,
+                "model": None,
+                "label": "Last restore ... restored",
+                "value": restore_data.get("restored"),
+                "computed_at": restore_data.get("finished_at"),
+            }
+        ],
+    }
+
+
 def _scope_reconciliation_payload(job):
     """See `scope_reconciliation.stored_scope_report`."""
     from .utilities.scope_reconciliation import stored_scope_report
@@ -4144,13 +4281,17 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
         return "forward_netbox.view_forwardsync"
 
     @staticmethod
-    def _cleanup_items(sync, payload):
-        """The ordered "what do I do" checklist; see `cleanup_checklist`."""
+    def _cleanup_items(sync, payload, platform_restorable=0):
+        """The ordered "what do I do" checklist; see `cleanup_checklist`.
+
+        ``platform_restorable`` is the restorable count of the stored platform
+        restore preview (0 when there is none).
+        """
         from .utilities.cleanup_checklist import cleanup_items
         from .utilities.scope_reconciliation import site_relabel_held_by_reason
         from .utilities.scope_reconciliation import site_relabel_pairs
 
-        if not payload:
+        if not payload and not platform_restorable:
             return []
 
         def url(name):
@@ -4176,6 +4317,7 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
             context_copies_on=context_copies_enabled(sync),
             on_no_interface=(summary or {}).get("address_on_no_synced_interface", 0),
             management_interfaces_on=management_interfaces_enabled(sync),
+            platform_restorable=platform_restorable,
             twin_count=len(_stored_device_ids(sync, "unmanaged", UNCLAIMED_TWINS)[0]),
             relabel={
                 "pair_count": len(relabel.get("pairs") or ()),
@@ -4212,7 +4354,10 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
         device_list_url = reverse("dcim:device_list")
         backfilled_tag_url = f"{device_list_url}?tag={BACKFILLED_TAG_SLUG}"
         uncovered_tag_url = f"{device_list_url}?tag={UNCOVERED_TAG_SLUG}"
-        cleanup_items = self._cleanup_items(sync, payload)
+        platform_restore = _platform_restore_payload(sync)
+        cleanup_items = self._cleanup_items(
+            sync, payload, platform_restorable=platform_restore["restorable"]
+        )
         return render(
             request,
             self.template_name,
@@ -4293,6 +4438,7 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
                 "catalogue_cleanup": _catalogue_cleanup_payload(sync),
                 # Stored jobs only: the preview is a button, never a page render.
                 "stale_row_cleanup": _stale_row_cleanup_payload(sync),
+                "platform_restore": platform_restore,
             },
         )
 
@@ -4639,6 +4785,7 @@ class _StaleDeviceRowsActionView(BaseObjectView):
     kind = ""
     busy_message = ""
     queued_message = ""
+    anchor = "stale-device-rows"
 
     def get_required_permission(self):
         from .utilities.sync_facade import button_job_permission
@@ -4651,7 +4798,7 @@ class _StaleDeviceRowsActionView(BaseObjectView):
                 "plugins:forward_netbox:forwardsync_scope_reconciliation",
                 kwargs={"pk": sync.pk},
             )
-            + "#stale-device-rows"
+            + f"#{self.anchor}"
         )
 
     def get(self, request, pk):
@@ -4724,6 +4871,71 @@ class ForwardSyncRemoveStaleDeviceRowsView(_StaleDeviceRowsActionView):
         except (TypeError, ValueError):
             preview_job_pk = 0
         return {"preview_job_pk": preview_job_pk} if preview_job_pk else None
+
+
+@register_model_view(
+    ForwardSync, "preview_platform_restore", path="preview-platform-restore"
+)
+class ForwardSyncPreviewPlatformRestoreView(_StaleDeviceRowsActionView):
+    """Count the devices a sync run blanked the platform on. Read-only."""
+
+    kind = "preview_platform_restore"
+    anchor = "platform-restore"
+    busy_message = gettext_lazy(
+        "A platform restore preview is already queued or running."
+    )
+    queued_message = gettext_lazy(
+        "Queued job #%(pk)d to count the devices a sync run blanked the "
+        "platform on. Reload this page when it finishes."
+    )
+
+
+@register_model_view(ForwardSync, "restore_platforms", path="restore-platforms")
+class ForwardSyncRestorePlatformsView(_StaleDeviceRowsActionView):
+    """Put back the platforms the reviewed preview counted.
+
+    See `platform_restore.run_platform_restore` for what is restored and held.
+    """
+
+    kind = "restore_platforms"
+    anchor = "platform-restore"
+    busy_message = gettext_lazy(
+        "A platform restore is already queued, or a sync is running; try "
+        "again when it finishes."
+    )
+    queued_message = gettext_lazy(
+        "Queued job #%(pk)d to restore platforms. Watch the Jobs tab for the result."
+    )
+
+    def job_kwargs(self, request):
+        try:
+            preview_job_pk = int(request.POST.get("preview_job") or 0)
+        except (TypeError, ValueError):
+            preview_job_pk = 0
+        return {"preview_job_pk": preview_job_pk} if preview_job_pk else None
+
+    def post(self, request, pk):
+        from .utilities.platform_restore import PlatformRestoreRefused
+        from .utilities.platform_restore import reviewed_preview
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        # Nothing is queued without a preview the operator can have reviewed:
+        # the job would refuse too, but a message on the page they are looking
+        # at is a better answer than a job that fails.
+        preview_job_pk = (self.job_kwargs(request) or {}).get("preview_job_pk")
+        try:
+            reviewed_preview(sync, preview_job_pk)
+        except PlatformRestoreRefused as exc:
+            messages.error(
+                request,
+                _(
+                    "Preview the platforms first (%(reason)s): the restore only "
+                    "puts back what a current preview counted."
+                )
+                % {"reason": exc.reason},
+            )
+            return self._back(sync)
+        return super().post(request, pk)
 
 
 @register_model_view(
