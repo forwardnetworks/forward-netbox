@@ -6,6 +6,7 @@ from django.test import SimpleTestCase
 from forward_netbox.utilities.cleanup_checklist import cleanup_items
 from forward_netbox.utilities.cleanup_checklist import DELETES_AFTER_REVIEW
 from forward_netbox.utilities.cleanup_checklist import NO_DELETE_FIX_IN_FORWARD
+from forward_netbox.utilities.cleanup_checklist import NO_DELETE_FIX_IN_NETBOX
 
 URLS = {
     key: f"/{key}/"
@@ -356,3 +357,30 @@ class IssueSummaryWithSuppressedRowsTest(SimpleTestCase):
 
         self.assertEqual(summary["informational"], 81)
         self.assertEqual(summary["needs_attention"], 3)
+
+
+class PlatformBlankedItemTest(SimpleTestCase):
+    def test_the_item_appears_only_when_a_preview_says_something_is_restorable(self):
+        for restorable in (0, None):
+            keys = [
+                item["key"]
+                for item in cleanup_items(REPORT, platform_restorable=restorable)
+            ]
+            self.assertNotIn("platform_blanked_by_sync", keys)
+        self.assertNotIn(
+            "platform_blanked_by_sync", [i["key"] for i in cleanup_items(REPORT)]
+        )
+
+        items = _by_key(cleanup_items(REPORT, platform_restorable=3))
+
+        item = items["platform_blanked_by_sync"]
+        self.assertEqual(item["title"], "Devices a sync run blanked the platform on")
+        self.assertEqual(item["count"], 3)
+        self.assertEqual(item["kind"], NO_DELETE_FIX_IN_NETBOX)
+        steps = " ".join(item["steps"])
+        self.assertLess(steps.index("Preview"), steps.index("Restore"))
+
+    def test_the_item_stands_without_a_scope_report(self):
+        items = cleanup_items(None, platform_restorable=2)
+
+        self.assertEqual([item["key"] for item in items], ["platform_blanked_by_sync"])

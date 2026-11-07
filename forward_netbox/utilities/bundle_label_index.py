@@ -292,6 +292,14 @@ PAGE_CARD_PATHS = {
             "operator_action_jobs.preview_stale_device_rows",
             "operator_action_jobs.remove_stale_device_rows",
         ],
+        # The preview's three figures under the card's labels in `ui_figures`,
+        # the hold split, when the preview computed them, and the last restore.
+        "Platforms a Sync Run Blanked": [
+            "scope_reconciliation.platform_restore",
+            "scope_reconciliation.platform_restore.ui_figures",
+            "operator_action_jobs.preview_platform_restore",
+            "operator_action_jobs.restore_platforms",
+        ],
         "What to do": "diagnostics.cleanup_checklist",
         "Site-Relabel Duplicates": "diagnostics.site_relabel_pairs",
         "Uncovered, Created by This Sync": [

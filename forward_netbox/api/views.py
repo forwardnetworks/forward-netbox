@@ -1089,6 +1089,44 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
             ),
         },
     )
+    @action(detail=True, methods=["post"], url_path="preview-platform-restore")
+    def preview_platform_restore(self, request, pk):
+        """Count the devices a sync run blanked the platform on. Read-only."""
+        return self._enqueue_button_job_response(request, "preview_platform_restore")
+
+    @extend_schema(
+        methods=["post"],
+        request=EmptySerializer(),
+        responses={
+            201: JobSerializer(),
+            202: OpenApiResponse(
+                description=(
+                    '{"status": "already_running"|"blocked_by_sync_run", '
+                    '"job_id": N}'
+                )
+            ),
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="restore-platforms")
+    def restore_platforms(self, request, pk):
+        # Restores within the latest completed preview; the job refuses without
+        # one (or when a run finalized after it), so a caller previews first
+        # exactly as the page does.
+        return self._enqueue_button_job_response(request, "restore_platforms")
+
+    @extend_schema(
+        methods=["post"],
+        request=EmptySerializer(),
+        responses={
+            201: JobSerializer(),
+            202: OpenApiResponse(
+                description=(
+                    '{"status": "already_running"|"blocked_by_sync_run", '
+                    '"job_id": N}'
+                )
+            ),
+        },
+    )
     @action(detail=True, methods=["post"], url_path="merge-site-relabel-duplicates")
     def merge_site_relabel_duplicates(self, request, pk):
         return self._enqueue_button_job_response(
