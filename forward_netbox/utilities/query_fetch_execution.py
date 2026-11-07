@@ -138,6 +138,23 @@ DEFAULT_WORKLOAD_FETCH_RETRY_ATTEMPTS = 2
 # A query that spent its whole budget would spend it again, so the outcome is
 # never retried as is (see NQE_RETRYABLE_OUTCOMES).
 TIME_LIMIT_SPLIT_MAX_DEPTH = 4
+# Each execution Forward stops at its time limit costs that whole limit. Halving
+# four levels deep can spend 15 of them (1 + 2 + 4 + 8) before the 16 parts run;
+# one workload never spends more than this many, and a timeout after that fails
+# the model with the original error instead of descending further.
+TIME_LIMIT_SPLIT_MAX_TIMED_OUT_EXECUTIONS = 15
+# Seconds a workload fetch deadline must still have for another part to be worth
+# starting; nearer than this the split stops and the timeout stands.
+TIME_LIMIT_SPLIT_MIN_REMAINING_SECONDS = 60
+# Set on the exception raised by the FULL-execution call in `_fetch_spec_rows`,
+# holding that call's fetch metadata. Only that call's timeout may be split: a
+# diff fetch's changes and a contributor fetch's rows are not a function of the
+# device list, so they cannot be merged from parts. A diff failure never reaches
+# the splitter at all (it falls back to the full call inside `_fetch_spec_rows`).
+_FULL_PATH_META_ATTR = "forward_netbox_full_path_meta"
+# Set on a transient error that a split part already retried to its limit, so the
+# workload loop does not restart the whole workload (and pay the time limit again).
+_PART_RETRIES_EXHAUSTED_ATTR = "forward_netbox_part_retries_exhausted"
 # Never split: these queries pick one winner per address across devices (the
 # longest prefix, then the chassis over a virtual context, then the smallest
 # name for an IP; the smallest name for a MAC). Each half would pick its own
@@ -176,6 +193,9 @@ def _is_transient_fetch_error(exc):
     never transient — retrying it just wastes time.
     """
     if isinstance(exc, ForwardFetchBudgetExceededError):
+        return False
+    if getattr(exc, "outcome", "") == "TIMED_OUT":
+        # A query that spent Forward's whole time limit is split, never resubmitted.
         return False
     if isinstance(exc, ForwardConnectivityError):
         return True
@@ -449,6 +469,14 @@ class ForwardModelResult:
             "scope_config_fingerprint": self.scope_config_fingerprint,
             "scope_membership_fingerprint": self.scope_membership_fingerprint,
         }
+
+
+@dataclass
+class _TimeLimitSplitBudget:
+    """What one workload's split fetch has spent, shared by every part."""
+
+    timed_out_executions: int = 0
+    part_retries: int = 0
 
 
 class ForwardQueryFetcher:
@@ -2084,6 +2112,9 @@ class ForwardQueryFetcher:
                 if (
                     attempt < attempts
                     and _is_transient_fetch_error(exc)
+                    # A split part already retried itself; restarting the whole
+                    # workload would pay the time limit again.
+                    and not getattr(exc, _PART_RETRIES_EXHAUSTED_ATTR, False)
                     and (deadline is None or time.monotonic() < deadline)
                 ):
                     self.logger.log_warning(
@@ -2712,27 +2743,51 @@ class ForwardQueryFetcher:
         )
 
     @staticmethod
-    def _time_limit_split_keys(exc, contract, baseline, shard_scope):
+    def _time_limit_split_keys(exc, contract, shard_scope):
         """The device names to split a timed-out fetch over, or None.
 
-        Only a full fetch whose rows are a function of the device list can be
-        fetched in parts and merged: a diff or contributor fetch is not, and a
-        fetch that already carries a shard has its own key set.
+        Only the FULL execution of a query whose rows are a function of the
+        device list can be fetched in parts and merged. `_fetch_spec_rows` marks
+        the error its full call raised (`_FULL_PATH_META_ATTR`); an error from a
+        diff or contributor fetch carries no mark and is never split, whatever
+        the contract allows. A diff that failed falls back to the full call
+        inside `_fetch_spec_rows`, so a contract that is diff-eligible, with a
+        baseline, is split when that full fallback is what timed out.
         """
         if getattr(exc, "outcome", "") != "TIMED_OUT":
+            return None
+        if getattr(exc, _FULL_PATH_META_ATTR, None) is None:
             return None
         if shard_scope or not isinstance(contract, ResolvedExecutionContract):
             return None
         if contract.model_string in TIME_LIMIT_SPLIT_REFUSED_MODELS:
             return None
-        if contract.diff_eligible and (
-            baseline is not None or is_tier3_reducer(contract.reducer_id)
-        ):
+        if contract.diff_eligible and is_tier3_reducer(contract.reducer_id):
             return None
         keys = list(
             contract.full_effective_parameters.get(SHARD_QUERY_PARAMETER_NAME) or ()
         )
         return keys if len(keys) > 1 else None
+
+    @staticmethod
+    def _time_limit_split_stop_reason(depth, split_budget, deadline):
+        """Why a timed-out fetch must not be split any further, or ""."""
+        if depth >= TIME_LIMIT_SPLIT_MAX_DEPTH:
+            return f"it is already {TIME_LIMIT_SPLIT_MAX_DEPTH} levels deep"
+        if (
+            split_budget.timed_out_executions
+            > TIME_LIMIT_SPLIT_MAX_TIMED_OUT_EXECUTIONS
+        ):
+            return (
+                f"it has spent {TIME_LIMIT_SPLIT_MAX_TIMED_OUT_EXECUTIONS} "
+                "time-limited executions"
+            )
+        if (
+            deadline is not None
+            and deadline - time.monotonic() < TIME_LIMIT_SPLIT_MIN_REMAINING_SECONDS
+        ):
+            return "the workload fetch budget is nearly spent"
+        return ""
 
     def _fetch_spec_rows_splitting_on_time_limit(
         self,
@@ -2746,6 +2801,8 @@ class ForwardQueryFetcher:
         deadline=None,
         skip_full_run_removals=False,
         depth=0,
+        split_budget=None,
+        force_full_path=False,
     ):
         """``_fetch_spec_rows``, fetched in halves of its device list when
         Forward stops the query at its NQE time limit.
@@ -2754,8 +2811,12 @@ class ForwardQueryFetcher:
         execution while each half finishes well inside it. The parts are merged
         into the result the single query would have returned (a row both halves
         return, such as a cable between them, is kept once), and the comparison
-        that finds removed rows runs once, on the whole result.
+        that finds removed rows runs once, on the whole result. A transient
+        error in one part retries that part alone; the parts already fetched
+        are kept.
         """
+        if split_budget is None:
+            split_budget = _TimeLimitSplitBudget()
         try:
             return self._fetch_spec_rows(
                 model_string,
@@ -2767,11 +2828,26 @@ class ForwardQueryFetcher:
                 return_fetch_meta=True,
                 deadline=deadline,
                 skip_full_run_removals=skip_full_run_removals,
+                force_full_path=force_full_path,
             )
         except ForwardClientError as exc:
-            keys = self._time_limit_split_keys(exc, contract, baseline, shard_scope)
-            if keys is None or depth >= TIME_LIMIT_SPLIT_MAX_DEPTH:
+            keys = self._time_limit_split_keys(exc, contract, shard_scope)
+            if keys is None:
                 raise
+            split_budget.timed_out_executions += 1
+            stop_reason = self._time_limit_split_stop_reason(
+                depth, split_budget, deadline
+            )
+            if stop_reason:
+                self.logger.log_warning(
+                    f"Forward stopped the {model_string} query at its NQE time "
+                    f"limit and it is not split further: {stop_reason}. "
+                    f"{split_budget.timed_out_executions} time-limited "
+                    "execution(s) spent; the model fails with the original error.",
+                    obj=self.sync,
+                )
+                raise
+            path_meta = dict(getattr(exc, _FULL_PATH_META_ATTR))
         middle = len(keys) // 2
         self.logger.log_warning(
             f"Forward stopped the {model_string} query at its NQE time limit; "
@@ -2779,7 +2855,7 @@ class ForwardQueryFetcher:
             f"{len(keys) - middle} device(s).",
             obj=self.sync,
         )
-        rows, delete_rows, seen, fetch_meta = [], [], set(), None
+        rows, delete_rows, seen = [], [], set()
         skipped_types = 0
         for part in (keys[:middle], keys[middle:]):
             part_contract = replace(
@@ -2791,17 +2867,15 @@ class ForwardQueryFetcher:
                     }
                 ),
             )
-            part_rows, part_deletes, _mode, part_meta = (
-                self._fetch_spec_rows_splitting_on_time_limit(
-                    model_string,
-                    part_contract,
-                    baseline,
-                    context,
-                    coalesce_fields,
-                    deadline=deadline,
-                    skip_full_run_removals=True,
-                    depth=depth + 1,
-                )
+            part_rows, part_deletes, _mode, part_meta = self._fetch_split_part(
+                model_string,
+                part_contract,
+                baseline,
+                context,
+                coalesce_fields,
+                deadline=deadline,
+                depth=depth + 1,
+                split_budget=split_budget,
             )
             for row in part_rows:
                 key = json.dumps(row, sort_keys=True, default=str)
@@ -2810,15 +2884,24 @@ class ForwardQueryFetcher:
                     rows.append(row)
             delete_rows.extend(part_deletes)
             skipped_types += int(part_meta.get("matched_type_rows_skipped") or 0)
-            fetch_meta = fetch_meta or dict(part_meta)
         fetch_meta = {
-            **fetch_meta,
+            # What the failed full call recorded, so a diff that fell back to
+            # full still reads as one.
+            **path_meta,
             # The whole device list: what this workload covers, and what its
             # durable state is recorded against.
             "query_parameters": dict(contract.full_effective_parameters),
             "matched_type_rows_skipped": skipped_types,
             "time_limit_split_depth": depth + 1,
+            "time_limit_timed_out_executions": split_budget.timed_out_executions,
         }
+        if depth == 0:
+            self.logger.log_info(
+                f"{model_string} was fetched in parts after "
+                f"{split_budget.timed_out_executions} time-limited execution(s) "
+                f"and {split_budget.part_retries} part retry(ies).",
+                obj=self.sync,
+            )
         if not skip_full_run_removals:
             delete_rows = delete_rows + self._full_run_removals(
                 model_string=model_string,
@@ -2828,6 +2911,60 @@ class ForwardQueryFetcher:
                 shard_scope=None,
             )
         return rows, delete_rows, "full", fetch_meta
+
+    def _fetch_split_part(
+        self,
+        model_string,
+        part_contract,
+        baseline,
+        context,
+        coalesce_fields,
+        *,
+        deadline,
+        depth,
+        split_budget,
+    ):
+        """One part of a split fetch, retrying a transient error in that part.
+
+        Same attempts and backoff as a whole workload (`_workload_fetch_retry_config`),
+        inside the workload `deadline`. A part that times out is split further by
+        the call it makes, never retried as is; any other error fails the part.
+        An error a nested part already retried to its limit is not retried again.
+        """
+        attempts, backoff = self._workload_fetch_retry_config()
+        for attempt in range(attempts + 1):
+            try:
+                return self._fetch_spec_rows_splitting_on_time_limit(
+                    model_string,
+                    part_contract,
+                    baseline,
+                    context,
+                    coalesce_fields,
+                    deadline=deadline,
+                    skip_full_run_removals=True,
+                    depth=depth,
+                    split_budget=split_budget,
+                    force_full_path=True,
+                )
+            except ForwardClientError as exc:
+                if getattr(exc, _PART_RETRIES_EXHAUSTED_ATTR, False):
+                    raise
+                if not _is_transient_fetch_error(exc):
+                    raise
+                if attempt >= attempts or (
+                    deadline is not None and time.monotonic() >= deadline
+                ):
+                    setattr(exc, _PART_RETRIES_EXHAUSTED_ATTR, True)
+                    raise
+                split_budget.part_retries += 1
+                self.logger.log_warning(
+                    f"Transient fetch error for {model_string} in one part of a "
+                    f"split fetch; retrying that part {attempt + 1}/{attempts}: "
+                    f"{exc}",
+                    obj=self.sync,
+                )
+                if backoff > 0:
+                    time.sleep(backoff * (attempt + 1))
 
     def _fetch_spec_rows(
         self,
@@ -2841,7 +2978,16 @@ class ForwardQueryFetcher:
         return_fetch_meta=False,
         deadline=None,
         skip_full_run_removals=False,
+        force_full_path=False,
     ):
+        """Fetch one model's rows, by diff when a baseline allows it, else in full.
+
+        ``force_full_path`` runs the full query only, as if there were no
+        baseline: a part of a time-limit split is fetched in full, never as a
+        diff or a contributor fetch (see `_time_limit_split_keys`).
+        """
+        if force_full_path:
+            baseline = None
         original_shard_scope = dict(shard_scope or {}) if shard_scope else None
         if isinstance(spec, ResolvedExecutionContract):
             contract = spec
@@ -2928,6 +3074,7 @@ class ForwardQueryFetcher:
             and contract.diff_eligible
             and ownership_mode == "contributor_relation"
             and is_tier3_reducer(contract.reducer_id)
+            and not force_full_path
         ):
             try:
                 rows, delete_rows, sync_mode, tier3_metadata = (
@@ -3167,7 +3314,7 @@ class ForwardQueryFetcher:
             fallback_parameters["fallback_reason"] = reason_code
             fetch_parameters = fallback_parameters
             requested_fetch_mode = "diff_fallback"
-        elif spec.run_query_id:
+        elif spec.run_query_id and not force_full_path:
             latest_baseline = self.sync.latest_baseline_ingestion(
                 exclude_ingestion_id=getattr(context, "ingestion_id", None)
             )
@@ -3211,6 +3358,18 @@ class ForwardQueryFetcher:
                     "Shard-scoped NQE fetch failed and full-model fallback is disabled "
                     f"for {model_string}: {safe_exc}"
                 ) from exc
+            # This error came from the full execution, whether or not a diff ran
+            # and fell back to it first: the one fetch a time-limit split may redo
+            # in parts. It carries what the unsplit result would have recorded.
+            setattr(
+                exc,
+                _FULL_PATH_META_ATTR,
+                {
+                    "fetch_mode": requested_fetch_mode,
+                    "fetch_key_family": fetch_key_family,
+                    "fetch_parameters": fetch_parameters,
+                },
+            )
             raise
         # Before scope filtering and the removal computation, so every later step
         # sees the same rows the apply will.

@@ -289,9 +289,15 @@ What the sync does: a device-scoped query that hits the limit is fetched again
 in halves of its device list, up to 16 parts, and the parts are merged. The run
 log says `Forward stopped the <model> query at its NQE time limit; fetching it
 again in two parts`. Each part that also hits the limit costs another full time
-limit before it is split again, so such a run is slower. IP and MAC address
-queries are never split (they pick one owner per address across devices), and
-neither is a query that runs as a Forward diff.
+limit before it is split again, so such a run is slower. A part that fails on a
+transient error (a connection reset, a 5xx, a rate limit) is retried on its own;
+the parts already fetched are kept. The split stops, and the model fails with the
+original time-limit error, after 15 time-limited executions or when the source's
+workload fetch budget (`workload_fetch_timeout_seconds`) is nearly spent; the run
+log says how many were spent. A query that normally runs as a Forward diff is
+split when the full query it fell back to times out; the diff itself is never
+split. IP and MAC address queries are never split (they pick one owner per
+address across devices).
 
 If the model still fails, narrow the include tags for that sync or contact
 support with the support bundle.
