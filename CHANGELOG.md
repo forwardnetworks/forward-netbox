@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v3.0.14
 
-Release candidate; Stale rows are deleted when the scope changes, with a preview-first cleanup; empty include tags stop the run; platform restore; time-limit split fetch
+Stale rows are deleted when the scope changes, with a preview-first cleanup; empty include tags stop the run; platform restore; time-limit split fetch
 
 ## v3.0.13
 
