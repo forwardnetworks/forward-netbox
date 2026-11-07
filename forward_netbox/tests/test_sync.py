@@ -7895,8 +7895,15 @@ select {device: value, name: value}
         self.sync.get_query_parameters = Mock(return_value={})
         self.sync.get_maps = Mock(return_value=[])
 
-        with self.assertRaisesMessage(ForwardQueryError, "match no device"):
+        with self.assertRaisesMessage(ForwardQueryError, "match no device") as caught:
             fetcher.resolve_context()
+        # The reason survives the value-free failure line the operator reads.
+        from forward_netbox.utilities.diagnostics import failure_classifier
+
+        self.assertEqual(
+            failure_classifier(caught.exception),
+            "ForwardQueryError: include-tags-match-no-device",
+        )
 
     def test_apply_device_tag_scope_filters_rows_with_device_keys(self):
         fetcher = ForwardQueryFetcher(
