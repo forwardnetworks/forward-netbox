@@ -232,6 +232,50 @@ endpoint scope used by sync protects imported endpoint devices from the orphan
 set. A failed endpoint scope probe aborts reconciliation rather than treating
 those devices as removable. CLI: add `--prune-orphans` (dry run) then `--apply`.
 
+### Stale rows Forward no longer returns
+
+Before 3.0.14, a run in which the set of in-scope devices changed (a device
+entered or left the include tags) forgot every interface, IP address, MAC
+address, cable and BGP peer Forward stopped returning on that run, so no later
+run could delete them. 3.0.14 stops new ones. The **Stale Rows Forward No
+Longer Returns** card on Scope Reconciliation clears the ones already there:
+
+1. **Preview stale rows** queues a read-only job. It compares the stored sync
+   state against NetBox and NetBox's change log; it makes no Forward call.
+   Reload the page when it finishes to see, per model, how many rows are on
+   in-scope devices, how many Forward no longer returns, how many are
+   removable and why the rest are held.
+2. **Remove N stale rows** queues the removal. It recomputes the plan, refuses
+   a model whose removable count grew past the preview you saw, and deletes
+   through the same delete path a sync uses. The deletes are in the change log
+   under your user.
+
+A row is removable only when all of these hold:
+
+- it is an interface, IP address, MAC address, cable or BGP peer;
+- its device is still in this sync's scope and Forward returned that device on
+  the last finalized run (rows of devices that left scope are kept on purpose);
+- no sync's current state still holds it (matched loosely: by interface name
+  or abbreviation, address host, MAC value, or device and neighbour address);
+- the change log shows this sync created it and nobody else changed it.
+
+Held, never removed: rows added or edited by hand, interfaces from the device
+type or a module, a primary or out-of-band address, an interface that still
+carries an address, MAC, cable, child or LAG member that stays, and a row
+whose create record is gone because NetBox's change-log retention removed it.
+Also held: a row whose delete would take or blank anything else that is not
+this sync's own (an FHRP assignment, OSPF interface or L2VPN termination added
+by hand, another address's NAT link), and a BGP peer whose scope or router
+another source made. A whole model is refused when its stored state is
+missing, unreadable or older than the latest run, when another sync with the
+model enabled has no comparable state yet, when the state and NetBox disagree
+about most rows, or when 20 or more rows and more than 30% of the model's rows
+would go (a scope or query fault looks like that). The counts, the hold reasons and when the preview ran are in the
+support bundle under `scope_reconciliation.stale_row_cleanup`, and the last
+preview and removal jobs under `operator_action_jobs`. API:
+`POST /api/plugins/forward/sync/<id>/preview-stale-device-rows/` then
+`.../remove-stale-device-rows/` (removes within the latest completed preview).
+
 ### Post-upgrade catalog reconciliation
 
 The **Post-Upgrade Catalog Reconciliation** panel on Scope Reconciliation is a

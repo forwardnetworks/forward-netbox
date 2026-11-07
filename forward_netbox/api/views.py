@@ -1017,6 +1017,42 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
             ),
         },
     )
+    @action(detail=True, methods=["post"], url_path="preview-stale-device-rows")
+    def preview_stale_device_rows(self, request, pk):
+        return self._enqueue_button_job_response(request, "preview_stale_device_rows")
+
+    @extend_schema(
+        methods=["post"],
+        request=EmptySerializer(),
+        responses={
+            201: JobSerializer(),
+            202: OpenApiResponse(
+                description=(
+                    '{"status": "already_running"|"blocked_by_sync_run", '
+                    '"job_id": N}'
+                )
+            ),
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="remove-stale-device-rows")
+    def remove_stale_device_rows(self, request, pk):
+        # Removes within the latest completed preview; the job refuses without
+        # one, so a caller previews first exactly as the page does.
+        return self._enqueue_button_job_response(request, "remove_stale_device_rows")
+
+    @extend_schema(
+        methods=["post"],
+        request=EmptySerializer(),
+        responses={
+            201: JobSerializer(),
+            202: OpenApiResponse(
+                description=(
+                    '{"status": "already_running"|"blocked_by_sync_run", '
+                    '"job_id": N}'
+                )
+            ),
+        },
+    )
     @action(detail=True, methods=["post"], url_path="merge-site-relabel-duplicates")
     def merge_site_relabel_duplicates(self, request, pk):
         return self._enqueue_button_job_response(

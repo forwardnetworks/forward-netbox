@@ -284,6 +284,14 @@ PAGE_CARD_PATHS = {
         "Backfill Reason Breakdown": "scope_reconciliation.report.backfilled_reason_breakdown",
         "Tagged-but-Backfilled Sample": "scope_reconciliation.device_keys",
         "Routing Policy Outside Scope": "scope_reconciliation.catalogue_cleanup",
+        # Per-model counts under the card's column labels in `ui_figures`, the
+        # hold split, when the preview computed them, and the last removal.
+        "Stale Rows Forward No Longer Returns": [
+            "scope_reconciliation.stale_row_cleanup",
+            "scope_reconciliation.stale_row_cleanup.ui_figures",
+            "operator_action_jobs.preview_stale_device_rows",
+            "operator_action_jobs.remove_stale_device_rows",
+        ],
         "What to do": "diagnostics.cleanup_checklist",
         "Site-Relabel Duplicates": "diagnostics.site_relabel_pairs",
         "Uncovered, Created by This Sync": [

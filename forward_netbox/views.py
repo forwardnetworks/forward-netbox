@@ -30,6 +30,7 @@ from django.urls import reverse
 from django.utils import timezone
 from django.utils.decorators import method_decorator
 from django.utils.translation import gettext as _
+from django.utils.translation import gettext_lazy
 from django.views import View
 from django.views.decorators.debug import sensitive_post_parameters
 from netbox.object_actions import AddObject
@@ -562,6 +563,11 @@ def _scope_reconciliation_bundle_payload(sync):
         # The "Routing Policy Outside Scope" card: entries no in-scope device holds.
         "catalogue_cleanup": _guarded_bundle_section(
             lambda: json_safe_value(_catalogue_cleanup_payload(sync))
+        ),
+        # The "Stale Rows Forward No Longer Returns" card: per-model counts,
+        # the hold split, when the preview computed them, and the last removal.
+        "stale_row_cleanup": _guarded_bundle_section(
+            lambda: json_safe_value(_stale_row_cleanup_payload(sync))
         ),
     }
 
@@ -3211,6 +3217,157 @@ def _catalogue_cleanup_payload(sync):
     }
 
 
+# The "Stale Rows Forward No Longer Returns" card's column labels, in page
+# order, and the stored key behind each. The bundle repeats the figures under
+# these words (`ui_figures`), so a number read off the card can be found there.
+STALE_ROW_CLEANUP_COLUMNS = (
+    ("Devices judged", "devices_judged"),
+    ("In NetBox", "netbox_rows"),
+    ("Not returned by Forward", "not_returned"),
+    ("Removable", "removable"),
+    ("Held", "held_total"),
+    ("Refused", "refused"),
+)
+STALE_ROW_CLEANUP_CARD = "Stale Rows Forward No Longer Returns"
+
+
+def _stale_row_cleanup_payload(sync):
+    """The latest stale-row preview and removal, as the card shows them.
+
+    A local read of the stored jobs: the preview job computed the counts (the
+    figure's "when" is its `generated_at`), and the removal job recomputes its
+    own set and refuses anything beyond what the preview showed.
+    """
+    from core.choices import JobStatusChoices
+    from core.models import Job
+    from django.contrib.contenttypes.models import ContentType
+
+    from .utilities.stale_row_cleanup import latest_preview_job
+    from .utilities.stale_row_cleanup import STALE_ROW_CLEANUP_MODELS
+
+    preview = latest_preview_job(sync)
+    data = (
+        preview.data if preview is not None and isinstance(preview.data, dict) else {}
+    )
+    rows = []
+    for model_string in STALE_ROW_CLEANUP_MODELS:
+        values = dict((data.get("models") or {}).get(model_string) or {})
+        if not values:
+            continue
+        held = values.get("held") or {}
+        values["held_total"] = sum(held.values())
+        rows.append(
+            {
+                "model": model_string,
+                "values": [
+                    (label, values.get(key)) for label, key in STALE_ROW_CLEANUP_COLUMNS
+                ],
+                "held": sorted(held.items()),
+            }
+        )
+    removal = (
+        Job.objects.filter(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=sync.pk,
+            name__icontains="remove stale device rows",
+        )
+        .exclude(status__in=(JobStatusChoices.STATUS_PENDING,))
+        .order_by("-created")
+        .first()
+    )
+    removal_data = (
+        removal.data if removal is not None and isinstance(removal.data, dict) else {}
+    )
+    totals = data.get("totals") or {}
+    # A preview that failed after the last good one: the card says so.
+    failed = (
+        Job.objects.filter(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=sync.pk,
+            name__icontains="preview stale device rows",
+            status__in=(
+                JobStatusChoices.STATUS_FAILED,
+                JobStatusChoices.STATUS_ERRORED,
+            ),
+        )
+        .order_by("-created")
+        .first()
+    )
+    error = None
+    if failed is not None and (preview is None or failed.created > preview.created):
+        error = (
+            (failed.data or {}).get("error") if isinstance(failed.data, dict) else None
+        )
+        error = error or "The last preview failed; see its job."
+    card = {"page": "Scope Reconciliation", "card": STALE_ROW_CLEANUP_CARD}
+    removal_totals = removal_data.get("totals") or {}
+    return {
+        "available": bool(rows),
+        "preview_job": getattr(preview, "pk", None),
+        "generated_at": data.get("generated_at"),
+        "error": error,
+        "removable": int(totals.get("removable") or 0),
+        "not_returned": int(totals.get("not_returned") or 0),
+        "held": int(totals.get("held") or 0),
+        "rows": rows,
+        "last_removal": {
+            "job": getattr(removal, "pk", None),
+            "status": getattr(removal, "status", None),
+            "finished_at": removal_data.get("finished_at"),
+            "refused": removal_data.get("refused"),
+            "totals": removal_data.get("totals") or {},
+        },
+        # The card's figures under the card's labels, for the support bundle.
+        "ui_figures": [
+            {
+                **card,
+                "model": None,
+                "label": "Preview computed ... removable",
+                "value": int(totals.get("removable") or 0),
+                "computed_at": data.get("generated_at"),
+            },
+            {
+                **card,
+                "model": None,
+                "label": "Last removal ... deleted",
+                "value": removal_totals.get("deleted"),
+                "computed_at": removal_data.get("finished_at"),
+            },
+            {
+                **card,
+                "model": None,
+                "label": "Last removal ... held",
+                "value": removal_totals.get("held"),
+                "computed_at": removal_data.get("finished_at"),
+            },
+        ]
+        + [
+            {
+                "page": "Scope Reconciliation",
+                "card": STALE_ROW_CLEANUP_CARD,
+                "model": row["model"],
+                "label": label,
+                "value": value,
+                "computed_at": data.get("generated_at"),
+            }
+            for row in rows
+            for label, value in row["values"]
+        ]
+        + [
+            {
+                "page": "Scope Reconciliation",
+                "card": STALE_ROW_CLEANUP_CARD,
+                "model": row["model"],
+                "label": f"Held: {reason}",
+                "value": count,
+                "computed_at": data.get("generated_at"),
+            }
+            for row in rows
+            for reason, count in row["held"]
+        ],
+    }
+
+
 def _scope_reconciliation_payload(job):
     """See `scope_reconciliation.stored_scope_report`."""
     from .utilities.scope_reconciliation import stored_scope_report
@@ -4095,6 +4252,8 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
                 # it is safe to compute on every page render.
                 "site_relabel_pairs": _site_relabel_pairs_payload(sync),
                 "catalogue_cleanup": _catalogue_cleanup_payload(sync),
+                # Stored jobs only: the preview is a button, never a page render.
+                "stale_row_cleanup": _stale_row_cleanup_payload(sync),
             },
         )
 
@@ -4432,6 +4591,92 @@ class ForwardSyncPruneOutOfScopeCatalogueView(BaseObjectView):
             % {"pk": job.pk},
         )
         return redirect(sync.get_absolute_url())
+
+
+class _StaleDeviceRowsActionView(BaseObjectView):
+    """Shared POST body for the stale-row preview and removal buttons."""
+
+    queryset = ForwardSync.objects.all()
+    kind = ""
+    busy_message = ""
+    queued_message = ""
+
+    def get_required_permission(self):
+        from .utilities.sync_facade import button_job_permission
+
+        return button_job_permission(self.kind)
+
+    def _back(self, sync):
+        return redirect(
+            reverse(
+                "plugins:forward_netbox:forwardsync_scope_reconciliation",
+                kwargs={"pk": sync.pk},
+            )
+            + "#stale-device-rows"
+        )
+
+    def get(self, request, pk):
+        return self._back(get_object_or_404(self.queryset, pk=pk))
+
+    def job_kwargs(self, request):
+        return None
+
+    def post(self, request, pk):
+        from .utilities.sync_facade import JobAlreadyActive, enqueue_button_job
+
+        sync = get_object_or_404(self.queryset, pk=pk)
+        try:
+            job = enqueue_button_job(
+                sync, self.kind, request.user, job_kwargs=self.job_kwargs(request)
+            )
+        except JobAlreadyActive:
+            messages.warning(request, self.busy_message)
+            return self._back(sync)
+        messages.success(request, self.queued_message % {"pk": job.pk})
+        return self._back(sync)
+
+
+@register_model_view(
+    ForwardSync, "preview_stale_device_rows", path="preview-stale-device-rows"
+)
+class ForwardSyncPreviewStaleDeviceRowsView(_StaleDeviceRowsActionView):
+    """Count device rows Forward no longer returns. Read-only, no Forward call."""
+
+    kind = "preview_stale_device_rows"
+    busy_message = gettext_lazy("A stale-row preview is already queued or running.")
+    queued_message = gettext_lazy(
+        "Queued job #%(pk)d to count device rows Forward no longer returns. "
+        "Reload this page when it finishes."
+    )
+
+
+@register_model_view(
+    ForwardSync, "remove_stale_device_rows", path="remove-stale-device-rows"
+)
+class ForwardSyncRemoveStaleDeviceRowsView(_StaleDeviceRowsActionView):
+    """Delete the stale device rows the reviewed preview counted.
+
+    See `stale_row_cleanup.remove_stale_rows` for what is deleted and held.
+    """
+
+    kind = "remove_stale_device_rows"
+    busy_message = gettext_lazy(
+        "A stale-row removal is already queued, or a sync is running; try "
+        "again when it finishes."
+    )
+    queued_message = gettext_lazy(
+        "Queued job #%(pk)d to remove stale device rows. Watch the Jobs tab "
+        "for the result."
+    )
+
+    def job_kwargs(self, request):
+        # The preview the operator was looking at when they confirmed. The job
+        # refuses if a fresh plan would remove more than it showed.
+        try:
+            preview_job_pk = int(request.POST.get("preview_job") or 0)
+        except (TypeError, ValueError):
+            preview_job_pk = 0
+        return {"preview_job_pk": preview_job_pk} if preview_job_pk else None
 
 
 @register_model_view(
