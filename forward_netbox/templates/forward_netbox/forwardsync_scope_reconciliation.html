@@ -472,6 +472,80 @@
   </div>
 </div>
 {% endif %}
+<div class="row mt-3">
+  <div class="col col-md-12">
+    <div class="card" id="stale-device-rows">
+      <h5 class="card-header">{% trans "Stale Rows Forward No Longer Returns" %}</h5>
+      <div class="card-body">
+        <p class="text-muted mt-0">
+          {% trans "Before 3.0.14, a run in which the set of in-scope devices changed forgot the interfaces, addresses, MACs, cables and BGP peers Forward stopped returning on that run, so no later run deletes them. The preview counts them on devices still in this sync's scope, from the stored sync state and NetBox's change log; it makes no Forward call and changes nothing." %}
+        </p>
+        {% if stale_row_cleanup.available %}
+          <p class="small mb-2">
+            {% blocktrans with when=stale_row_cleanup.generated_at removable=stale_row_cleanup.removable %}Preview computed {{ when }}: {{ removable }} removable.{% endblocktrans %}
+          </p>
+          <div class="table-responsive">
+            <table class="table table-sm table-hover mb-2">
+              <thead>
+                <tr>
+                  <th>{% trans "Model" %}</th>
+                  {% for label, value in stale_row_cleanup.rows.0.values %}<th>{% trans label %}</th>{% endfor %}
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in stale_row_cleanup.rows %}
+                  <tr>
+                    <td><code>{{ row.model }}</code></td>
+                    {% for label, value in row.values %}
+                      <td>{% if value is None %}<span class="text-muted">&mdash;</span>{% else %}{{ value }}{% endif %}</td>
+                    {% endfor %}
+                  </tr>
+                  {% if row.held %}
+                    <tr><td></td><td colspan="6" class="small text-muted">{% for reason, count in row.held %}<code>{{ reason }}</code>: {{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}</td></tr>
+                  {% endif %}
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          <p class="small mb-2">
+            {% trans "Only rows this sync created, that nobody else changed, whose device Forward still returns, and that no sync's state still holds are removable. Rows added by hand, template and module components, and anything still attached to a row that stays are held. A model is refused outright when its state is missing or older than the latest run, or when the share looks like a fault rather than a backlog." %}
+          </p>
+        {% elif stale_row_cleanup.error %}
+          <p class="text-danger small mb-2">{{ stale_row_cleanup.error }}</p>
+        {% else %}
+          <p class="text-muted small mb-2">{% trans "No preview yet." %}</p>
+        {% endif %}
+        {% if stale_row_cleanup.last_removal.job %}
+          <p class="small text-muted mb-2">
+            {% blocktrans with pk=stale_row_cleanup.last_removal.job status=stale_row_cleanup.last_removal.status deleted=stale_row_cleanup.last_removal.totals.deleted|default:0 held=stale_row_cleanup.last_removal.totals.held|default:0 %}Last removal: job #{{ pk }} ({{ status }}), {{ deleted }} deleted, {{ held }} held.{% endblocktrans %}
+            {% if stale_row_cleanup.last_removal.refused %}<code>{{ stale_row_cleanup.last_removal.refused }}</code>{% endif %}
+          </p>
+        {% endif %}
+        <div class="d-flex gap-2">
+          {% if perms.forward_netbox.run_forwardsync %}
+            <form method="post" action="{% url 'plugins:forward_netbox:forwardsync_preview_stale_device_rows' pk=object.pk %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm btn-outline-primary">
+                <i class="mdi mdi-magnify" aria-hidden="true"></i>&nbsp;{% trans "Preview stale rows" %}
+              </button>
+            </form>
+          {% endif %}
+          {% if stale_row_cleanup.removable and perms.dcim.delete_interface %}
+            <form method="post"
+                  action="{% url 'plugins:forward_netbox:forwardsync_remove_stale_device_rows' pk=object.pk %}"
+                  onsubmit="return confirm('{% blocktrans with count=stale_row_cleanup.removable %}Remove up to {{ count }} stale device rows? The plan is recomputed first and nothing beyond this preview is removed.{% endblocktrans %}');">
+              {% csrf_token %}
+              <input type="hidden" name="preview_job" value="{{ stale_row_cleanup.preview_job }}">
+              <button type="submit" class="btn btn-sm btn-danger">
+                <i class="mdi mdi-delete-sweep-outline" aria-hidden="true"></i>&nbsp;{% blocktrans with count=stale_row_cleanup.removable %}Remove {{ count }} stale rows{% endblocktrans %}
+              </button>
+            </form>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 {% if site_relabel_pairs.available and site_relabel_pairs.pair_count or site_relabel_pairs.available and site_relabel_pairs.held_count %}
 <div class="row mt-3">
   <div class="col col-md-12">

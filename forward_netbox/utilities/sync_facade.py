@@ -583,6 +583,20 @@ BUTTON_JOB_SPECS = {
         "prune out-of-scope routing policy",
         "netbox_routing.delete_prefixlist",
     ),
+    # Device rows Forward stopped returning that the durable state forgot
+    # (the pre-3.0.14 scope-change reset). The preview is read-only and makes
+    # no Forward call; the removal deletes only what a reviewed preview counted,
+    # through the sync's own delete adapters (`stale_row_cleanup`).
+    "preview_stale_device_rows": (
+        "forward_netbox.jobs.PreviewStaleDeviceRowsJob",
+        "preview stale device rows",
+        "forward_netbox.run_forwardsync",
+    ),
+    "remove_stale_device_rows": (
+        "forward_netbox.jobs.RemoveStaleDeviceRowsJob",
+        "remove stale device rows",
+        "dcim.delete_interface",
+    ),
     # Deletes only the specific netbox_routing (or other allowlisted-app) rows
     # named on the device ownership panel as refusing a delete - never the
     # device itself. Same permission as the prunes: it is preparing a device
@@ -708,6 +722,7 @@ def enqueue_button_job(
             "prune_unmanaged",
             "release_foreign_delete_blockers",
             "prune_out_of_scope_catalogue",
+            "remove_stale_device_rows",
         ):
             running_sync = (
                 sync.jobs.filter(

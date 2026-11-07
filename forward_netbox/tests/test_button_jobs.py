@@ -336,6 +336,8 @@ class ButtonJobRunnerParityTest(TestCase):
         "prune_unmanaged": "_prune_unmanaged_devices_work",
         "merge_site_relabel_duplicates": "_merge_site_relabel_duplicates_work",
         "prune_out_of_scope_catalogue": "_prune_out_of_scope_catalogue_work",
+        "preview_stale_device_rows": "_preview_stale_device_rows_work",
+        "remove_stale_device_rows": "_remove_stale_device_rows_work",
         "config_backup": "_run_forward_config_backup_work",
         "recover_stuck_sync": "_recover_stuck_sync_work",
         "tag_delete_eligible_ipam": "_tag_delete_eligible_ipam_work",

@@ -1138,6 +1138,67 @@ def _prune_out_of_scope_catalogue_work(job):
         raise
 
 
+def _preview_stale_device_rows_work(job):
+    """Count the device rows Forward no longer returns that the state forgot.
+
+    Read-only: a local comparison of the durable state, NetBox and the change
+    log, no Forward call. Stores counts per model and hold reasons, never a
+    name - see `stale_row_cleanup`.
+    """
+    from .utilities.stale_row_cleanup import preview_stale_row_cleanup
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    try:
+        job.data = preview_stale_row_cleanup(sync)
+        job.save(update_fields=["data"])
+    except Exception as exc:
+        job.data = {
+            "error": safe_operation_failure("Stale device row preview", exc),
+            "error_type": exception_type(exc),
+        }
+        job.save(update_fields=["data"])
+        raise
+
+
+def _remove_stale_device_rows_work(job, *, preview_job_pk=None):
+    """Delete the stale device rows a reviewed preview counted.
+
+    Operator-initiated only. The plan is recomputed inside the job and checked
+    against the preview the operator saw; every delete goes through the sync's
+    own delete adapters and is change-logged under the job's user.
+    """
+    from .utilities.stale_row_cleanup import remove_stale_rows
+    from .utilities.stale_row_cleanup import StaleRowCleanupRefused
+
+    sync = ForwardSync.objects.get(pk=job.object_id)
+    request = NetBoxFakeRequest(
+        {
+            "META": {},
+            "POST": {},
+            "GET": {},
+            "FILES": {},
+            "user": _resolve_request_user(sync=sync, job=job),
+            "path": "",
+            "id": job.job_id,
+        }
+    )
+    try:
+        with event_tracking(request):
+            job.data = remove_stale_rows(sync, preview_job_pk=preview_job_pk)
+        job.save(update_fields=["data"])
+    except StaleRowCleanupRefused as exc:
+        job.data = {"refused": str(exc), "error_type": exception_type(exc)}
+        job.save(update_fields=["data"])
+        raise
+    except Exception as exc:
+        job.data = {
+            "error": safe_operation_failure("Stale device row removal", exc),
+            "error_type": exception_type(exc),
+        }
+        job.save(update_fields=["data"])
+        raise
+
+
 def _release_foreign_delete_blockers_work(
     job, *, device_pk=None, expected_blockers=None
 ):
@@ -2676,6 +2737,34 @@ class PruneOutOfScopeCatalogueJob(ForwardJobRunner):
 
     def run(self, *args, **kwargs):
         _prune_out_of_scope_catalogue_work(self.job)
+
+
+class PreviewStaleDeviceRowsJob(ForwardJobRunner):
+    """Counts device rows Forward stopped returning that the state forgot."""
+
+    class Meta:
+        # Byte-identical to BUTTON_JOB_SPECS["preview_stale_device_rows"][1],
+        # and to stale_row_cleanup.PREVIEW_JOB_SUFFIX, which finds it.
+        name = "preview stale device rows"
+
+    def run(self, *args, **kwargs):
+        _preview_stale_device_rows_work(self.job)
+
+
+class RemoveStaleDeviceRowsJob(ForwardJobRunner):
+    """Removes the stale device rows a reviewed preview counted."""
+
+    class Meta:
+        # Byte-identical to BUTTON_JOB_SPECS["remove_stale_device_rows"][1].
+        name = "remove stale device rows"
+
+    def run(self, *args, **kwargs):
+        # Forwarded only when the caller named a preview, so the default (the
+        # latest completed preview) lives in the work function's signature.
+        extra = {}
+        if kwargs.get("preview_job_pk"):
+            extra["preview_job_pk"] = int(kwargs["preview_job_pk"])
+        _remove_stale_device_rows_work(self.job, **extra)
 
 
 class ReleaseForeignDeleteBlockersJob(ForwardJobRunner):
