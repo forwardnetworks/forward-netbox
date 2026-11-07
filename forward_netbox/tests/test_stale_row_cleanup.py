@@ -55,6 +55,7 @@ from forward_netbox.utilities.stale_row_cleanup import preview_stale_row_cleanup
 from forward_netbox.utilities.stale_row_cleanup import REFUSED_FRACTION
 from forward_netbox.utilities.stale_row_cleanup import REFUSED_GREW_SINCE_PREVIEW
 from forward_netbox.utilities.stale_row_cleanup import REFUSED_NO_PREVIEW
+from forward_netbox.utilities.stale_row_cleanup import REFUSED_NO_DEVICE_LIST
 from forward_netbox.utilities.stale_row_cleanup import REFUSED_NO_STATE
 from forward_netbox.utilities.stale_row_cleanup import REFUSED_NOT_ENABLED
 from forward_netbox.utilities.stale_row_cleanup import (
@@ -278,7 +279,7 @@ class StaleRowCandidateRulesTest(StaleRowCleanupFixture):
 
     # -- rule 2: device in current scope and fetched ------------------------
 
-    def test_an_owned_device_without_a_scope_claim_is_never_judged(self):
+    def test_a_device_missing_from_the_device_list_is_never_judged(self):
         outside = Device.objects.create(
             name="edge-3",
             site=self.edge1.site,
@@ -326,6 +327,48 @@ class StaleRowCandidateRulesTest(StaleRowCleanupFixture):
 
         self.assertNotIn(stale1.pk, removable)
         self.assertIn(stale2.pk, removable)
+
+    def test_without_a_device_list_every_model_is_refused_with_a_reason(self):
+        self._interface(self.edge1, "Ethernet2")
+        self._interface_state()
+        self.device_state.delete()
+
+        plans = plan_stale_row_cleanup(self.sync)
+
+        # Every model enabled on this sync (the others are refused for that).
+        self.assertEqual(
+            {plans[model]["refused"] for model in (IFACE, IP, CABLE)},
+            {REFUSED_NO_DEVICE_LIST},
+        )
+        self.assertFalse(any(plan["deletable"] for plan in plans.values()))
+
+    def test_a_device_list_from_an_older_run_is_not_used(self):
+        stale = self._interface(self.edge1, "Ethernet2")
+        newer = ForwardIngestion.objects.create(
+            sync=self.sync,
+            change_request_id=uuid.uuid4(),
+            merge_finalized_at=timezone.now(),
+        )
+        self._interface_state(ingestion=newer)
+
+        plan = self._iface_plan()
+
+        self.assertEqual(plan["refused"], REFUSED_NO_DEVICE_LIST)
+        self.assertNotIn(stale.pk, plan["deletable"])
+
+    def test_uncovered_and_backfilled_devices_are_never_judged(self):
+        for claim_type in ("uncovered", "backfilled"):
+            ForwardDeviceTagClaim.objects.filter(device=self.edge1).exclude(
+                claim_type="scope"
+            ).delete()
+            ForwardDeviceTagClaim.objects.create(
+                sync=self.sync, device=self.edge1, tag=self.tag, claim_type=claim_type
+            )
+            stale = self._interface(self.edge1, f"Ethernet-{claim_type}")
+            ForwardWorkloadState.objects.filter(model_string=IFACE).delete()
+            self._interface_state()
+
+            self.assertNotIn(stale.pk, self._removable_pks(), claim_type)
 
     def test_a_name_two_devices_share_is_never_judged(self):
         Device.objects.create(
@@ -446,18 +489,23 @@ class StaleRowCandidateRulesTest(StaleRowCleanupFixture):
     def test_a_state_that_is_not_current_refuses_the_model(self):
         self._interface(self.edge1, "Ethernet2")
         self._interface_state()
-        ForwardWorkloadState.objects.filter(sync=self.sync).update(is_current=False)
+        ForwardWorkloadState.objects.filter(sync=self.sync, model_string=IFACE).update(
+            is_current=False
+        )
 
         self.assertEqual(self._iface_plan()["refused"], REFUSED_NO_STATE)
 
     def test_a_state_older_than_the_latest_run_refuses_the_model(self):
         self._interface(self.edge1, "Ethernet2")
         self._interface_state()
-        ForwardIngestion.objects.create(
+        newer = ForwardIngestion.objects.create(
             sync=self.sync,
             change_request_id=uuid.uuid4(),
             merge_finalized_at=timezone.now(),
         )
+        # The device list is from the latest run; the interface state is not.
+        self.device_state.ingestion = newer
+        self.device_state.save()
 
         plan = self._iface_plan()
 

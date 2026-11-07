@@ -13,10 +13,11 @@ A row is a candidate only when ALL of these hold (each is a test):
 1. Its model is in `STALE_ROW_CLEANUP_MODELS`: a device-scoped child model the
    sync itself may delete (`DEVICE_SHARD_MODELS` & `BASELINE_REMOVAL_MODELS`)
    whose NetBox -> identity mapping can be built exactly.
-2. Every device it belongs to is in the sync's CURRENT scope (owned by this
-   sync, scope-claimed when the source is tag-scoped, not out of scope,
-   uncovered or backfilled) AND was fetched on the last promoted run (it has
-   live rows in this model's state). Rows of devices that left scope are kept
+2. Every device it belongs to is in the device list of the sync's latest
+   finalized run (its current `dcim.device` state; a name two NetBox devices
+   share, a device another sync identifies, and one marked out of scope,
+   uncovered or backfilled are left out) AND has live rows in this model's
+   state. Rows of devices that left scope are kept
    on purpose: see `out_of_scope_entries` in workload_state.py.
 3. Its identity is absent from every current durable state for the model -
    this sync's and every other sync's. Matching is deliberately COARSER than
@@ -111,6 +112,7 @@ REFUSED_NOT_INSTALLED = "plugin_not_installed"
 REFUSED_NO_STATE = "no_current_durable_state"
 REFUSED_STATE_UNREADABLE = "durable_state_failed_its_checksum"
 REFUSED_STATE_STALE = "durable_state_older_than_the_latest_run"
+REFUSED_NO_DEVICE_LIST = "no_device_list_from_the_latest_run"
 REFUSED_STATE_MISMATCH = "durable_state_does_not_match_netbox"
 REFUSED_FRACTION = "too_large_a_share_of_the_model"
 REFUSED_UNREPRESENTED_PEER = "another_sync_has_no_comparable_state"
@@ -270,7 +272,11 @@ def _other_syncs_present_keys(sync, model_string):
 
 
 def in_scope_device_ids(sync):
-    """Devices the sync's last run fetched, by NetBox pk.
+    """Devices the sync's last run fetched, by NetBox pk, or None.
+
+    None when there is no device list from the latest finalized run (missing,
+    older, or unreadable): every model is then refused rather than judged on
+    no devices, so the preview says why instead of showing a bare zero.
 
     The device list is the sync's current `dcim.device` state: the devices that
     run asked Forward for (rows carried for a device out of scope are not
@@ -286,9 +292,15 @@ def in_scope_device_ids(sync):
     from .workload_state import CARRIED_ROW_HASH
 
     state = _current_state(sync, "dcim.device")
-    entries = _decode(state) if state is not None else None
-    if not entries:
-        return set()
+    if state is None:
+        return None
+    latest_ingestion_id = _latest_finalized_ingestion_id(sync)
+    if latest_ingestion_id is not None and state.ingestion_id != latest_ingestion_id:
+        # An older run's device list: not what the child states were judged on.
+        return None
+    entries = _decode(state)
+    if entries is None:
+        return None
     names = {
         str((value.get("row") or {}).get("name") or "").strip()
         for value in entries.values()
@@ -688,6 +700,9 @@ def _plan_model(sync, model_string, request_ids, scope_ids, latest_ingestion_id)
         return plan
     if not sync.is_model_enabled(model_string):
         plan["refused"] = REFUSED_NOT_ENABLED
+        return plan
+    if scope_ids is None:
+        plan["refused"] = REFUSED_NO_DEVICE_LIST
         return plan
     state = _current_state(sync, model_string)
     if state is None:

@@ -21,10 +21,12 @@ CLI (`2026-09-10-no-operator-cli-troubleshooting.md`).
   1. its model is in `STALE_ROW_CLEANUP_MODELS`, a subset of
      `DEVICE_SHARD_MODELS & BASELINE_REMOVAL_MODELS` whose reverse identity is
      exact;
-  2. every device it belongs to is owned by this sync, scope-claimed when the
-     source is tag-scoped, carries no out-of-scope/uncovered/backfilled claim,
-     and has live (not carried) rows in this model's current state - Forward
-     returned it on the last promoted run. Rows of devices that left scope are
+  2. every device it belongs to is in the device list of the sync's latest
+     finalized run (its current `dcim.device` state), is the only NetBox device
+     with that name, is identified by no other sync, carries no
+     out-of-scope/uncovered/backfilled claim, and has live (not carried) rows in
+     this model's current state. Without a device list from the latest run,
+     every model is refused (`no_device_list_from_the_latest_run`). Rows of devices that left scope are
      kept (`out_of_scope_entries`);
   3. no current durable state (this sync's or any other) holds its identity;
   4. the change log shows this sync's ingestions created it and only they
@@ -67,9 +69,13 @@ CLI (`2026-09-10-no-operator-cli-troubleshooting.md`).
 
 ## Approach
 
-1. Scope: `in_scope_device_ids` = `ForwardDeviceIdentity(sync)` devices,
-   intersected with `scope` claims when include tags are configured, minus
-   devices with `out_of_scope`, `uncovered` or `backfilled` claims.
+1. Scope: `in_scope_device_ids` = names in the sync's current `dcim.device`
+   state from the latest finalized ingestion, mapped to NetBox devices where
+   the name is unique, minus devices another sync identifies and devices with
+   `out_of_scope`, `uncovered` or `backfilled` claims. The first version used
+   identity records and scope claims; live it judged no device at all (scope
+   claims exist only with "apply device scope tags" on, identity records only
+   for some devices).
 2. Per model: load the current state, refuse if missing / stale / unreadable;
    collect present keys from every upsert entry of every sync's current state;
    collect fetched device names from this sync's live upserts.
@@ -114,9 +120,13 @@ to reverse), `netbox_peering_manager.peeringsession` (goes with its peer).
   confirm the interface and BGP peer counts fall by the previewed amounts with
   nothing hand-added touched.
 
-Evidence so far: `invoke harness-check` and `pre-commit` pass locally. The
-Django tests above were NOT run: the test machine was unreachable when this was
-written. Nothing has been exercised live.
+Evidence: `test_stale_row_cleanup` passes on the test host, and the full suite
+passed (4452 tests) before the device-list change. Live on the customer-shaped
+stack through the UI (agent-browser): the preview found 174 removable (158 BGP
+peers, 11 interfaces, 5 cables) and held 198 (178 management-step interfaces,
+17 primary or out-of-band addresses, 3 per-context copies); removal deleted
+exactly those 174 in about 70 seconds, and the next sync merged with no
+failures.
 
 ## Rollback
 

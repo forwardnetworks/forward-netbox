@@ -254,7 +254,10 @@ A row is removable only when all of these hold:
 
 - it is an interface, IP address, MAC address, cable or BGP peer;
 - its device is still in this sync's scope and Forward returned that device on
-  the last finalized run (rows of devices that left scope are kept on purpose);
+  the last finalized run (rows of devices that left scope are kept on purpose).
+  SNMP endpoints the sync imports as devices count as devices here. Without a
+  device list from the latest run, the preview refuses every model and says
+  so;
 - no sync's current state still holds it (matched loosely: by interface name
   or abbreviation, address host, MAC value, or device and neighbour address);
 - the change log shows this sync created it and nobody else changed it.
