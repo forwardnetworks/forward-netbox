@@ -160,7 +160,7 @@ The bundle carries the same checklist under `diagnostics.cleanup_checklist`.
 
 ## Devices That Carry No Include Tag
 
-The Scope Reconciliation `Carry no include tag` count is the devices this sync does not manage: some were created by this sync and are now uncovered (needs attention), the rest are not managed by it (informational). Open `Not Managed by This Sync` for the full list. The `share a name with a device this sync manages` link lists likely older copies at another site; review them and delete the copy you do not want. To have the sync manage the rest, add the include tag to the device in Forward (a tag added by hand in NetBox is removed on the next run), then run the sync again. "Select all" on these lists acts on that list only.
+The Scope Reconciliation `No include tag (uncovered + not managed)` count is the devices this sync does not manage: some were created by this sync and are now uncovered (needs attention), the rest are not managed by it (informational). Open `Not Managed by This Sync` for the full list. The `share a name with a device this sync manages` link lists likely older copies at another site; review them and delete the copy you do not want. To have the sync manage the rest, add the include tag to the device in Forward (a tag added by hand in NetBox is removed on the next run), then run the sync again. "Select all" on these lists acts on that list only.
 
 ### `Snapshot collection problem:` Leads The Blocked Run
 
@@ -253,6 +253,54 @@ RQ_DEFAULT_TIMEOUT = 7200
 This matches the plugin-enforced minimum. Set a larger value according to your
 environment, worker supervision policy, and how long a trusted large baseline
 is allowed to run.
+
+## Sync Fails With `include-tags-match-no-device`
+
+The sync's include (or exclude) tags leave no collected device in scope in the
+selected snapshot: a tag renamed in Forward, a typo on the source, or every
+matching device failing collection. The run stops before fetching anything, so
+nothing is synced and nothing is deleted. Before 3.0.14 such a run read every
+compared table as gone and could delete platforms, device types and OSPF areas.
+
+Check the tag names on the Forward source against the device tags in Forward,
+and the snapshot's collection results, then run the sync again. A sync that
+imports only SNMP endpoints chosen by the include tags (`Scope SNMP Endpoints by
+Include Tags` on) is not refused.
+
+## A Catalogue Delete Is Skipped As "Still Referenced"
+
+The sync never deletes a platform, manufacturer, device role or device type that
+any NetBox row still uses (including through a child platform or role). Deleting
+one would blank the field on those rows. The skip is counted as skipped, not
+failed, and the row stays; delete it by hand once nothing uses it.
+
+## A Model Fails With `nqe-timed-out`
+
+Symptoms:
+
+- One model (often cables or BGP peers on a large estate) fails with reason
+  `nqe-timed-out`; the rest of the run completes.
+
+What it means: Forward stopped the query at its own NQE time limit (about 20
+minutes). The source `Timeout` does not change that limit, so raising it does
+not help.
+
+What the sync does: a device-scoped query that hits the limit is fetched again
+in halves of its device list, up to 16 parts, and the parts are merged. The run
+log says `Forward stopped the <model> query at its NQE time limit; fetching it
+again in two parts`. Each part that also hits the limit costs another full time
+limit before it is split again, so such a run is slower. A part that fails on a
+transient error (a connection reset, a 5xx, a rate limit) is retried on its own;
+the parts already fetched are kept. The split stops, and the model fails with the
+original time-limit error, after 15 time-limited executions or when the source's
+workload fetch budget (`workload_fetch_timeout_seconds`) is nearly spent; the run
+log says how many were spent. A query that normally runs as a Forward diff is
+split when the full query it fell back to times out; the diff itself is never
+split. IP and MAC address queries are never split (they pick one owner per
+address across devices).
+
+If the model still fails, narrow the include tags for that sync or contact
+support with the support bundle.
 
 ## Sync Is Slow But Still Running
 

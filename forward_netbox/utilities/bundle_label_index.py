@@ -1,7 +1,7 @@
 # Where each row a customer reads off the sync's Health, Scope Reconciliation and
 # Drift report pages lives in the support bundle, by the page's own label.
 #
-# A customer quotes a figure by its label ("Carry no include tag", "Deleted
+# A customer quotes a figure by its label ("No include tag (uncovered + not managed)", "Deleted
 # objects"); the bundle stores it under the field name the code uses. This index
 # is the lookup, and it ships inside the bundle (`ui_label_index`) so a reader can
 # find any figure from the file alone. `test_bundle_label_index` fails when a row
@@ -123,7 +123,7 @@ PAGE_LABEL_PATHS = {
         "Out of scope (orphans)": "scope_reconciliation.report.netbox_out_of_scope",
         "Empty orphan sites": "scope_reconciliation.report.netbox_empty_orphan_site_count",
         "In scope, missing from NetBox": "scope_reconciliation.report.forward_missing_in_netbox",
-        "Carry no include tag": "scope_reconciliation.report.unmanaged.untagged_total",
+        "No include tag (uncovered + not managed)": "scope_reconciliation.report.unmanaged.untagged_total",
         "Platforms with manufacturer": "upgrade_reconciliation.platforms.with_manufacturer",
         "Platforms without manufacturer": "upgrade_reconciliation.platforms.without_manufacturer",
         "Stale endpoint DeviceTypes": "upgrade_reconciliation.stale_endpoint_device_types.candidate_count",
@@ -284,6 +284,22 @@ PAGE_CARD_PATHS = {
         "Backfill Reason Breakdown": "scope_reconciliation.report.backfilled_reason_breakdown",
         "Tagged-but-Backfilled Sample": "scope_reconciliation.device_keys",
         "Routing Policy Outside Scope": "scope_reconciliation.catalogue_cleanup",
+        # Per-model counts under the card's column labels in `ui_figures`, the
+        # hold split, when the preview computed them, and the last removal.
+        "Stale Rows Forward No Longer Returns": [
+            "scope_reconciliation.stale_row_cleanup",
+            "scope_reconciliation.stale_row_cleanup.ui_figures",
+            "operator_action_jobs.preview_stale_device_rows",
+            "operator_action_jobs.remove_stale_device_rows",
+        ],
+        # The preview's three figures under the card's labels in `ui_figures`,
+        # the hold split, when the preview computed them, and the last restore.
+        "Platforms a Sync Run Blanked": [
+            "scope_reconciliation.platform_restore",
+            "scope_reconciliation.platform_restore.ui_figures",
+            "operator_action_jobs.preview_platform_restore",
+            "operator_action_jobs.restore_platforms",
+        ],
         "What to do": "diagnostics.cleanup_checklist",
         "Site-Relabel Duplicates": "diagnostics.site_relabel_pairs",
         "Uncovered, Created by This Sync": [

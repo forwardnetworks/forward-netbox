@@ -170,6 +170,9 @@ _FAILURE_REASON_RULES = (
     ("missing-network-id", "requires a network id"),
     ("missing-snapshot-id", "requires a snapshot id"),
     ("device-tag-scope-query-failed", "device tag filter query failed"),
+    # The run refused because the include tags matched nothing (an empty scope
+    # would otherwise read every compared table as gone).
+    ("include-tags-match-no-device", "include tags match no device"),
     ("shard-fetch-failed", "shard-scoped nqe fetch failed"),
     # A fetched row whose identity fields are not all present. The sentence is
     # composed by the plugin, so naming it discloses nothing; before this slug a

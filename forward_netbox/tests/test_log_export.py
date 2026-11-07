@@ -1053,7 +1053,7 @@ class SupportBundleTroubleshootingDepthTest(TestCase):
         section = payload["scope_reconciliation"]
         figures = {row["label"]: row for row in section["ui_figures"]}
 
-        carry = figures["Carry no include tag"]
+        carry = figures["No include tag (uncovered + not managed)"]
         self.assertEqual(carry["page"], "Scope Reconciliation")
         self.assertEqual(carry["value"], 270)
         self.assertEqual(

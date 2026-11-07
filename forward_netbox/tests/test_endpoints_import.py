@@ -256,6 +256,57 @@ class EndpointScopeUnionTest(TestCase):
         self.assertEqual(names, {"dev-1", "avocent-1", "avocent-2"})
         self.assertFalse(failed)
 
+    def test_unscoped_endpoints_do_not_hide_a_tag_that_matches_no_device(self):
+        # A renamed include tag matches no collected device, but endpoints not
+        # chosen by the tags keep the scope non-empty. The run must still stop.
+        from unittest.mock import Mock
+
+        from forward_netbox.exceptions import ForwardQueryError
+
+        client = Mock()
+        # The tag matches no collected device; the endpoint probe (not scoped
+        # by the tags) still returns one.
+        client.run_nqe_query.side_effect = lambda **kwargs: (
+            [{"name": "avocent-1"}] if "endpoint" in kwargs.get("query", "") else []
+        )
+        with self.assertRaisesMessage(ForwardQueryError, "match no device"):
+            self._fetcher(client)._resolve_scoped_tag_scope(
+                network_id="n",
+                snapshot_id="s",
+                include_tags=["renamed"],
+                exclude_tags=[],
+                include_match="any",
+                sync_endpoints=True,
+                scope_endpoints_by_include_tags=False,
+                refuse_empty=True,
+            )
+
+    def test_an_endpoint_only_scope_chosen_by_the_tags_still_runs(self):
+        from unittest.mock import Mock
+
+        client = Mock()
+        # No collected device carries the tag; an endpoint does.
+        client.run_nqe_query.side_effect = lambda **kwargs: (
+            [{"name": "avocent-1", "tagNames": ["console"]}]
+            if "endpoint" in kwargs.get("query", "")
+            else []
+        )
+        names, _sites, _matched, failed = self._fetcher(
+            client
+        )._resolve_scoped_tag_scope(
+            network_id="n",
+            snapshot_id="s",
+            include_tags=["console"],
+            exclude_tags=[],
+            include_match="any",
+            sync_endpoints=True,
+            scope_endpoints_by_include_tags=True,
+            refuse_empty=True,
+        )
+
+        self.assertEqual(names, {"avocent-1"})
+        self.assertFalse(failed)
+
     def test_scope_union_carries_endpoint_include_tags_for_netbox_tagging(self):
         from unittest.mock import Mock
 

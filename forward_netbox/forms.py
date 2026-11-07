@@ -1361,7 +1361,8 @@ class ForwardSyncForm(NetBoxModelForm):
             "the single management address Forward records for it, but only if "
             "that exact address is already on one of the device's interfaces. "
             "Devices with a `Mgmt_` tag, several management addresses, or an "
-            "address on no interface are left alone. Off by default."
+            "address on no interface are left alone. On for a new sync, unchanged "
+            "for an existing one."
         ),
     )
     give_contexts_their_own_management_ip = forms.BooleanField(
@@ -1375,8 +1376,8 @@ class ForwardSyncForm(NetBoxModelForm):
             "of that address on its own interface of the same name, marked "
             "Anycast (NetBox allows duplicate addresses only when every copy has "
             "a shared role) and tagged `forward-context-copy`, and that copy is "
-            "its primary IP. Needs the management-IP fallback above. Off by "
-            "default."
+            "its primary IP. Needs the management-IP fallback above. On for a "
+            "new sync, unchanged for an existing one."
         ),
     )
     add_management_interface = forms.BooleanField(
@@ -1392,7 +1393,8 @@ class ForwardSyncForm(NetBoxModelForm):
             "chassis interface that holds the address) tagged "
             "`forward-management-interface`, carrying the address as its primary "
             "IP. An interface of that name the sync did not add is never used. "
-            "Needs the management-IP fallback above. Off by default."
+            "Needs the management-IP fallback above. On for a new sync, "
+            "unchanged for an existing one."
         ),
     )
     diff_fallback_mode = forms.ChoiceField(
@@ -1508,14 +1510,21 @@ class ForwardSyncForm(NetBoxModelForm):
             "set_primary_ip_from_mgmt_tag",
             False,
         )
+        # A new sync starts with every device getting a primary IP: the
+        # management-IP fallback, the per-context copy and the management
+        # interface. They were off by default and a customer's checklist showed
+        # hundreds of devices with none until each was found and turned on. An
+        # existing sync keeps what it stored, so editing one never switches
+        # anything on.
+        new_sync = self.instance.pk is None
         self.fields["set_primary_ip_from_forward_management_ip"].initial = (
-            parameters.get("set_primary_ip_from_forward_management_ip", False)
+            parameters.get("set_primary_ip_from_forward_management_ip", new_sync)
         )
         self.fields["give_contexts_their_own_management_ip"].initial = parameters.get(
-            "give_contexts_their_own_management_ip", False
+            "give_contexts_their_own_management_ip", new_sync
         )
         self.fields["add_management_interface"].initial = parameters.get(
-            "add_management_interface", False
+            "add_management_interface", new_sync
         )
         self.fields["diff_fallback_mode"].initial = parameters.get(
             "diff_fallback_mode",

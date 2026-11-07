@@ -232,6 +232,150 @@ endpoint scope used by sync protects imported endpoint devices from the orphan
 set. A failed endpoint scope probe aborts reconciliation rather than treating
 those devices as removable. CLI: add `--prune-orphans` (dry run) then `--apply`.
 
+### Stale rows Forward no longer returns
+
+Before 3.0.14, a run in which the set of in-scope devices changed (a device
+entered or left the include tags) forgot every interface, IP address, MAC
+address, cable, inventory item, module, BGP peer, BGP address family, BGP peer
+address family and OSPF instance and interface Forward stopped returning on that
+run, so no later run could delete them. 3.0.14 stops new ones. The **Stale Rows
+Forward No Longer Returns** card on Scope Reconciliation clears the ones already
+there:
+
+1. **Preview stale rows** queues a read-only job. It compares the stored sync
+   state against NetBox and NetBox's change log; it makes no Forward call.
+   Reload the page when it finishes to see, per model, how many rows are on
+   in-scope devices, how many Forward no longer returns, how many are
+   removable and why the rest are held.
+2. **Remove N stale rows** queues the removal. It recomputes the plan, refuses
+   a model whose removable count grew past the preview you saw, and deletes
+   through the same delete path a sync uses. The deletes are in the change log
+   under your user.
+
+A row is removable only when all of these hold:
+
+- it is one of the models above;
+- its device is still in this sync's scope and Forward returned that device on
+  the last finalized run (rows of devices that left scope are kept on purpose).
+  SNMP endpoints the sync imports as devices count as devices here. Without a
+  device list from the latest run, the preview refuses every model and says
+  so;
+- no sync's current state still holds it (matched loosely: by interface name
+  or abbreviation, address host, MAC value, device and neighbour address,
+  device and inventory item name, device and module bay, BGP address family
+  under any spelling of the family, OSPF process as the sync stores it). A
+  BGP peer, BGP address family or OSPF instance is also kept while a child
+  model's state (peer address families, peering sessions, OSPF interfaces) still
+  names it, because applying the child writes the parent;
+- the change log shows this sync created it and nobody else changed it.
+
+Held, never removed: rows added or edited by hand, interfaces from the device
+type or a module, a primary or out-of-band address, an interface that still
+carries an address, MAC, cable, child, LAG member, OSPF interface or inventory
+item that stays, a BGP address family or OSPF instance that still has a peer
+address family or OSPF interface on it, a module with any component installed
+in it (NetBox adopts a device's existing interfaces into a module, so most
+real modules are held and module cleanup will rarely remove anything), and a
+row whose create record is gone because NetBox's change-log
+retention removed it (see the option below).
+Also held: a row whose delete would take or blank anything else that is not
+this sync's own (an FHRP assignment, OSPF interface or L2VPN termination added
+by hand, another address's NAT link), and a BGP peer whose scope or router
+another source made. A whole model is refused when its stored state is
+missing, unreadable or older than the latest run, when another sync with the
+model enabled has no comparable state yet, when a child model that names its
+rows (peer address families, peering sessions, OSPF interfaces) is enabled with
+no state, when the state and NetBox disagree about most rows, or when 20 or more
+rows and more than 30% of the model's rows would go (a scope or query fault
+looks like that).
+
+**Rows the change log no longer remembers.** NetBox keeps 90 days of change log
+by default, so on an estate with months of stale rows most of them are held as
+`no_create_record_from_this_sync`. Tick **Also remove rows older than the change
+log** before **Preview stale rows** to reach them. It applies only to a row with
+no create record whose own created time is after the first sync was set up (a
+row older than that cannot be the plugin's) and older than the oldest change
+NetBox still retains (anywhere, by anyone): the log provably cannot say who made
+it. A
+row created after that point that lacks a create record stays held, and so does
+any row with a retained change by anyone but this sync, always. Every other rule
+above applies unchanged, including the BGP scope and router ownership check
+(an old peer whose scope or router also lack a create record is held). By
+ticking it you attest that nobody created or edited those rows by hand; the removal
+confirmation says so again. The preview records your choice and the oldest
+retained change it measured against, and shows the rows only the option reaches
+as their own **Older than change log (option)** count. The removal uses the
+preview's choice and that same point and never widens it: a preview run without
+the option removes none of them, whatever the removal asks for. Without the
+option the preview still counts what it would add, as the hold
+`no_create_record_older_than_the_change_log`.
+
+Left out on purpose, and why:
+
+- FHRP groups (`ipam.fhrpgroup`): a group is shared by several devices, its
+  virtual IP is a separate address that two groups can share and attach to only
+  one of them, and removing the last member deletes the group and the IP. A
+  group without that IP cannot be mapped back to its row, and the side effects
+  land on objects no single device owns.
+- OSPF areas (`netbox_routing.ospfarea`): a global catalogue row shared by every
+  device that uses the area, not a device row.
+- Peering sessions (`netbox_peering_manager.peeringsession`): the sync never
+  removes one by absence, only through a Forward diff or its BGP peer. A session
+  on a stale peer holds that peer.
+- Tag assignments (`extras.taggeditem`): owned by the device-scope tag job,
+  which decides what stays.
+
+The counts, the hold reasons, your choice on the option, the oldest retained
+change and when the preview ran are in the support bundle under
+`scope_reconciliation.stale_row_cleanup`, and the last preview and removal jobs
+under `operator_action_jobs`. API:
+`POST /api/plugins/forward/sync/<id>/preview-stale-device-rows/` (optional JSON
+body `{"include_older_than_change_log": true}`) then
+`.../remove-stale-device-rows/` (removes within the latest completed preview and
+takes its choice; `true` against a preview that did not opt in is refused,
+`false` narrows).
+
+### Platforms a sync run blanked
+
+Before 3.0.14, a run in which the include tag matched no collected device read
+every platform as gone. NetBox lets a platform be deleted while devices use it,
+so the platform list was emptied and the platform was cleared on every device
+that had one. The next normal run puts it back on the devices it covers, but a
+device outside the sync's scope is never revisited, so it stays blank.
+
+The **Platforms a Sync Run Blanked** card on Scope Reconciliation puts those
+back. **Preview platforms** reads NetBox's change log and the device table; it
+makes no Forward call and changes nothing. It shows, under the card's labels:
+
+- **Blanked by this sync**: devices with no platform whose latest change to the
+  platform was one of this sync's own runs taking it away;
+- **Restorable**: of those, the devices where nobody has touched the platform
+  since and the platform that was removed can be found again, by its pk or, if
+  it was deleted and recreated, by its slug;
+- **Held**, with the reason for each: `platform_not_found_again`,
+  `several_platforms_with_that_slug`, `platform_changed_by_someone_else_since`.
+
+A preview that finds nothing blanked shows one line and no buttons. Otherwise
+**Restore N platforms** (needs `dcim.change_device`) puts the platform back. It
+is refused without a completed preview, when a run finalized after the preview,
+and while a sync run is active; it recomputes the plan and restores no more
+than the preview counted. Each edit is change-logged to the person who pressed
+the button. A platform someone else removed, or one a person set and cleared
+again, is never touched.
+
+Only devices are restored. A virtual machine's platform and a config context's
+platform list were cleared the same way and are not put back; set them by hand.
+The restore does not run NetBox's device validation, so check a platform that was
+recreated under another manufacturer.
+
+While a preview says something is restorable, **What to do** lists "Devices a
+sync run blanked the platform on". The card's figures, the hold split, when the
+preview ran and the last restore are in the support bundle under
+`scope_reconciliation.platform_restore`, and the last preview and restore jobs
+under `operator_action_jobs`. API:
+`POST /api/plugins/forward/sync/<id>/preview-platform-restore/` then
+`.../restore-platforms/` (restores within the latest completed preview).
+
 ### Post-upgrade catalog reconciliation
 
 The **Post-Upgrade Catalog Reconciliation** panel on Scope Reconciliation is a

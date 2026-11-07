@@ -795,7 +795,7 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
             status=200 if interval and job.pk == existing_pk else 201,
         )
 
-    def _enqueue_button_job_response(self, request, kind):
+    def _enqueue_button_job_response(self, request, kind, *, job_kwargs=None):
         """Shared body for the button-job actions: permission check mirroring
         the HTML view, overlap guard via enqueue_button_job (202
         already_running on an active equivalent job — idempotent for
@@ -828,7 +828,7 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
             )
         sync = self.get_object()
         try:
-            job = enqueue_button_job(sync, kind, request.user)
+            job = enqueue_button_job(sync, kind, request.user, job_kwargs=job_kwargs)
         except JobBlockedBySyncRun as exc:
             # Distinct from already_running: the requested work is NOT
             # queued (prune refuses while a sync run is active). Still 2xx
@@ -1003,6 +1003,116 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
         return self._enqueue_button_job_response(
             request, "prune_out_of_scope_catalogue"
         )
+
+    @extend_schema(
+        methods=["post"],
+        request=EmptySerializer(),
+        responses={
+            201: JobSerializer(),
+            202: OpenApiResponse(
+                description=(
+                    '{"status": "already_running"|"blocked_by_sync_run", '
+                    '"job_id": N}'
+                )
+            ),
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="preview-stale-device-rows")
+    def preview_stale_device_rows(self, request, pk):
+        """Count the stale device rows. ``include_older_than_change_log`` (a
+        JSON boolean, default false) also counts rows with no create record in
+        NetBox's change log that are older than the oldest change it retains;
+        the removal then runs on exactly that choice."""
+        include, error = self._older_than_change_log_flag(request)
+        if error is not None:
+            return error
+        return self._enqueue_button_job_response(
+            request,
+            "preview_stale_device_rows",
+            job_kwargs={"include_older_than_change_log": True} if include else None,
+        )
+
+    @staticmethod
+    def _older_than_change_log_flag(request):
+        """``(flag or None, error Response or None)`` from the request body."""
+        data = request.data if isinstance(request.data, dict) else {}
+        if "include_older_than_change_log" not in data:
+            return None, None
+        value = data["include_older_than_change_log"]
+        if not isinstance(value, bool):
+            return None, Response(
+                {"detail": "`include_older_than_change_log` must be true or false."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return value, None
+
+    @extend_schema(
+        methods=["post"],
+        request=EmptySerializer(),
+        responses={
+            201: JobSerializer(),
+            202: OpenApiResponse(
+                description=(
+                    '{"status": "already_running"|"blocked_by_sync_run", '
+                    '"job_id": N}'
+                )
+            ),
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="remove-stale-device-rows")
+    def remove_stale_device_rows(self, request, pk):
+        # Removes within the latest completed preview; the job refuses without
+        # one, so a caller previews first exactly as the page does. It takes the
+        # preview's choice about rows older than the change log; `true` against
+        # a preview that did not opt in is refused by the job, never widened.
+        include, error = self._older_than_change_log_flag(request)
+        if error is not None:
+            return error
+        return self._enqueue_button_job_response(
+            request,
+            "remove_stale_device_rows",
+            job_kwargs=(
+                None if include is None else {"include_older_than_change_log": include}
+            ),
+        )
+
+    @extend_schema(
+        methods=["post"],
+        request=EmptySerializer(),
+        responses={
+            201: JobSerializer(),
+            202: OpenApiResponse(
+                description=(
+                    '{"status": "already_running"|"blocked_by_sync_run", '
+                    '"job_id": N}'
+                )
+            ),
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="preview-platform-restore")
+    def preview_platform_restore(self, request, pk):
+        """Count the devices a sync run blanked the platform on. Read-only."""
+        return self._enqueue_button_job_response(request, "preview_platform_restore")
+
+    @extend_schema(
+        methods=["post"],
+        request=EmptySerializer(),
+        responses={
+            201: JobSerializer(),
+            202: OpenApiResponse(
+                description=(
+                    '{"status": "already_running"|"blocked_by_sync_run", '
+                    '"job_id": N}'
+                )
+            ),
+        },
+    )
+    @action(detail=True, methods=["post"], url_path="restore-platforms")
+    def restore_platforms(self, request, pk):
+        # Restores within the latest completed preview; the job refuses without
+        # one (or when a run finalized after it), so a caller previews first
+        # exactly as the page does.
+        return self._enqueue_button_job_response(request, "restore_platforms")
 
     @extend_schema(
         methods=["post"],

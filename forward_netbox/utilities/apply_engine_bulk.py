@@ -2014,6 +2014,23 @@ def bulk_orm_apply_interface(
         ):
             defaults["untagged_vlan"] = None
 
+        # NetBox lets only a virtual interface (or a channel subinterface) have a
+        # parent. A row Forward lists as a top-level, non-virtual interface
+        # that NetBox still holds as a subinterface (Forward reclassified it)
+        # cannot be written until the old parent link is dropped: it would be
+        # rejected for a field the row does not carry. The row says the
+        # interface has no parent, so clear it and let the row converge, as for
+        # a stale untagged VLAN above.
+        # NetBox's own rule (Interface.clean): only a virtual interface, or one
+        # bound to a channel of its parent (`channel_id`), may have a parent.
+        if (
+            existing.parent_id is not None
+            and not row.get("parent")
+            and defaults.get("type") != "virtual"
+            and getattr(existing, "channel_id", None) is None
+        ):
+            defaults["parent"] = None
+
         # Existing interface: only write when a field actually changes,
         # otherwise every sync re-PATCHes unchanged interfaces.
         changed_values = []

@@ -314,6 +314,17 @@ def apply_dcim_interface(runner, row):
         and stale_cross_site_untagged_vlan(runner, existing_interface, device)
     ):
         defaults["untagged_vlan"] = None
+    # Same rule as the bulk path: a top-level non-virtual row for an interface
+    # NetBox still holds as a subinterface drops the stale parent link (only a
+    # virtual interface, or one bound to a channel of its parent, may have one).
+    if (
+        existing_interface is not None
+        and existing_interface.parent_id is not None
+        and not row.get("parent")
+        and row["type"] != "virtual"
+        and getattr(existing_interface, "channel_id", None) is None
+    ):
+        defaults["parent"] = None
     if row["type"] == "lag" and existing_interface is not None:
         existing_cable = getattr(existing_interface, "cable", None)
         if existing_cable is not None:

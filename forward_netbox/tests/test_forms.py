@@ -281,6 +281,46 @@ class ForwardSyncFormTest(TestCase):
         self.assertFalse(form.fields["enable_fast_baseline_load"].initial)
         self.assertFalse(form.fields["require_fast_baseline_eligibility"].initial)
 
+    def test_every_device_gets_a_primary_ip_by_default_on_a_new_sync(self):
+        form = ForwardSyncForm()
+
+        for name in (
+            "set_primary_ip_from_forward_management_ip",
+            "give_contexts_their_own_management_ip",
+            "add_management_interface",
+        ):
+            self.assertTrue(form.fields[name].initial, name)
+
+    def test_an_existing_sync_without_the_primary_ip_settings_is_not_switched_on(self):
+        sync = ForwardSync.objects.create(
+            name="sync-existing-primary-ip",
+            source=self.source,
+            parameters={"snapshot_id": LATEST_PROCESSED_SNAPSHOT},
+        )
+
+        form = ForwardSyncForm(instance=sync)
+
+        for name in (
+            "set_primary_ip_from_forward_management_ip",
+            "give_contexts_their_own_management_ip",
+            "add_management_interface",
+        ):
+            self.assertFalse(form.fields[name].initial, name)
+
+    def test_a_stored_off_setting_stays_off(self):
+        sync = ForwardSync.objects.create(
+            name="sync-primary-ip-off",
+            source=self.source,
+            parameters={
+                "snapshot_id": LATEST_PROCESSED_SNAPSHOT,
+                "add_management_interface": False,
+            },
+        )
+
+        form = ForwardSyncForm(instance=sync)
+
+        self.assertFalse(form.fields["add_management_interface"].initial)
+
     def test_copy_sql_defaults_off_for_new_syncs(self):
         form = ForwardSyncForm()
 

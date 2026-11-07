@@ -134,7 +134,7 @@
           </tr>
           {% if payload.unmanaged.untagged_total %}
           <tr title="{% trans 'Devices carrying neither include tag. Split by whether this sync created them: one is ours and worth investigating, the other is not ours to reason about. Orphans can read zero while this is large, because a device this sync never claimed is not an orphan of it.' %}">
-            <th scope="row">{% trans "Carry no include tag" %}</th>
+            <th scope="row">{% trans "No include tag (uncovered + not managed)" %}</th>
             <td>
               {{ payload.unmanaged.untagged_total }}
               {% if payload.unmanaged.owned_untagged %}
@@ -472,6 +472,157 @@
   </div>
 </div>
 {% endif %}
+<div class="row mt-3">
+  <div class="col col-md-12">
+    <div class="card" id="stale-device-rows">
+      <h5 class="card-header">{% trans "Stale Rows Forward No Longer Returns" %}</h5>
+      <div class="card-body">
+        <p class="text-muted mt-0">
+          {% trans "Before 3.0.14, a run in which the set of in-scope devices changed forgot the interfaces, addresses, MACs, cables, inventory items, modules, BGP peers, BGP address families and OSPF instances and interfaces Forward stopped returning on that run, so no later run deletes them. The preview counts them on devices still in this sync's scope, from the stored sync state and NetBox's change log; it makes no Forward call and changes nothing." %}
+        </p>
+        {% if stale_row_cleanup.available %}
+          <p class="small mb-2">
+            {% blocktrans with when=stale_row_cleanup.generated_at removable=stale_row_cleanup.removable %}Preview computed {{ when }}: {{ removable }} removable.{% endblocktrans %}
+            {% if stale_row_cleanup.older_than_change_log %}
+              {% blocktrans with older=stale_row_cleanup.removable_only_by_option oldest=stale_row_cleanup.oldest_change_logged_at|default:"-" %}Run with &ldquo;Also remove rows older than the change log&rdquo;: {{ older }} of them are removable only because of that option. The oldest change NetBox retained then was {{ oldest }}.{% endblocktrans %}
+            {% else %}
+              {% trans "Run without the option to also remove rows older than the change log." %}
+            {% endif %}
+          </p>
+          <div class="table-responsive">
+            <table class="table table-sm table-hover mb-2">
+              <thead>
+                <tr>
+                  <th>{% trans "Model" %}</th>
+                  {% for label, value in stale_row_cleanup.rows.0.values %}<th>{% trans label %}</th>{% endfor %}
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in stale_row_cleanup.rows %}
+                  <tr>
+                    <td><code>{{ row.model }}</code></td>
+                    {% for label, value in row.values %}
+                      <td>{% if value is None %}<span class="text-muted">&mdash;</span>{% else %}{{ value }}{% endif %}</td>
+                    {% endfor %}
+                  </tr>
+                  {% if row.held %}
+                    <tr><td></td><td colspan="7" class="small text-muted">{% for reason, count in row.held %}<code>{{ reason }}</code>: {{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}</td></tr>
+                  {% endif %}
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          <p class="small mb-2">
+            {% trans "Only rows this sync created, that nobody else changed, whose device Forward still returns, and that no sync's state still holds are removable. Rows added by hand, template and module components, and anything still attached to a row that stays are held. A row with no create record in the change log (NetBox keeps 90 days by default) is held too, unless the preview was run with the option below. A model is refused outright when its state is missing or older than the latest run, or when the share looks like a fault rather than a backlog." %}
+          </p>
+        {% elif stale_row_cleanup.error %}
+          <p class="text-danger small mb-2">{{ stale_row_cleanup.error }}</p>
+        {% else %}
+          <p class="text-muted small mb-2">{% trans "No preview yet." %}</p>
+        {% endif %}
+        {% if stale_row_cleanup.last_removal.job %}
+          <p class="small text-muted mb-2">
+            {% blocktrans with pk=stale_row_cleanup.last_removal.job status=stale_row_cleanup.last_removal.status deleted=stale_row_cleanup.last_removal.totals.deleted|default:0 held=stale_row_cleanup.last_removal.totals.held|default:0 %}Last removal: job #{{ pk }} ({{ status }}), {{ deleted }} deleted, {{ held }} held.{% endblocktrans %}
+            {% if stale_row_cleanup.last_removal.refused %}<code>{{ stale_row_cleanup.last_removal.refused }}</code>{% endif %}
+          </p>
+        {% endif %}
+        <div class="d-flex gap-2">
+          {% if perms.forward_netbox.run_forwardsync %}
+            <form method="post" action="{% url 'plugins:forward_netbox:forwardsync_preview_stale_device_rows' pk=object.pk %}">
+              {% csrf_token %}
+              <div class="form-check mb-1">
+                <input class="form-check-input" type="checkbox" name="include_older_than_change_log" value="1" id="stale-older-than-log">
+                <label class="form-check-label small" for="stale-older-than-log">{% trans "Also remove rows older than the change log" %}</label>
+              </div>
+              <p class="small text-muted mb-1">{% trans "Reaches only rows with no create record that were created after the first sync was set up but before the oldest change NetBox still retains, and that no retained change by anyone else touches. Every other rule still applies. You are attesting that nobody created or edited those rows by hand." %}</p>
+              <button type="submit" class="btn btn-sm btn-outline-primary">
+                <i class="mdi mdi-magnify" aria-hidden="true"></i>&nbsp;{% trans "Preview stale rows" %}
+              </button>
+            </form>
+          {% endif %}
+          {% if stale_row_cleanup.removable and perms.dcim.delete_interface %}
+            <form method="post"
+                  action="{% url 'plugins:forward_netbox:forwardsync_remove_stale_device_rows' pk=object.pk %}"
+                  onsubmit="return confirm('{% if stale_row_cleanup.older_than_change_log %}{% blocktrans with count=stale_row_cleanup.removable older=stale_row_cleanup.removable_only_by_option %}Remove up to {{ count }} stale device rows? {{ older }} of them have no create record in the change log and are older than the oldest change NetBox still retains, so NetBox cannot say who made them. By continuing you attest that nobody created or edited those rows by hand. The plan is recomputed first and nothing beyond this preview is removed.{% endblocktrans %}{% else %}{% blocktrans with count=stale_row_cleanup.removable %}Remove up to {{ count }} stale device rows? The plan is recomputed first and nothing beyond this preview is removed.{% endblocktrans %}{% endif %}');">
+              {% csrf_token %}
+              <input type="hidden" name="preview_job" value="{{ stale_row_cleanup.preview_job }}">
+              <button type="submit" class="btn btn-sm btn-danger">
+                <i class="mdi mdi-delete-sweep-outline" aria-hidden="true"></i>&nbsp;{% blocktrans with count=stale_row_cleanup.removable %}Remove {{ count }} stale rows{% endblocktrans %}
+              </button>
+            </form>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="row mt-3">
+  <div class="col col-md-12">
+    <div class="card" id="platform-restore">
+      <h5 class="card-header">{% trans "Platforms a Sync Run Blanked" %}</h5>
+      <div class="card-body">
+        <p class="text-muted mt-0">
+          {% trans "Before 3.0.14, a run in which the include tag matched no device read every platform as gone and cleared the platform on every device that had one. The next normal run puts it back on the devices it covers, but a device outside the sync's scope stays blank. The preview finds those devices from NetBox's change log: a device is restorable only when this sync's own run took its platform away, nobody has touched its platform since, and the platform can be found again by its slug. It makes no Forward call and changes nothing." %}
+        </p>
+        {% if platform_restore.available %}
+          {% if platform_restore.blanked_by_this_sync %}
+            <p class="small mb-2">
+              {% blocktrans with when=platform_restore.generated_at %}Preview computed {{ when }}:{% endblocktrans %}
+            </p>
+            <table class="table table-sm table-hover mb-2 w-auto">
+              <tbody>
+                {% for label, value in platform_restore.figures %}
+                  <tr><th scope="row" class="fw-normal">{% trans label %}</th><td>{{ value }}</td></tr>
+                {% endfor %}
+                {% if platform_restore.held_by_reason %}
+                  <tr><td colspan="2" class="small text-muted">{% for reason, count in platform_restore.held_by_reason %}<code>{{ reason }}</code>: {{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}</td></tr>
+                {% endif %}
+              </tbody>
+            </table>
+            {% if platform_restore.preview_refused %}
+              <p class="small text-warning mb-2">{% blocktrans with reason=platform_restore.preview_refused %}This preview can no longer be restored from (<code>{{ reason }}</code>). Preview again.{% endblocktrans %}</p>
+            {% endif %}
+          {% else %}
+            <p class="small text-muted mb-2">
+              {% blocktrans with when=platform_restore.generated_at %}Preview computed {{ when }}: no device had its platform blanked by this sync.{% endblocktrans %}
+            </p>
+          {% endif %}
+        {% elif platform_restore.error %}
+          <p class="text-danger small mb-2">{{ platform_restore.error }}</p>
+        {% else %}
+          <p class="text-muted small mb-2">{% trans "No preview yet." %}</p>
+        {% endif %}
+        {% if platform_restore.last_restore.job %}
+          <p class="small text-muted mb-2">
+            {% blocktrans with pk=platform_restore.last_restore.job status=platform_restore.last_restore.status restored=platform_restore.last_restore.restored|default:0 %}Last restore: job #{{ pk }} ({{ status }}), {{ restored }} restored.{% endblocktrans %}
+            {% if platform_restore.last_restore.refused %}<code>{{ platform_restore.last_restore.refused }}</code>{% endif %}
+          </p>
+        {% endif %}
+        <div class="d-flex gap-2">
+          {% if perms.forward_netbox.run_forwardsync %}
+            <form method="post" action="{% url 'plugins:forward_netbox:forwardsync_preview_platform_restore' pk=object.pk %}">
+              {% csrf_token %}
+              <button type="submit" class="btn btn-sm btn-outline-primary">
+                <i class="mdi mdi-magnify" aria-hidden="true"></i>&nbsp;{% trans "Preview platforms" %}
+              </button>
+            </form>
+          {% endif %}
+          {% if platform_restore.restorable and not platform_restore.preview_refused and perms.dcim.change_device %}
+            <form method="post"
+                  action="{% url 'plugins:forward_netbox:forwardsync_restore_platforms' pk=object.pk %}"
+                  onsubmit="return confirm('{% blocktrans with count=platform_restore.restorable %}Restore the platform on up to {{ count }} devices? The plan is recomputed first and nothing beyond this preview is restored. Each change is logged to you.{% endblocktrans %}');">
+              {% csrf_token %}
+              <input type="hidden" name="preview_job" value="{{ platform_restore.preview_job }}">
+              <button type="submit" class="btn btn-sm btn-primary">
+                <i class="mdi mdi-backup-restore" aria-hidden="true"></i>&nbsp;{% blocktrans with count=platform_restore.restorable %}Restore {{ count }} platforms{% endblocktrans %}
+              </button>
+            </form>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 {% if site_relabel_pairs.available and site_relabel_pairs.pair_count or site_relabel_pairs.available and site_relabel_pairs.held_count %}
 <div class="row mt-3">
   <div class="col col-md-12">

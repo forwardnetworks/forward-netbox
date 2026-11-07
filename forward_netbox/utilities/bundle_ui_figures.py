@@ -29,7 +29,7 @@ FIGURES = (
     ("Empty orphan sites", "netbox_empty_orphan_site_count", ()),
     ("In scope, missing from NetBox", "forward_missing_in_netbox", ()),
     (
-        "Carry no include tag",
+        "No include tag (uncovered + not managed)",
         "unmanaged.untagged_total",
         (
             ("created by this sync", "unmanaged.owned_untagged"),
