@@ -77,6 +77,7 @@ IFACE = "dcim.interface"
 IP = "ipam.ipaddress"
 CABLE = "dcim.cable"
 COALESCE = {
+    "dcim.device": [["name"]],
     "dcim.macaddress": [["mac_address"]],
     IFACE: [["device", "name"]],
     IP: [["address", "vrf"], ["address"]],
@@ -135,6 +136,10 @@ class StaleRowCleanupFixture(TestCase):
         for dev in (self.edge1, self.edge2):
             self._own(dev)
             self._scope_claim(dev)
+        # The devices the last run fetched.
+        self.device_state = self._state(
+            "dcim.device", [{"name": "edge-1"}, {"name": "edge-2"}]
+        )
         # Present in NetBox and in this sync's state, so every model has a
         # state that describes NetBox.
         self.kept1 = self._interface(self.edge1, "Ethernet1")
@@ -296,8 +301,39 @@ class StaleRowCandidateRulesTest(StaleRowCleanupFixture):
 
         self.assertNotIn(stale.pk, self._removable_pks())
 
-    def test_a_device_this_sync_does_not_own_is_never_judged(self):
-        ForwardDeviceIdentity.objects.filter(device=self.edge1).delete()
+    def test_a_device_another_sync_identifies_is_never_judged(self):
+        other_sync = ForwardSync.objects.create(
+            name="other-sync", source=self.source, parameters={}
+        )
+        ForwardDeviceIdentity.objects.filter(device=self.edge1).update(sync=other_sync)
+        stale = self._interface(self.edge1, "Ethernet2")
+        self._interface_state()
+
+        self.assertNotIn(stale.pk, self._removable_pks())
+
+    def test_a_device_the_last_run_did_not_return_is_never_judged(self):
+        # Without scope claims or identity records (a sync with "apply device
+        # scope tags" off has none), the device list is the last run's state.
+        ForwardDeviceIdentity.objects.all().delete()
+        ForwardDeviceTagClaim.objects.all().delete()
+        self.device_state.delete()
+        self._state("dcim.device", [{"name": "edge-2"}])
+        stale1 = self._interface(self.edge1, "Ethernet2")
+        stale2 = self._interface(self.edge2, "Ethernet2")
+        self._interface_state()
+
+        removable = self._removable_pks()
+
+        self.assertNotIn(stale1.pk, removable)
+        self.assertIn(stale2.pk, removable)
+
+    def test_a_name_two_devices_share_is_never_judged(self):
+        Device.objects.create(
+            name="edge-1",
+            site=Site.objects.create(name="Other Site", slug="other-site"),
+            device_type=self.device_type,
+            role=self.edge1.role,
+        )
         stale = self._interface(self.edge1, "Ethernet2")
         self._interface_state()
 

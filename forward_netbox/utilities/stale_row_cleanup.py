@@ -270,23 +270,40 @@ def _other_syncs_present_keys(sync, model_string):
 
 
 def in_scope_device_ids(sync):
-    """Devices this sync owns and still has in scope, by NetBox pk."""
+    """Devices the sync's last run fetched, by NetBox pk.
+
+    The device list is the sync's current `dcim.device` state: the devices that
+    run asked Forward for (rows carried for a device out of scope are not
+    counted). Scope claims and device identity records are not used: the first
+    exist only with "apply device scope tags" on, the second only for some
+    devices. A name two NetBox devices share is left out, as is a device another
+    sync identifies, or one marked out of scope, uncovered or backfilled.
+    """
+    from dcim.models import Device
+
     from ..models import ForwardDeviceIdentity
     from ..models import ForwardDeviceTagClaim
-    from .sync_facade import device_tag_scope
+    from .workload_state import CARRIED_ROW_HASH
 
-    device_ids = set(
-        ForwardDeviceIdentity.objects.filter(sync=sync).values_list(
+    state = _current_state(sync, "dcim.device")
+    entries = _decode(state) if state is not None else None
+    if not entries:
+        return set()
+    names = {
+        str((value.get("row") or {}).get("name") or "").strip()
+        for value in entries.values()
+        if value.get("action") == "upsert" and value.get("row_hash") != CARRIED_ROW_HASH
+    } - {""}
+    by_name = {}
+    for chunk in _chunks(sorted(names)):
+        for pk, name in Device.objects.filter(name__in=chunk).values_list("pk", "name"):
+            by_name.setdefault(name, []).append(pk)
+    device_ids = {pks[0] for pks in by_name.values() if len(pks) == 1}
+    device_ids -= set(
+        ForwardDeviceIdentity.objects.exclude(sync=sync).values_list(
             "device_id", flat=True
         )
     )
-    include_tags, _exclude, _match = device_tag_scope(sync)
-    if include_tags:
-        device_ids &= set(
-            ForwardDeviceTagClaim.objects.filter(
-                sync=sync, claim_type="scope"
-            ).values_list("device_id", flat=True)
-        )
     device_ids -= set(
         ForwardDeviceTagClaim.objects.filter(
             sync=sync, claim_type__in=("out_of_scope", "uncovered", "backfilled")
