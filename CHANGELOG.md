@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v3.0.14
+
+Release candidate; Stale rows are deleted when the scope changes, with a preview-first cleanup; empty include tags stop the run; platform restore; time-limit split fetch
+
 ## v3.0.13
 
 Every device gets a primary IP Forward can name (endpoints, collection-IP tie-break, opt-in management interface); deleting or pruning a device that has BGP routing works and never removes another device's routing; NetBox 4.7.4 migrates an existing install; search-index jobs batched, per-run lookup cache and a linear merge make large syncs much faster; one config backup per sync; the device fields the sync owns are pinned and documented; forward-sdk 0.1.35. Run migrate after upgrading.
