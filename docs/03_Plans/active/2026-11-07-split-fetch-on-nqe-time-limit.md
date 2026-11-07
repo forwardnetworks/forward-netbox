@@ -22,6 +22,9 @@ limit, so raising it does not help.
 - The workload is recorded against the whole device list, so durable state sees
   the same scope as an unsplit run.
 - A `TIMED_OUT` outcome is still not retried as is.
+- IP addresses and MAC addresses are never split (`TIME_LIMIT_SPLIT_REFUSED_MODELS`):
+  their queries pick one winner per address across devices, so each half would
+  pick its own and the merge could hand a shared address to the wrong device.
 
 ## Touched Surfaces
 
@@ -50,6 +53,16 @@ the whole list in `query_parameters`, and runs the removal comparison once.
 - Live: not reproducible on demand (needs Forward to time out); the halving path
   is covered by unit tests only. Say so in the release notes.
 
+Known limits:
+
+- Each level that times out costs Forward's full time limit before the next
+  level runs; at the maximum depth that is up to 15 timed-out executions before
+  the 16 final parts. A deadline set by the workload fetch budget still applies.
+- A transient error in one part restarts the whole workload from the top, which
+  pays the first time limit again.
+- A map with a diff baseline is not split even when its diff was blocked and the
+  full path ran; its incremental runs still fail on the time limit.
+
 ## Rollback
 
 Revert the commit; a timed-out query fails its model as before.
@@ -57,5 +70,6 @@ Revert the commit; a timed-out query fails its model as before.
 ## Decision Log
 
 - Rejected: raising the source timeout. It does not govern Forward's NQE limit.
+- Rejected after review: splitting IP and MAC queries (see Constraints).
 - Rejected: splitting on any failure. Only the time limit is helped by a smaller
   device list; other failures would fail each part the same way.

@@ -138,6 +138,13 @@ DEFAULT_WORKLOAD_FETCH_RETRY_ATTEMPTS = 2
 # A query that spent its whole budget would spend it again, so the outcome is
 # never retried as is (see NQE_RETRYABLE_OUTCOMES).
 TIME_LIMIT_SPLIT_MAX_DEPTH = 4
+# Never split: these queries pick one winner per address across devices (the
+# longest prefix, then the chassis over a virtual context, then the smallest
+# name for an IP; the smallest name for a MAC). Each half would pick its own
+# winner, and the merged result could hand a shared address to the wrong
+# device. Every other device-scoped query returns rows that depend on one
+# device each, so its halves merge into the whole.
+TIME_LIMIT_SPLIT_REFUSED_MODELS = frozenset({"ipam.ipaddress", "dcim.macaddress"})
 DEFAULT_WORKLOAD_FETCH_RETRY_BACKOFF_SECONDS = 3.0
 DEFAULT_WORKLOAD_FETCH_TIMEOUT_SECONDS = 0
 DEFAULT_DIFF_FETCH_TIMEOUT_SECONDS = 60
@@ -2688,6 +2695,8 @@ class ForwardQueryFetcher:
         if getattr(exc, "outcome", "") != "TIMED_OUT":
             return None
         if shard_scope or not isinstance(contract, ResolvedExecutionContract):
+            return None
+        if contract.model_string in TIME_LIMIT_SPLIT_REFUSED_MODELS:
             return None
         if contract.diff_eligible and (
             baseline is not None or is_tier3_reducer(contract.reducer_id)

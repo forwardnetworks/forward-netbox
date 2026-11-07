@@ -24,9 +24,9 @@ select {device: device.name, name: "eth0"}
 """
 
 
-def _contract(keys):
+def _contract(keys, model_string="dcim.interface"):
     spec = QuerySpec(
-        model_string="dcim.interface",
+        model_string=model_string,
         query_name="Forward Interfaces",
         query_id="Q_interfaces",
         query_repository="org",
@@ -146,4 +146,32 @@ class SplitOnTimeLimitTest(SimpleTestCase):
                 _timed_out(), contract, None, None
             ),
             ["a", "b"],
+        )
+
+    def test_addresses_are_never_split(self):
+        # One winner per address across devices: halves would each pick one.
+        for model in ("ipam.ipaddress", "dcim.macaddress"):
+            self.assertIsNone(
+                ForwardQueryFetcher._time_limit_split_keys(
+                    _timed_out(), _contract(["a", "b"], model), None, None
+                )
+            )
+
+    def test_a_fetch_that_already_carries_a_shard_is_not_split(self):
+        self.assertIsNone(
+            ForwardQueryFetcher._time_limit_split_keys(
+                _timed_out(), _contract(["a", "b"]), None, {"fetch_mode": "model"}
+            )
+        )
+
+    def test_a_contributor_fetch_is_not_split(self):
+        from forward_netbox.utilities.tier3_reducers import TIER3_REDUCER_IDS
+
+        tier3 = replace(
+            _contract(["a", "b"]),
+            diff_eligible=True,
+            reducer_id=sorted(TIER3_REDUCER_IDS)[0],
+        )
+        self.assertIsNone(
+            ForwardQueryFetcher._time_limit_split_keys(_timed_out(), tier3, None, None)
         )
