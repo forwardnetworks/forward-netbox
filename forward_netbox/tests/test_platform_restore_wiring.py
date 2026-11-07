@@ -319,10 +319,13 @@ class PlatformRestoreViewTest(PlatformRestoreWiringFixture):
     def test_the_restore_view_queues_the_job_against_the_preview_the_page_showed(self):
         self.blanked_device("edge-1")
         preview = self.preview_job()
-        queued = self.job("restore platforms", status=JobStatusChoices.STATUS_PENDING)
+        # Not an active job: an active one of this kind would make the view
+        # answer "already queued" and enqueue nothing.
+        queued = self.job("restore platforms", status=JobStatusChoices.STATUS_COMPLETED)
 
         with patch(
-            "forward_netbox.jobs.enqueue_forward_job", return_value=queued
+            "forward_netbox.jobs.enqueue_forward_job",
+            return_value=queued,
         ) as enqueue:
             response = self.post("restore_platforms", {"preview_job": str(preview.pk)})
 
@@ -333,11 +336,14 @@ class PlatformRestoreViewTest(PlatformRestoreWiringFixture):
 
     def test_the_preview_view_queues_the_preview_job(self):
         queued = self.job(
-            "preview platform restore", data={}, status=JobStatusChoices.STATUS_PENDING
+            "preview platform restore",
+            data={},
+            status=JobStatusChoices.STATUS_COMPLETED,
         )
 
         with patch(
-            "forward_netbox.jobs.enqueue_forward_job", return_value=queued
+            "forward_netbox.jobs.enqueue_forward_job",
+            return_value=queued,
         ) as enqueue:
             response = self.post("preview_platform_restore")
 
