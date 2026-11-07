@@ -25,12 +25,20 @@ interfaces. Devices, interfaces, addresses, BGP peers and cables were untouched
 
 ## Touched Surfaces
 
-- `forward_netbox/utilities/query_fetch_execution.py` `resolve_context`: raises
-  `ForwardQueryError` when include tags are set and the scoped device set is
-  empty.
+- `forward_netbox/utilities/query_fetch_execution.py`
+  `_resolve_scoped_tag_scope(refuse_empty=True)` (called from `resolve_context`):
+  raises `ForwardQueryError` when tags are set and no collected device is in
+  scope, unless the scope is endpoint-only and the endpoints are themselves
+  chosen by the include tags. Review found the first version keyed on the whole
+  scoped set, which unscoped SNMP endpoints keep non-empty after a renamed tag.
+- `forward_netbox/utilities/diagnostics.py`: reason slug
+  `include-tags-match-no-device`, so the failure line names the cause.
 - `forward_netbox/utilities/sync_primitives.py`: `SHARED_CATALOG_MODELS`,
-  `_rows_a_delete_would_blank`; `delete_by_coalesce` turns a delete that would
-  SET_NULL another row into the same protected-dependency skip PROTECT produces.
+  `_rows_a_delete_would_blank` (asks Django's deletion collector, so a parent
+  platform or role whose child is in use counts); `delete_by_coalesce` turns a
+  delete that would SET_NULL another row into the same protected-dependency skip
+  PROTECT produces. A kept row is dropped from the durable state like any refused
+  delete, so it is not retried every run.
 - Tests: `test_sync.py` (`test_include_tags_that_match_no_device_stop_the_run`),
   `test_catalog_delete_keeps_used_rows.py`.
 
@@ -44,8 +52,10 @@ and worded like every other "still referenced" skip.
 - `invoke test-isolated` for the two test modules plus test_sync,
   test_protected_delete_is_a_skip, test_endpoints_import, test_scope_matched_tags
   (382 tests, OK on the test host).
-- Live: repeat the empty-tag run on the customer-shaped stack after restoring it;
-  the run must fail with the message and change nothing.
+- Live (done): on the customer-shaped stack the empty-tag run now fails with
+  `ForwardQueryError: include-tags-match-no-device` in the log and the
+  ingestion issue, and changes nothing (platform, device type, role and OSPF
+  counts unchanged). The stack was restored by a normal sync with the real tags.
 
 ## Rollback
 

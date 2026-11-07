@@ -1,8 +1,8 @@
 # A device's platform is SET_NULL, not PROTECT, so the database let a sync
 # delete a platform still in use and blanked the field on every device that had
 # it. Seen live: an include tag that matched no device emptied the platform
-# list, and one run deleted all 13 platforms and blanked the platform on 3,572
-# devices. A shared catalogue row is deleted only when nothing uses it.
+# list, and one run deleted every platform and blanked it on every device. A
+# shared catalogue row is deleted only when nothing uses it.
 from unittest.mock import Mock
 
 from dcim.models import Device
@@ -69,3 +69,18 @@ class CatalogDeleteKeepsUsedRowsTest(TestCase):
             )
         )
         self.assertFalse(Platform.objects.filter(pk=self.unused.pk).exists())
+
+    def test_a_parent_platform_whose_child_a_device_uses_is_kept(self):
+        # Deleting a parent cascades to its children; a device on the child
+        # would be blanked just the same.
+        parent = Platform.objects.create(name="parent-os", slug="parent-os")
+        self.used.parent = parent
+        self.used.save()
+
+        with self.assertRaises(ForwardDependencySkipError):
+            delete_dcim_platform(
+                self._runner(), {"slug": "parent-os", "name": "parent-os"}
+            )
+
+        self.device.refresh_from_db()
+        self.assertEqual(self.device.platform_id, self.used.pk)

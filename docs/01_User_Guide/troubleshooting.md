@@ -254,6 +254,26 @@ This matches the plugin-enforced minimum. Set a larger value according to your
 environment, worker supervision policy, and how long a trusted large baseline
 is allowed to run.
 
+## Sync Fails With `include-tags-match-no-device`
+
+The sync's include (or exclude) tags leave no collected device in scope in the
+selected snapshot: a tag renamed in Forward, a typo on the source, or every
+matching device failing collection. The run stops before fetching anything, so
+nothing is synced and nothing is deleted. Before 3.0.14 such a run read every
+compared table as gone and could delete platforms, device types and OSPF areas.
+
+Check the tag names on the Forward source against the device tags in Forward,
+and the snapshot's collection results, then run the sync again. A sync that
+imports only SNMP endpoints chosen by the include tags (`Scope SNMP Endpoints by
+Include Tags` on) is not refused.
+
+## A Catalogue Delete Is Skipped As "Still Referenced"
+
+The sync never deletes a platform, manufacturer, device role or device type that
+any NetBox row still uses (including through a child platform or role). Deleting
+one would blank the field on those rows. The skip is counted as skipped, not
+failed, and the row stays; delete it by hand once nothing uses it.
+
 ## A Model Fails With `nqe-timed-out`
 
 Symptoms:

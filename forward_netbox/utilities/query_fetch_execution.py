@@ -571,19 +571,8 @@ class ForwardQueryFetcher:
             sync_endpoints=sync_endpoints,
             sync_generic_endpoints=sync_generic_endpoints,
             scope_endpoints_by_include_tags=scope_endpoints_by_include_tags,
+            refuse_empty=True,
         )
-        if include_tags and not scoped_device_names:
-            # Every row is then filtered out locally, and every model whose
-            # state compares against the previous run reads its whole table as
-            # gone. Seen live: one run deleted every platform (blanking it on
-            # every device) and every OSPF area with its interfaces. A tag
-            # renamed in Forward, or a typo here, must stop the run instead.
-            raise ForwardQueryError(
-                "The sync's include tags match no device in the selected "
-                "Forward snapshot, so nothing was synced and nothing was "
-                "deleted. Check the tag names on the sync source against the "
-                "device tags in Forward."
-            )
         if endpoint_scope_failed:
             # The scoped set carries no endpoint names, so emitting endpoint
             # rows would get them dropped locally and then pruned as deletes.
@@ -624,6 +613,7 @@ class ForwardQueryFetcher:
         sync_endpoints: bool = False,
         sync_generic_endpoints: bool = False,
         scope_endpoints_by_include_tags: bool = False,
+        refuse_empty: bool = False,
     ) -> tuple[set[str], set[str], dict[str, list[str]], bool]:
         if not include_tags and not exclude_tags:
             return set(), set(), {}, False
@@ -706,6 +696,7 @@ class ForwardQueryFetcher:
                 exclude_tags=exclude_tags,
                 include_match=include_match,
             )
+        collected_names = set(names)
         endpoint_scope_failed = False
         if sync_endpoints:
             collected_device_count = len(names)
@@ -750,6 +741,30 @@ class ForwardQueryFetcher:
                         "membership.",
                         obj=self.sync,
                     )
+        if refuse_empty and not collected_names:
+            # No collected device in scope: every collected device's rows are
+            # filtered out locally, and every model compared against the
+            # previous run reads its table as gone. Seen live: one run deleted
+            # every platform (blanking it on every device) and every OSPF area
+            # with its interfaces. Endpoints do not make that safe unless they
+            # are themselves chosen by the include tags (an endpoint-only
+            # scope): unscoped endpoints keep the set non-empty after a
+            # renamed tag.
+            endpoint_only_scope = bool(
+                sync_endpoints
+                and scope_endpoints_by_include_tags
+                and include_tags
+                and names
+            )
+            if not endpoint_only_scope:
+                raise ForwardQueryError(
+                    "The sync's include tags match no device in the selected "
+                    "Forward snapshot (or every matching device failed "
+                    "collection), so nothing was synced and nothing was "
+                    "deleted. Check the tag names on the sync source against "
+                    "the device tags in Forward, and the snapshot's collection "
+                    "results."
+                )
         return names, sites, matched_tags_by_device, endpoint_scope_failed
 
     def _resolve_scoped_endpoint_names(

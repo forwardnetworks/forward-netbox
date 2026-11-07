@@ -585,32 +585,32 @@ def protected_delete_skip(model, exc, *, obj=None, context=None):
 # device's platform is SET_NULL, not PROTECT, so the database lets the delete
 # through and blanks the field on every device that had it. Seen live: an
 # include tag that matched no device emptied the platform list, and one run
-# deleted all 13 platforms and blanked the platform on 3,572 devices.
+# deleted every platform and blanked the platform on every device.
 SHARED_CATALOG_MODELS = frozenset(
     {"dcim.platform", "dcim.manufacturer", "dcim.devicerole", "dcim.devicetype"}
 )
 
 
 def _rows_a_delete_would_blank(obj):
-    """One row per model whose reference to ``obj`` the delete would SET_NULL."""
-    from django.db.models import SET_NULL
+    """Rows whose reference the delete would SET_NULL, one per model.
 
-    found = []
-    for relation in obj._meta.get_fields(include_hidden=True):
-        if not (relation.auto_created and not relation.concrete):
-            continue
-        if not (relation.one_to_many or relation.one_to_one):
-            continue
-        if getattr(relation, "on_delete", None) is not SET_NULL:
-            continue
-        row = (
-            relation.related_model._base_manager.filter(**{relation.field.name: obj})
-            .only("pk")
-            .first()
-        )
-        if row is not None:
-            found.append(row)
-    return found
+    Asked of Django's own deletion collector, so a cascade counts too: deleting
+    a parent platform or role takes its children, and any row using a child is
+    blanked just the same.
+    """
+    from django.db import router
+    from django.db.models.deletion import Collector
+
+    collector = Collector(using=router.db_for_write(type(obj)))
+    collector.collect([obj])
+    found = {}
+    for (field, _value), batches in collector.field_updates.items():
+        for batch in batches:
+            row = batch.first() if hasattr(batch, "first") else next(iter(batch), None)
+            if row is not None:
+                found.setdefault(field.model._meta.label_lower, row)
+                break
+    return list(found.values())
 
 
 def delete_by_coalesce(runner, model, lookups):
@@ -621,7 +621,12 @@ def delete_by_coalesce(runner, model, lookups):
         obj = get_unique_or_raise(runner, model, lookup)
         if obj is not None:
             if model._meta.label_lower in SHARED_CATALOG_MODELS:
-                still_used = _rows_a_delete_would_blank(obj)
+                try:
+                    still_used = _rows_a_delete_would_blank(obj)
+                except ProtectedError as exc:
+                    raise protected_delete_skip(
+                        model, exc, obj=obj, context=lookup
+                    ) from exc
                 if still_used:
                     exc = ProtectedError(
                         "still referenced (the delete would blank the field)",

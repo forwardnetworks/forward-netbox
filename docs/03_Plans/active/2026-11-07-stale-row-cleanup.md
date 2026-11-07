@@ -131,7 +131,7 @@ failures.
 ## Rollback
 
 Revert the commit. The feature adds no migration and stores only job data; a
-removal already run is in NetBoxs change log (each delete under the job's
+removal already run is in NetBox's change log (each delete under the job's
 user) and the rows return on the next sync only if Forward reports them again.
 
 ## Decision Log
