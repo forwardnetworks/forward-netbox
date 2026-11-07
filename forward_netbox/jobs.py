@@ -1138,18 +1138,22 @@ def _prune_out_of_scope_catalogue_work(job):
         raise
 
 
-def _preview_stale_device_rows_work(job):
+def _preview_stale_device_rows_work(job, *, include_older_than_change_log=False):
     """Count the device rows Forward no longer returns that the state forgot.
 
     Read-only: a local comparison of the durable state, NetBox and the change
     log, no Forward call. Stores counts per model and hold reasons, never a
-    name - see `stale_row_cleanup`.
+    name - see `stale_row_cleanup`. The operator's choice to also reach rows
+    older than the change log is stored with the counts; the removal runs on
+    that choice and no wider.
     """
     from .utilities.stale_row_cleanup import preview_stale_row_cleanup
 
     sync = ForwardSync.objects.get(pk=job.object_id)
     try:
-        job.data = preview_stale_row_cleanup(sync)
+        job.data = preview_stale_row_cleanup(
+            sync, include_older_than_change_log=bool(include_older_than_change_log)
+        )
         job.save(update_fields=["data"])
     except Exception as exc:
         job.data = {
@@ -1160,12 +1164,17 @@ def _preview_stale_device_rows_work(job):
         raise
 
 
-def _remove_stale_device_rows_work(job, *, preview_job_pk=None):
+def _remove_stale_device_rows_work(
+    job, *, preview_job_pk=None, include_older_than_change_log=None
+):
     """Delete the stale device rows a reviewed preview counted.
 
     Operator-initiated only. The plan is recomputed inside the job and checked
     against the preview the operator saw; every delete goes through the sync's
-    own delete adapters and is change-logged under the job's user.
+    own delete adapters and is change-logged under the job's user. The removal
+    takes the preview's choice about rows older than the change log and refuses
+    a caller who asks for more (``include_older_than_change_log=True`` against a
+    preview that did not opt in).
     """
     from .utilities.stale_row_cleanup import remove_stale_rows
     from .utilities.stale_row_cleanup import StaleRowCleanupRefused
@@ -1184,7 +1193,11 @@ def _remove_stale_device_rows_work(job, *, preview_job_pk=None):
     )
     try:
         with event_tracking(request):
-            job.data = remove_stale_rows(sync, preview_job_pk=preview_job_pk)
+            job.data = remove_stale_rows(
+                sync,
+                preview_job_pk=preview_job_pk,
+                include_older_than_change_log=include_older_than_change_log,
+            )
         job.save(update_fields=["data"])
     except StaleRowCleanupRefused as exc:
         job.data = {"refused": str(exc), "error_type": exception_type(exc)}
@@ -2748,7 +2761,12 @@ class PreviewStaleDeviceRowsJob(ForwardJobRunner):
         name = "preview stale device rows"
 
     def run(self, *args, **kwargs):
-        _preview_stale_device_rows_work(self.job)
+        # Forwarded only when the caller opted in, so the default lives in the
+        # work function's signature.
+        extra = {}
+        if kwargs.get("include_older_than_change_log"):
+            extra["include_older_than_change_log"] = True
+        _preview_stale_device_rows_work(self.job, **extra)
 
 
 class RemoveStaleDeviceRowsJob(ForwardJobRunner):
@@ -2764,6 +2782,10 @@ class RemoveStaleDeviceRowsJob(ForwardJobRunner):
         extra = {}
         if kwargs.get("preview_job_pk"):
             extra["preview_job_pk"] = int(kwargs["preview_job_pk"])
+        if kwargs.get("include_older_than_change_log") is not None:
+            extra["include_older_than_change_log"] = bool(
+                kwargs["include_older_than_change_log"]
+            )
         _remove_stale_device_rows_work(self.job, **extra)
 
 

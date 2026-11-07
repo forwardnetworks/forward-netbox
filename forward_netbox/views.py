@@ -3225,6 +3225,7 @@ STALE_ROW_CLEANUP_COLUMNS = (
     ("In NetBox", "netbox_rows"),
     ("Not returned by Forward", "not_returned"),
     ("Removable", "removable"),
+    ("Older than change log (option)", "older_than_change_log"),
     ("Held", "held_total"),
     ("Refused", "refused"),
 )
@@ -3301,12 +3302,19 @@ def _stale_row_cleanup_payload(sync):
         error = error or "The last preview failed; see its job."
     card = {"page": "Scope Reconciliation", "card": STALE_ROW_CLEANUP_CARD}
     removal_totals = removal_data.get("totals") or {}
+    # The choice the preview was run with, and the oldest change NetBox still
+    # retained when it ran: the removal runs on these and no wider.
+    older_option = bool((data.get("options") or {}).get("older_than_change_log"))
+    oldest_change = data.get("oldest_change_logged_at")
     return {
         "available": bool(rows),
         "preview_job": getattr(preview, "pk", None),
         "generated_at": data.get("generated_at"),
         "error": error,
         "removable": int(totals.get("removable") or 0),
+        "removable_only_by_option": int(totals.get("older_than_change_log") or 0),
+        "older_than_change_log": older_option,
+        "oldest_change_logged_at": oldest_change,
         "not_returned": int(totals.get("not_returned") or 0),
         "held": int(totals.get("held") or 0),
         "rows": rows,
@@ -3315,6 +3323,9 @@ def _stale_row_cleanup_payload(sync):
             "status": getattr(removal, "status", None),
             "finished_at": removal_data.get("finished_at"),
             "refused": removal_data.get("refused"),
+            "older_than_change_log": bool(
+                (removal_data.get("options") or {}).get("older_than_change_log")
+            ),
             "totals": removal_data.get("totals") or {},
         },
         # The card's figures under the card's labels, for the support bundle.
@@ -3329,8 +3340,36 @@ def _stale_row_cleanup_payload(sync):
             {
                 **card,
                 "model": None,
+                "label": "Preview computed ... older than change log (option)",
+                "value": int(totals.get("older_than_change_log") or 0),
+                "computed_at": data.get("generated_at"),
+            },
+            {
+                **card,
+                "model": None,
+                "label": "Also remove rows older than the change log (preview)",
+                "value": older_option,
+                "computed_at": data.get("generated_at"),
+            },
+            {
+                **card,
+                "model": None,
+                "label": "Oldest change NetBox retained (preview)",
+                "value": oldest_change,
+                "computed_at": data.get("generated_at"),
+            },
+            {
+                **card,
+                "model": None,
                 "label": "Last removal ... deleted",
                 "value": removal_totals.get("deleted"),
+                "computed_at": removal_data.get("finished_at"),
+            },
+            {
+                **card,
+                "model": None,
+                "label": "Last removal ... deleted only because of the option",
+                "value": removal_totals.get("deleted_older_than_change_log"),
                 "computed_at": removal_data.get("finished_at"),
             },
             {
@@ -4648,6 +4687,14 @@ class ForwardSyncPreviewStaleDeviceRowsView(_StaleDeviceRowsActionView):
         "Queued job #%(pk)d to count device rows Forward no longer returns. "
         "Reload this page when it finishes."
     )
+
+    def job_kwargs(self, request):
+        # The Scope Reconciliation checkbox: also count rows with no create
+        # record that are older than the oldest change NetBox retains. The
+        # removal runs on this choice, recorded in the preview job.
+        if request.POST.get("include_older_than_change_log") in ("1", "on", "true"):
+            return {"include_older_than_change_log": True}
+        return None
 
 
 @register_model_view(

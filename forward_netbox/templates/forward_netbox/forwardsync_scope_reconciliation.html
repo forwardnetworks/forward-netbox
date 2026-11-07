@@ -478,11 +478,16 @@
       <h5 class="card-header">{% trans "Stale Rows Forward No Longer Returns" %}</h5>
       <div class="card-body">
         <p class="text-muted mt-0">
-          {% trans "Before 3.0.14, a run in which the set of in-scope devices changed forgot the interfaces, addresses, MACs, cables and BGP peers Forward stopped returning on that run, so no later run deletes them. The preview counts them on devices still in this sync's scope, from the stored sync state and NetBox's change log; it makes no Forward call and changes nothing." %}
+          {% trans "Before 3.0.14, a run in which the set of in-scope devices changed forgot the interfaces, addresses, MACs, cables, inventory items, modules, BGP peers, BGP address families and OSPF instances and interfaces Forward stopped returning on that run, so no later run deletes them. The preview counts them on devices still in this sync's scope, from the stored sync state and NetBox's change log; it makes no Forward call and changes nothing." %}
         </p>
         {% if stale_row_cleanup.available %}
           <p class="small mb-2">
             {% blocktrans with when=stale_row_cleanup.generated_at removable=stale_row_cleanup.removable %}Preview computed {{ when }}: {{ removable }} removable.{% endblocktrans %}
+            {% if stale_row_cleanup.older_than_change_log %}
+              {% blocktrans with older=stale_row_cleanup.removable_only_by_option oldest=stale_row_cleanup.oldest_change_logged_at|default:"-" %}Run with &ldquo;Also remove rows older than the change log&rdquo;: {{ older }} of them are removable only because of that option. The oldest change NetBox retained then was {{ oldest }}.{% endblocktrans %}
+            {% else %}
+              {% trans "Run without the option to also remove rows older than the change log." %}
+            {% endif %}
           </p>
           <div class="table-responsive">
             <table class="table table-sm table-hover mb-2">
@@ -501,14 +506,14 @@
                     {% endfor %}
                   </tr>
                   {% if row.held %}
-                    <tr><td></td><td colspan="6" class="small text-muted">{% for reason, count in row.held %}<code>{{ reason }}</code>: {{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}</td></tr>
+                    <tr><td></td><td colspan="7" class="small text-muted">{% for reason, count in row.held %}<code>{{ reason }}</code>: {{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}</td></tr>
                   {% endif %}
                 {% endfor %}
               </tbody>
             </table>
           </div>
           <p class="small mb-2">
-            {% trans "Only rows this sync created, that nobody else changed, whose device Forward still returns, and that no sync's state still holds are removable. Rows added by hand, template and module components, and anything still attached to a row that stays are held. A model is refused outright when its state is missing or older than the latest run, or when the share looks like a fault rather than a backlog." %}
+            {% trans "Only rows this sync created, that nobody else changed, whose device Forward still returns, and that no sync's state still holds are removable. Rows added by hand, template and module components, and anything still attached to a row that stays are held. A row with no create record in the change log (NetBox keeps 90 days by default) is held too, unless the preview was run with the option below. A model is refused outright when its state is missing or older than the latest run, or when the share looks like a fault rather than a backlog." %}
           </p>
         {% elif stale_row_cleanup.error %}
           <p class="text-danger small mb-2">{{ stale_row_cleanup.error }}</p>
@@ -525,6 +530,11 @@
           {% if perms.forward_netbox.run_forwardsync %}
             <form method="post" action="{% url 'plugins:forward_netbox:forwardsync_preview_stale_device_rows' pk=object.pk %}">
               {% csrf_token %}
+              <div class="form-check mb-1">
+                <input class="form-check-input" type="checkbox" name="include_older_than_change_log" value="1" id="stale-older-than-log">
+                <label class="form-check-label small" for="stale-older-than-log">{% trans "Also remove rows older than the change log" %}</label>
+              </div>
+              <p class="small text-muted mb-1">{% trans "Reaches only rows with no create record that were created before the oldest change NetBox still retains, and that no retained change by anyone else touches. Every other rule still applies. You are attesting that nobody edited those rows by hand." %}</p>
               <button type="submit" class="btn btn-sm btn-outline-primary">
                 <i class="mdi mdi-magnify" aria-hidden="true"></i>&nbsp;{% trans "Preview stale rows" %}
               </button>
@@ -533,7 +543,7 @@
           {% if stale_row_cleanup.removable and perms.dcim.delete_interface %}
             <form method="post"
                   action="{% url 'plugins:forward_netbox:forwardsync_remove_stale_device_rows' pk=object.pk %}"
-                  onsubmit="return confirm('{% blocktrans with count=stale_row_cleanup.removable %}Remove up to {{ count }} stale device rows? The plan is recomputed first and nothing beyond this preview is removed.{% endblocktrans %}');">
+                  onsubmit="return confirm('{% if stale_row_cleanup.older_than_change_log %}{% blocktrans with count=stale_row_cleanup.removable older=stale_row_cleanup.removable_only_by_option %}Remove up to {{ count }} stale device rows? {{ older }} of them have no create record in the change log and are older than the oldest change NetBox still retains, so NetBox cannot say who made them. By continuing you attest that nobody edited those rows by hand. The plan is recomputed first and nothing beyond this preview is removed.{% endblocktrans %}{% else %}{% blocktrans with count=stale_row_cleanup.removable %}Remove up to {{ count }} stale device rows? The plan is recomputed first and nothing beyond this preview is removed.{% endblocktrans %}{% endif %}');">
               {% csrf_token %}
               <input type="hidden" name="preview_job" value="{{ stale_row_cleanup.preview_job }}">
               <button type="submit" class="btn btn-sm btn-danger">
