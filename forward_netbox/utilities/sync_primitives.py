@@ -581,6 +581,38 @@ def protected_delete_skip(model, exc, *, obj=None, context=None):
     )
 
 
+# Shared catalogues: deleting one is only ever right when nothing uses it. A
+# device's platform is SET_NULL, not PROTECT, so the database lets the delete
+# through and blanks the field on every device that had it. Seen live: an
+# include tag that matched no device emptied the platform list, and one run
+# deleted all 13 platforms and blanked the platform on 3,572 devices.
+SHARED_CATALOG_MODELS = frozenset(
+    {"dcim.platform", "dcim.manufacturer", "dcim.devicerole", "dcim.devicetype"}
+)
+
+
+def _rows_a_delete_would_blank(obj):
+    """One row per model whose reference to ``obj`` the delete would SET_NULL."""
+    from django.db.models import SET_NULL
+
+    found = []
+    for relation in obj._meta.get_fields(include_hidden=True):
+        if not (relation.auto_created and not relation.concrete):
+            continue
+        if not (relation.one_to_many or relation.one_to_one):
+            continue
+        if getattr(relation, "on_delete", None) is not SET_NULL:
+            continue
+        row = (
+            relation.related_model._base_manager.filter(**{relation.field.name: obj})
+            .only("pk")
+            .first()
+        )
+        if row is not None:
+            found.append(row)
+    return found
+
+
 def delete_by_coalesce(runner, model, lookups):
     lookups = _dedupe_lookups([lookup for lookup in lookups or [] if lookup])
     if not lookups:
@@ -588,6 +620,14 @@ def delete_by_coalesce(runner, model, lookups):
     for lookup in lookups:
         obj = get_unique_or_raise(runner, model, lookup)
         if obj is not None:
+            if model._meta.label_lower in SHARED_CATALOG_MODELS:
+                still_used = _rows_a_delete_would_blank(obj)
+                if still_used:
+                    exc = ProtectedError(
+                        "still referenced (the delete would blank the field)",
+                        set(still_used),
+                    )
+                    raise protected_delete_skip(model, exc, obj=obj, context=lookup)
             try:
                 obj.delete()
             except ProtectedError as exc:

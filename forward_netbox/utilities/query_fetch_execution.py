@@ -572,6 +572,18 @@ class ForwardQueryFetcher:
             sync_generic_endpoints=sync_generic_endpoints,
             scope_endpoints_by_include_tags=scope_endpoints_by_include_tags,
         )
+        if include_tags and not scoped_device_names:
+            # Every row is then filtered out locally, and every model whose
+            # state compares against the previous run reads its whole table as
+            # gone. Seen live: one run deleted every platform (blanking it on
+            # every device) and every OSPF area with its interfaces. A tag
+            # renamed in Forward, or a typo here, must stop the run instead.
+            raise ForwardQueryError(
+                "The sync's include tags match no device in the selected "
+                "Forward snapshot, so nothing was synced and nothing was "
+                "deleted. Check the tag names on the sync source against the "
+                "device tags in Forward."
+            )
         if endpoint_scope_failed:
             # The scoped set carries no endpoint names, so emitting endpoint
             # rows would get them dropped locally and then pruned as deletes.

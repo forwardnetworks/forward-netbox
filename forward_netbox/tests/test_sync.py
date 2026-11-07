@@ -7879,6 +7879,25 @@ select {device: value, name: value}
         self.assertEqual(context.scoped_device_names, {"core-1", "core-2"})
         self.assertEqual(context.scoped_site_names, {"main dc", "main-dc"})
 
+    def test_include_tags_that_match_no_device_stop_the_run(self):
+        # Seen live: every row was filtered out locally, every model compared
+        # against the previous run read its table as gone, and one run deleted
+        # every platform (blanking it on every device) and every OSPF area.
+        self.source.parameters["device_tag_include_tags"] = ["renamed-in-forward"]
+        self.source.save(update_fields=["parameters"])
+        client = Mock()
+        client.get_snapshot_metrics.return_value = {}
+        client.run_nqe_query.return_value = []
+        fetcher = ForwardQueryFetcher(sync=self.sync, client=client, logger_=Mock())
+        self.sync.get_network_id = Mock(return_value="test-network")
+        self.sync.get_snapshot_id = Mock(return_value=LATEST_PROCESSED_SNAPSHOT)
+        self.sync.resolve_snapshot_id = Mock(return_value="snapshot-after")
+        self.sync.get_query_parameters = Mock(return_value={})
+        self.sync.get_maps = Mock(return_value=[])
+
+        with self.assertRaisesMessage(ForwardQueryError, "match no device"):
+            fetcher.resolve_context()
+
     def test_apply_device_tag_scope_filters_rows_with_device_keys(self):
         fetcher = ForwardQueryFetcher(
             sync=self.sync,
