@@ -238,7 +238,15 @@ def decode_state_entries(payload, checksum):
     return entries
 
 
-def _parameter_hash(workloads) -> str:
+# The parameter a device-scoped query receives the in-scope device names in.
+SCOPE_KEYS_PARAMETER = "forward_netbox_shard_keys"
+# Stored for a row carried while its device was out of scope: matches no real
+# row hash, so the row is staged again when the device returns.
+CARRIED_ROW_HASH = ""
+
+
+def _legacy_parameter_hash(workloads) -> str:
+    """The hash releases before 3.0.14 stored: scope names included."""
     return _digest(
         [
             {
@@ -257,6 +265,52 @@ def _parameter_hash(workloads) -> str:
             )
         ]
     )
+
+
+def _scope_device_names(model_string, workloads):
+    """The device names these workloads fetched, or None for the whole network.
+
+    A device-scoped child model (interfaces, addresses, peers, ...) is fetched
+    for the sync's in-scope devices only, by passing their names. Which devices
+    are in scope is not part of the query's contract: a device entering or
+    leaving scope changes which rows are asked for, not what a row means. The
+    device model itself is excluded - its deletes go through the ownership
+    quarantine, and this must not open a second path to them.
+    """
+    from .branch_budget import DEVICE_SHARD_MODELS
+
+    if model_string not in DEVICE_SHARD_MODELS:
+        return None
+    names = set()
+    for workload in workloads:
+        keys = (workload.query_parameters or {}).get(SCOPE_KEYS_PARAMETER)
+        if not keys:
+            # One workload fetched the whole network: nothing is out of scope.
+            return None
+        names.update(str(key) for key in keys)
+    return names
+
+
+def _parameter_hash(workloads) -> str:
+    model_string = workloads[0].model_string if workloads else ""
+    if _scope_device_names(model_string, workloads) is None:
+        return _legacy_parameter_hash(workloads)
+    entries = {
+        _canonical_json(
+            {
+                "execution_mode": workload.execution_mode,
+                "execution_value": workload.execution_value,
+                "query_name": workload.query_name,
+                "query_parameters": {
+                    key: value
+                    for key, value in (workload.query_parameters or {}).items()
+                    if key != SCOPE_KEYS_PARAMETER
+                },
+            }
+        )
+        for workload in workloads
+    }
+    return _digest({"scope_independent": sorted(entries)})
 
 
 def _identity_contract_hash(workloads) -> str:
@@ -1089,9 +1143,11 @@ def apply_durable_workload_deltas(sync, workloads):
         parameter_hash = _parameter_hash(full_mode_workloads)
         identity_contract_hash = _identity_contract_hash(full_mode_workloads)
         current_state = _load_current_state(sync, model_string)
+        scope_device_names = _scope_device_names(model_string, full_mode_workloads)
         compatible = bool(
             current_state is not None
-            and current_state.parameter_hash == parameter_hash
+            and current_state.parameter_hash
+            in {parameter_hash, _legacy_parameter_hash(full_mode_workloads)}
             and current_state.identity_contract_hash == identity_contract_hash
         )
 
@@ -1262,6 +1318,7 @@ def apply_durable_workload_deltas(sync, workloads):
             for identity in bootstrap_delete_identities
         )
         explicit_deletes = [value["row"] for value in explicit_delete_entries.values()]
+        out_of_scope_entries = {}
         if compatible:
             previous_entries = decode_state_entries(
                 current_state.payload,
@@ -1274,15 +1331,35 @@ def apply_durable_workload_deltas(sync, workloads):
                 or previous_entries[identity]["action"] != "upsert"
                 or previous_entries[identity]["row_hash"] != value["row_hash"]
             ]
+            absent_entries = {
+                identity: value
+                for identity, value in previous_entries.items()
+                if value["action"] == "upsert"
+                and identity not in target_entries
+                and identity not in sibling_entries
+            }
+            # A row of a device this run did not fetch is not evidence of
+            # anything: carry it forward, so it is neither deleted now nor
+            # forgotten, and judged again once the device is back. Its hash is
+            # blanked so that return re-stages it: while out of scope the
+            # device may have been pruned with its rows, and a row recorded as
+            # current would then never be recreated.
+            if scope_device_names is not None:
+                from .query_fetch_execution import _row_device_names
+
+                for identity, value in list(absent_entries.items()):
+                    devices = _row_device_names(model_string, value["row"])
+                    if devices and not devices & scope_device_names:
+                        out_of_scope_entries[identity] = {
+                            **absent_entries.pop(identity),
+                            "row_hash": CARRIED_ROW_HASH,
+                        }
             missing_entries = {
                 identity: {
                     **value,
                     "action": "delete",
                 }
-                for identity, value in previous_entries.items()
-                if value["action"] == "upsert"
-                and identity not in target_entries
-                and identity not in sibling_entries
+                for identity, value in absent_entries.items()
             }
             proposed_missing_count = len(missing_entries)
             missing_reference_protected = _locally_referenced_delete_identities(
@@ -1314,6 +1391,7 @@ def apply_durable_workload_deltas(sync, workloads):
                 state_entries = {**previous_entries, **target_entries}
             else:
                 state_entries = {
+                    **out_of_scope_entries,
                     **target_entries,
                     **explicit_delete_entries,
                     **missing_entries,
@@ -1375,6 +1453,7 @@ def apply_durable_workload_deltas(sync, workloads):
                 "ownership_quarantine_held_rows": ownership_quarantine_held,
                 "ownership_shrink_held_rows": ownership_shrink_held,
                 "unrepresented_peer": unrepresented_peer,
+                "out_of_scope_carried_rows": len(out_of_scope_entries),
                 "tombstone_rows": sum(
                     value["action"] == "delete" for value in state_entries.values()
                 ),

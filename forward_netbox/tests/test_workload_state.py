@@ -1282,3 +1282,212 @@ class MixedSyncModeConsolidationTest(TestCase):
         diff_survivors = [w for w in workloads if w.sync_mode == "diff"]
         self.assertEqual(len(diff_survivors), 1)
         self.assertEqual(diff_survivors[0].upsert_rows, diff_sibling_rows)
+
+
+class ScopeChangeStillDeletesTest(TestCase):
+    # A device-scoped query is sent the in-scope device names. Those names used
+    # to be part of the hash that decides whether last run's state can be
+    # compared against, so any device entering or leaving scope reset every
+    # device-scoped model: nothing missing was deleted that run, and the old
+    # state was replaced, so the missing rows were never deleted at all. A
+    # customer's estate gained ~20k stale BGP peers that way.
+    def setUp(self):
+        user = get_user_model().objects.create_user(username="scope-change-owner")
+        source = ForwardSource.objects.create(
+            name="scope-change-source",
+            type="saas",
+            url="https://fwd.app",
+            parameters={"network_id": "network"},
+        )
+        self.sync = ForwardSync.objects.create(
+            name="scope-change-sync",
+            source=source,
+            user=user,
+            parameters={"dcim.interface": True},
+        )
+        self.snapshots = 0
+
+    def _run(self, rows, scope, **kwargs):
+        workloads, pending, summaries = apply_durable_workload_deltas(
+            self.sync,
+            [
+                _workload(
+                    rows,
+                    parameters={"forward_netbox_shard_keys": sorted(scope)},
+                    **kwargs,
+                )
+            ],
+        )
+        return workloads, pending, summaries
+
+    def _promote(self, pending):
+        self.snapshots += 1
+        ingestion = ForwardIngestion.objects.create(
+            sync=self.sync, snapshot_id=f"snapshot-{self.snapshots}"
+        )
+        stage_workload_states(ingestion, pending)
+        promote_workload_states_locked(ingestion)
+
+    def test_a_row_gone_from_an_in_scope_device_is_deleted_when_scope_grows(self):
+        _, pending, _ = self._run(
+            [
+                {"device": "router-1", "name": "Ethernet1"},
+                {"device": "router-1", "name": "Ethernet2"},
+            ],
+            {"router-1"},
+        )
+        self._promote(pending)
+
+        workloads, _, summaries = self._run(
+            [
+                {"device": "router-1", "name": "Ethernet1"},
+                {"device": "router-2", "name": "Ethernet1"},
+            ],
+            {"router-1", "router-2"},
+        )
+
+        self.assertEqual(summaries[0]["mode"], "local_delta")
+        self.assertEqual(
+            workloads[0].delete_rows, [{"device": "router-1", "name": "Ethernet2"}]
+        )
+        self.assertEqual(
+            workloads[0].upsert_rows, [{"device": "router-2", "name": "Ethernet1"}]
+        )
+
+    def test_a_device_leaving_scope_keeps_its_rows_until_it_returns(self):
+        _, pending, _ = self._run(
+            [
+                {"device": "router-1", "name": "Ethernet1"},
+                {"device": "router-2", "name": "Ethernet1"},
+                {"device": "router-2", "name": "Ethernet2"},
+            ],
+            {"router-1", "router-2"},
+        )
+        self._promote(pending)
+
+        # router-2 leaves scope: its rows are not Forward's to judge this run,
+        # so they are neither deleted nor forgotten.
+        workloads, pending, summaries = self._run(
+            [{"device": "router-1", "name": "Ethernet1"}],
+            {"router-1"},
+        )
+        self.assertEqual(summaries[0]["mode"], "local_delta")
+        self.assertEqual(workloads, [])
+        self._promote(pending)
+
+        # It returns with Ethernet2 gone: that row is deleted now. Ethernet1 is
+        # staged again - the device may have been pruned with its rows while it
+        # was out of scope, and a row that is still there is not changed by it.
+        workloads, pending, summaries = self._run(
+            [
+                {"device": "router-1", "name": "Ethernet1"},
+                {"device": "router-2", "name": "Ethernet1"},
+            ],
+            {"router-1", "router-2"},
+        )
+        self.assertEqual(summaries[0]["mode"], "local_delta")
+        self.assertEqual(
+            workloads[0].delete_rows, [{"device": "router-2", "name": "Ethernet2"}]
+        )
+        self.assertEqual(
+            workloads[0].upsert_rows, [{"device": "router-2", "name": "Ethernet1"}]
+        )
+        self._promote(pending)
+
+        # Back to normal: nothing changed, nothing staged.
+        workloads, _, _ = self._run(
+            [
+                {"device": "router-1", "name": "Ethernet1"},
+                {"device": "router-2", "name": "Ethernet1"},
+            ],
+            {"router-1", "router-2"},
+        )
+        self.assertEqual(workloads, [])
+
+    def test_a_device_pruned_while_out_of_scope_gets_its_rows_back(self):
+        _, pending, _ = self._run(
+            [{"device": "router-2", "name": "Ethernet1"}], {"router-1", "router-2"}
+        )
+        self._promote(pending)
+        _, pending, _ = self._run([], {"router-1"})
+        self._promote(pending)
+        _, pending, _ = self._run([], {"router-1"})
+        self._promote(pending)
+
+        workloads, _, _ = self._run(
+            [{"device": "router-2", "name": "Ethernet1"}], {"router-1", "router-2"}
+        )
+
+        self.assertEqual(
+            workloads[0].upsert_rows, [{"device": "router-2", "name": "Ethernet1"}]
+        )
+
+    def test_state_written_before_the_fix_is_still_compatible(self):
+        # A state stored by an earlier release hashed the scope names in. With
+        # the scope unchanged it must still be compared against, or upgrading
+        # costs every customer one more run that deletes nothing.
+        from forward_netbox.utilities import workload_state
+
+        rows = [
+            {"device": "router-1", "name": "Ethernet1"},
+            {"device": "router-1", "name": "Ethernet2"},
+        ]
+        _, pending, _ = self._run(rows, {"router-1"})
+        # What 3.0.13 stored for this workload (computed with that release's
+        # `_parameter_hash`), not recomputed by the code under test.
+        legacy = "c744723063e7b59e959582556153244c76cb1b0354cd27af7de26fd756950b37"
+        pending = [
+            workload_state.PendingWorkloadState(
+                **{**state.__dict__, "parameter_hash": legacy}
+            )
+            for state in pending
+        ]
+        self._promote(pending)
+
+        workloads, _, summaries = self._run(
+            [{"device": "router-1", "name": "Ethernet1"}], {"router-1"}
+        )
+
+        self.assertEqual(summaries[0]["mode"], "local_delta")
+        self.assertEqual(
+            workloads[0].delete_rows, [{"device": "router-1", "name": "Ethernet2"}]
+        )
+
+    def test_another_parameter_change_still_resets(self):
+        _, pending, _ = self._run(
+            [{"device": "router-1", "name": "Ethernet1"}], {"router-1"}
+        )
+        self._promote(pending)
+
+        workloads, _, summaries = apply_durable_workload_deltas(
+            self.sync,
+            [
+                _workload(
+                    [{"device": "router-1", "name": "Ethernet2"}],
+                    parameters={
+                        "forward_netbox_shard_keys": ["router-1"],
+                        "sync_endpoints": True,
+                    },
+                )
+            ],
+        )
+
+        self.assertEqual(summaries[0]["mode"], "contract_reset")
+        self.assertEqual(workloads[0].delete_rows, [])
+
+    def test_the_device_model_itself_is_unchanged(self):
+        # Device deletes go through the ownership quarantine; a scope change
+        # must not open a second path to them.
+        _, pending, _ = self._run(
+            [{"name": "router-1"}, {"name": "router-2"}],
+            {"router-1", "router-2"},
+            model_string="dcim.device",
+        )
+        self._promote(pending)
+
+        workloads, _, summaries = self._run(
+            [{"name": "router-1"}], {"router-1"}, model_string="dcim.device"
+        )
+
+        self.assertEqual(summaries[0]["mode"], "contract_reset")
+        self.assertEqual(workloads[0].delete_rows, [])

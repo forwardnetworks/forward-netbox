@@ -1224,6 +1224,9 @@ class ForwardQueryFetcher:
                     "protected_delete_count": summary["protected_delete_rows"],
                     "tombstone_count": summary["tombstone_rows"],
                     "unrepresented_peer": summary["unrepresented_peer"],
+                    "out_of_scope_carried_count": summary.get(
+                        "out_of_scope_carried_rows", 0
+                    ),
                     "compressed_bytes": summary["compressed_bytes"],
                 }
             updated_results.append(
@@ -1238,6 +1241,7 @@ class ForwardQueryFetcher:
                 f"upserts={summary['upsert_rows']} "
                 f"deletes={summary['delete_rows']} "
                 f"bootstrap_deletes={summary['bootstrap_delete_rows']} "
+                f"out_of_scope_carried={summary.get('out_of_scope_carried_rows', 0)} "
                 f"compressed_bytes={summary['compressed_bytes']}.",
                 obj=self.sync,
             )
