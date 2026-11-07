@@ -196,3 +196,25 @@ class PlatformRestoreTest(TestCase):
             restore_platforms(self.sync, preview_restorable=1)
         self.assertEqual(caught.exception.reason, REFUSED_GREW_SINCE_PREVIEW)
         self.assertIsNone(Device.objects.get(pk=first.pk).platform_id)
+
+    def test_a_later_update_by_the_sync_that_leaves_the_platform_blank_is_not_a_blanking(
+        self,
+    ):
+        device = self._device("edge-1")
+        self._blank_by_the_run(device, minutes=1)
+        self._delete_and_recreate_platform()
+        # Any later change by the sync (tags, a custom field): the platform was
+        # already blank, and NetBox still writes the key.
+        self._change(
+            device.pk,
+            self.device_ct,
+            "update",
+            {"platform": None},
+            {"platform": None},
+            minutes=40,
+        )
+
+        plan = plan_platform_restore(self.sync)
+
+        self.assertEqual(plan["restorable"], {device.pk: self.new_pk})
+        self.assertEqual(plan["blanked_by_this_sync"], 1)

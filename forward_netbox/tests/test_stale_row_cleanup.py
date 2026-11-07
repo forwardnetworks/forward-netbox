@@ -893,6 +893,9 @@ class OlderThanChangeLogFixture(StaleRowCleanupFixture):
         self.log_start = now - timedelta(days=10)
         self.before_log = now - timedelta(days=100)
         self.after_log = now - timedelta(days=5)
+        # The sync was set up long before the change log's start.
+        self.first_sync = now - timedelta(days=200)
+        ForwardSync.objects.filter(pk=self.sync.pk).update(created=self.first_sync)
         self._retain_changes_since(self.log_start)
 
     def _retain_changes_since(self, when):
@@ -947,6 +950,17 @@ class OlderThanChangeLogRulesTest(OlderThanChangeLogFixture):
         self.assertEqual(off["older_than_change_log"], 0)
         self.assertEqual(set(on["deletable"]), {old.pk})
         self.assertEqual(on["older_than_change_log"], 1)
+
+    def test_a_row_older_than_the_first_sync_is_never_reached(self):
+        # Made by hand before the plugin was in use: no sync can have written
+        # it, whatever the change log no longer says.
+        hand_made = self._unrecorded("Ethernet9", self.first_sync - timedelta(days=30))
+        self._interface_state()
+
+        plan = self._plan(include=True)
+
+        self.assertNotIn(hand_made.pk, plan["deletable"])
+        self.assertEqual(plan["older_than_change_log"], 0)
 
     def test_a_row_newer_than_the_oldest_retained_change_is_never_reached(self):
         recent = self._unrecorded("Ethernet9", self.after_log)
@@ -1283,7 +1297,9 @@ class OlderThanChangeLogSurfaceTest(OlderThanChangeLogFixture):
         self.assertIn("Also remove rows older than the change log", template)
         start = template.index("forwardsync_remove_stale_device_rows")
         confirm = template[start:].split("</form>")[0]
-        self.assertIn("you attest that nobody edited those rows by hand", confirm)
+        self.assertIn(
+            "you attest that nobody created or edited those rows by hand", confirm
+        )
 
     def test_the_bundle_carries_the_option_the_added_counts_and_the_log_point(self):
         from forward_netbox.views import _stale_row_cleanup_payload

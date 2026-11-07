@@ -2021,10 +2021,13 @@ def bulk_orm_apply_interface(
         # rejected for a field the row does not carry. The row says the
         # interface has no parent, so clear it and let the row converge, as for
         # a stale untagged VLAN above.
+        # NetBox's own rule (Interface.clean): only a virtual interface, or one
+        # bound to a channel of its parent (`channel_id`), may have a parent.
         if (
             existing.parent_id is not None
             and not row.get("parent")
             and defaults.get("type") != "virtual"
+            and getattr(existing, "channel_id", None) is None
         ):
             defaults["parent"] = None
 

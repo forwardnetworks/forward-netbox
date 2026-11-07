@@ -534,7 +534,7 @@
                 <input class="form-check-input" type="checkbox" name="include_older_than_change_log" value="1" id="stale-older-than-log">
                 <label class="form-check-label small" for="stale-older-than-log">{% trans "Also remove rows older than the change log" %}</label>
               </div>
-              <p class="small text-muted mb-1">{% trans "Reaches only rows with no create record that were created before the oldest change NetBox still retains, and that no retained change by anyone else touches. Every other rule still applies. You are attesting that nobody edited those rows by hand." %}</p>
+              <p class="small text-muted mb-1">{% trans "Reaches only rows with no create record that were created after the first sync was set up but before the oldest change NetBox still retains, and that no retained change by anyone else touches. Every other rule still applies. You are attesting that nobody created or edited those rows by hand." %}</p>
               <button type="submit" class="btn btn-sm btn-outline-primary">
                 <i class="mdi mdi-magnify" aria-hidden="true"></i>&nbsp;{% trans "Preview stale rows" %}
               </button>
@@ -543,7 +543,7 @@
           {% if stale_row_cleanup.removable and perms.dcim.delete_interface %}
             <form method="post"
                   action="{% url 'plugins:forward_netbox:forwardsync_remove_stale_device_rows' pk=object.pk %}"
-                  onsubmit="return confirm('{% if stale_row_cleanup.older_than_change_log %}{% blocktrans with count=stale_row_cleanup.removable older=stale_row_cleanup.removable_only_by_option %}Remove up to {{ count }} stale device rows? {{ older }} of them have no create record in the change log and are older than the oldest change NetBox still retains, so NetBox cannot say who made them. By continuing you attest that nobody edited those rows by hand. The plan is recomputed first and nothing beyond this preview is removed.{% endblocktrans %}{% else %}{% blocktrans with count=stale_row_cleanup.removable %}Remove up to {{ count }} stale device rows? The plan is recomputed first and nothing beyond this preview is removed.{% endblocktrans %}{% endif %}');">
+                  onsubmit="return confirm('{% if stale_row_cleanup.older_than_change_log %}{% blocktrans with count=stale_row_cleanup.removable older=stale_row_cleanup.removable_only_by_option %}Remove up to {{ count }} stale device rows? {{ older }} of them have no create record in the change log and are older than the oldest change NetBox still retains, so NetBox cannot say who made them. By continuing you attest that nobody created or edited those rows by hand. The plan is recomputed first and nothing beyond this preview is removed.{% endblocktrans %}{% else %}{% blocktrans with count=stale_row_cleanup.removable %}Remove up to {{ count }} stale device rows? The plan is recomputed first and nothing beyond this preview is removed.{% endblocktrans %}{% endif %}');">
               {% csrf_token %}
               <input type="hidden" name="preview_job" value="{{ stale_row_cleanup.preview_job }}">
               <button type="submit" class="btn btn-sm btn-danger">

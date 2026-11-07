@@ -100,6 +100,9 @@ def plan_platform_restore(sync):
             prechange_data__platform__isnull=False,
             postchange_data__platform=None,
         )
+        # `isnull=False` only says the key is there, and NetBox always writes
+        # it: an update that leaves the platform blank must not count.
+        .exclude(prechange_data__platform=None)
         .order_by("time")
         .only("changed_object_id", "request_id", "prechange_data", "time")
         .iterator(chunk_size=2000)

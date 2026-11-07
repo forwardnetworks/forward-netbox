@@ -5,6 +5,7 @@
 from dcim.models import Interface
 
 from forward_netbox.tests.test_subinterface_apply import SubinterfaceFixture
+from forward_netbox.utilities.sync_interface import apply_dcim_interface
 
 
 class SubinterfaceRetypeTest(SubinterfaceFixture):
@@ -79,3 +80,56 @@ class SubinterfaceRetypeTest(SubinterfaceFixture):
         child.refresh_from_db()
         self.assertEqual(child.parent_id, parent.pk)
         self.assertFalse(child.enabled)
+
+    def test_a_channel_subinterface_keeps_its_parent(self):
+        # NetBox lets a non-virtual interface bound to a channel of its parent
+        # keep that parent; the row says nothing about it, so it is not cleared.
+        parent = Interface.objects.create(
+            device=self.device, name="Ethernet1/52", type="100gbase-x-qsfp28"
+        )
+        child = Interface.objects.create(
+            device=self.device, name="Ethernet1/52:1", type="25gbase-x-sfp28"
+        )
+        Interface.objects.filter(pk=parent.pk).update(channels=4)
+        Interface.objects.filter(pk=child.pk).update(parent=parent, channel_id=1)
+
+        self._apply(
+            [
+                self._parent_row(),
+                {
+                    "device": "dev-s",
+                    "name": "Ethernet1/52:1",
+                    "type": "25gbase-x-sfp28",
+                    "enabled": False,
+                    "parent": None,
+                },
+            ]
+        )
+
+        child.refresh_from_db()
+        self.assertEqual(child.parent_id, parent.pk)
+        self.assertFalse(child.enabled)
+
+    def test_the_row_oriented_path_drops_the_stale_parent_too(self):
+        parent = Interface.objects.create(
+            device=self.device, name="Ethernet1/52", type="100gbase-x-qsfp28"
+        )
+        child = Interface.objects.create(
+            device=self.device, name="Ethernet1/52.100", type="virtual"
+        )
+        Interface.objects.filter(pk=child.pk).update(parent=parent)
+
+        apply_dcim_interface(
+            self._runner(),
+            {
+                "device": "dev-s",
+                "name": "Ethernet1/52.100",
+                "type": "1000base-t",
+                "enabled": True,
+                "parent": None,
+            },
+        )
+
+        child.refresh_from_db()
+        self.assertEqual(child.type, "1000base-t")
+        self.assertIsNone(child.parent_id)

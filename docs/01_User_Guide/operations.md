@@ -293,13 +293,15 @@ looks like that).
 by default, so on an estate with months of stale rows most of them are held as
 `no_create_record_from_this_sync`. Tick **Also remove rows older than the change
 log** before **Preview stale rows** to reach them. It applies only to a row with
-no create record whose own created time is older than the oldest change NetBox
-still retains (anywhere, by anyone): the log provably cannot say who made it. A
+no create record whose own created time is after the first sync was set up (a
+row older than that cannot be the plugin's) and older than the oldest change
+NetBox still retains (anywhere, by anyone): the log provably cannot say who made
+it. A
 row created after that point that lacks a create record stays held, and so does
 any row with a retained change by anyone but this sync, always. Every other rule
 above applies unchanged, including the BGP scope and router ownership check
 (an old peer whose scope or router also lack a create record is held). By
-ticking it you attest that nobody edited those rows by hand; the removal
+ticking it you attest that nobody created or edited those rows by hand; the removal
 confirmation says so again. The preview records your choice and the oldest
 retained change it measured against, and shows the rows only the option reaches
 as their own **Older than change log (option)** count. The removal uses the
@@ -360,6 +362,11 @@ and while a sync run is active; it recomputes the plan and restores no more
 than the preview counted. Each edit is change-logged to the person who pressed
 the button. A platform someone else removed, or one a person set and cleared
 again, is never touched.
+
+Only devices are restored. A virtual machine's platform and a config context's
+platform list were cleared the same way and are not put back; set them by hand.
+The restore does not run NetBox's device validation, so check a platform that was
+recreated under another manufacturer.
 
 While a preview says something is restorable, **What to do** lists "Devices a
 sync run blanked the platform on". The card's figures, the hold split, when the

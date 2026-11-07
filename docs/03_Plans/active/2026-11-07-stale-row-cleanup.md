@@ -150,7 +150,7 @@ and job parameter `include_older_than_change_log`).
   `no_create_record_older_than_the_change_log` (an upper bound, counted before
   later holds), so the operator can see what ticking it would add. With it on,
   the preview shows a separate "Older than change log (option)" count per model
-  and in total. The removal confirm says the operator attests nobody edited
+  and in total. The removal confirm says the operator attests nobody created or edited
   those rows by hand.
 - Support bundle: the option, the per-model and total counts it adds, the
   oldest retained change time and the preview's computed-at are under the

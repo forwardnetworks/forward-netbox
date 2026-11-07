@@ -35,7 +35,7 @@ A row is a candidate only when ALL of these hold (each is a test):
    `include_older_than_change_log` AND the row's own `created` time is older
    than the OLDEST change NetBox still retains for anything (the log provably
    cannot speak for it) AND no retained change by anyone else touches it. The
-   operator is then attesting that nobody edited those rows by hand. A row
+   operator is then attesting that nobody created or edited those rows by hand. A row
    newer than that point without a create record stays held.
 5. The model as a whole is refused - nothing deleted - when its durable state
    is missing, unreadable or older than the latest finalized run, when the
@@ -1119,6 +1119,20 @@ def oldest_retained_change_time():
     return ObjectChange.objects.aggregate(oldest=Min("time"))["oldest"]
 
 
+def first_sync_created_time():
+    """When the first sync was set up: no row older than this is the plugin's.
+
+    A row that predates every sync cannot have been written by one, whatever
+    the change log no longer says, so the opt-in never reaches it. None when no
+    sync exists.
+    """
+    from django.db.models import Min
+
+    from ..models import ForwardSync
+
+    return ForwardSync.objects.aggregate(first=Min("created"))["first"]
+
+
 def _created_times(object_model_string, pks):
     """``{pk: created}`` for rows whose model records when it was created."""
     model = _model_class(object_model_string)
@@ -1330,10 +1344,14 @@ def _plan_model(
             if not row.hold and row.pk not in created and row.pk not in outside
         ]
         created_at = _created_times(model_string, unrecorded)
+        first_sync = first_sync_created_time()
         older_than_log = {
             pk
             for pk in unrecorded
-            if pk in created_at and created_at[pk] < change_log_cutoff
+            if pk in created_at
+            and created_at[pk] < change_log_cutoff
+            and first_sync is not None
+            and created_at[pk] >= first_sync
         }
     survivors = []
     for row in absent:
