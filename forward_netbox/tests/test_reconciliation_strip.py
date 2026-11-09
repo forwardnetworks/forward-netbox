@@ -56,9 +56,20 @@ class ReconciliationStripTest(StripFixture):
         self.assertEqual(counts["In scope (SNMP endpoints)"], 62)
         self.assertEqual(counts["In scope, missing from NetBox"], 10)
         self.assertEqual(counts["Tagged but backfilled"], 5)
-        self.assertEqual(counts["No include tag (uncovered + not managed)"], 257)
+        self.assertEqual(counts["No include tag (all)"], 257)
         self.assertEqual(counts["created by this sync"], 45)
         self.assertEqual(counts["not claimed by this sync"], 212)
+
+    def test_no_label_but_the_created_line_reads_as_the_uncovered_count(self):
+        self.report()
+
+        for label, step in self.steps(reconciliation_strip(self.sync)).items():
+            if label != "created by this sync":
+                self.assertNotIn("uncovered", label.lower())
+        self.assertEqual(
+            self.counts(reconciliation_strip(self.sync))["No include tag (all)"],
+            257,
+        )
 
     def test_collected_and_endpoints_are_not_summed_into_one_claim(self):
         self.report()
@@ -111,7 +122,7 @@ class ReconciliationStripTest(StripFixture):
 
         self.assertEqual(
             counts["created by this sync"] + counts["not claimed by this sync"],
-            counts["No include tag (uncovered + not managed)"],
+            counts["No include tag (all)"],
         )
 
     def test_orphans_are_their_own_line_and_make_no_claim_about_being_the_same_set(
@@ -269,7 +280,7 @@ class AgainstTheRealReportTest(_ReportFixture):
         # Only the one tagged device is matched; the rest carry no include tag.
         self.assertEqual(counts["matched to a tagged Forward device"], 1)
         # untagged: the two "dup" devices, "gone" (ours) and "stranger".
-        self.assertEqual(counts["No include tag (uncovered + not managed)"], 4)
+        self.assertEqual(counts["No include tag (all)"], 4)
         self.assertEqual(counts["created by this sync"], 1)
         self.assertEqual(counts["not claimed by this sync"], 3)
 

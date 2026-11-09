@@ -4272,6 +4272,28 @@ class ForwardDeviceListBulkDeleteView(DeviceBulkDeleteView):
         return response
 
 
+def _primary_ip_unrecorded_count(sync, outcomes):
+    """Devices with an address but no primary IP that the last management step
+    recorded nothing for (0 when the log carries no per-device lines)."""
+    if outcomes is None:
+        return 0
+    from dcim.models import Device
+
+    from .models import ForwardDeviceIdentity
+    from .utilities.primary_ip_reasons import classify_primary_ip_devices
+    from .utilities.primary_ip_reasons import outcome_split
+
+    bound = ForwardDeviceIdentity.objects.filter(sync=sync).values_list(
+        "device_id", flat=True
+    )
+    bare = Device.objects.filter(
+        pk__in=bound, primary_ip4__isnull=True, primary_ip6__isnull=True
+    )
+    classified = classify_primary_ip_devices(bare, outcomes)
+    split = outcome_split(classified, outcomes)
+    return split.get("has_an_address_but_none_was_chosen", {}).get(None, 0)
+
+
 @register_model_view(ForwardSync, "scope_reconciliation", path="scope-reconciliation")
 class ForwardSyncScopeReconciliationView(BaseObjectView):
     queryset = ForwardSync.objects.all()
@@ -4311,8 +4333,14 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
             summary, _outcomes = primary_ip_log_facts(sync)
         except Exception:  # noqa: BLE001 - the checklist must not sink the page
             summary = None
+            _outcomes = None
+        try:
+            unrecorded = _primary_ip_unrecorded_count(sync, _outcomes)
+        except Exception:  # noqa: BLE001 - the checklist must not sink the page
+            unrecorded = 0
         return cleanup_items(
             payload,
+            no_primary_ip_unrecorded=unrecorded,
             shared_primary=(summary or {}).get("shared_with_another_device", 0),
             context_copies_on=context_copies_enabled(sync),
             on_no_interface=(summary or {}).get("address_on_no_synced_interface", 0),
@@ -4332,6 +4360,7 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
                 "in_forward_not_in_scope": url("uncovered_devices"),
                 "forward_could_not_collect": url("present_backfilled_devices"),
                 "shared_management_address": url("explained"),
+                "generic_endpoints_not_imported": url("uncovered_devices"),
             },
         )
 

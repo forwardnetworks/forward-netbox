@@ -133,26 +133,36 @@
             <td>{{ payload.forward_missing_in_netbox }}</td>
           </tr>
           {% if payload.unmanaged.untagged_total %}
-          <tr title="{% trans 'Devices carrying neither include tag. Split by whether this sync created them: one is ours and worth investigating, the other is not ours to reason about. Orphans can read zero while this is large, because a device this sync never claimed is not an orphan of it.' %}">
-            <th scope="row">{% trans "No include tag (uncovered + not managed)" %}</th>
+          <tr title="{% trans 'Devices this sync created that Forward no longer lists under its include tags. This is the uncovered figure, the one the Health card reports. Orphans can read zero while this is large, because a device that left scope is not an orphan until Forward stops reporting it.' %}">
+            <th scope="row">{% trans "Uncovered: created by this sync" %}</th>
             <td>
-              {{ payload.unmanaged.untagged_total }}
               {% if payload.unmanaged.owned_untagged %}
-                <a href="{{ uncovered_tag_url }}" class="badge text-bg-warning text-decoration-none">{% blocktrans with count=payload.unmanaged.owned_untagged %}{{ count }} created by this sync{% endblocktrans %}</a>
+                <a href="{{ uncovered_tag_url }}" class="badge text-bg-warning text-decoration-none">{{ payload.unmanaged.owned_untagged }}</a>
                 {# The cause of this number, and the cleanup for it, are in a #}
                 {# card further down the page - which is the half a customer  #}
                 {# reading only the summary never reached.                    #}
                 <a href="#uncovered-owned" class="text-decoration-none small">{% trans "why? / clean up" %}</a>
                 {% include 'forward_netbox/inc/count_trend.html' with trend=uncovered_trend %}
+              {% else %}
+                <span class="badge text-bg-success">0</span>
               {% endif %}
-              {% if payload.unmanaged.unclaimed %}
-                <a href="{{ unclaimed_devices_url }}" class="badge text-bg-secondary text-decoration-none">{% blocktrans with count=payload.unmanaged.unclaimed %}{{ count }} not managed by this sync{% endblocktrans %}</a>
-                <a href="#uncovered-unclaimed" class="text-decoration-none small">{% trans "why?" %}</a>
-              {% endif %}
-              {% if payload.unmanaged.owned_untagged and payload.unmanaged.unclaimed %}
-                <div class="small text-muted mt-1">{% blocktrans with total=payload.unmanaged.untagged_total owned=payload.unmanaged.owned_untagged unclaimed=payload.unmanaged.unclaimed %}{{ total }} = {{ owned }} uncovered (needs attention) + {{ unclaimed }} not managed by this sync (informational).{% endblocktrans %}</div>
-              {% endif %}
+              <span class="small text-muted">{% trans "needs attention" %}</span>
             </td>
+          </tr>
+          <tr title="{% trans 'Devices in NetBox that this sync never created: another source, an operator or a leftover made them. The sync neither updates nor removes them, so this is informational and not a problem to fix.' %}">
+            <th scope="row">{% trans "Not managed by this sync" %}</th>
+            <td>
+              {% if payload.unmanaged.unclaimed %}
+                <a href="{{ unclaimed_devices_url }}" class="badge text-bg-secondary text-decoration-none">{{ payload.unmanaged.unclaimed }}</a>
+                <a href="#uncovered-unclaimed" class="text-decoration-none small">{% trans "why?" %}</a>
+              {% else %}
+                <span class="badge text-bg-secondary">0</span>
+              {% endif %}
+              <span class="small text-muted">{% trans "informational" %}</span>
+            </td>
+          </tr>
+          <tr>
+            <td colspan="2" class="small text-muted">{% blocktrans with total=payload.unmanaged.untagged_total owned=payload.unmanaged.owned_untagged|default:0 unclaimed=payload.unmanaged.unclaimed|default:0 %}{{ total }} devices carry no include tag: {{ owned }} uncovered + {{ unclaimed }} not managed. This total is not a count of uncovered devices.{% endblocktrans %}</td>
           </tr>
           {% endif %}
         </table>
