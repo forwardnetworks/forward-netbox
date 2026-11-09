@@ -51,7 +51,7 @@ class ButtonJobPermissionFixture(TestCase):
     def user(self, name, *, skip=None):
         """A user who may run the action and delete every cleanup model but ``skip``."""
         user = get_user_model().objects.create_user(username=name, password="x")
-        grant(user, ForwardSync, "run", "view")
+        grant(user, ForwardSync, "add", "run", "view", "delete")
         for model_string in STALE_ROW_CLEANUP_MODELS:
             if model_string != skip:
                 grant(user, apps.get_model(model_string), "delete")
@@ -176,7 +176,9 @@ class NewSyncPrimaryIpDefaultsTest(ButtonJobPermissionFixture):
         self.assertNotIn("give_contexts_their_own_management_ip", parameters)
 
     def test_the_serializer_fills_the_defaults_only_when_creating(self):
-        creating = ForwardSyncSerializer().validate({"name": "x", "parameters": {}})
+        creating = ForwardSyncSerializer().validate(
+            {"name": "api-new", "source": self.sync.source, "parameters": {}}
+        )
         self.assertTrue(creating["parameters"]["add_management_interface"])
 
         updating = ForwardSyncSerializer(instance=self.sync).validate(
