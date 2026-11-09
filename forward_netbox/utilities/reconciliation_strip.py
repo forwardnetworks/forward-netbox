@@ -167,10 +167,11 @@ def reconciliation_strip(sync):
         )
     netbox += [
         _step(
-            "No include tag (uncovered + not managed)",
+            "No include tag (all)",
             untagged,
-            "Named devices not matched to a tagged Forward device now: the two "
-            "groups below, which add up to this.",
+            "Named devices not matched to a tagged Forward device now. This is a "
+            "total, not the uncovered count: it splits into the two groups below, "
+            "and only the first of them is uncovered.",
             group="NetBox",
             indent=1,
         ),
@@ -179,7 +180,7 @@ def reconciliation_strip(sync):
             owned,
             "This sync made them (it holds a record of each) but Forward does not list "
             "them under its tags now: they left scope, lost the tag, were disabled "
-            "or are gone. These are the uncovered devices. Scope Reconciliation "
+            "or are gone. This line is the uncovered figure. Scope Reconciliation "
             "shows what happens to them.",
             group="NetBox",
             indent=2,
@@ -198,7 +199,7 @@ def reconciliation_strip(sync):
             "not claimed by this sync",
             unclaimed,
             "Another source, an operator or a leftover created these. The sync "
-            "neither updates nor removes them.",
+            "neither updates nor removes them; informational, not uncovered.",
             group="NetBox",
             indent=2,
         ),
