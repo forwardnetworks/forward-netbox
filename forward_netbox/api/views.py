@@ -804,11 +804,19 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
         from ..utilities.sync_facade import enqueue_button_job
         from ..utilities.sync_facade import JobAlreadyActive
         from ..utilities.sync_facade import JobBlockedBySyncRun
+        from ..utilities.sync_facade import missing_button_job_permissions
 
         permission = button_job_permission(kind)
         if not request.user.has_perm(permission):
             raise PermissionDenied(
                 f"This user does not have the `{permission}` permission."
+            )
+        missing = missing_button_job_permissions(request.user, kind)
+        if missing:
+            raise PermissionDenied(
+                "This user does not have the permissions this action needs: "
+                + ", ".join(f"`{item}`" for item in missing)
+                + "."
             )
         # Only validate and dependency-preview accept schedule parameters;
         # silently ignoring them here would 201 a one-shot run the caller

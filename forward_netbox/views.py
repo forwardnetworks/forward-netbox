@@ -4810,7 +4810,16 @@ class _StaleDeviceRowsActionView(BaseObjectView):
     def post(self, request, pk):
         from .utilities.sync_facade import JobAlreadyActive, enqueue_button_job
 
+        from .utilities.sync_facade import missing_button_job_permissions
+
         sync = get_object_or_404(self.queryset, pk=pk)
+        missing = missing_button_job_permissions(request.user, self.kind)
+        if missing:
+            raise PermissionDenied(
+                "This user does not have the permissions this action needs: "
+                + ", ".join(f"`{permission}`" for permission in missing)
+                + "."
+            )
         try:
             job = enqueue_button_job(
                 sync, self.kind, request.user, job_kwargs=self.job_kwargs(request)

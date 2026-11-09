@@ -224,6 +224,16 @@ class ForwardSyncSerializer(OrganizationalModelSerializer):
     def get_advisory_summary(self, obj):
         return obj.get_advisory_summary()
 
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        if self.instance is None:
+            from ..utilities.sync_facade import apply_new_sync_primary_ip_defaults
+
+            attrs["parameters"] = apply_new_sync_primary_ip_defaults(
+                attrs.get("parameters")
+            )
+        return attrs
+
     def to_representation(self, instance):
         data = super().to_representation(instance)
         data["parameters"] = instance.get_display_parameters()
