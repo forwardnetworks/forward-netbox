@@ -16,6 +16,10 @@ from dcim.models import Site
 from django.test import TestCase
 from django.utils import timezone
 
+from virtualization.models import Cluster
+from virtualization.models import ClusterType
+from virtualization.models import VirtualMachine
+
 from forward_netbox.models import ForwardIngestion
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
@@ -116,7 +120,7 @@ class PlatformRestoreTest(TestCase):
 
         plan = plan_platform_restore(self.sync)
 
-        self.assertEqual(plan["restorable"], {device.pk: self.new_pk})
+        self.assertEqual(plan["restorable"], {("dcim.device", device.pk): self.new_pk})
         summary = preview_platform_restore(self.sync)
         self.assertEqual(summary["restorable"], 1)
         result = restore_platforms(self.sync, preview_restorable=1)
@@ -129,7 +133,8 @@ class PlatformRestoreTest(TestCase):
         self._blank_by_the_run(device)
 
         self.assertEqual(
-            plan_platform_restore(self.sync)["restorable"], {device.pk: self.old_pk}
+            plan_platform_restore(self.sync)["restorable"],
+            {("dcim.device", device.pk): self.old_pk},
         )
 
     def test_a_blanking_by_someone_else_is_never_restored(self):
@@ -216,5 +221,50 @@ class PlatformRestoreTest(TestCase):
 
         plan = plan_platform_restore(self.sync)
 
-        self.assertEqual(plan["restorable"], {device.pk: self.new_pk})
+        self.assertEqual(plan["restorable"], {("dcim.device", device.pk): self.new_pk})
         self.assertEqual(plan["blanked_by_this_sync"], 1)
+
+    def test_a_virtual_machine_the_deleted_platform_cleared_is_restored_too(self):
+        cluster = Cluster.objects.create(
+            name="c1", type=ClusterType.objects.create(name="ct", slug="ct")
+        )
+        vm = VirtualMachine.objects.create(
+            name="vm-1", cluster=cluster, platform=self.old
+        )
+        vm_ct = ObjectType.objects.get_for_model(VirtualMachine)
+        self._change(
+            vm.pk,
+            vm_ct,
+            "update",
+            {"platform": self.old_pk},
+            {"platform": None},
+            minutes=1,
+        )
+        VirtualMachine.objects.filter(pk=vm.pk).update(platform=None)
+        # A VM someone else cleared (not this sync's request) is never touched.
+        other = VirtualMachine.objects.create(
+            name="vm-2", cluster=cluster, platform=self.old
+        )
+        self._change(
+            other.pk,
+            vm_ct,
+            "update",
+            {"platform": self.old_pk},
+            {"platform": None},
+            request_id=uuid.uuid4(),
+            minutes=1,
+        )
+        VirtualMachine.objects.filter(pk=other.pk).update(platform=None)
+        self._delete_and_recreate_platform()
+
+        plan = plan_platform_restore(self.sync)
+
+        self.assertEqual(
+            plan["restorable"], {("virtualization.virtualmachine", vm.pk): self.new_pk}
+        )
+        result = restore_platforms(self.sync, preview_restorable=1)
+        self.assertEqual(result["restored"], 1)
+        vm.refresh_from_db()
+        other.refresh_from_db()
+        self.assertEqual(vm.platform_id, self.new_pk)
+        self.assertIsNone(other.platform_id)
