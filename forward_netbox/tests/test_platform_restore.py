@@ -15,7 +15,6 @@ from dcim.models import Platform
 from dcim.models import Site
 from django.test import TestCase
 from django.utils import timezone
-
 from extras.models import ConfigContext
 from virtualization.models import Cluster
 from virtualization.models import ClusterType
