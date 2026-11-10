@@ -69,8 +69,21 @@ class RemovalNeedsEveryDeletePermissionTest(ButtonJobPermissionFixture):
             )
 
     def test_other_actions_need_no_extra_permissions(self):
-        for kind in ("preview_stale_device_rows", "restore_platforms"):
-            self.assertEqual(button_job_extra_permissions(kind), ())
+        self.assertEqual(button_job_extra_permissions("preview_stale_device_rows"), ())
+
+    def test_the_platform_restore_needs_the_right_to_change_what_it_edits(self):
+        self.assertEqual(
+            set(button_job_extra_permissions("restore_platforms")),
+            {"virtualization.change_virtualmachine", "extras.change_configcontext"},
+        )
+        user = get_user_model().objects.create_user(username="dev-only", password="x")
+        grant(user, ForwardSync, "run")
+        grant(user, apps.get_model("dcim.device"), "change")
+
+        self.assertEqual(
+            set(missing_button_job_permissions(user, "restore_platforms")),
+            {"virtualization.change_virtualmachine", "extras.change_configcontext"},
+        )
 
     def test_a_user_who_may_only_delete_interfaces_is_missing_the_rest(self):
         user = get_user_model().objects.create_user(username="iface-only", password="x")

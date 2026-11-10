@@ -374,7 +374,10 @@ class PlatformBlankedItemTest(SimpleTestCase):
         items = _by_key(cleanup_items(REPORT, platform_restorable=3))
 
         item = items["platform_blanked_by_sync"]
-        self.assertEqual(item["title"], "Devices a sync run blanked the platform on")
+        self.assertEqual(
+            item["title"],
+            "Platforms a sync run blanked on devices, VMs and config contexts",
+        )
         self.assertEqual(item["count"], 3)
         self.assertEqual(item["kind"], NO_DELETE_FIX_IN_NETBOX)
         steps = " ".join(item["steps"])

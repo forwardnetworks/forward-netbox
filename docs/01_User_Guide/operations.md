@@ -339,37 +339,40 @@ takes its choice; `true` against a preview that did not opt in is refused,
 
 Before 3.0.14, a run in which the include tag matched no collected device read
 every platform as gone. NetBox lets a platform be deleted while devices use it,
-so the platform list was emptied and the platform was cleared on every device
-that had one. The next normal run puts it back on the devices it covers, but a
+so the platform list was emptied and the platform was cleared on every device,
+virtual machine and config context that had one. The next normal run puts it back on the devices it covers, but a
 device outside the sync's scope is never revisited, so it stays blank.
 
 The **Platforms a Sync Run Blanked** card on Scope Reconciliation puts those
-back. **Preview platforms** reads NetBox's change log and the device table; it
+back. **Preview platforms** reads NetBox's change log; it
 makes no Forward call and changes nothing. It shows, under the card's labels:
 
-- **Blanked by this sync**: devices with no platform whose latest change to the
-  platform was one of this sync's own runs taking it away;
-- **Restorable**: of those, the devices where nobody has touched the platform
+- **Blanked by this sync**: devices and virtual machines with no platform, and
+  config contexts missing a platform, whose latest change to it was one of this
+  sync's own runs taking it away;
+- **Restorable** (and, under it, **Restorable: devices**, **virtual machines**
+  and **config contexts**): of those, the ones where nobody has touched the platform
   since and the platform that was removed can be found again, by its pk or, if
   it was deleted and recreated, by its slug;
 - **Held**, with the reason for each: `platform_not_found_again`,
   `several_platforms_with_that_slug`, `platform_changed_by_someone_else_since`.
 
 A preview that finds nothing blanked shows one line and no buttons. Otherwise
-**Restore N platforms** (needs `dcim.change_device`) puts the platform back. It
+**Restore N platforms** (needs `dcim.change_device`,
+`virtualization.change_virtualmachine` and `extras.change_configcontext`) puts the platform back. It
 is refused without a completed preview, when a run finalized after the preview,
 and while a sync run is active; it recomputes the plan and restores no more
 than the preview counted. Each edit is change-logged to the person who pressed
 the button. A platform someone else removed, or one a person set and cleared
 again, is never touched.
 
-Only devices are restored. A virtual machine's platform and a config context's
-platform list were cleared the same way and are not put back; set them by hand.
-The restore does not run NetBox's device validation, so check a platform that was
-recreated under another manufacturer.
+A preview taken before upgrading to 3.0.15 counted devices only; preview again,
+because the restore refuses when it finds more than the preview showed. The
+restore does not run NetBox's validation, so check a platform that was recreated
+under another manufacturer.
 
-While a preview says something is restorable, **What to do** lists "Devices a
-sync run blanked the platform on". The card's figures, the hold split, when the
+While a preview says something is restorable, **What to do** lists "Platforms a
+sync run blanked on devices, VMs and config contexts". The card's figures, the hold split, when the
 preview ran and the last restore are in the support bundle under
 `scope_reconciliation.platform_restore`, and the last preview and restore jobs
 under `operator_action_jobs`. API:

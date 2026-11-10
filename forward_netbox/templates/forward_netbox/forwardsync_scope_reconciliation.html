@@ -572,7 +572,7 @@
       <h5 class="card-header">{% trans "Platforms a Sync Run Blanked" %}</h5>
       <div class="card-body">
         <p class="text-muted mt-0">
-          {% trans "Before 3.0.14, a run in which the include tag matched no device read every platform as gone and cleared the platform on every device that had one. The next normal run puts it back on the devices it covers, but a device outside the sync's scope stays blank. The preview finds those devices from NetBox's change log: a device is restorable only when this sync's own run took its platform away, nobody has touched its platform since, and the platform can be found again by its slug. It makes no Forward call and changes nothing." %}
+          {% trans "Before 3.0.14, a run in which the include tag matched no device read every platform as gone and cleared the platform on every device, virtual machine and config context that had one. The next normal run puts it back on the devices it covers, but anything outside the sync's scope stays blank. The preview finds them from NetBox's change log: one is restorable only when this sync's own run took its platform away, nobody has touched its platform since, and the platform can be found again by its slug. It makes no Forward call and changes nothing." %}
         </p>
         {% if platform_restore.available %}
           {% if platform_restore.blanked_by_this_sync %}
@@ -594,7 +594,7 @@
             {% endif %}
           {% else %}
             <p class="small text-muted mb-2">
-              {% blocktrans with when=platform_restore.generated_at %}Preview computed {{ when }}: no device had its platform blanked by this sync.{% endblocktrans %}
+              {% blocktrans with when=platform_restore.generated_at %}Preview computed {{ when }}: no device, virtual machine or config context had its platform blanked by this sync.{% endblocktrans %}
             </p>
           {% endif %}
         {% elif platform_restore.error %}
@@ -617,10 +617,10 @@
               </button>
             </form>
           {% endif %}
-          {% if platform_restore.restorable and not platform_restore.preview_refused and perms.dcim.change_device %}
+          {% if platform_restore.restorable and not platform_restore.preview_refused and perms.dcim.change_device and perms.virtualization.change_virtualmachine and perms.extras.change_configcontext %}
             <form method="post"
                   action="{% url 'plugins:forward_netbox:forwardsync_restore_platforms' pk=object.pk %}"
-                  onsubmit="return confirm('{% blocktrans with count=platform_restore.restorable %}Restore the platform on up to {{ count }} devices? The plan is recomputed first and nothing beyond this preview is restored. Each change is logged to you.{% endblocktrans %}');">
+                  onsubmit="return confirm('{% blocktrans with count=platform_restore.restorable %}Restore the platform on up to {{ count }} devices, virtual machines and config contexts? The plan is recomputed first and nothing beyond this preview is restored. Each change is logged to you.{% endblocktrans %}');">
               {% csrf_token %}
               <input type="hidden" name="preview_job" value="{{ platform_restore.preview_job }}">
               <button type="submit" class="btn btn-sm btn-primary">

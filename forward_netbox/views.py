@@ -3420,6 +3420,12 @@ PLATFORM_RESTORE_FIGURES = (
     ("Restorable", "restorable"),
     ("Held", "held_total"),
 )
+# The restorable count split by what is edited: the same figure, by model.
+PLATFORM_RESTORE_SPLIT = (
+    ("Restorable: devices", "dcim.device"),
+    ("Restorable: virtual machines", "virtualization.virtualmachine"),
+    ("Restorable: config contexts", "extras.configcontext"),
+)
 PLATFORM_RESTORE_CARD = "Platforms a Sync Run Blanked"
 
 
@@ -3493,6 +3499,12 @@ def _platform_restore_payload(sync):
     generated_at = data.get("generated_at")
     card = {"page": "Scope Reconciliation", "card": PLATFORM_RESTORE_CARD}
     figures = [(label, values[key]) for label, key in PLATFORM_RESTORE_FIGURES]
+    by_model = data.get("restorable_by_model") or {}
+    split = [
+        (label, int(by_model.get(model) or 0))
+        for label, model in PLATFORM_RESTORE_SPLIT
+    ]
+    figures[2:2] = split
     return {
         "available": available,
         "preview_job": getattr(preview, "pk", None),
@@ -4915,7 +4927,7 @@ class ForwardSyncRemoveStaleDeviceRowsView(_StaleDeviceRowsActionView):
     ForwardSync, "preview_platform_restore", path="preview-platform-restore"
 )
 class ForwardSyncPreviewPlatformRestoreView(_StaleDeviceRowsActionView):
-    """Count the devices a sync run blanked the platform on. Read-only."""
+    """Count the devices, VMs and config contexts a sync run blanked the platform on. Read-only."""
 
     kind = "preview_platform_restore"
     anchor = "platform-restore"
@@ -4923,7 +4935,7 @@ class ForwardSyncPreviewPlatformRestoreView(_StaleDeviceRowsActionView):
         "A platform restore preview is already queued or running."
     )
     queued_message = gettext_lazy(
-        "Queued job #%(pk)d to count the devices a sync run blanked the "
+        "Queued job #%(pk)d to count what a sync run blanked the "
         "platform on. Reload this page when it finishes."
     )
 

@@ -417,15 +417,16 @@ def cleanup_items(
         items.append(
             {
                 "key": "platform_blanked_by_sync",
-                "title": "Devices a sync run blanked the platform on",
+                "title": "Platforms a sync run blanked on devices, VMs and config contexts",
                 "count": blanked,
                 "kind": NO_DELETE_FIX_IN_NETBOX,
                 "what": (
                     "Before 3.0.14 a run in which the include tag matched no "
-                    "device cleared the platform on every device that had one. "
-                    "A device outside the sync's scope is never revisited, so "
-                    "it stays blank. NetBox's change log shows which devices "
-                    "this sync's own runs blanked; nothing is deleted."
+                    "device cleared the platform on every device, virtual machine "
+                    "and config context that had one. Anything outside the "
+                    "sync's scope is never revisited, so it stays blank. "
+                    "NetBox's change log shows which this sync's own runs "
+                    "blanked; nothing is deleted."
                 ),
                 "steps": [
                     "Open the Platforms a Sync Run Blanked card below.",

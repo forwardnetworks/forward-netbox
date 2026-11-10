@@ -16,6 +16,7 @@ from dcim.models import Site
 from django.test import TestCase
 from django.utils import timezone
 
+from extras.models import ConfigContext
 from virtualization.models import Cluster
 from virtualization.models import ClusterType
 from virtualization.models import VirtualMachine
@@ -268,3 +269,97 @@ class PlatformRestoreTest(TestCase):
         other.refresh_from_db()
         self.assertEqual(vm.platform_id, self.new_pk)
         self.assertIsNone(other.platform_id)
+
+    def test_a_device_and_a_vm_with_the_same_pk_are_both_restored(self):
+        cluster = Cluster.objects.create(
+            name="c2", type=ClusterType.objects.create(name="ct2", slug="ct2")
+        )
+        shared_pk = 900_000
+        device = Device.objects.create(
+            pk=shared_pk,
+            name="edge-same",
+            site=self.site,
+            role=self.role,
+            device_type=self.device_type,
+            platform=self.old,
+        )
+        vm = VirtualMachine.objects.create(
+            pk=shared_pk, name="vm-same", cluster=cluster, platform=self.old
+        )
+        self.assertEqual(device.pk, vm.pk)
+        self._blank_by_the_run(device)
+        self._change(
+            vm.pk,
+            ObjectType.objects.get_for_model(VirtualMachine),
+            "update",
+            {"platform": self.old_pk},
+            {"platform": None},
+            minutes=1,
+        )
+        VirtualMachine.objects.filter(pk=vm.pk).update(platform=None)
+        self._delete_and_recreate_platform()
+
+        plan = plan_platform_restore(self.sync)
+
+        self.assertEqual(len(plan["restorable"]), 2)
+        result = restore_platforms(self.sync, preview_restorable=2)
+        self.assertEqual(result["restored"], 2)
+        self.assertEqual(
+            result["restorable_by_model"],
+            {"dcim.device": 1, "virtualization.virtualmachine": 1},
+        )
+
+    def _context_change(self, context, before, after, *, request_id=None, minutes=1):
+        self._change(
+            context.pk,
+            ObjectType.objects.get_for_model(ConfigContext),
+            "update",
+            {"platforms": before},
+            {"platforms": after},
+            request_id=request_id,
+            minutes=minutes,
+        )
+
+    def test_a_config_context_the_deleted_platform_was_removed_from_is_restored(self):
+        keep = Platform.objects.create(name="os-keep", slug="os-keep")
+        context = ConfigContext.objects.create(name="cc-1", data={"a": 1})
+        context.platforms.set([keep])
+        # The run's deletion took os-a out of the context, logged as its update.
+        self._context_change(context, [self.old_pk, keep.pk], [keep.pk])
+        self._delete_and_recreate_platform()
+
+        plan = plan_platform_restore(self.sync)
+
+        self.assertEqual(
+            plan["restorable"],
+            {("extras.configcontext", context.pk, self.old_pk): self.new_pk},
+        )
+        result = restore_platforms(self.sync, preview_restorable=1)
+        self.assertEqual(result["restored"], 1)
+        self.assertEqual(
+            set(context.platforms.values_list("pk", flat=True)), {keep.pk, self.new_pk}
+        )
+
+    def test_a_config_context_link_removed_by_someone_else_is_left_alone(self):
+        context = ConfigContext.objects.create(name="cc-2", data={"a": 1})
+        self._context_change(context, [self.old_pk], [], request_id=uuid.uuid4())
+        self._delete_and_recreate_platform()
+
+        self.assertEqual(plan_platform_restore(self.sync)["restorable"], {})
+
+    def test_a_config_context_a_person_changed_since_is_held(self):
+        context = ConfigContext.objects.create(name="cc-3", data={"a": 1})
+        self._context_change(context, [self.old_pk], [], minutes=1)
+        # A person later set and cleared the same platform on it.
+        self._context_change(
+            context, [], [self.old_pk], request_id=uuid.uuid4(), minutes=2
+        )
+        self._context_change(
+            context, [self.old_pk], [], request_id=uuid.uuid4(), minutes=3
+        )
+        self._delete_and_recreate_platform()
+
+        plan = plan_platform_restore(self.sync)
+
+        self.assertEqual(plan["restorable"], {})
+        self.assertEqual(plan["held"].get(HOLD_CHANGED_SINCE), 1)

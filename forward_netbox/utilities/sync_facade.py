@@ -597,9 +597,9 @@ BUTTON_JOB_SPECS = {
         "remove stale device rows",
         "dcim.delete_interface",
     ),
-    # Puts back the platform a pre-3.0.14 empty-scope run blanked on devices
+    # Puts back the platform a pre-3.0.14 empty-scope run blanked on devices, virtual machines and config contexts
     # (`platform_restore`). The preview is read-only and makes no Forward call;
-    # the restore edits devices, within the count a reviewed preview showed.
+    # the restore edits them, within the count a reviewed preview showed.
     "preview_platform_restore": (
         "forward_netbox.jobs.PreviewPlatformRestoreJob",
         "preview platform restore",
@@ -696,8 +696,11 @@ def button_job_extra_permissions(kind):
     """Permissions a button job needs on top of its primary one.
 
     The stale-row removal deletes rows of several models, so the person pressing
-    it must be allowed to delete every one of them, not only interfaces.
+    it must be allowed to delete every one of them, not only interfaces. The
+    platform restore edits devices, virtual machines and config contexts.
     """
+    if kind == "restore_platforms":
+        return ("virtualization.change_virtualmachine", "extras.change_configcontext")
     if kind == "remove_stale_device_rows":
         from .stale_row_cleanup import STALE_ROW_CLEANUP_MODELS
 
