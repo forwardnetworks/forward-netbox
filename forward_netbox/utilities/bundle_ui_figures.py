@@ -1,8 +1,8 @@
 # The numbers a customer reads off the Scope Reconciliation page, in the page's
 # own words, so a figure they quote can be found in their support bundle by the
 # label they used. The raw report is in the bundle too, but under field names
-# nobody reads aloud: a customer's "278 uncovered" was the page's "Carry no
-# include tag" (`unmanaged.untagged_total`), and searching the bundle for the
+# nobody reads aloud: a customer's "278 uncovered" was the page's sum of uncovered and
+# not-managed devices (`unmanaged.untagged_total`), and searching the bundle for the
 # number or the word found neither.
 #
 # Counts and device primary keys only. Names stay out, as everywhere else in the
@@ -28,12 +28,16 @@ FIGURES = (
     ("Out of scope (orphans)", "netbox_out_of_scope", ()),
     ("Empty orphan sites", "netbox_empty_orphan_site_count", ()),
     ("In scope, missing from NetBox", "forward_missing_in_netbox", ()),
+    # The page shows the split, not the sum. The total is kept here, under a
+    # label that cannot be read as the uncovered count, with its parts.
+    ("Uncovered: created by this sync", "unmanaged.owned_untagged", ()),
+    ("Not managed by this sync", "unmanaged.unclaimed", ()),
     (
-        "No include tag (uncovered + not managed)",
+        "No include tag (all)",
         "unmanaged.untagged_total",
         (
-            ("created by this sync", "unmanaged.owned_untagged"),
-            ("not claimed by this sync", "unmanaged.unclaimed"),
+            ("Uncovered: created by this sync", "unmanaged.owned_untagged"),
+            ("Not managed by this sync", "unmanaged.unclaimed"),
         ),
     ),
 )

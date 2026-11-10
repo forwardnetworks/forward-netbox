@@ -2109,8 +2109,9 @@ def _uncovered_summary(sync):
             "Reconciliation for the split by cause (gone from Forward, in "
             "Forward but untagged, or a custom-command source), or filter the "
             f"device list by the forward-uncovered tag.{trend_note} This is not "
-            'the Scope page\'s larger "No include tag (uncovered + not managed)" count, which '
-            "also includes devices this sync never created and does not manage."
+            "the Scope page's total of devices with no include tag, which also "
+            "includes devices this sync never created and does not manage; the "
+            'Scope page\'s "Uncovered: created by this sync" row is this figure.'
         ),
     }
 

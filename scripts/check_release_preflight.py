@@ -167,18 +167,10 @@ POETRY_LOCK = REPO_ROOT / "poetry.lock"
 # SAME ids must be passed to `pip-audit` in release.yml - a waiver only one of
 # the two checks knows about reintroduces the exact gap this preflight exists
 # to close (a release that passes here and fails in the actual workflow).
-ACCEPTED_DEPENDENCY_ADVISORIES = {
-    # PYSEC-2026-2858 / CVE-2026-44405: paramiko <=4.0.0 allows SHA-1 in
-    # rsakey.py; fixed only in paramiko 5.0.0. paramiko reaches constraints.txt
-    # transitively through netbox-validity's own dependencies (dulwich,
-    # django-storages[sftp], scrapli, scrapli_netconf, scp, netmiko) - netmiko
-    # pins paramiko <5.0, so 5.0.0 is unreachable without dropping Validity.
-    # forward_netbox never imports paramiko, netmiko, or scrapli itself
-    # (confirmed by grep); the vulnerable code path is Validity's own SSH
-    # device-polling, which config backup exists specifically to avoid using.
-    # Revisit when netmiko or Validity relaxes the paramiko ceiling.
-    "PYSEC-2026-2858",
-}
+# PYSEC-2026-2858 (paramiko <=4.0.0 SHA-1 in rsakey.py) was waived here until
+# netmiko 4.8.0 dropped its `paramiko<5.0` ceiling; poetry.lock now resolves
+# paramiko 5.1.0, so the waiver is gone.
+ACCEPTED_DEPENDENCY_ADVISORIES: set[str] = set()
 
 
 def check_dependency_advisories() -> str:
@@ -277,9 +269,8 @@ def check_lockfile_consistency() -> str:
 
 
 # Dependabot alert ids (GHSA, not PYSEC - a different vocabulary from
-# `ACCEPTED_DEPENDENCY_ADVISORIES`, and the two lists do not overlap: paramiko
-# PYSEC-2026-2858 does not appear in this repo's Dependabot alerts at all, and
-# nothing here has yet needed a waiver) that are accepted rather than fixed.
+# `ACCEPTED_DEPENDENCY_ADVISORIES`, and the two lists do not overlap; nothing
+# here has yet needed a waiver) that are accepted rather than fixed.
 # Same rule as above: name why, here.
 ACCEPTED_DEPENDABOT_ALERTS: set[str] = set()
 

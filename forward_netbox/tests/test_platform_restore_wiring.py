@@ -40,7 +40,7 @@ from forward_netbox.utilities.sync_facade import enqueue_button_job
 from forward_netbox.utilities.sync_facade import JobBlockedBySyncRun
 
 CARD = "Platforms a Sync Run Blanked"
-CHECKLIST_TITLE = "Devices a sync run blanked the platform on"
+CHECKLIST_TITLE = "Platforms a sync run blanked on devices, VMs and config contexts"
 
 
 class PlatformRestoreWiringFixture(TestCase):
@@ -383,7 +383,10 @@ class PlatformRestoreCardTest(PlatformRestoreWiringFixture):
 
         page = self.scope_page()
 
-        self.assertIn("no device had its platform blanked by this sync", page)
+        self.assertIn(
+            "no device, virtual machine or config context had its platform blanked by this sync",
+            page,
+        )
         self.assertNotIn("restore-platforms", page)
         self.assertNotIn("Blanked by this sync</th>", page)
         self.assertNotIn(CHECKLIST_TITLE, page)

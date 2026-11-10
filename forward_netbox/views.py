@@ -3420,6 +3420,12 @@ PLATFORM_RESTORE_FIGURES = (
     ("Restorable", "restorable"),
     ("Held", "held_total"),
 )
+# The restorable count split by what is edited: the same figure, by model.
+PLATFORM_RESTORE_SPLIT = (
+    ("Restorable: devices", "dcim.device"),
+    ("Restorable: virtual machines", "virtualization.virtualmachine"),
+    ("Restorable: config contexts", "extras.configcontext"),
+)
 PLATFORM_RESTORE_CARD = "Platforms a Sync Run Blanked"
 
 
@@ -3493,6 +3499,12 @@ def _platform_restore_payload(sync):
     generated_at = data.get("generated_at")
     card = {"page": "Scope Reconciliation", "card": PLATFORM_RESTORE_CARD}
     figures = [(label, values[key]) for label, key in PLATFORM_RESTORE_FIGURES]
+    by_model = data.get("restorable_by_model") or {}
+    split = [
+        (label, int(by_model.get(model) or 0))
+        for label, model in PLATFORM_RESTORE_SPLIT
+    ]
+    figures[2:2] = split
     return {
         "available": available,
         "preview_job": getattr(preview, "pk", None),
@@ -4272,6 +4284,28 @@ class ForwardDeviceListBulkDeleteView(DeviceBulkDeleteView):
         return response
 
 
+def _primary_ip_unrecorded_count(sync, outcomes):
+    """Devices with an address but no primary IP that the last management step
+    recorded nothing for (0 when the log carries no per-device lines)."""
+    if outcomes is None:
+        return 0
+    from dcim.models import Device
+
+    from .models import ForwardDeviceIdentity
+    from .utilities.primary_ip_reasons import classify_primary_ip_devices
+    from .utilities.primary_ip_reasons import outcome_split
+
+    bound = ForwardDeviceIdentity.objects.filter(sync=sync).values_list(
+        "device_id", flat=True
+    )
+    bare = Device.objects.filter(
+        pk__in=bound, primary_ip4__isnull=True, primary_ip6__isnull=True
+    )
+    classified = classify_primary_ip_devices(bare, outcomes)
+    split = outcome_split(classified, outcomes)
+    return split.get("has_an_address_but_none_was_chosen", {}).get(None, 0)
+
+
 @register_model_view(ForwardSync, "scope_reconciliation", path="scope-reconciliation")
 class ForwardSyncScopeReconciliationView(BaseObjectView):
     queryset = ForwardSync.objects.all()
@@ -4311,8 +4345,14 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
             summary, _outcomes = primary_ip_log_facts(sync)
         except Exception:  # noqa: BLE001 - the checklist must not sink the page
             summary = None
+            _outcomes = None
+        try:
+            unrecorded = _primary_ip_unrecorded_count(sync, _outcomes)
+        except Exception:  # noqa: BLE001 - the checklist must not sink the page
+            unrecorded = 0
         return cleanup_items(
             payload,
+            no_primary_ip_unrecorded=unrecorded,
             shared_primary=(summary or {}).get("shared_with_another_device", 0),
             context_copies_on=context_copies_enabled(sync),
             on_no_interface=(summary or {}).get("address_on_no_synced_interface", 0),
@@ -4332,6 +4372,7 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
                 "in_forward_not_in_scope": url("uncovered_devices"),
                 "forward_could_not_collect": url("present_backfilled_devices"),
                 "shared_management_address": url("explained"),
+                "generic_endpoints_not_imported": url("uncovered_devices"),
             },
         )
 
@@ -4810,7 +4851,16 @@ class _StaleDeviceRowsActionView(BaseObjectView):
     def post(self, request, pk):
         from .utilities.sync_facade import JobAlreadyActive, enqueue_button_job
 
+        from .utilities.sync_facade import missing_button_job_permissions
+
         sync = get_object_or_404(self.queryset, pk=pk)
+        missing = missing_button_job_permissions(request.user, self.kind)
+        if missing:
+            raise PermissionDenied(
+                "This user does not have the permissions this action needs: "
+                + ", ".join(f"`{permission}`" for permission in missing)
+                + "."
+            )
         try:
             job = enqueue_button_job(
                 sync, self.kind, request.user, job_kwargs=self.job_kwargs(request)
@@ -4877,7 +4927,7 @@ class ForwardSyncRemoveStaleDeviceRowsView(_StaleDeviceRowsActionView):
     ForwardSync, "preview_platform_restore", path="preview-platform-restore"
 )
 class ForwardSyncPreviewPlatformRestoreView(_StaleDeviceRowsActionView):
-    """Count the devices a sync run blanked the platform on. Read-only."""
+    """Count the devices, VMs and config contexts a sync run blanked the platform on. Read-only."""
 
     kind = "preview_platform_restore"
     anchor = "platform-restore"
@@ -4885,7 +4935,7 @@ class ForwardSyncPreviewPlatformRestoreView(_StaleDeviceRowsActionView):
         "A platform restore preview is already queued or running."
     )
     queued_message = gettext_lazy(
-        "Queued job #%(pk)d to count the devices a sync run blanked the "
+        "Queued job #%(pk)d to count what a sync run blanked the "
         "platform on. Reload this page when it finishes."
     )
 

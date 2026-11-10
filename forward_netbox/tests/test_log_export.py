@@ -1053,12 +1053,14 @@ class SupportBundleTroubleshootingDepthTest(TestCase):
         section = payload["scope_reconciliation"]
         figures = {row["label"]: row for row in section["ui_figures"]}
 
-        carry = figures["No include tag (uncovered + not managed)"]
+        self.assertEqual(figures["Uncovered: created by this sync"]["value"], 58)
+        self.assertEqual(figures["Not managed by this sync"]["value"], 212)
+        carry = figures["No include tag (all)"]
         self.assertEqual(carry["page"], "Scope Reconciliation")
         self.assertEqual(carry["value"], 270)
         self.assertEqual(
             {part["label"]: part["value"] for part in carry["parts"]},
-            {"created by this sync": 58, "not claimed by this sync": 212},
+            {"Uncovered: created by this sync": 58, "Not managed by this sync": 212},
         )
         self.assertEqual(figures["Out of scope (orphans)"]["value"], 58)
         self.assertEqual(

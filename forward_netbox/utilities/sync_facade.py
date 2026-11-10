@@ -597,9 +597,9 @@ BUTTON_JOB_SPECS = {
         "remove stale device rows",
         "dcim.delete_interface",
     ),
-    # Puts back the platform a pre-3.0.14 empty-scope run blanked on devices
+    # Puts back the platform a pre-3.0.14 empty-scope run blanked on devices, virtual machines and config contexts
     # (`platform_restore`). The preview is read-only and makes no Forward call;
-    # the restore edits devices, within the count a reviewed preview showed.
+    # the restore edits them, within the count a reviewed preview showed.
     "preview_platform_restore": (
         "forward_netbox.jobs.PreviewPlatformRestoreJob",
         "preview platform restore",
@@ -690,6 +690,57 @@ _ACTIVE_JOB_STATUSES = (
 
 def button_job_permission(kind):
     return BUTTON_JOB_SPECS[kind][2]
+
+
+def button_job_extra_permissions(kind):
+    """Permissions a button job needs on top of its primary one.
+
+    The stale-row removal deletes rows of several models, so the person pressing
+    it must be allowed to delete every one of them, not only interfaces. The
+    platform restore edits devices, virtual machines and config contexts.
+    """
+    if kind == "restore_platforms":
+        return ("virtualization.change_virtualmachine", "extras.change_configcontext")
+    if kind == "remove_stale_device_rows":
+        from .stale_row_cleanup import STALE_ROW_CLEANUP_MODELS
+
+        return tuple(
+            sorted(
+                {
+                    "{}.delete_{}".format(*model_string.split("."))
+                    for model_string in STALE_ROW_CLEANUP_MODELS
+                }
+            )
+        )
+    return ()
+
+
+def missing_button_job_permissions(user, kind):
+    """The permissions ``user`` lacks to run ``kind`` (empty when allowed)."""
+    needed = (button_job_permission(kind), *button_job_extra_permissions(kind))
+    return [permission for permission in needed if not user.has_perm(permission)]
+
+
+# A sync created through the API starts with every device getting a primary IP,
+# as one created in the web form does; an existing sync keeps what it stored.
+NEW_SYNC_PRIMARY_IP_DEFAULTS = (
+    "give_contexts_their_own_management_ip",
+    "add_management_interface",
+)
+
+
+def apply_new_sync_primary_ip_defaults(parameters):
+    """``parameters`` with the primary-IP settings defaulted ON for a new sync.
+
+    Only keys the caller left out are filled; an explicit value is kept. The
+    per-context copy and the management interface need the management-IP
+    fallback, so they default on only while that is on.
+    """
+    parameters = dict(parameters or {})
+    if parameters.setdefault("set_primary_ip_from_forward_management_ip", True):
+        for key in NEW_SYNC_PRIMARY_IP_DEFAULTS:
+            parameters.setdefault(key, True)
+    return parameters
 
 
 def enqueue_button_job(

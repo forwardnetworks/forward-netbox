@@ -1,4 +1,5 @@
-# Put back the platform a sync run blanked on a device.
+# Put back the platform a sync run blanked on a device, virtual machine or
+# config context.
 #
 # Before 3.0.14 an include tag that matched no device made one run read every
 # compared table as gone. The platform list was emptied, and because a device's
@@ -7,8 +8,8 @@
 # devices it covers, but a device outside the sync's scope is never revisited, so
 # it stays blank.
 #
-# This restores exactly those, and only those: a device whose LATEST change to
-# its platform is a change made by one of this sync's own ingestions that took a
+# This restores exactly those, and only those: a device, virtual machine or config context whose
+# LATEST change to its platform is a change made by one of this sync's own ingestions that took a
 # platform away, where the platform is still blank and the platform that was
 # removed can be found again by its slug. NetBox's change log is the proof; a
 # platform removed by anyone else, or put back and removed again by a person, is
@@ -74,101 +75,187 @@ def _slug_of_removed_platform(platform_pk, cache):
     return slug
 
 
-def plan_platform_restore(sync):
-    """``{"restorable": {device_pk: platform_pk}, "held": {reason: n}, ...}``.
+def _restore_models():
+    """Every model whose platform a deleted platform clears (SET_NULL)."""
+    from dcim.models import Device
+    from virtualization.models import VirtualMachine
 
-    Counts only leave this module through `summarize_plan`.
+    return (Device, VirtualMachine)
+
+
+CONFIG_CONTEXT_LABEL = "extras.configcontext"
+
+
+def _hold(plan, reason):
+    plan["held"][reason] = plan["held"].get(reason, 0) + 1
+
+
+def _target_platform(old_platform_pk, cache, plan):
+    """The platform to put back, or ``None`` after recording why not."""
+    from dcim.models import Platform
+
+    slug = _slug_of_removed_platform(old_platform_pk, cache)
+    if slug is None:
+        return old_platform_pk
+    if not slug:
+        _hold(plan, HOLD_PLATFORM_GONE)
+        return None
+    found = list(Platform.objects.filter(slug=slug).values_list("pk", flat=True)[:2])
+    if not found:
+        _hold(plan, HOLD_PLATFORM_GONE)
+        return None
+    if len(found) > 1:
+        _hold(plan, HOLD_PLATFORM_AMBIGUOUS)
+        return None
+    return found[0]
+
+
+def _plan_single_platform_models(request_ids, plan, cache):
+    from core.models import ObjectChange
+    from core.models import ObjectType
+
+    for model in _restore_models():
+        label = model._meta.label_lower
+        object_type = ObjectType.objects.get_for_model(model)
+        blanked = {}
+        for change in (
+            ObjectChange.objects.filter(
+                changed_object_type=object_type,
+                action="update",
+                request_id__in=list(request_ids),
+                prechange_data__platform__isnull=False,
+                postchange_data__platform=None,
+            )
+            # `isnull=False` only says the key is there, and NetBox always writes
+            # it: an update that leaves the platform blank must not count.
+            .exclude(prechange_data__platform=None)
+            .order_by("time", "pk")
+            .only("changed_object_id", "request_id", "prechange_data", "time")
+            .iterator(chunk_size=2000)
+        ):
+            blanked[change.changed_object_id] = (
+                change.time,
+                (change.prechange_data or {}).get("platform"),
+            )
+        if not blanked:
+            continue
+        still_blank = set(
+            model.objects.filter(
+                pk__in=list(blanked), platform__isnull=True
+            ).values_list("pk", flat=True)
+        )
+        plan["blanked_by_this_sync"] += len(still_blank)
+        for object_pk in sorted(still_blank):
+            blank_time, old_platform_pk = blanked[object_pk]
+            # Anything after the blanking that touched the platform means someone
+            # else has had a say since: leave it alone.
+            later = ObjectChange.objects.filter(
+                changed_object_type=object_type,
+                changed_object_id=object_pk,
+                time__gt=blank_time,
+            ).only("prechange_data", "postchange_data")
+            if any(
+                (c.prechange_data or {}).get("platform")
+                != (c.postchange_data or {}).get("platform")
+                for c in later
+            ):
+                _hold(plan, HOLD_CHANGED_SINCE)
+                continue
+            target = _target_platform(old_platform_pk, cache, plan)
+            if target is not None:
+                plan["restorable"][(label, object_pk)] = target
+
+
+def _platform_set(data):
+    return {int(pk) for pk in ((data or {}).get("platforms") or [])}
+
+
+def _plan_config_contexts(request_ids, plan, cache):
+    """Config contexts a deleted platform was taken out of.
+
+    A config context lists platforms many-to-many. NetBox removes the link when
+    the platform is deleted and logs it as an update of the context, so the same
+    change log proves it. One entry per (context, platform) pair.
     """
     from core.models import ObjectChange
     from core.models import ObjectType
-    from dcim.models import Device
-    from dcim.models import Platform
+    from extras.models import ConfigContext
 
+    object_type = ObjectType.objects.get_for_model(ConfigContext)
+    removed = {}
+    for change in (
+        ObjectChange.objects.filter(
+            changed_object_type=object_type,
+            action="update",
+            request_id__in=list(request_ids),
+        )
+        .order_by("time", "pk")
+        .only("changed_object_id", "prechange_data", "postchange_data", "time")
+        .iterator(chunk_size=2000)
+    ):
+        before = _platform_set(change.prechange_data)
+        after = _platform_set(change.postchange_data)
+        pairs = removed.setdefault(change.changed_object_id, {})
+        for platform_pk in before - after:
+            pairs[platform_pk] = change.time
+        for platform_pk in after - before:
+            pairs.pop(platform_pk, None)
+    removed = {pk: pairs for pk, pairs in removed.items() if pairs}
+    if not removed:
+        return
+    for context in ConfigContext.objects.filter(pk__in=list(removed)).order_by("pk"):
+        current = set(context.platforms.values_list("pk", flat=True))
+        for platform_pk, removed_at in sorted(removed[context.pk].items()):
+            if platform_pk in current:
+                continue
+            plan["blanked_by_this_sync"] += 1
+            changed_since = any(
+                platform_pk
+                in (_platform_set(c.prechange_data) ^ _platform_set(c.postchange_data))
+                for c in ObjectChange.objects.filter(
+                    changed_object_type=object_type,
+                    changed_object_id=context.pk,
+                    time__gt=removed_at,
+                ).only("prechange_data", "postchange_data")
+            )
+            if changed_since:
+                _hold(plan, HOLD_CHANGED_SINCE)
+                continue
+            target = _target_platform(platform_pk, cache, plan)
+            if target is not None:
+                plan["restorable"][
+                    (CONFIG_CONTEXT_LABEL, context.pk, platform_pk)
+                ] = target
+
+
+def plan_platform_restore(sync):
+    """``{"restorable": {key: platform_pk}, "held": {reason: n}, ...}``.
+
+    A key is ``(model label, pk)`` for a device or virtual machine - NetBox logs
+    the platform it clears on each as that object's own change - and
+    ``("extras.configcontext", pk, removed platform pk)`` for a config context.
+    Counts only leave this module through `summarize_plan`.
+    """
     from .routing_catalogue_cleanup import _sync_request_ids
 
     request_ids = set(_sync_request_ids(sync))
     plan = {"restorable": {}, "held": {}, "blanked_by_this_sync": 0}
     if not request_ids:
         return plan
-    device_type = ObjectType.objects.get_for_model(Device)
-    blanked = {}
-    for change in (
-        ObjectChange.objects.filter(
-            changed_object_type=device_type,
-            action="update",
-            request_id__in=list(request_ids),
-            prechange_data__platform__isnull=False,
-            postchange_data__platform=None,
-        )
-        # `isnull=False` only says the key is there, and NetBox always writes
-        # it: an update that leaves the platform blank must not count.
-        .exclude(prechange_data__platform=None)
-        .order_by("time")
-        .only("changed_object_id", "request_id", "prechange_data", "time")
-        .iterator(chunk_size=2000)
-    ):
-        blanked[change.changed_object_id] = (
-            change.time,
-            (change.prechange_data or {}).get("platform"),
-        )
-    if not blanked:
-        return plan
-    still_blank = set(
-        Device.objects.filter(pk__in=list(blanked), platform__isnull=True).values_list(
-            "pk", flat=True
-        )
-    )
-    plan["blanked_by_this_sync"] = len(still_blank)
     cache = {}
-    for device_pk in sorted(still_blank):
-        blank_time, old_platform_pk = blanked[device_pk]
-        # Anything after the blanking that touched the platform means someone
-        # else has had a say since: leave it alone.
-        later = ObjectChange.objects.filter(
-            changed_object_type=device_type,
-            changed_object_id=device_pk,
-            time__gt=blank_time,
-        ).only("prechange_data", "postchange_data")
-        if any(
-            (c.prechange_data or {}).get("platform")
-            != (c.postchange_data or {}).get("platform")
-            for c in later
-        ):
-            plan["held"][HOLD_CHANGED_SINCE] = (
-                plan["held"].get(HOLD_CHANGED_SINCE, 0) + 1
-            )
-            continue
-        slug = _slug_of_removed_platform(old_platform_pk, cache)
-        if slug is None:
-            target = old_platform_pk
-        elif not slug:
-            plan["held"][HOLD_PLATFORM_GONE] = (
-                plan["held"].get(HOLD_PLATFORM_GONE, 0) + 1
-            )
-            continue
-        else:
-            found = list(
-                Platform.objects.filter(slug=slug).values_list("pk", flat=True)[:2]
-            )
-            if not found:
-                plan["held"][HOLD_PLATFORM_GONE] = (
-                    plan["held"].get(HOLD_PLATFORM_GONE, 0) + 1
-                )
-                continue
-            if len(found) > 1:
-                plan["held"][HOLD_PLATFORM_AMBIGUOUS] = (
-                    plan["held"].get(HOLD_PLATFORM_AMBIGUOUS, 0) + 1
-                )
-                continue
-            target = found[0]
-        plan["restorable"][device_pk] = target
+    _plan_single_platform_models(request_ids, plan, cache)
+    _plan_config_contexts(request_ids, plan, cache)
     return plan
 
 
 def summarize_plan(plan):
+    by_model = {}
+    for key in plan["restorable"]:
+        by_model[key[0]] = by_model.get(key[0], 0) + 1
     return {
         "blanked_by_this_sync": plan["blanked_by_this_sync"],
         "restorable": len(plan["restorable"]),
+        "restorable_by_model": dict(sorted(by_model.items())),
         "held": dict(plan["held"]),
     }
 
@@ -188,8 +275,8 @@ def restore_platforms(sync, *, user=None, preview_restorable=None):
     The plan is recomputed first and nothing beyond that count is restored.
     Change-logged under ``user`` like any other edit.
     """
-    from dcim.models import Device
     from dcim.models import Platform
+    from extras.models import ConfigContext
     from netbox.context_managers import event_tracking
     from utilities.request import NetBoxFakeRequest
 
@@ -205,14 +292,33 @@ def restore_platforms(sync, *, user=None, preview_restorable=None):
 
     def apply():
         restored = 0
-        for device in Device.objects.filter(pk__in=list(restorable)):
-            platform = platforms.get(restorable[device.pk])
-            if platform is None or device.platform_id is not None:
-                continue
-            device.snapshot()
-            device.platform = platform
-            device.save(update_fields=["platform"])
-            restored += 1
+        for model in _restore_models():
+            label = model._meta.label_lower
+            pks = [key[1] for key in restorable if key[0] == label]
+            for obj in model.objects.filter(pk__in=pks):
+                platform = platforms.get(restorable[(label, obj.pk)])
+                if platform is None or obj.platform_id is not None:
+                    continue
+                obj.snapshot()
+                obj.platform = platform
+                obj.save(update_fields=["platform"])
+                restored += 1
+        context_keys = [key for key in restorable if key[0] == CONFIG_CONTEXT_LABEL]
+        for context in ConfigContext.objects.filter(
+            pk__in={key[1] for key in context_keys}
+        ):
+            for key in context_keys:
+                if key[1] != context.pk:
+                    continue
+                platform = platforms.get(restorable[key])
+                if (
+                    platform is None
+                    or context.platforms.filter(pk=platform.pk).exists()
+                ):
+                    continue
+                context.snapshot()
+                context.platforms.add(platform)
+                restored += 1
         return restored
 
     if user is None:

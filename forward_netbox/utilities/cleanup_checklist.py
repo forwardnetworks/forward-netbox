@@ -33,6 +33,7 @@ def cleanup_items(
     on_no_interface=0,
     management_interfaces_on=False,
     platform_restorable=0,
+    no_primary_ip_unrecorded=0,
 ):
     """The ordered checklist for one stored scope report.
 
@@ -40,7 +41,9 @@ def cleanup_items(
     share a name with a managed one, ``relabel`` the `site_relabel_pairs`
     summary (``pair_count``/``held_count``) and ``urls`` maps an item key to the
     page that lists its devices. ``platform_restorable`` is the restorable count of
-    the stored platform-restore preview. Items with nothing to do are left out.
+    the stored platform-restore preview. ``no_primary_ip_unrecorded`` is the devices
+    with an address but no primary IP that the management step recorded nothing
+    for. Items with nothing to do are left out.
     """
     payload = payload or {}
     unmanaged = payload.get("unmanaged") or {}
@@ -221,6 +224,39 @@ def cleanup_items(
         )
 
     untagged = _count((unmanaged.get("owned_absence") or {}).get("present_untagged"))
+    # Generic SNMP endpoints this sync created are untagged for a different
+    # reason - the source's own setting - so they get their own item, and the
+    # "add a tag" advice below is not offered for them.
+    generic = sum(
+        _count(row.get("count"))
+        for row in (unmanaged.get("owned_absence") or {}).get("endpoint_detail") or ()
+        if row.get("reason") == "endpoint_generic"
+    )
+    if generic:
+        items.append(
+            {
+                "key": "generic_endpoints_not_imported",
+                "title": "Generic SNMP endpoints this sync created, now uncovered",
+                "count": generic,
+                "kind": DELETES_AFTER_REVIEW,
+                "what": (
+                    "This sync created these from Forward's SNMP endpoints. "
+                    "Import generic SNMP endpoints is off on the source, so "
+                    "Forward still reports them but the sync no longer reads "
+                    "them, and it cannot prune them: they stay uncovered until "
+                    "you choose."
+                ),
+                "steps": [
+                    "To keep them: edit the source and turn on Import generic "
+                    "SNMP endpoints, then run the sync again.",
+                    "To remove them: open the list, select them and Delete "
+                    "Selected (the device list bulk delete), or delete each by "
+                    "hand. This also deletes their interfaces and IP addresses.",
+                ],
+                "url": urls.get("generic_endpoints_not_imported", ""),
+            }
+        )
+    untagged = max(untagged - generic, 0)
     if untagged:
         items.append(
             {
@@ -354,20 +390,43 @@ def cleanup_items(
                 "url": urls.get("shared_management_address", ""),
             }
         )
+    unrecorded = _count(no_primary_ip_unrecorded)
+    if unrecorded:
+        items.append(
+            {
+                "key": "primary_ip_none_recorded",
+                "title": "Devices with an address, no primary IP and no recorded reason",
+                "count": unrecorded,
+                "kind": NO_DELETE_FIX_IN_FORWARD,
+                "what": (
+                    "These devices have an address in NetBox, but the "
+                    "management-address step recorded nothing for them, so the "
+                    "sync has no interface to take the primary IP from."
+                ),
+                "steps": [
+                    "In Forward, add a Mgmt_<interface> device tag to each, "
+                    "naming the interface to use (for example Mgmt_eth0), then "
+                    "run the sync again.",
+                    "Or set the primary IP by hand on the device in NetBox.",
+                ],
+                "url": urls.get("shared_management_address", ""),
+            }
+        )
     blanked = _count(platform_restorable)
     if blanked:
         items.append(
             {
                 "key": "platform_blanked_by_sync",
-                "title": "Devices a sync run blanked the platform on",
+                "title": "Platforms a sync run blanked on devices, VMs and config contexts",
                 "count": blanked,
                 "kind": NO_DELETE_FIX_IN_NETBOX,
                 "what": (
                     "Before 3.0.14 a run in which the include tag matched no "
-                    "device cleared the platform on every device that had one. "
-                    "A device outside the sync's scope is never revisited, so "
-                    "it stays blank. NetBox's change log shows which devices "
-                    "this sync's own runs blanked; nothing is deleted."
+                    "device cleared the platform on every device, virtual machine "
+                    "and config context that had one. Anything outside the "
+                    "sync's scope is never revisited, so it stays blank. "
+                    "NetBox's change log shows which this sync's own runs "
+                    "blanked; nothing is deleted."
                 ),
                 "steps": [
                     "Open the Platforms a Sync Run Blanked card below.",

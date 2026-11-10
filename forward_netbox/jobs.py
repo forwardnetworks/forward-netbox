@@ -1213,7 +1213,7 @@ def _remove_stale_device_rows_work(
 
 
 def _preview_platform_restore_work(job):
-    """Count the devices a sync run blanked the platform on, and what is restorable.
+    """Count what a sync run blanked the platform on, and what is restorable.
 
     Read-only: the NetBox change log and the device table, no Forward call.
     Stores counts and hold reasons only - see `platform_restore`.
@@ -2843,7 +2843,7 @@ class RemoveStaleDeviceRowsJob(ForwardJobRunner):
 
 
 class PreviewPlatformRestoreJob(ForwardJobRunner):
-    """Counts the devices a sync run blanked the platform on."""
+    """Counts what a sync run blanked the platform on."""
 
     class Meta:
         # Byte-identical to BUTTON_JOB_SPECS["preview_platform_restore"][1],
