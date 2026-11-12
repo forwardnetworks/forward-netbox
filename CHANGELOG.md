@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v3.0.15
 
-Release candidate; 3.0.15: Scope page splits uncovered from not-managed; platform restore covers VMs and config contexts; dependency bumps (paramiko 5.1, forward-sdk 0.1.36)
+3.0.15: Scope page splits uncovered from not-managed; platform restore covers VMs and config contexts; dependency bumps (paramiko 5.1, forward-sdk 0.1.36)
 
 ## v3.0.14
 
