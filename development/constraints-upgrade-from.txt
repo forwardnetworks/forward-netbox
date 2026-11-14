@@ -33,7 +33,7 @@ cryptography==50.0.2
 forward-sdk==0.1.35
 httpx==0.28.1
 netbox-cisco-aci==0.4.0
-netbox-dlm==0.10.1
+netbox-dlm==0.10.2
 netbox-peering-manager==0.3.1
 netbox-routing==0.5.1
 netbox-validity==3.6.1
