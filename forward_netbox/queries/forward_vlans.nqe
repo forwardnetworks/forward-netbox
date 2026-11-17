@@ -22,7 +22,7 @@ ni_vlan_rows(device_tag_include_tags: List<String>, device_tag_include_match: St
       && any(foreach tag in device_tag_include_tags select tag in device.tagNames))
   where isEmpty(device_tag_exclude_tags)
     || !any(foreach tag in device_tag_exclude_tags select tag in device.tagNames)
-  let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
+  let site_name = deviceSiteName(device)
   let site_slug = slugify(site_name)
   foreach ni in device.networkInstances
   foreach vlan in ni.vlans
@@ -48,7 +48,7 @@ iface_vlan_rows(device_tag_include_tags: List<String>, device_tag_include_match:
       && any(foreach tag in device_tag_include_tags select tag in device.tagNames))
   where isEmpty(device_tag_exclude_tags)
     || !any(foreach tag in device_tag_exclude_tags select tag in device.tagNames)
-  let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
+  let site_name = deviceSiteName(device)
   let site_slug = slugify(site_name)
   foreach interface in device.interfaces
   let vlan_mode =

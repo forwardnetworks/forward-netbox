@@ -566,6 +566,54 @@
     </div>
   </div>
 </div>
+{% if unmanaged_delete.available %}
+<div class="row mt-3">
+  <div class="col col-md-12">
+    <div class="card" id="unmanaged-delete">
+      <h5 class="card-header">{% trans "Unmanaged Delete: Last Result" %}</h5>
+      <div class="card-body">
+        <p class="small mb-2">
+          {% blocktrans with job=unmanaged_delete.job when=unmanaged_delete.finished_label %}Job #{{ job }}, finished {{ when }}.{% endblocktrans %}
+          {% if unmanaged_delete.release_routing_used %}{% trans "The routing option was on for this run." %}{% endif %}
+        </p>
+        <table class="table table-sm table-hover mb-2 w-auto">
+          <tbody>
+            {% for label, value in unmanaged_delete.figures %}
+              <tr><th scope="row" class="fw-normal">{% trans label %}</th><td>{{ value }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% if unmanaged_delete.next_step == "release_routing" %}
+          <div class="alert alert-warning py-2">
+            {% trans "The job succeeded but skipped these devices: NetBox will not delete a device while routing records (BGP scopes, OSPF interfaces) depend on it. Open the list of devices Forward does not report, select them, press Delete (verified gone) and tick the box to also delete the routing records. Those records are not owned by a sync, so check they are not wanted." %}
+          </div>
+        {% elif unmanaged_delete.next_step == "other_records" %}
+          <div class="alert alert-warning py-2">
+            {% trans "The job succeeded but skipped these devices: records still depend on them that the routing box does not remove (for example a routing record shared with a device that stays). Remove or change those records first, then delete again. The Held by column below names them." %}
+          </div>
+        {% elif unmanaged_delete.next_step == "legacy" %}
+          <div class="alert alert-warning py-2">
+            {% blocktrans with count=unmanaged_delete.legacy_held_count %}This run was recorded before the per-device detail existed: {{ count }} device(s) were held back. Run the delete again to see which devices and what holds each.{% endblocktrans %}
+            {% for label, count in unmanaged_delete.legacy_held_by_model.items %}<code>{{ label }}</code> &times;{{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}
+          </div>
+        {% endif %}
+        {% if unmanaged_delete.held_rows %}
+          <div class="table-responsive">
+            <table class="table table-sm mb-0">
+              <thead><tr><th>{% trans "Device" %}</th><th>{% trans "Held by" %}</th></tr></thead>
+              <tbody>
+                {% for row in unmanaged_delete.held_rows %}
+                  <tr><td><a href="{{ row.device.get_absolute_url }}">{{ row.device }}</a></td><td class="small">{{ row.held_by }}</td></tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
 <div class="row mt-3">
   <div class="col col-md-12">
     <div class="card" id="platform-restore">

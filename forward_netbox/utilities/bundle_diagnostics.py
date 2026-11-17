@@ -319,6 +319,7 @@ def _cleanup_checklist(sync):
     (whether anything is deleted) and steps, so a report that says "276 uncovered"
     carries the instruction that goes with it. No device names."""
     from ..views import _platform_restore_payload
+    from ..views import _unmanaged_delete_payload
     from ..views import ForwardSyncScopeReconciliationView
     from .scope_reconciliation import latest_scope_report
 
@@ -327,6 +328,7 @@ def _cleanup_checklist(sync):
         sync,
         payload,
         platform_restorable=_platform_restore_payload(sync)["restorable"],
+        unmanaged_held=_unmanaged_delete_payload(sync).get("held_still_in_netbox"),
     )
     return {
         "scope_report_generated_at": (

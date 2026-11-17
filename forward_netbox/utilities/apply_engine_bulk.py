@@ -14,7 +14,13 @@ from .context_ip_copies import role_for_new_address
 # Fields the bulk engines must set on CREATE but preserve on UPDATE, matching the
 # adapter's intent. Platform-map manufacturer values are authoritative in this
 # engine, so there are no create-only Platform fields.
-CREATE_ONLY_UPDATE_FIELDS_BY_MODEL: dict[str, frozenset] = {}
+#
+# A site's name and slug are create-only: a site the sync matches by slug may
+# belong to another system (an inventory import, a person), and renaming it would
+# fight that system on every run. See `SyncRunnerAdapters._ensure_site`.
+CREATE_ONLY_UPDATE_FIELDS_BY_MODEL: dict[str, frozenset] = {
+    "dcim.site": frozenset({"name", "slug"}),
+}
 
 # Chunk size for synthesizing branch ObjectChanges after a bulk write: bounds the
 # serialized batch + the ObjectChange list so memory does not grow with the

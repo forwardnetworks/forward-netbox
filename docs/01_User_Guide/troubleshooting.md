@@ -158,6 +158,32 @@ It refuses otherwise and lists what it refused in the job. At most 100 devices g
 one run, and deleting a device also deletes its interfaces, IP addresses and cables.
 The bundle carries the same checklist under `diagnostics.cleanup_checklist`.
 
+### Devices the delete held back
+
+A device can still be there after **Delete (verified gone)** reports success. NetBox
+will not delete a device while other records depend on it, and the commonest case is
+routing records (BGP scopes, OSPF interfaces from the routing plugin). The job skips
+that device, finishes without error and records why. Nothing is wrong with the sync.
+
+- The confirmation page lists, per selected device, what holds it (the **Held by**
+  column) and says how many are held only by routing records.
+- Tick **Also delete the routing records** to delete those records together with the
+  device. No sync manages these devices, so the records may have been added by hand:
+  check they are not wanted. Only routing records the device itself holds are
+  removed, and a device something else also holds is left whole.
+- After the job, the **Unmanaged Delete: Last Result** card on Scope Reconciliation
+  shows how many were deleted, held by routing records, held by other records and
+  refused, and lists each device still held with what holds it. **What to do** adds
+  *Unmanaged devices the last delete held back* while any remain.
+- A device held by something other than routing records stays until that record is
+  removed or changed by hand.
+- Through the API, `POST .../sync/<id>/prune-unmanaged/` takes `device_pks` and an
+  optional `release_routing` (true or false, default false).
+- The support bundle carries the card under `scope_reconciliation.unmanaged_delete`
+  (device ids and holding models, no names), the job record under
+  `operator_action_jobs.prune_unmanaged`, and `delete_blockers.by_group`, which
+  surveys what blocks deleting each list of devices, including this one.
+
 ## Devices That Carry No Include Tag
 
 Scope Reconciliation shows two rows, not one total. `Uncovered: created by this sync` is the devices this sync made that Forward no longer lists under its include tags (needs attention; it matches the Health card). `Not managed by this sync` is devices this sync never created (informational; the sync never touches them). A small line under them gives the sum, for example 128 devices carry no include tag: 4 uncovered + 124 not managed. That sum is not the uncovered count. Open `Not Managed by This Sync` for the full list. The `share a name with a device this sync manages` link lists likely older copies at another site; review them and delete the copy you do not want. To have the sync manage the rest, add the include tag to the device in Forward (a tag added by hand in NetBox is removed on the next run), then run the sync again. "Select all" on these lists acts on that list only.

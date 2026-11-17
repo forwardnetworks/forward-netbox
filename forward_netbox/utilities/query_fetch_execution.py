@@ -98,6 +98,8 @@ from .query_registry import only_legacy_safe_default_parameters
 from .query_registry import QuerySpec
 from .query_registry import resolve_query_specs_for_client
 from .query_registry import SHARD_QUERY_PARAMETER_NAME
+from .site_tag import site_name_nqe
+from .site_tag import site_tag_nqe_let
 from .sync import ForwardSyncRunner
 from .sync_contracts import validate_row_shape_for_model
 from .sync_facade import effective_scope_endpoints_by_include_tags
@@ -657,9 +659,10 @@ class ForwardQueryFetcher:
             [
                 "foreach device in network.devices",
                 *where,
+                site_tag_nqe_let(),
                 "select {",
                 "  name: device.name,",
-                '  site: if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown",',
+                f"  site: {site_name_nqe()},",
                 "  tagNames: device.tagNames",
                 "}",
             ]
@@ -1296,6 +1299,9 @@ class ForwardQueryFetcher:
                     "out_of_scope_carried_count": summary.get(
                         "out_of_scope_carried_rows", 0
                     ),
+                    "site_move_restaged_count": summary.get(
+                        "site_move_restaged_rows", 0
+                    ),
                     "compressed_bytes": summary["compressed_bytes"],
                 }
             updated_results.append(
@@ -1311,6 +1317,7 @@ class ForwardQueryFetcher:
                 f"deletes={summary['delete_rows']} "
                 f"bootstrap_deletes={summary['bootstrap_delete_rows']} "
                 f"out_of_scope_carried={summary.get('out_of_scope_carried_rows', 0)} "
+                f"site_move_restaged={summary.get('site_move_restaged_rows', 0)} "
                 f"compressed_bytes={summary['compressed_bytes']}.",
                 obj=self.sync,
             )

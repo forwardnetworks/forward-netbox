@@ -16,9 +16,13 @@
         <tr>
           <th scope="row">{% trans "Changes Scanned" %}</th>
           <td>
+            {% if change_explainability.field_detail_available is False %}
+              {% blocktrans with total=change_explainability.total_change_count %}{{ total }} (counts only; field detail needs the branch){% endblocktrans %}
+            {% else %}
             {{ change_explainability.sampled_change_count }} / {{ change_explainability.total_change_count }}
             {% if change_explainability.truncated %}
               <span class="badge text-bg-warning">{% trans "Truncated" %}</span>
+            {% endif %}
             {% endif %}
           </td>
         </tr>
@@ -55,7 +59,13 @@
       </table>
     {% else %}
       <span class="text-muted">
-        {% if change_explainability.reason == "branch_missing" %}
+        {% if change_explainability.reason == "no_change_log_for_run" %}
+          {% trans "NetBox's change log holds no changes for this merged ingestion (the entries may have passed the change log retention period)." %}
+        {% elif change_explainability.reason == "fast_baseline_no_change_log" %}
+          {% trans "This ingestion was a fast baseline load, which writes no change log entries." %}
+        {% elif change_explainability.reason == "change_log_query_skipped" %}
+          {% trans "The change log count was skipped because it took too long. Reload to try again." %}
+        {% elif change_explainability.reason == "branch_missing" %}
           {% trans "No Branching change diff is available for this ingestion." %}
         {% else %}
           {% trans "No local change explanation is available for this ingestion." %}

@@ -6,6 +6,7 @@ from django.db.models import Count
 
 DEFAULT_MAX_CHANGE_DIFFS = 5000
 EXCLUDED_DIFF_FIELDS = {"last_updated"}
+CHANGE_LOG_SOURCE = "core.objectchange"
 
 
 def change_explainability_summary(ingestion, *, max_changes=DEFAULT_MAX_CHANGE_DIFFS):
@@ -13,7 +14,10 @@ def change_explainability_summary(ingestion, *, max_changes=DEFAULT_MAX_CHANGE_D
         return _unavailable("ingestion_missing")
     branch = getattr(ingestion, "branch", None)
     if branch is None:
-        return _unavailable("branch_missing")
+        # A merged run's branch is deprovisioned, so the branch has nothing left
+        # to count. NetBox's change log still holds every change the run made,
+        # under the ingestion's request id.
+        return _change_log_summary(ingestion)
 
     from netbox_branching.models import ChangeDiff
 
@@ -81,6 +85,102 @@ def change_explainability_summary(ingestion, *, max_changes=DEFAULT_MAX_CHANGE_D
         "update_changes_with_field_detail": update_changes_with_field_detail,
         "update_changes_without_field_detail": update_changes_without_field_detail,
     }
+
+
+def _change_log_summary(ingestion):
+    """The same counts, read from NetBox's change log when the branch is gone.
+
+    Counts only: the change log keeps no field-level diff worth sampling here, so
+    the field detail stays empty and the result says so. Reports unavailable
+    (never zeros) when the log holds nothing for the run, which is what a purged
+    change log looks like.
+    """
+    from core.models import ObjectChange
+
+    request_id = getattr(ingestion, "change_request_id", None)
+    if not request_id:
+        return _unavailable("branch_missing")
+    from .health_evidence import _guarded
+
+    # The exclude is for symmetry with the branch path; ObjectChange rows are not
+    # themselves change-logged, so on the main log it removes nothing.
+    queryset = (
+        ObjectChange.objects.filter(request_id=request_id)
+        .exclude(changed_object_type__model="objectchange")
+        .order_by()
+        .values(
+            "changed_object_type__app_label",
+            "changed_object_type__model",
+            "action",
+        )
+        .annotate(total=Count("pk"))
+    )
+    # Guarded like the other change-log reads, so a slow count on a huge log
+    # cannot hold a page open: the group-by is skipped, not waited for.
+    rows, skipped = _guarded(lambda: list(queryset))
+    if skipped:
+        return {
+            "available": False,
+            "reason": "change_log_query_skipped",
+            "source": CHANGE_LOG_SOURCE,
+        }
+    action_counts = Counter()
+    model_counts = Counter()
+    model_action_counts: dict[str, Counter] = {}
+    for row in rows:
+        app_label = str(row["changed_object_type__app_label"] or "").strip()
+        model = str(row["changed_object_type__model"] or "").strip()
+        label = f"{app_label}.{model}" if app_label and model else model or "unknown"
+        action = str(row["action"] or "unknown")
+        total = int(row["total"])
+        action_counts[action] += total
+        model_counts[label] += total
+        model_action_counts.setdefault(label, Counter())[action] += total
+    total_change_count = sum(action_counts.values())
+    if not total_change_count:
+        return {
+            "available": False,
+            "reason": _empty_log_reason(ingestion),
+            "source": CHANGE_LOG_SOURCE,
+        }
+    return {
+        "available": True,
+        "source": CHANGE_LOG_SOURCE,
+        "branch": "",
+        "total_change_count": total_change_count,
+        "sampled_change_count": 0,
+        "truncated": False,
+        "max_changes": 0,
+        "action_counts": dict(sorted(action_counts.items())),
+        "model_counts": dict(sorted(model_counts.items())),
+        "model_action_counts": {
+            model: dict(sorted(actions.items()))
+            for model, actions in sorted(model_action_counts.items())
+        },
+        "counts_cover_all_changes": True,
+        "field_detail_available": False,
+        "top_changed_fields": [],
+        "top_changed_fields_by_model": {},
+        "update_changes_with_field_detail": 0,
+        "update_changes_without_field_detail": action_counts.get(
+            ObjectChangeActionChoices.ACTION_UPDATE, 0
+        ),
+    }
+
+
+def _empty_log_reason(ingestion):
+    """Why the change log holds nothing for a run, when that can be told.
+
+    A fast baseline load writes no change log by design, and a run that never
+    merged has nothing in it. Only a merged, ordinary run with an empty log looks
+    like a purge, so only that gets the purge reason.
+    """
+    snapshot_info = getattr(ingestion, "snapshot_info", None) or {}
+    if isinstance(snapshot_info, dict) and snapshot_info.get("fast_baseline_load"):
+        return "fast_baseline_no_change_log"
+    if getattr(ingestion, "merge_applied_at", None) is None:
+        return "branch_missing"
+    return "no_change_log_for_run"
 
 
 def branch_model_change_counts(branch):

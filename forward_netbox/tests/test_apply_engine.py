@@ -134,7 +134,7 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
             "bulk_orm_auto_enabled_safe_model_set",
         )
 
-    def test_bulk_orm_creates_and_updates_sites(self):
+    def test_bulk_orm_creates_sites_and_keeps_existing_names(self):
         self.sync.parameters["enable_bulk_orm"] = True
         self.sync.save(update_fields=["parameters"])
         Site.objects.create(name="site-a", slug="site-a")
@@ -155,7 +155,9 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
 
         self.assertFalse(runner._apply_model_rows.called)
         self.assertEqual(Site.objects.filter(slug="site-b").count(), 1)
-        self.assertEqual(Site.objects.get(slug="site-a").name, "Site A")
+        # A matched site keeps its own name: it may belong to another system
+        # (an inventory import), and renaming it would fight that system.
+        self.assertEqual(Site.objects.get(slug="site-a").name, "site-a")
 
     def test_isolate_bulk_objects_applies_good_and_records_bad(self):
         # The per-row isolation fallback (used when a bulk write hits a DB
@@ -1070,23 +1072,24 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
         unnecessarily. Targeted validation skips them while preserving field-
         and model-level validation.
 
-        Uses dcim.site (bulk_orm_apply_simple_models path). Lookup by slug
-        finds the existing site; renaming it triggers the UPDATE code path."""
+        Uses dcim.manufacturer (bulk_orm_apply_simple_models path). Lookup by
+        slug finds the existing row; renaming it triggers the UPDATE code path.
+        (A site's name is create-only, so a site no longer takes this path.)"""
         self.sync.parameters["enable_bulk_orm"] = True
         self.sync.save(update_fields=["parameters"])
-        Site.objects.create(name="Paris", slug="paris")
+        Manufacturer.objects.create(name="Paris", slug="paris")
         runner = self._runner()
         engine = select_apply_engine(
             sync=self.sync,
-            model_string="dcim.site",
+            model_string="dcim.manufacturer",
         )
 
         full_clean_calls = []
         clean_fields_calls = []
         clean_calls = []
-        original_full_clean = Site.full_clean
-        original_clean_fields = Site.clean_fields
-        original_clean = Site.clean
+        original_full_clean = Manufacturer.full_clean
+        original_clean_fields = Manufacturer.clean_fields
+        original_clean = Manufacturer.clean
 
         def tracking_full_clean(self_obj, *args, **kwargs):
             full_clean_calls.append(self_obj.slug)
@@ -1101,14 +1104,14 @@ class ForwardBulkOrmApplyEngineTest(TestCase):
             return original_clean(self_obj, *args, **kwargs)
 
         with (
-            patch.object(Site, "full_clean", tracking_full_clean),
-            patch.object(Site, "clean_fields", tracking_clean_fields),
-            patch.object(Site, "clean", tracking_clean),
+            patch.object(Manufacturer, "full_clean", tracking_full_clean),
+            patch.object(Manufacturer, "clean_fields", tracking_clean_fields),
+            patch.object(Manufacturer, "clean", tracking_clean),
         ):
             # Lookup is by slug "paris" → finds existing; name change triggers UPDATE path.
             engine.apply_upserts(
                 runner,
-                "dcim.site",
+                "dcim.manufacturer",
                 [{"name": "Paris-Renamed", "slug": "paris"}],
             )
 
