@@ -250,6 +250,7 @@ where isEmpty(device_tag_include_tags)
     && any(foreach tag in device_tag_include_tags select tag in device.tagNames))
 where isEmpty(device_tag_exclude_tags)
   || !any(foreach tag in device_tag_exclude_tags select tag in device.tagNames)
+let site_tag = siteTagName(device.tagNames)
 let site_name = deviceSiteName(device)
 let site_slug = slugify(site_name)
 where isEmpty(forward_netbox_shard_keys)
@@ -258,7 +259,7 @@ where isEmpty(forward_netbox_shard_keys)
 // A device with no location and no site tag has no site to add; the device map
 // files it at "unknown" itself.
 where (isPresent(device.locationName) && length(device.locationName) > 0)
-  || isPresent(siteTagName(device.tagNames))
+  || isPresent(site_tag)
 group device as devices by site_name as site_name
 let location_names = (
   foreach member in devices
