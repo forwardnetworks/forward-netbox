@@ -34,6 +34,7 @@ def cleanup_items(
     management_interfaces_on=False,
     platform_restorable=0,
     no_primary_ip_unrecorded=0,
+    unmanaged_held=None,
 ):
     """The ordered checklist for one stored scope report.
 
@@ -43,7 +44,9 @@ def cleanup_items(
     page that lists its devices. ``platform_restorable`` is the restorable count of
     the stored platform-restore preview. ``no_primary_ip_unrecorded`` is the devices
     with an address but no primary IP that the management step recorded nothing
-    for. Items with nothing to do are left out.
+    for. ``unmanaged_held`` is the last unmanaged delete's held devices that are
+    still in NetBox (``held_devices``, ``freed_by_routing_option``,
+    ``needs_other_records``). Items with nothing to do are left out.
     """
     payload = payload or {}
     unmanaged = payload.get("unmanaged") or {}
@@ -165,7 +168,48 @@ def cleanup_items(
                     "Press Delete (verified gone), read the warning and type the "
                     "count. Each device is checked against Forward again and "
                     "refused unless it is still absent.",
+                    "If a device is still there after the job, something holds it: "
+                    "NetBox will not delete a device while routing records (BGP "
+                    "scopes, OSPF interfaces) depend on it. The confirmation page "
+                    "names what holds each device and offers a box to delete those "
+                    "routing records with it.",
                 ],
+                "url": urls.get("unmanaged_not_in_forward", ""),
+            }
+        )
+    held = unmanaged_held or {}
+    held_devices = _count(held.get("held_devices"))
+    if held_devices:
+        freed = _count(held.get("freed_by_routing_option"))
+        other = _count(held.get("needs_other_records"))
+        steps = [
+            "These devices were selected for the last unmanaged delete and are "
+            "still in NetBox: the job held them back instead of deleting them."
+        ]
+        if freed:
+            steps.append(
+                f"{freed} are held only by routing records. Open the list, select "
+                "them, press Delete (verified gone) and tick the box to also "
+                "delete the routing records. Those records are not owned by a "
+                "sync, so check they are not wanted."
+            )
+        if other:
+            steps.append(
+                f"{other} are held by other records. Remove or change those "
+                "records first (the Held by column on the confirmation page and "
+                "the Unmanaged Delete card name them), then delete again."
+            )
+        items.append(
+            {
+                "key": "unmanaged_delete_held",
+                "title": "Unmanaged devices the last delete held back",
+                "count": held_devices,
+                "kind": DELETES_AFTER_REVIEW,
+                "what": (
+                    "The delete succeeded but skipped these devices because other "
+                    "records depend on them. Nothing is wrong with the sync."
+                ),
+                "steps": steps,
                 "url": urls.get("unmanaged_not_in_forward", ""),
             }
         )

@@ -2,7 +2,7 @@
 
 Both apply paths matched existing devices by `(name, site)` only. When Forward
 relabels a location - the customer's actual estate went from
-`cdl0_dc00-roseland nj (njrsl)` to `dc00-cdl-roseland nj` - the row for that
+`hall-a (old-code)` to `hall-a-renamed` - the row for that
 device now carries the SAME name at a DIFFERENT site, the lookup misses, and a
 second device is created. The old copy is stranded: it still holds the
 device's primary IP, which the new copy then cannot acquire

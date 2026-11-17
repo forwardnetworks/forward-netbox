@@ -6928,7 +6928,7 @@ select {name: site.name, slug: site.name}
         ingestion.refresh_from_db()
         self.assertEqual(ingestion.sync_mode, "full")
 
-    def test_run_updates_existing_rows_from_nqe_diff_modifications(self):
+    def test_run_applies_nqe_diff_modifications_to_the_matched_row(self):
         Site.objects.create(name="site-before", slug="site-update", status="active")
 
         baseline = ForwardIngestion.objects.create(
@@ -6979,8 +6979,11 @@ select {name: site.name, slug: site.name}
         )
         client.run_nqe_query.assert_not_called()
 
+        # The MODIFIED row reached the apply and matched the existing site by
+        # slug. A site's name is create-only (it may belong to another system),
+        # so the matched site keeps its own name and no second site is made.
         site = Site.objects.get(slug="site-update")
-        self.assertEqual(site.name, "site-after")
+        self.assertEqual(site.name, "site-before")
         self.assertEqual(site.status, "active")
         ingestion.refresh_from_db()
         self.assertEqual(ingestion.sync_mode, "diff")

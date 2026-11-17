@@ -23,6 +23,8 @@ from .forward_api import get_configured_device_tags
 from .forward_api import run_nqe_query
 from .json_safe import json_safe_value
 from .post_sync import current_post_sync_snapshot
+from .site_tag import site_name_nqe
+from .site_tag import site_tag_nqe_let
 from .sync_facade import device_tag_scope
 from .sync_facade import effective_scope_endpoints_by_include_tags
 
@@ -482,6 +484,7 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
             "foreach device in network.devices",
             "where device.platform.vendor != Vendor.FORWARD_CUSTOM",
             *scope_where,
+            site_tag_nqe_let(),
             "select {",
             "  name: device.name,",
             "  completed: device.snapshotInfo.result "
@@ -490,7 +493,7 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
             "  collectionTime: device.snapshotInfo.collectionTime,",
             "  backfillTime: device.snapshotInfo.backfillTime,",
             "  tagNames: device.tagNames,",
-            '  location: if isPresent(device.locationName) then toLowerCase(device.locationName) else ""',
+            f"  location: {site_name_nqe(fallback='\"\"')},",
             "}",
         ]
     )
@@ -1652,8 +1655,15 @@ def _release_routing_rows_owned_by(device, selected_ids):
     return _release_routing_rows_protecting(device, releasable=releasable)
 
 
-def _delete_prunable_devices(sync, device_pks, *, release_routing=True):
+def _delete_prunable_devices(
+    sync, device_pks, *, release_routing=True, protected_by_device=None
+):
     """Delete devices, releasing ownership first and respecting PROTECT.
+
+    ``protected_by_device``, when given a dict, is filled with ``{device pk:
+    {model label: count}}`` for each device a protecting record refused, so a
+    caller can say which device is held by what. Callers that do not pass it are
+    unaffected.
 
     One implementation, shared by every prune. A second copy of this loop is
     how a delete path acquires a guard the other one does not have, and the
@@ -1726,9 +1736,15 @@ def _delete_prunable_devices(sync, device_pks, *, release_routing=True):
                 for obj in exc.protected_objects:
                     label = obj._meta.label_lower
                     protected_tally[label] = protected_tally.get(label, 0) + 1
+                    if protected_by_device is not None:
+                        held = protected_by_device.setdefault(device_id, {})
+                        held[label] = held.get(label, 0) + 1
             except _PruneRefused as exc:
                 for label, count in exc.refused.items():
                     protected_tally[label] = protected_tally.get(label, 0) + count
+                    if protected_by_device is not None:
+                        held = protected_by_device.setdefault(device_id, {})
+                        held[label] = held.get(label, 0) + count
         if not retry_device_ids:
             break
         if not pass_progress:
@@ -2104,6 +2120,7 @@ def prune_unmanaged_devices(
     restrict_to_device_pks,
     report=None,
     max_devices=UNMANAGED_PRUNE_MAX_DEVICES,
+    release_routing=False,
 ) -> dict:
     """Delete devices NO sync is bound to that Forward does not report at all.
 
@@ -2127,6 +2144,13 @@ def prune_unmanaged_devices(
     The empty-scope refusal and the missing-census refusal apply as for the other
     prunes. Deletion goes through `_delete_prunable_devices`, the one shared
     delete loop, which respects PROTECT and ownership.
+
+    ``release_routing`` is the operator's choice to also delete the routing
+    records (netbox_routing BGP and OSPF rows) that hold these devices. Off by
+    default: nothing claims these devices, so those rows may be a person's, and a
+    device they hold is refused and reported per device. On, only the routing
+    allowlist is removed, only for rows the device owns, and a device something
+    else also holds is left whole and reported.
     """
     from ..models import ForwardChangeDevice
     from ..models import ForwardDeviceAbsence
@@ -2174,6 +2198,9 @@ def prune_unmanaged_devices(
         "ownership_blocked_device_count": 0,
         "refusals": refusals,
         "cap": max_devices,
+        # Same keys on every return, so a reader never has to guess.
+        "protected_by_device": {},
+        "release_routing": bool(release_routing),
     }
     if not wanted:
         return empty
@@ -2224,6 +2251,7 @@ def prune_unmanaged_devices(
     if not eligible:
         return empty
 
+    protected_by_device = {}
     (
         pruned_device_ids,
         deleted_total,
@@ -2233,10 +2261,10 @@ def prune_unmanaged_devices(
         sync,
         eligible,
         # No sync claims these devices, so their routing rows may be a
-        # person's: they are never removed here. A device they protect is
-        # refused and says so; the device list's routing box is the way to
-        # take them with it.
-        release_routing=False,
+        # person's: they are removed only when the operator asked for it. A
+        # device they protect is otherwise refused and reported per device.
+        release_routing=bool(release_routing),
+        protected_by_device=protected_by_device,
     )
     result = dict(empty)
     result.update(
@@ -2249,7 +2277,47 @@ def prune_unmanaged_devices(
     )
     if protected_tally:
         result["protected_by_model"] = protected_tally
+    result["protected_by_device"] = {
+        pk: dict(held) for pk, held in sorted(protected_by_device.items())
+    }
+    result["release_routing"] = bool(release_routing)
     return result
+
+
+def summarize_held_devices(protected_by_device, *, option_was_on=False) -> dict:
+    """What the held devices are held by, and which the routing option would free.
+
+    ``protected_by_device`` is ``{device pk: {model label: count}}``. A device is
+    "freed by the routing option" when every record holding it is a routing record
+    the option removes; one held by anything else needs that record removed
+    first. Counts of devices, not rows, because the option acts per device.
+
+    ``option_was_on`` is that the run that held these already had the routing
+    option on. A device still held after that is not one the option frees (a
+    routing row it shares with a device that stays, say), so none count as freed.
+    """
+    from .device_cascade_delete import is_releasable_routing_row
+
+    freed = 0
+    needs_other = 0
+    by_model = {}
+    for held in (protected_by_device or {}).values():
+        if (
+            not option_was_on
+            and held
+            and all(is_releasable_routing_row(label) for label in held)
+        ):
+            freed += 1
+        else:
+            needs_other += 1
+        for label, count in held.items():
+            by_model[label] = by_model.get(label, 0) + int(count)
+    return {
+        "held_devices": freed + needs_other,
+        "freed_by_routing_option": freed,
+        "needs_other_records": needs_other,
+        "by_model": dict(sorted(by_model.items())),
+    }
 
 
 def _occupied_site_ids() -> set:

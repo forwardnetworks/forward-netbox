@@ -1187,6 +1187,12 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
                 {"detail": ("`device_pks` must be a list of 1 to 500 device ids.")},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+        release_routing = data.get("release_routing", False)
+        if not isinstance(release_routing, bool):
+            return Response(
+                {"detail": "`release_routing` must be true or false."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         from dcim.models import Device
 
         deletable = Device.objects.restrict(request.user, "delete").filter(
@@ -1197,12 +1203,17 @@ class ForwardSyncViewSet(NetBoxModelViewSet):
                 "Some devices do not exist or this user may not delete them."
             )
         sync = self.get_object()
+        job_kwargs = {"restrict_to_device_pks": device_pks}
+        if release_routing:
+            # The caller's explicit choice to also delete the routing records
+            # (netbox_routing) that hold these devices; off unless asked.
+            job_kwargs["release_routing"] = True
         try:
             job = enqueue_button_job(
                 sync,
                 "prune_unmanaged",
                 request.user,
-                job_kwargs={"restrict_to_device_pks": device_pks},
+                job_kwargs=job_kwargs,
             )
         except JobBlockedBySyncRun as exc:
             return Response(

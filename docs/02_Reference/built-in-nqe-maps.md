@@ -232,39 +232,65 @@ export slugifyNetboxModel(value: String) =
 
 - `NetBox Model`: `dcim.site`
 - Expected fields: `name`, `slug`, `status`, `physical_address`, `comments`
+- Built-in behavior: one site per Forward location by default; a device tagged `NetBox_Site_<name>` is placed at the site `<name>` instead, so several locations can make one site. See [Site Tag Override](site-tag-override.md).
 - Query file: [`forward_locations.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_locations.nqe)
 
 ```nqe
 import "netbox_utilities";
 
 @query
-f(device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
-foreach location in network.locations
-where location.name in (
-  foreach d in network.devices
-  where d.snapshotInfo.result == DeviceSnapshotResult.completed
-  where d.platform.vendor != Vendor.FORWARD_CUSTOM
-  where isEmpty(device_tag_include_tags)
-    || (device_tag_include_match == "all"
-      && all(foreach tag in device_tag_include_tags select tag in d.tagNames))
-    || (device_tag_include_match != "all"
-      && any(foreach tag in device_tag_include_tags select tag in d.tagNames))
-  where isEmpty(device_tag_exclude_tags)
-    || !any(foreach tag in device_tag_exclude_tags select tag in d.tagNames)
-  select distinct d.locationName
+f(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where isEmpty(device_tag_include_tags)
+  || (device_tag_include_match == "all"
+    && all(foreach tag in device_tag_include_tags select tag in device.tagNames))
+  || (device_tag_include_match != "all"
+    && any(foreach tag in device_tag_include_tags select tag in device.tagNames))
+where isEmpty(device_tag_exclude_tags)
+  || !any(foreach tag in device_tag_exclude_tags select tag in device.tagNames)
+let site_name = deviceSiteName(device)
+let site_slug = slugify(site_name)
+where isEmpty(forward_netbox_shard_keys)
+  || site_slug in forward_netbox_shard_keys
+  || site_name in forward_netbox_shard_keys
+// A device with no location and no site tag has no site to add; the device map
+// files it at "unknown" itself.
+where (isPresent(device.locationName) && length(device.locationName) > 0)
+  || isPresent(siteTagName(device.tagNames))
+group device as devices by site_name as site_name
+let location_names = (
+  foreach member in devices
+  where isPresent(member.locationName)
+  select member.locationName
 )
-let location_name = toLowerCase(location.name)
-let location_slug = slugify(location_name)
-let address = join(", ", [if isPresent(location.city)
-                          then location.city
+let own_location = max(
+  foreach name in location_names
+  where toLowerCase(name) == site_name
+  select name
+)
+let primary_location = if isPresent(own_location) then own_location else min(location_names)
+let city = max(
+  foreach location in network.locations
+  where location.name == primary_location
+  select location.city
+)
+let country = max(
+  foreach location in network.locations
+  where location.name == primary_location
+  select location.country
+)
+let address = join(", ", [if isPresent(city)
+                          then city
                           else "city unknown",
-                          if isPresent(location.country)
-                          then location.country
+                          if isPresent(country)
+                          then country
                           else "country unknown"
                          ])
 select {
-  name: location_name,
-  slug: location_slug,
+  name: site_name,
+  slug: slugify(site_name),
   status: "active",
   physical_address: address,
   comments: "Site added or Updated by Forward Enterprise"
@@ -749,7 +775,7 @@ candidate_rows =
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
   foreach ni in device.networkInstances
   foreach vlan in ni.vlans
-  let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
+  let site_name = deviceSiteName(device)
   let site_slug = slugify(site_name)
   select distinct {
     site: site_name,

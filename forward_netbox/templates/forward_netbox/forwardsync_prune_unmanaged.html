@@ -17,11 +17,29 @@
   {% endif %}
 </div>
 
+{% if survey.routing_devices or survey.other_devices or survey.surveyed < survey.total %}
+<div class="alert alert-warning" role="alert" id="held-devices">
+  <h5 class="alert-title">{% trans "Records on some of these devices block the delete" %}</h5>
+  <p class="mb-2">{% trans "NetBox will not delete a device while routing records (BGP scopes, OSPF interfaces) or other records still depend on it. A device held this way is skipped when the job runs: the job succeeds, deletes nothing for that device, and lists it as held." %}</p>
+  {% if survey.routing_devices %}
+    <p class="mb-2">{% blocktrans with devices=survey.routing_devices %}{{ devices }} device(s) are held only by routing records. Tick the box below to delete those records together with the device.{% endblocktrans %}
+      <span class="text-muted">{% for label, count in survey.routing_labels.items %}<code>{{ label }}</code> &times;{{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}</span></p>
+  {% endif %}
+  {% if survey.other_devices %}
+    <p class="mb-2">{% blocktrans with devices=survey.other_devices %}{{ devices }} device(s) are held by records the box does not remove. They stay until those records are removed or changed by hand:{% endblocktrans %}
+      <span class="text-muted">{% for label, count in survey.other_labels.items %}<code>{{ label }}</code> &times;{{ count }}{% if not forloop.last %}, {% endif %}{% endfor %}</span></p>
+  {% endif %}
+  {% if survey.surveyed < survey.total %}
+    <p class="mb-0 small">{% blocktrans with checked=survey.surveyed total=survey.total %}Checked {{ checked }} of {{ total }} devices before the time limit; the rest may also be held.{% endblocktrans %}</p>
+  {% endif %}
+</div>
+{% endif %}
+
 <div class="card mb-3">
   <h5 class="card-header">{% trans "Selected devices" %}</h5>
   <div class="table-responsive">
     <table class="table table-hover mb-0">
-      <thead><tr><th>{% trans "Device" %}</th><th>{% trans "Site" %}</th><th>{% trans "Role" %}</th><th>{% trans "Interfaces" %}</th><th>{% trans "IP addresses" %}</th></tr></thead>
+      <thead><tr><th>{% trans "Device" %}</th><th>{% trans "Site" %}</th><th>{% trans "Role" %}</th><th>{% trans "Interfaces" %}</th><th>{% trans "IP addresses" %}</th><th>{% trans "Held by" %}</th></tr></thead>
       <tbody>
         {% for row in rows %}
           <tr>
@@ -30,6 +48,7 @@
             <td>{{ row.device.role }}</td>
             <td>{{ row.interfaces }}</td>
             <td>{{ row.addresses }}</td>
+            <td class="small">{% if not row.checked %}<span class="text-muted">{% trans "not checked" %}</span>{% elif row.held_by %}{{ row.held_by }}{% else %}<span class="text-muted">&mdash;</span>{% endif %}</td>
           </tr>
         {% endfor %}
       </tbody>
@@ -40,6 +59,13 @@
 <form method="post" action="{{ form_action }}">
   {% csrf_token %}
   {% for pk in pks %}<input type="hidden" name="pk" value="{{ pk }}">{% endfor %}
+  {% if survey.routing_devices or survey.surveyed < survey.total %}
+    <div class="form-check mb-3">
+      <input class="form-check-input" type="checkbox" id="release_routing" name="release_routing" value="1">
+      <label class="form-check-label" for="release_routing">{% trans "Also delete the routing records that hold these devices." %}</label>
+      <div class="form-text">{% trans "No sync manages these devices, so these records may have been added by a person or another tool. Only routing records (netbox-routing, and peering sessions) that the device itself holds are removed, and only for the devices you confirm here. A routing record on another device that merely uses this device's address is kept; the address is detached from this device. Anything else that holds a device still keeps it. Recorded in the change log." %}</div>
+    </div>
+  {% endif %}
   <div class="mb-3">
     <label class="form-label" for="confirm_count">{% blocktrans with count=count %}Type {{ count }} to confirm{% endblocktrans %}</label>
     <input class="form-control" style="max-width: 12rem" type="text" id="confirm_count" name="confirm_count" autocomplete="off" required>

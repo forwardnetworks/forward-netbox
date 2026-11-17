@@ -1,42 +1,69 @@
 /**
  * @intent Forward Locations
- * @description It provides a list of Locations configured in Forward to be added
- * in NetBox using POST requests to the /api/dcim/sites/ REST API endpoint.
+ * @description It provides the NetBox sites for the devices Forward collected, to
+ * be added in NetBox using POST requests to the /api/dcim/sites/ REST API
+ * endpoint. A device is placed at its Forward location unless it carries a
+ * NetBox_Site_<name> tag, in which case it is placed at the site <name>; several
+ * Forward locations can therefore make up one site. A site's address is that of
+ * the Forward location with the same name, or else of its first location by name.
  */
 
 import "netbox_utilities";
 
 @query
 f(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
-foreach location in network.locations
-where location.name in (
-  foreach d in network.devices
-  where d.snapshotInfo.result == DeviceSnapshotResult.completed
-  where d.platform.vendor != Vendor.FORWARD_CUSTOM
-  where isEmpty(device_tag_include_tags)
-    || (device_tag_include_match == "all"
-      && all(foreach tag in device_tag_include_tags select tag in d.tagNames))
-    || (device_tag_include_match != "all"
-      && any(foreach tag in device_tag_include_tags select tag in d.tagNames))
-  where isEmpty(device_tag_exclude_tags)
-    || !any(foreach tag in device_tag_exclude_tags select tag in d.tagNames)
-  select distinct d.locationName
-)
-let location_name = toLowerCase(location.name)
-let location_slug = slugify(location_name)
+foreach device in network.devices
+where device.snapshotInfo.result == DeviceSnapshotResult.completed
+where device.platform.vendor != Vendor.FORWARD_CUSTOM
+where isEmpty(device_tag_include_tags)
+  || (device_tag_include_match == "all"
+    && all(foreach tag in device_tag_include_tags select tag in device.tagNames))
+  || (device_tag_include_match != "all"
+    && any(foreach tag in device_tag_include_tags select tag in device.tagNames))
+where isEmpty(device_tag_exclude_tags)
+  || !any(foreach tag in device_tag_exclude_tags select tag in device.tagNames)
+let site_tag = siteTagName(device.tagNames)
+let site_name = deviceSiteName(device)
+let site_slug = slugify(site_name)
 where isEmpty(forward_netbox_shard_keys)
-  || location_slug in forward_netbox_shard_keys
-  || location_name in forward_netbox_shard_keys
-let address = join(", ", [if isPresent(location.city)
-                          then location.city
+  || site_slug in forward_netbox_shard_keys
+  || site_name in forward_netbox_shard_keys
+// A device with no location and no site tag has no site to add; the device map
+// files it at "unknown" itself.
+where (isPresent(device.locationName) && length(device.locationName) > 0)
+  || isPresent(site_tag)
+group device as devices by site_name as site_name
+let location_names = (
+  foreach member in devices
+  where isPresent(member.locationName)
+  select member.locationName
+)
+let own_location = max(
+  foreach name in location_names
+  where toLowerCase(name) == site_name
+  select name
+)
+let primary_location = if isPresent(own_location) then own_location else min(location_names)
+let city = max(
+  foreach location in network.locations
+  where location.name == primary_location
+  select location.city
+)
+let country = max(
+  foreach location in network.locations
+  where location.name == primary_location
+  select location.country
+)
+let address = join(", ", [if isPresent(city)
+                          then city
                           else "city unknown",
-                          if isPresent(location.country)
-                          then location.country
+                          if isPresent(country)
+                          then country
                           else "country unknown"
                          ])
 select {
-  name: location_name,
-  slug: location_slug,
+  name: site_name,
+  slug: slugify(site_name),
   status: "active",
   physical_address: address,
   comments: "Site added or Updated by Forward Enterprise"

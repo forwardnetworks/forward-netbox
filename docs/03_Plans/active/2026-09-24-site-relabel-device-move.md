@@ -4,7 +4,7 @@
 
 A customer's sync began piling up duplicate devices: 248 name-pairs (496
 rows), 207 created in a single day. Root cause: when Forward renames a
-location (`cdl0_dc00-roseland nj (njrsl)` -> `dc00-cdl-roseland nj`, confirmed
+location (`hall-a (old-code)` -> `hall-a-renamed`, confirmed
 independently by the customer's own Forward contact - the old name no longer
 exists as a location), the device row Forward reports for that name now
 carries a different site. Both apply paths match an existing device on

@@ -8,7 +8,7 @@ Maps for `netbox_routing.*`, `netbox_peering_manager.*`, `netbox_cisco_aci.*`, a
 
 | NetBox Model | Built-In Query | Forward Source Shape | Mapping Style | Notes |
 | --- | --- | --- | --- | --- |
-| `dcim.site` | `Forward Locations` | `network.locations` filtered by collected device locations | Exact | Site names/slugs are shaped in NQE. |
+| `dcim.site` | `Forward Locations` | one site per collected device location, or the site named by a `NetBox_Site_<name>` device tag | Exact | Site names/slugs are shaped in NQE; see [Site Tag Override](site-tag-override.md). |
 | `dcim.manufacturer` | `Forward Device Vendors` | `device.platform.vendor` | Exact | One manufacturer per Forward vendor enum, with built-in names and slugs canonicalized in NQE. |
 | `dcim.devicerole` | `Forward Device Types` | `device.platform.deviceType` | Best-fit | Forward device type is used as the NetBox device role. |
 | `dcim.platform` | `Forward Platforms` | `device.platform.os` plus vendor | Exact | Platform slugs are shaped in NQE. APIC controllers stay on `APIC`, CIMC-managed hardware stays on `CIMC`, and ACI switches stay on `ACI`. |

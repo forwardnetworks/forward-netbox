@@ -1074,6 +1074,56 @@ def _bootstrap_dlm_rows(sync, model_string):
     return []
 
 
+# Child rows whose NetBox writes depend on the device's site. An interface's
+# untagged and tagged VLANs are site-scoped; its Forward row names them only by
+# VLAN id, so a device that moves site leaves the row unchanged while the VLAN it
+# must point at is now the new site's.
+SITE_DEPENDENT_CHILD_MODELS = frozenset({"dcim.interface"})
+
+
+def _devices_changing_site(workloads):
+    """Device names whose site in this run's rows differs from NetBox's.
+
+    When a device moves, the plugin clears its interfaces' VLANs from the old
+    site (NetBox refuses a cross-site untagged VLAN). An incremental run would
+    then never write the new site's VLAN back, because the interface rows did
+    not change. Naming the moving devices lets their child rows re-apply.
+    """
+    from dcim.models import Device
+
+    wanted = {}
+    for workload in workloads:
+        if workload.model_string != "dcim.device":
+            continue
+        for row in workload.upsert_rows or ():
+            name = str(row.get("name") or "").strip()
+            slug = str(row.get("site_slug") or "").strip()
+            site_name = str(row.get("site") or "").strip()
+            if name and (slug or site_name):
+                wanted[name] = (slug, site_name)
+    if not wanted:
+        return set()
+    current = {}
+    names = list(wanted)
+    for start in range(0, len(names), 1000):
+        for name, slug, site_name in Device.objects.filter(
+            name__in=names[start : start + 1000]
+        ).values_list("name", "site__slug", "site__name"):
+            current.setdefault(name, set()).update(
+                {("slug", slug), ("name", site_name)}
+            )
+    # Not moving when the device's site matches by slug OR by name: that is how
+    # the device apply finds the site, and a site matched by name keeps its own
+    # slug, so comparing slugs alone would call such a device moving every run.
+    return {
+        name
+        for name, (slug, site_name) in wanted.items()
+        if name in current
+        and ("slug", slug) not in current[name]
+        and ("name", site_name) not in current[name]
+    }
+
+
 def apply_durable_workload_deltas(sync, workloads):
     """Derive local deltas for parameterized full model workloads.
 
@@ -1086,6 +1136,11 @@ def apply_durable_workload_deltas(sync, workloads):
     for position, workload in enumerate(workloads):
         positions_by_model.setdefault(workload.model_string, []).append(position)
     association_protection = _association_catalog_protection(sync, workloads)
+    moving_devices = (
+        _devices_changing_site(workloads)
+        if any(w.model_string in SITE_DEPENDENT_CHILD_MODELS for w in workloads)
+        else set()
+    )
 
     replacements = {}
     removed_positions = set()
@@ -1319,17 +1374,27 @@ def apply_durable_workload_deltas(sync, workloads):
         )
         explicit_deletes = [value["row"] for value in explicit_delete_entries.values()]
         out_of_scope_entries = {}
+        restage_for_move = set()
         if compatible:
             previous_entries = decode_state_entries(
                 current_state.payload,
                 current_state.payload_checksum,
             )
+            if moving_devices and model_string in SITE_DEPENDENT_CHILD_MODELS:
+                from .query_fetch_execution import _row_device_names
+
+                restage_for_move = {
+                    identity
+                    for identity, value in target_entries.items()
+                    if _row_device_names(model_string, value["row"]) & moving_devices
+                }
             changed_rows = [
                 value["row"]
                 for identity, value in target_entries.items()
                 if identity not in previous_entries
                 or previous_entries[identity]["action"] != "upsert"
                 or previous_entries[identity]["row_hash"] != value["row_hash"]
+                or identity in restage_for_move
             ]
             absent_entries = {
                 identity: value
@@ -1454,6 +1519,8 @@ def apply_durable_workload_deltas(sync, workloads):
                 "ownership_shrink_held_rows": ownership_shrink_held,
                 "unrepresented_peer": unrepresented_peer,
                 "out_of_scope_carried_rows": len(out_of_scope_entries),
+                # Unchanged child rows re-applied because their device moved site.
+                "site_move_restaged_rows": len(restage_for_move),
                 "tombstone_rows": sum(
                     value["action"] == "delete" for value in state_entries.values()
                 ),

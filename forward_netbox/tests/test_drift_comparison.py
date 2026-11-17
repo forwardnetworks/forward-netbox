@@ -88,14 +88,30 @@ class PreviewCountsMatchRealityTest(TestCase):
         self.assertEqual(result["updates"], 0)
 
     def test_a_changed_row_counts_as_an_update(self):
+        from dcim.models import Manufacturer
+
+        Manufacturer.objects.create(name="Existing Vendor", slug="existing-vendor")
+
+        result = compare_model_rows(
+            None,
+            "dcim.manufacturer",
+            [{"name": "Renamed Vendor", "slug": "existing-vendor"}],
+        )
+
+        self.assertEqual(result["updates"], 1)
+        self.assertEqual(result["creates"], 0)
+
+    def test_a_site_with_another_name_is_unchanged_because_names_are_create_only(self):
+        # The apply never renames a site it matched (it may belong to another
+        # system), so the preview must not count one as drift either.
         result = compare_model_rows(
             None,
             "dcim.site",
             [{"name": "Renamed Site", "slug": "existing-site"}],
         )
 
-        self.assertEqual(result["updates"], 1)
-        self.assertEqual(result["creates"], 0)
+        self.assertEqual(result["unchanged"], 1)
+        self.assertEqual(result["updates"], 0)
 
     def test_a_mixed_batch_is_not_all_or_nothing(self):
         result = compare_model_rows(

@@ -359,9 +359,16 @@ class ForwardSyncRunnerAdapterMixin:
         return delete_sync_model_rows(self, model_string, rows)
 
     def _ensure_site(self, row):
+        """The site for this row, created when no site has its slug or name.
+
+        Create-only: an existing site is used as it is and never renamed. It may
+        belong to another system (an inventory import, a person), and a rename
+        would fight that system on every run. A device can therefore be placed at
+        such a site by its slug (see the NetBox_Site_<name> tag).
+        """
         from dcim.models import Site
 
-        site, _ = self._upsert_row_from_defaults(
+        site, _ = self._upsert_row(
             "dcim.site",
             Site,
             row=row,
@@ -369,7 +376,8 @@ class ForwardSyncRunnerAdapterMixin:
                 "dcim.site",
                 [("slug",), ("name",)],
             ),
-            defaults={"name": row["name"], "slug": row["slug"]},
+            create_values={"name": row["name"], "slug": row["slug"]},
+            update_values={},
         )
         return site
 

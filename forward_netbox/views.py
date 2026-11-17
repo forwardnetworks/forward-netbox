@@ -574,6 +574,11 @@ def _scope_reconciliation_bundle_payload(sync):
         "platform_restore": _guarded_bundle_section(
             lambda: json_safe_value(_platform_restore_payload(sync))
         ),
+        # The "Unmanaged Delete: Last Result" card: what the last verified delete
+        # removed and held, per held device by pk and holding model.
+        "unmanaged_delete": _guarded_bundle_section(
+            lambda: json_safe_value(_unmanaged_delete_payload(sync))
+        ),
     }
 
 
@@ -1538,44 +1543,76 @@ def _delete_blocker_survey_bundle_payload(sync):
         _latest_scope_reconciliation_job(sync)
     )
     unmanaged = report.get("unmanaged") or {}
-    target_pks = []
+    # Each group is sampled on its own. One shared cap let the first two groups
+    # use every slot and left a third, larger group unsurveyed, which is the group
+    # a customer's "why won't these delete" is usually about.
+    groups = (
+        # A delete of these that deletes nothing is explained by exactly this, so
+        # it is surveyed first: it must not be the group a spent budget drops.
+        (
+            "unmanaged_not_in_forward",
+            unmanaged.get("unclaimed_absent_device_ids") or (),
+        ),
+        ("out_of_scope", report.get("out_of_scope_device_ids") or ()),
+        ("owned_untagged", unmanaged.get("owned_untagged_device_ids") or ()),
+    )
     seen = set()
-    for pks in (
-        report.get("out_of_scope_device_ids") or (),
-        unmanaged.get("owned_untagged_device_ids") or (),
-    ):
+    group_pks = {}
+    for group, pks in groups:
         for pk in pks:
             if isinstance(pk, int) and pk not in seen:
                 seen.add(pk)
-                target_pks.append(pk)
+                group_pks.setdefault(group, []).append(pk)
+    target_total = sum(len(pks) for pks in group_pks.values())
 
-    candidates = list(
-        Device.objects.filter(pk__in=target_pks[:_SUPPORT_BUNDLE_BLOCKER_SAMPLE])
-    )
     by_label = {}
+    by_group = {}
     blocked_devices = 0
     surveyed = 0
-    deadline = time.monotonic() + _SUPPORT_BUNDLE_BLOCKER_BUDGET_SECONDS
     exhausted_budget = False
-    for device in candidates:
-        if time.monotonic() > deadline:
-            exhausted_budget = True
-            break
-        surveyed += 1
-        blockers = describe_delete_blockers(device)
-        if not blockers:
-            continue
-        blocked_devices += 1
-        for label, count in blockers:
-            entry = by_label.setdefault(label, {"rows": 0, "devices": 0})
-            entry["rows"] += count
-            entry["devices"] += 1
+    for group, pks in group_pks.items():
+        # Each group gets its own budget, so a slow first group cannot leave a
+        # later one out; a group that runs out says so itself.
+        deadline = time.monotonic() + _SUPPORT_BUNDLE_BLOCKER_BUDGET_SECONDS
+        entry = by_group[group] = {
+            "target": len(pks),
+            "sampled": 0,
+            "devices_with_blockers": 0,
+            "stopped_on_time_budget": False,
+            "blockers": {},
+        }
+        candidates = list(
+            Device.objects.filter(pk__in=pks[:_SUPPORT_BUNDLE_BLOCKER_SAMPLE])
+        )
+        for device in candidates:
+            if time.monotonic() > deadline:
+                exhausted_budget = True
+                entry["stopped_on_time_budget"] = True
+                break
+            surveyed += 1
+            entry["sampled"] += 1
+            blockers = describe_delete_blockers(device)
+            if not blockers:
+                continue
+            blocked_devices += 1
+            entry["devices_with_blockers"] += 1
+            for label, count in blockers:
+                for tally in (by_label, entry["blockers"]):
+                    row = tally.setdefault(label, {"rows": 0, "devices": 0})
+                    row["rows"] += count
+                    row["devices"] += 1
     return {
-        "target_total": len(target_pks),
+        "target_total": target_total,
         "sampled": surveyed,
-        "truncated": len(target_pks) > surveyed,
+        "truncated": target_total > surveyed,
         "stopped_on_time_budget": exhausted_budget,
         "devices_with_blockers": blocked_devices,
+        # The same survey split by the list each device came from, with what
+        # blocks each group and how many of the group were checked.
+        "by_group": {
+            group: {**entry, "blockers": dict(sorted(entry["blockers"].items()))}
+            for group, entry in by_group.items()
+        },
         # Split the way the remedy splits: ours the prune releases itself, and
         # anything else has to be removed before the prune can take the device.
         "forward_owned": {
@@ -3429,6 +3466,129 @@ PLATFORM_RESTORE_SPLIT = (
 PLATFORM_RESTORE_CARD = "Platforms a Sync Run Blanked"
 
 
+UNMANAGED_DELETE_CARD = "Unmanaged Delete: Last Result"
+# (card label, key in the payload's `values`); the card renders these labels and
+# the bundle repeats them in `ui_figures`.
+UNMANAGED_DELETE_FIGURES = (
+    ("Deleted", "deleted"),
+    ("Held by routing records", "held_by_routing"),
+    ("Held by other records", "held_by_other"),
+    ("Refused, not eligible", "refused"),
+    ("Left for a later run (over the cap)", "over_cap"),
+    ("Held and still in NetBox", "still_in_netbox"),
+)
+
+
+def _unmanaged_delete_payload(sync, *, with_names=False):
+    """The last unmanaged delete: what it removed, what it held, and why.
+
+    A local read of the stored job. Held devices are listed by pk, with their
+    names only for the page (``with_names``); the bundle never carries names.
+    """
+    from core.choices import JobStatusChoices
+    from core.models import Job
+    from django.contrib.contenttypes.models import ContentType
+
+    from .utilities.scope_reconciliation import summarize_held_devices
+
+    job = (
+        Job.objects.filter(
+            object_type=ContentType.objects.get_for_model(ForwardSync),
+            object_id=sync.pk,
+            name__icontains="prune unmanaged",
+            status=JobStatusChoices.STATUS_COMPLETED,
+        )
+        .order_by("-created")
+        .first()
+    )
+    data = job.data if job is not None and isinstance(job.data, dict) else {}
+    card = {"page": "Scope Reconciliation", "card": UNMANAGED_DELETE_CARD}
+    if "pruned_device_count" not in data:
+        return {
+            "available": False,
+            "figures": [],
+            "ui_figures": [],
+            "held": [],
+            "next_step": "",
+        }
+    # A job from before the per-device record only has counts. Say so, instead of
+    # reading its missing detail as "nothing was held".
+    legacy = "protected_by_device" not in data
+    held_by_device = {
+        int(pk): counts
+        for pk, counts in (data.get("protected_by_device") or {}).items()
+        if str(pk).isdigit()
+    }
+    still_here = set(
+        Device.objects.filter(pk__in=list(held_by_device)).values_list("pk", flat=True)
+    )
+    held_here = {pk: held_by_device[pk] for pk in sorted(still_here)}
+    still = summarize_held_devices(
+        held_here, option_was_on=bool(data.get("release_routing"))
+    )
+    reasons = data.get("refused_device_pks_by_reason") or {}
+    over_cap = len(reasons.get("over_cap") or ())
+    refused = sum(len(pks) for key, pks in reasons.items() if key != "over_cap")
+    not_recorded = "not recorded (older run)"
+    values = {
+        "deleted": int(data.get("pruned_device_count") or 0),
+        "held_by_routing": not_recorded if legacy else still["freed_by_routing_option"],
+        "held_by_other": not_recorded if legacy else still["needs_other_records"],
+        "refused": refused,
+        "over_cap": over_cap,
+        "still_in_netbox": not_recorded if legacy else still["held_devices"],
+    }
+    if legacy:
+        next_step = "legacy" if int(data.get("protected_device_count") or 0) else ""
+    elif still["freed_by_routing_option"]:
+        next_step = "release_routing"
+    elif still["held_devices"]:
+        next_step = "other_records"
+    else:
+        next_step = ""
+    figures = [(label, values[key]) for label, key in UNMANAGED_DELETE_FIGURES]
+    when = job.completed.isoformat() if getattr(job, "completed", None) else None
+    held_rows = []
+    if with_names:
+        shown = list(held_here)[:25]
+        devices = {d.pk: d for d in Device.objects.filter(pk__in=shown)}
+        held_rows = [
+            {"device": devices[pk], "held_by": _blocker_labels(held_here[pk])}
+            for pk in shown
+            if pk in devices
+        ]
+    return {
+        "available": True,
+        "job": job.pk,
+        "finished_at": when,
+        "finished_label": (
+            job.completed.strftime("%Y-%m-%d %H:%M UTC")
+            if getattr(job, "completed", None)
+            else ""
+        ),
+        "release_routing_used": bool(data.get("release_routing")),
+        "legacy": legacy,
+        "legacy_held_count": int(data.get("protected_device_count") or 0),
+        "legacy_held_by_model": data.get("protected_by_model") or {},
+        "values": values,
+        "figures": figures,
+        "held": [{"pk": pk, "held_by": counts} for pk, counts in held_here.items()],
+        "held_rows": held_rows,
+        "held_still_in_netbox": still,
+        "next_step": next_step,
+        "ui_figures": [
+            {
+                **card,
+                "model": None,
+                "label": label,
+                "value": value,
+                "computed_at": when,
+            }
+            for label, value in figures
+        ],
+    }
+
+
 def _platform_restore_payload(sync):
     """The latest platform-restore preview and restore, as the card shows them.
 
@@ -3925,6 +4085,64 @@ def _select_all_to_stored_list(request):
     return ""
 
 
+# The confirmation page for the unmanaged delete summarises what holds each
+# selected device. Each device walks Django's deletion plan, so the walk is
+# budgeted: a large selection is summarised as far as it gets, and says so.
+_UNMANAGED_HOLD_SURVEY_BUDGET_SECONDS = 8
+
+
+def _unmanaged_hold_survey(devices):
+    """What holds each of these devices, split by what the routing option frees.
+
+    ``{"by_device": {pk: [(label, count)]}, "routing_devices": n,
+    "other_devices": n, "clear_devices": n, "routing_labels": {label: n},
+    "other_labels": {label: n}, "surveyed": n, "total": n}``. Labels owned by this
+    plugin are left out: the delete releases its own ownership rows itself.
+    """
+    from .utilities.device_cascade_delete import is_releasable_routing_row
+    from .utilities.workload_state import describe_delete_blockers
+
+    by_device = {}
+    routing_labels, other_labels = {}, {}
+    routing_devices = other_devices = clear_devices = surveyed = 0
+    deadline = time.monotonic() + _UNMANAGED_HOLD_SURVEY_BUDGET_SECONDS
+    device_list = list(devices)
+    for device in device_list:
+        if time.monotonic() > deadline:
+            break
+        surveyed += 1
+        # Lowercase, like the job's own record of what refused a device, so the
+        # page, the card and the bundle name a model the same way.
+        held = [
+            (label.lower(), count)
+            for label, count in describe_delete_blockers(device)
+            if not label.lower().startswith("forward_netbox.")
+        ]
+        by_device[device.pk] = held
+        if not held:
+            clear_devices += 1
+            continue
+        if all(is_releasable_routing_row(label) for label, _ in held):
+            routing_devices += 1
+        else:
+            other_devices += 1
+        for label, count in held:
+            target = (
+                routing_labels if is_releasable_routing_row(label) else other_labels
+            )
+            target[label] = target.get(label, 0) + count
+    return {
+        "by_device": by_device,
+        "routing_devices": routing_devices,
+        "other_devices": other_devices,
+        "clear_devices": clear_devices,
+        "routing_labels": dict(sorted(routing_labels.items())),
+        "other_labels": dict(sorted(other_labels.items())),
+        "surveyed": surveyed,
+        "total": len(device_list),
+    }
+
+
 class ForwardDeviceListPruneUnmanagedView(View):
     """Review, confirm and queue the guarded prune of unmanaged devices.
 
@@ -3994,11 +4212,11 @@ class ForwardDeviceListPruneUnmanagedView(View):
                 )
             else:
                 try:
+                    job_kwargs = {"restrict_to_device_pks": pks}
+                    if request.POST.get("release_routing"):
+                        job_kwargs["release_routing"] = True
                     job = enqueue_button_job(
-                        sync,
-                        "prune_unmanaged",
-                        request.user,
-                        job_kwargs={"restrict_to_device_pks": pks},
+                        sync, "prune_unmanaged", request.user, job_kwargs=job_kwargs
                     )
                 except (JobAlreadyActive, JobBlockedBySyncRun):
                     messages.warning(
@@ -4013,8 +4231,9 @@ class ForwardDeviceListPruneUnmanagedView(View):
                         request,
                         _(
                             "Queued job #%(pk)d. Each device is checked against "
-                            "Forward again and only those proven gone are deleted; "
-                            "the job records any it refused."
+                            "Forward again and only those proven gone are deleted. "
+                            "When it finishes, the result and any device it held "
+                            "back, with the reason, are on Scope Reconciliation."
                         )
                         % {"pk": job.pk},
                     )
@@ -4041,12 +4260,18 @@ class ForwardDeviceListPruneUnmanagedView(View):
             }
             for device in devices.select_related("site", "role").order_by("name")
         ]
+        survey = _unmanaged_hold_survey(device_row["device"] for device_row in rows)
+        for device_row in rows:
+            held = survey["by_device"].get(device_row["device"].pk)
+            device_row["checked"] = held is not None
+            device_row["held_by"] = _blocker_labels(dict(held or ()))
         return render(
             request,
             self.template_name,
             {
                 "sync": sync,
                 "rows": rows,
+                "survey": survey,
                 "count": len(pks),
                 "pks": pks,
                 "cap": UNMANAGED_PRUNE_MAX_DEVICES,
@@ -4315,7 +4540,7 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
         return "forward_netbox.view_forwardsync"
 
     @staticmethod
-    def _cleanup_items(sync, payload, platform_restorable=0):
+    def _cleanup_items(sync, payload, platform_restorable=0, unmanaged_held=None):
         """The ordered "what do I do" checklist; see `cleanup_checklist`.
 
         ``platform_restorable`` is the restorable count of the stored platform
@@ -4325,7 +4550,11 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
         from .utilities.scope_reconciliation import site_relabel_held_by_reason
         from .utilities.scope_reconciliation import site_relabel_pairs
 
-        if not payload and not platform_restorable:
+        if (
+            not payload
+            and not platform_restorable
+            and not (unmanaged_held or {}).get("held_devices")
+        ):
             return []
 
         def url(name):
@@ -4358,6 +4587,7 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
             on_no_interface=(summary or {}).get("address_on_no_synced_interface", 0),
             management_interfaces_on=management_interfaces_enabled(sync),
             platform_restorable=platform_restorable,
+            unmanaged_held=unmanaged_held,
             twin_count=len(_stored_device_ids(sync, "unmanaged", UNCLAIMED_TWINS)[0]),
             relabel={
                 "pair_count": len(relabel.get("pairs") or ()),
@@ -4396,8 +4626,12 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
         backfilled_tag_url = f"{device_list_url}?tag={BACKFILLED_TAG_SLUG}"
         uncovered_tag_url = f"{device_list_url}?tag={UNCOVERED_TAG_SLUG}"
         platform_restore = _platform_restore_payload(sync)
+        unmanaged_delete = _unmanaged_delete_payload(sync, with_names=True)
         cleanup_items = self._cleanup_items(
-            sync, payload, platform_restorable=platform_restore["restorable"]
+            sync,
+            payload,
+            platform_restorable=platform_restore["restorable"],
+            unmanaged_held=unmanaged_delete.get("held_still_in_netbox"),
         )
         return render(
             request,
@@ -4480,6 +4714,7 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
                 # Stored jobs only: the preview is a button, never a page render.
                 "stale_row_cleanup": _stale_row_cleanup_payload(sync),
                 "platform_restore": platform_restore,
+                "unmanaged_delete": unmanaged_delete,
             },
         )
 

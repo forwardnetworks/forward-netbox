@@ -301,6 +301,14 @@ PAGE_CARD_PATHS = {
             "operator_action_jobs.preview_platform_restore",
             "operator_action_jobs.restore_platforms",
         ],
+        # The last verified delete of unmanaged devices: the figures under the
+        # card's labels in `ui_figures`, each held device by pk and holder, and
+        # the job record.
+        "Unmanaged Delete: Last Result": [
+            "scope_reconciliation.unmanaged_delete",
+            "scope_reconciliation.unmanaged_delete.ui_figures",
+            "operator_action_jobs.prune_unmanaged",
+        ],
         "What to do": "diagnostics.cleanup_checklist",
         "Site-Relabel Duplicates": "diagnostics.site_relabel_pairs",
         "Uncovered, Created by This Sync": [

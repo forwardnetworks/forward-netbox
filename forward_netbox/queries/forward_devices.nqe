@@ -28,7 +28,7 @@ foreach row in (
     let model_slug_raw = slugifyNetboxModel(model)
     let model_slug = if isPresent(model_slug_raw) && model_slug_raw != "" then model_slug_raw else "unknown"
     let role_name = replace(toString(device.platform.deviceType), "DeviceType.", "")
-    let site_name = if isPresent(device.locationName) then toLowerCase(device.locationName) else "unknown"
+    let site_name = deviceSiteName(device)
     let platform_name = normalizeDevicePlatformName(device)
     let manufacturer_name = canonicalManufacturerName(device.platform.vendor)
     let manufacturer_slug = slugify(manufacturer_name)
@@ -159,7 +159,7 @@ foreach row in (
     let ep_model_slug_raw = substring(slugifyNetboxModel(ep_model), 0, 100)
     let ep_model_slug = if ep_model_slug_raw == "" then "unknown" else ep_model_slug_raw
     let ep_role = if isConsoleServer then "Console Server" else "SNMP Endpoint"
-    let ep_site = if isPresent(endpoint.locationName) then toLowerCase(endpoint.locationName) else "unknown"
+    let ep_site = siteNameFor(endpoint.tagNames, if isPresent(endpoint.locationName) then endpoint.locationName else "")
     select {
       name: endpoint.name,
       manufacturer: ep_manuf,

@@ -1023,7 +1023,9 @@ def _prune_uncovered_devices_work(
         raise
 
 
-def _prune_unmanaged_devices_work(job, *, restrict_to_device_pks=()):
+def _prune_unmanaged_devices_work(
+    job, *, restrict_to_device_pks=(), release_routing=False
+):
     """Run the reviewed prune of devices no sync is bound to.
 
     Operator button only, with the pks the operator reviewed and confirmed;
@@ -1034,6 +1036,7 @@ def _prune_unmanaged_devices_work(job, *, restrict_to_device_pks=()):
     from .utilities.scope_reconciliation import EmptyForwardScopeError
     from .utilities.scope_reconciliation import prune_unmanaged_devices
     from .utilities.scope_reconciliation import ScopeCensusUnavailableError
+    from .utilities.scope_reconciliation import summarize_held_devices
 
     sync = ForwardSync.objects.get(pk=job.object_id)
     try:
@@ -1042,7 +1045,9 @@ def _prune_unmanaged_devices_work(job, *, restrict_to_device_pks=()):
             sync,
             report=report,
             restrict_to_device_pks=restrict_to_device_pks,
+            release_routing=release_routing,
         )
+        held = result.get("protected_by_device", {})
         job.data = {
             "pruned_device_count": result["pruned_device_count"],
             "pruned_object_count": result["pruned_object_count"],
@@ -1051,6 +1056,14 @@ def _prune_unmanaged_devices_work(job, *, restrict_to_device_pks=()):
             "ownership_blocked_device_count": result["ownership_blocked_device_count"],
             "protected_device_count": result["protected_device_count"],
             "protected_by_model": result.get("protected_by_model", {}),
+            # WHICH device was held by WHAT: pks and model labels, never names.
+            # A job that deleted nothing is otherwise a bare count, and the
+            # operator cannot tell a refusal from a job that never ran.
+            "protected_by_device": {str(pk): counts for pk, counts in held.items()},
+            "held_summary": summarize_held_devices(
+                held, option_was_on=bool(release_routing)
+            ),
+            "release_routing": bool(release_routing),
             "per_run_cap": result["cap"],
         }
         job.save(update_fields=["data"])
@@ -2780,6 +2793,8 @@ class PruneUnmanagedDevicesJob(ForwardJobRunner):
             extra["restrict_to_device_pks"] = [
                 int(pk) for pk in kwargs["restrict_to_device_pks"]
             ]
+        if kwargs.get("release_routing"):
+            extra["release_routing"] = True
         _prune_unmanaged_devices_work(self.job, **extra)
 
 

@@ -174,3 +174,31 @@ export slugifyNetboxModel(value: String) =
       ".", " dot "
     )
   );
+
+// The NetBox site a device belongs to. Forward knows a device by its location;
+// NetBox sites are usually coarser (many Forward locations make up one data
+// centre). A device tagged NetBox_Site_<name> is placed at the site <name>,
+// whatever its location; an untagged device keeps its location, as before.
+// Names are lowercased like every site name the sync creates. A device with more
+// than one such tag takes the first alphabetically, so the answer never depends on
+// tag order. See docs/02_Reference/site-tag-override.md.
+export siteTagName(tag_names: List<String>) =
+  min(
+    foreach tag in tag_names
+    where matches(tag, "NetBox_Site_*")
+    where length(replace(tag, "NetBox_Site_", "")) > 0
+    select replace(tag, "NetBox_Site_", "")
+  );
+
+export siteNameFor(tag_names: List<String>, location_name: String) =
+  if isPresent(siteTagName(tag_names))
+  then toLowerCase(siteTagName(tag_names))
+  else if length(location_name) > 0
+  then toLowerCase(location_name)
+  else "unknown";
+
+export deviceSiteName(device: Device) =
+  siteNameFor(
+    device.tagNames,
+    if isPresent(device.locationName) then device.locationName else ""
+  );
