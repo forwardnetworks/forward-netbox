@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v3.0.16
+
+Release candidate; Change counts for completed runs, held unmanaged deletes, NetBox_Site_ device tag, safe site moves
+
 ## v3.0.15
 
 3.0.15: Scope page splits uncovered from not-managed; platform restore covers VMs and config contexts; dependency bumps (paramiko 5.1, forward-sdk 0.1.36)
