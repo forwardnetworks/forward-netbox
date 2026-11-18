@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v3.0.16
 
-Release candidate; Change counts for completed runs, held unmanaged deletes, NetBox_Site_ device tag, safe site moves
+Change counts for completed runs, held unmanaged deletes, NetBox_Site_ device tag, safe site moves
 
 ## v3.0.15
 
