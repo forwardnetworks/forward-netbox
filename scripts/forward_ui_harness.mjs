@@ -465,6 +465,9 @@ async function main() {
           `visible: area.getClientRects().length > 0,` +
           `help: document.body.innerText.includes("unless a mapping applies"),` +
           `tagControl: !!builder.querySelector("[data-tag]"),` +
+          `locationList: builder.querySelector("[data-location]").getAttribute("list"),` +
+          `locationOptions: !!document.getElementById(` +
+            `builder.querySelector("[data-location]").getAttribute("list")),` +
           `status: builder.querySelector("[data-status]").textContent.trim(),` +
         `};` +
       `})()`,
@@ -477,6 +480,10 @@ async function main() {
       `the rule builder did not add a line (field: ${siteRules.value})`,
     );
     assert(siteRules.tagControl, "the rule builder has no tag control for a tag rule");
+    assert(
+      siteRules.locationList && siteRules.locationOptions,
+      "the location field has no suggestion list for Forward's location names",
+    );
     assert(siteRules.status.length > 0, "the rule builder said nothing about loading tags");
     assertNoHorizontalOverflow("desktop source form");
     evidence.screenshots.push(screenshot("desktop-source-form.jpg"));

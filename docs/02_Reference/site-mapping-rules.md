@@ -27,6 +27,9 @@ tag Prod_Core -> core
 - A tag is chosen from a dropdown filled from Forward's own tag list (the field's
   **Add a rule** builder; save the source first so it knows which network to ask).
   The textarea also accepts a tag typed by hand.
+- A location pattern is typed, with Forward's location names offered as suggestions
+  as you type (the same builder; they are only suggestions, since a rule is a
+  pattern such as `HQ_*`, not one location).
 - The site is the NetBox site name. It is lowercased and slugged like every site
   name the sync creates.
 - At most 100 rules. The same location pattern or tag twice, and two site names that
@@ -93,11 +96,14 @@ them.
 ## If a sync stops
 
 The full message, with the map's name and what to do, is on the sync **job's page** in
-NetBox (the job's log). The plugin's own Logs tab and the support bundle redact
-warning text, as they do everywhere, so there they show only the reason label.
+NetBox (the job's log). The plugin's own Logs tab and the log export redact warning
+text, because a map's name is your own word, so they show a second, shorter line for
+each refusal that carries only the model, the reason label and what to do. The
+support bundle shows the reason label.
 
 | Message or reason label | Meaning | Fix |
 | --- | --- | --- |
+| `site-rules-require-diff`: "...need a full fetch ... `Require diff`" | The sync's diff fallback mode is `Require diff`, which refuses the full fetch that site rules need | Set the sync's diff fallback mode to `Allow full fallback`, or remove the rules |
 | "The site rules saved on the Forward source are not valid" | Rules saved by hand (the REST API) that the form would have refused | Edit the source and correct the named rule |
 | `site-rules-query-rejected`, `site-rules-query-not-declared`: "...rejected the site mapping rules" or "this query does not take them" | A query in your Forward organization predates the rules | Publish Bundled Queries, refresh the query IDs, or remove the rules |
 | `site-rules-custom-map`: "...runs a custom query that does not take them" (and Health: "Site rules ... cannot apply them") | An enabled map for devices, sites or VLANs is your own query, which cannot take the rules | Enable the bundled map for that model, declare `site_rules` on your query and in the map's parameters, or remove the rules |

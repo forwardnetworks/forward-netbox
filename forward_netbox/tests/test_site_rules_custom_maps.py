@@ -262,6 +262,6 @@ class RuntimeWarningIsLoggedOnceTest(SimpleTestCase):
         warnings = [
             call.args[0]
             for call in logger.log_warning.call_args_list
-            if "site mapping rules" in str(call.args[0])
+            if "rejected the site mapping rules" in str(call.args[0])
         ]
         self.assertEqual(len(warnings), 1)

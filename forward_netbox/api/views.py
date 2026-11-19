@@ -210,8 +210,13 @@ class ForwardSourceViewSet(NetBoxModelViewSet):
                 )
         return Response({"count": len(results), "results": results})
 
-    @action(detail=False, methods=["get"], url_path="available-tags")
-    def available_tags(self, request):
+    def _available_names(self, request, *, noun, query, names_from_row):
+        """List the distinct names Forward has, for a form dropdown.
+
+        ``noun`` is what is listed (it appears in the messages), ``query`` is the
+        NQE that finds them on the latest processed snapshot, and
+        ``names_from_row`` turns one result row into its names.
+        """
         if "username" in request.GET or "password" in request.GET:
             return Response(
                 {"detail": "Forward credentials are not accepted in query strings."},
@@ -224,7 +229,7 @@ class ForwardSourceViewSet(NetBoxModelViewSet):
                 {
                     "count": 0,
                     "results": [],
-                    "detail": "A saved Forward source is required to load device tags.",
+                    "detail": f"A saved Forward source is required to load {noun}.",
                 }
             )
         try:
@@ -244,12 +249,12 @@ class ForwardSourceViewSet(NetBoxModelViewSet):
                 {
                     "count": 0,
                     "results": [],
-                    "detail": "Select a Forward network to load device tags.",
+                    "detail": f"Select a Forward network to load {noun}.",
                 }
             )
 
         q = (request.GET.get("q") or "").strip().lower()
-        tag_set = set()
+        name_set = set()
         try:
             client = source.get_client()
             snapshot = get_latest_processed_snapshot(client, network_id)
@@ -268,24 +273,19 @@ class ForwardSourceViewSet(NetBoxModelViewSet):
 
             rows = run_nqe_query(
                 client,
-                query=(
-                    "foreach device in network.devices\n"
-                    "where device.snapshotInfo.result == DeviceSnapshotResult.completed\n"
-                    "where device.platform.vendor != Vendor.FORWARD_CUSTOM\n"
-                    "select {tagNames: device.tagNames}"
-                ),
+                query=query,
                 network_id=network_id,
                 snapshot_id=snapshot_id,
                 fetch_all=True,
             )
             for row in rows:
-                for tag in row.get("tagNames") or []:
-                    candidate = str(tag or "").strip()
+                for name in names_from_row(row):
+                    candidate = str(name or "").strip()
                     if not candidate:
                         continue
                     if q and q not in candidate.lower():
                         continue
-                    tag_set.add(candidate)
+                    name_set.add(candidate)
         except ForwardSyncError as error:
             message = str(error)
             if isinstance(error, ForwardConnectivityError):
@@ -304,22 +304,48 @@ class ForwardSourceViewSet(NetBoxModelViewSet):
                     "web UI before using NetBox."
                 )
             else:
-                detail = "Could not load device tags from this Forward account."
+                detail = f"Could not load {noun} from this Forward account."
             return Response({"count": 0, "results": [], "detail": detail})
         except Exception:
             return Response(
                 {
                     "count": 0,
                     "results": [],
-                    "detail": "Could not load device tags from this Forward account.",
+                    "detail": f"Could not load {noun} from this Forward account.",
                 }
             )
 
         results = [
-            {"id": tag, "name": tag, "display": tag}
-            for tag in sorted(tag_set, key=lambda value: value.lower())
+            {"id": name, "name": name, "display": name}
+            for name in sorted(name_set, key=lambda value: value.lower())
         ]
         return Response({"count": len(results), "results": results})
+
+    @action(detail=False, methods=["get"], url_path="available-tags")
+    def available_tags(self, request):
+        return self._available_names(
+            request,
+            noun="device tags",
+            query=(
+                "foreach device in network.devices\n"
+                "where device.snapshotInfo.result == DeviceSnapshotResult.completed\n"
+                "where device.platform.vendor != Vendor.FORWARD_CUSTOM\n"
+                "select {tagNames: device.tagNames}"
+            ),
+            names_from_row=lambda row: row.get("tagNames") or [],
+        )
+
+    @action(detail=False, methods=["get"], url_path="available-locations")
+    def available_locations(self, request):
+        """The Forward location names, offered as suggestions for a site rule."""
+        return self._available_names(
+            request,
+            noun="locations",
+            query=(
+                "foreach location in network.locations\n" "select {name: location.name}"
+            ),
+            names_from_row=lambda row: [row.get("name")],
+        )
 
 
 class ForwardNQEMapViewSet(NetBoxModelViewSet):

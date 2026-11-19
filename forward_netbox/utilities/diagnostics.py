@@ -1,6 +1,7 @@
 """Safe diagnostic helpers for persisted and user-visible job evidence."""
 
 import re
+from functools import lru_cache
 from collections import Counter
 from copy import deepcopy
 
@@ -120,13 +121,18 @@ def ownership_conflict_reason(exc) -> str:
 # failure is characterised by an allowlisted slug wherever one matches, and by
 # leading wording with every value-bearing token dropped where none does.
 #
-# Ordering is significant only in that the ownership rules stay first, so
-# `ownership_conflict_reason` and `failure_reason` agree on the same message.
+# Ordering matters twice: the ownership rules stay first, so `ownership_conflict_reason`
+# and `failure_reason` agree on the same message, and the site-rules labels come
+# first among the needle rules, because the list of labels is capped.
 _FAILURE_REASON_RULES = (
     # First, because the list of labels is capped and a validation block reads these:
     # a map named with words that match a rule below must not push one of them out.
     # The site mapping rules (utilities/site_tag.py) reached a map that cannot take
     # them. Plugin-authored sentences, so the slugs disclose nothing.
+    (
+        "site-rules-require-diff",
+        "site mapping rules are set and need a full fetch",
+    ),
     ("site-rules-custom-map", "runs a custom query that does not take"),
     ("site-rules-query-rejected", "rejected the site mapping rules"),
     ("site-rules-query-not-declared", "site_rules_not_declared"),
@@ -186,6 +192,65 @@ _FAILURE_REASON_RULES = (
     # wholesale skip of a model read as `unrecognized-fetch-failure`.
     ("row-identity-incomplete", "does not satisfy any configured coalesce field set"),
 )
+
+# The site mapping rules refusals (utilities/site_tag.py), as one value-free sentence
+# each: only the model string, the reason label and fixed advice, so the plugin's Logs
+# tab and the log export (which redact warning text) can show them. The map's name,
+# which is the customer's own word, stays out of them; the full text is on the job
+# page. This module is standard-library only on purpose (it is loaded on its own by
+# tests and is the one every failure path formats through), so the reason codes, the
+# models and the advice live here, and the execution contract reads them from here.
+SITE_RULES_NOT_DECLARED_REASON = "site_rules_not_declared"
+SITE_RULES_CUSTOM_MAP_REASON = "site_rules_custom_map"
+SITE_RULES_REQUIRE_DIFF_REASON = "site_rules_require_diff"
+# The models whose rows name a NetBox site: a map for one of them has to take the
+# site rules.
+SITE_RULES_MODELS = frozenset({"dcim.site", "dcim.device", "ipam.vlan"})
+SITE_RULES_ADVICE = {
+    SITE_RULES_NOT_DECLARED_REASON: (
+        " The Forward source has site mapping rules, but this query does not take "
+        "them (it predates them). Publish the bundled queries to the organization "
+        "(Forward NQE Maps, Publish Bundled Queries) and refresh the query IDs, "
+        "or remove the site rules."
+    ),
+    SITE_RULES_CUSTOM_MAP_REASON: (
+        " Enable the bundled map for this model instead of the custom one; or "
+        "make the custom query take the rules by declaring a `site_rules` "
+        "parameter in its @query line AND adding `site_rules` (value `[]`) to "
+        "the map's parameters (see the Site Mapping Rules reference); or remove "
+        "the site rules."
+    ),
+    SITE_RULES_REQUIRE_DIFF_REASON: (
+        " Site rules need a full fetch (the incremental diff cannot carry them), "
+        "and this sync's diff fallback mode is `Require diff`, which refuses one. "
+        "Set the sync's diff fallback mode to `Allow full fallback`, or remove the "
+        "site rules."
+    ),
+}
+_SITE_RULES_LABEL_REASONS = {
+    "site-rules-custom-map": SITE_RULES_CUSTOM_MAP_REASON,
+    "site-rules-query-rejected": SITE_RULES_NOT_DECLARED_REASON,
+    "site-rules-query-not-declared": SITE_RULES_NOT_DECLARED_REASON,
+    "site-rules-require-diff": SITE_RULES_REQUIRE_DIFF_REASON,
+}
+
+
+def safe_site_rules_message(model_string, label) -> str:
+    """The value-free warning for a site-rules refusal of ``model_string``."""
+    return (
+        f"Site mapping rules cannot be applied for {model_string} ({label})."
+        + SITE_RULES_ADVICE[_SITE_RULES_LABEL_REASONS[label]]
+    )
+
+
+@lru_cache(maxsize=1)
+def _safe_site_rules_messages() -> frozenset:
+    return frozenset(
+        safe_site_rules_message(model, label)
+        for model in SITE_RULES_MODELS
+        for label in _SITE_RULES_LABEL_REASONS
+    )
+
 
 # `403` and `503` are HTTP status codes, not customer data, and they are the
 # single most actionable token in a Forward client error - but they carry a
@@ -414,6 +479,14 @@ def model_failure_summary(model_results) -> list[dict]:
     def _safe(value: str) -> str:
         return value if _SAFE_DIAGNOSTIC_TOKEN.fullmatch(value) else "redacted"
 
+    def _safe_reason(value: str) -> str:
+        # A reason is one or more allowlisted slugs joined by `+`. Each must be a
+        # safe token on its own; anything else is redacted whole.
+        parts = value.split("+")
+        if all(_SAFE_DIAGNOSTIC_TOKEN.fullmatch(part) for part in parts):
+            return value
+        return "redacted"
+
     summary = []
     for result in model_results or []:
         if not isinstance(result, dict):
@@ -427,7 +500,7 @@ def model_failure_summary(model_results) -> list[dict]:
                     str(result.get("model") or result.get("model_string") or "")
                 ),
                 "exception": _safe(str(result.get("failure_exception") or "")),
-                "reason": _safe(str(result.get("failure_reason") or "")),
+                "reason": _safe_reason(str(result.get("failure_reason") or "")),
                 "failure_count": failure_count,
             }
         )
@@ -674,6 +747,10 @@ def safe_job_error_summary(error) -> str:
 
 def safe_log_message(message, level: str = "") -> str:
     """Redact a log row's body, claiming only what its level supports."""
+    # Exactly the sentences the plugin builds for a site-rules refusal: nothing a
+    # customer typed can match, so these are the one warning allowed through.
+    if str(message) in _safe_site_rules_messages():
+        return str(message)
     parts = recovered_classifiers(message)
     site = recovered_raise_site(message)
     if parts:

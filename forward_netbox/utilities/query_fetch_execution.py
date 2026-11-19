@@ -41,6 +41,11 @@ from .diagnostics import failure_classifier
 from .diagnostics import failure_reason
 from .diagnostics import safe_exception_summary
 from .diagnostics import safe_operation_failure
+from .diagnostics import safe_site_rules_message
+from .diagnostics import SITE_RULES_CUSTOM_MAP_REASON
+from .diagnostics import SITE_RULES_MODELS
+from .diagnostics import SITE_RULES_NOT_DECLARED_REASON
+from .diagnostics import SITE_RULES_REQUIRE_DIFF_REASON
 from .forward_api import build_device_tag_scope_where
 from .forward_api import build_endpoint_device_eligibility_where
 from .forward_api import build_endpoint_tag_scope_where
@@ -92,8 +97,6 @@ from .query_execution_contract import resolve_model_execution_contract
 from .query_execution_contract import ResolvedExecutionContract
 from .query_execution_contract import scope_config_fingerprint
 from .query_execution_contract import scope_membership_fingerprint
-from .query_execution_contract import SITE_RULES_CUSTOM_MAP_REASON
-from .query_execution_contract import SITE_RULES_NOT_DECLARED_REASON
 from .query_execution_contract import SITE_RULES_PARAMETER_NAME
 from .query_registry import ensure_unique_query_spec_executions
 from .query_registry import get_query_specs
@@ -247,11 +250,6 @@ _NQE_CONTRACT_REJECTION_MARKERS = (
 def _is_nqe_contract_rejection(exc: Exception) -> bool:
     haystack = str(exc or "").casefold()
     return any(marker in haystack for marker in _NQE_CONTRACT_REJECTION_MARKERS)
-
-
-# The models whose rows name a NetBox site: a map for one of them has to take the
-# site rules (see utilities/site_tag.py).
-SITE_RULES_MODELS = frozenset({"dcim.site", "dcim.device", "ipam.vlan"})
 
 
 def _custom_maps_without_site_rules(model_string, specs, context):
@@ -1148,6 +1146,11 @@ class ForwardQueryFetcher:
                 ensure_unique_query_spec_executions(
                     effective_specs,
                 )
+                uncovered = _custom_maps_without_site_rules(
+                    model_string, effective_specs, context
+                )
+                if uncovered:
+                    raise self._custom_map_site_rules_refusal(model_string, uncovered)
             except ForwardQueryError as exc:
                 self._record_model_failure(
                     context,
@@ -1537,6 +1540,27 @@ class ForwardQueryFetcher:
     def _require_diff_execution(self) -> bool:
         return self._diff_fallback_mode() == ForwardDiffFallbackModeChoices.REQUIRE_DIFF
 
+    def _custom_map_site_rules_refusal(self, model_string, uncovered):
+        """Log a custom map's refusal in full and value-free, and return the error.
+
+        The log keeps only the first words of an exception, so the whole message
+        (which map, and what to do) is logged here. The second line carries no map
+        name, so the plugin's Logs tab can show it.
+        """
+        message = (
+            "Site mapping rules are set on the Forward source, but "
+            f"the map {', '.join(sorted(uncovered))} for {model_string} "
+            "runs a custom query that does not take them, so its "
+            "devices would not be placed by the rules."
+            + contract_reason_hint(SITE_RULES_CUSTOM_MAP_REASON)
+        )
+        self.logger.log_warning(message, obj=self.sync)
+        self.logger.log_warning(
+            safe_site_rules_message(model_string, "site-rules-custom-map"),
+            obj=self.sync,
+        )
+        return ForwardQueryError(message)
+
     def _build_workload_jobs(
         self,
         context: ForwardQueryContext,
@@ -1604,16 +1628,28 @@ class ForwardQueryFetcher:
                     # placed by their Forward location. Stop the whole run, as an
                     # unsafe contract does, so nothing is applied half-placed.
                     contract_preflight_blocked = True
+                    raise self._custom_map_site_rules_refusal(model_string, uncovered)
+                if (
+                    getattr(context, "site_rules", None)
+                    and model_string in SITE_RULES_MODELS
+                    and self._require_diff_execution()
+                ):
+                    # The diff revisions cannot carry the rules, so rules need a full
+                    # fetch, and `Require diff` refuses one: both cannot be honoured.
+                    contract_preflight_blocked = True
                     message = (
-                        "Site mapping rules are set on the Forward source, but "
-                        f"the map {', '.join(sorted(uncovered))} for {model_string} "
-                        "runs a custom query that does not take them, so its "
-                        "devices would not be placed by the rules."
-                        + contract_reason_hint(SITE_RULES_CUSTOM_MAP_REASON)
+                        "Site mapping rules are set and need a full fetch of "
+                        f"{model_string}, but this sync's diff fallback mode is "
+                        "`Require diff`."
+                        + contract_reason_hint(SITE_RULES_REQUIRE_DIFF_REASON)
                     )
-                    # The log keeps only the first words of an exception, so say
-                    # the whole of it here: which map, and what to do.
                     self.logger.log_warning(message, obj=self.sync)
+                    self.logger.log_warning(
+                        safe_site_rules_message(
+                            model_string, "site-rules-require-diff"
+                        ),
+                        obj=self.sync,
+                    )
                     raise ForwardQueryError(message)
                 contracts = [
                     resolve_execution_contract(
@@ -1653,6 +1689,16 @@ class ForwardQueryFetcher:
                         + contract_reason_hint(unsafe_full_contract.full_reason_code),
                         obj=self.sync,
                     )
+                    if (
+                        unsafe_full_contract.full_reason_code
+                        == SITE_RULES_NOT_DECLARED_REASON
+                    ):
+                        self.logger.log_warning(
+                            safe_site_rules_message(
+                                model_string, "site-rules-query-not-declared"
+                            ),
+                            obj=self.sync,
+                        )
                     raise ForwardQueryError(
                         "Execution contract preflight rejected an unsafe full "
                         f"contract for {model_string}: "
@@ -4187,6 +4233,12 @@ class ForwardQueryFetcher:
                     if site_rules_key not in self._site_rules_rejections_logged:
                         self._site_rules_rejections_logged.add(site_rules_key)
                         self.logger.log_warning(message, obj=self.sync)
+                        self.logger.log_warning(
+                            safe_site_rules_message(
+                                spec.model_string, "site-rules-query-rejected"
+                            ),
+                            obj=self.sync,
+                        )
                     raise ForwardQueryError(message) from exc
                 self._queries_without_site_rules.add(site_rules_key)
                 self.logger.log_info(

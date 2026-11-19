@@ -5,10 +5,13 @@ from django.utils.safestring import mark_safe
 
 # The endpoint the device-tag filters already use to list the tags Forward has.
 AVAILABLE_TAGS_URL = "/api/plugins/forward/source/available-tags/"
+# And the one that lists its locations, offered as suggestions for a location rule.
+AVAILABLE_LOCATIONS_URL = "/api/plugins/forward/source/available-locations/"
 
 _BUILDER = """
 <div class="border rounded p-2 mt-2" data-forward-site-rule-builder="{field_id}"
-     data-source-id="{source_id}" data-tags-url="{tags_url}">
+     data-source-id="{source_id}" data-tags-url="{tags_url}"
+     data-locations-url="{locations_url}">
   <div class="fw-bold mb-1">Add a rule</div>
   <div class="row g-2 align-items-end">
     <div class="col-12 col-md-3">
@@ -20,7 +23,9 @@ _BUILDER = """
     </div>
     <div class="col-12 col-md-4">
       <label class="form-label mb-0" data-value-label>Location (a pattern, e.g. DC01*)</label>
-      <input type="text" class="form-control" data-location placeholder="DC01*">
+      <input type="text" class="form-control" data-location placeholder="DC01*"
+             list="{field_id}_locations" autocomplete="off">
+      <datalist id="{field_id}_locations" data-location-options></datalist>
       <select class="form-select" data-tag hidden></select>
     </div>
     <div class="col-12 col-md-3">
@@ -51,6 +56,22 @@ _SCRIPT = """
   var label = builder.querySelector('[data-value-label]');
   var status = builder.querySelector('[data-status]');
   var loaded = false;
+  // A location rule is a pattern, so the field stays free text; the names Forward
+  // has are only suggestions (a datalist), loaded once for a saved source.
+  function loadLocations() {
+    var id = builder.getAttribute('data-source-id');
+    var options = builder.querySelector('[data-location-options]');
+    if (!id || !options) { return; }
+    fetch(builder.getAttribute('data-locations-url') + '?source_id=' + encodeURIComponent(id), {
+      credentials: 'same-origin', headers: {'Accept': 'application/json'}
+    }).then(function (r) { return r.json(); }).then(function (body) {
+      (body.results || []).forEach(function (l) {
+        var o = document.createElement('option');
+        o.value = l.id;
+        options.appendChild(o);
+      });
+    }).catch(function () { /* suggestions are optional */ });
+  }
   function show() {
     var isTag = kind.value === 'tag';
     loc.hidden = isTag;
@@ -97,6 +118,7 @@ _SCRIPT = """
     tag = input;
   }
   kind.addEventListener('change', show);
+  loadLocations();
   builder.querySelector('[data-add]').addEventListener('click', function () {
     var value = (kind.value === 'tag' ? tag.value : loc.value).trim();
     var name = site.value.trim();
@@ -140,6 +162,7 @@ class SiteRulesWidget(forms.Textarea):
             field_id=field_id,
             source_id=self.source_id or "",
             tags_url=AVAILABLE_TAGS_URL,
+            locations_url=AVAILABLE_LOCATIONS_URL,
             status=status,
         )
         script = mark_safe(_SCRIPT.replace("__ID__", escapejs(str(field_id))))

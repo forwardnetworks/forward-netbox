@@ -184,9 +184,19 @@ virtual children (they carry a location), and is reviewed and edited in NetBox.
   (`+` is not in its token set; true of every multi-label reason, not new), and the
   plugin's Logs tab redacts warning text by design (the full text is on the core job
   page; the docs say where to look).
-- Not built, on purpose: location-name suggestions in the builder, a two-sources
-  warning, and the check on the smoke-test fetch path and the older single-stage path
-  (no production caller found).
+- Everything the audits left open was then done: a value-free warning per refusal that
+  the Logs tab and log export can show (the model, the reason label and the advice; the
+  map's name stays on the job page); the bundle keeps a multi-label reason whole;
+  site rules with a sync set to `Require diff` stop with their own message and label
+  (the rules need a full fetch, which `Require diff` refuses); the `Require diff`
+  recovery advice is no longer attached to a site-rules block; the same custom-map
+  check on the smoke-test fetch path; and Forward's location names are offered as
+  suggestions in the builder (a new `available-locations` endpoint beside the tags
+  one, sharing its code).
+- Not built, and why: a Scope-page warning for two sources that cover the same devices
+  with different rules. Nothing in the data model says two sources cover the same
+  devices, so the warning would guess; the reference page says to give a device one
+  source. The older single-stage path (`run_sync_stage`) has no production caller.
 
 ## Rollback
 

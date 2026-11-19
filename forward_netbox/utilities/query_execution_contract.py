@@ -18,8 +18,12 @@ from typing import Mapping
 # sites, so the contract treats it specially: see `resolve_execution_contract`.
 SITE_RULES_PARAMETER_NAME = "site_rules"
 SITE_RULES_FULL_FETCH_REASON = "site_rules_full_fetch"
+# The reason codes. `diagnostics` holds the same three strings with the advice for
+# each (a test pins them equal): this module is also loaded on its own by the release
+# preflight, so it cannot import a sibling at load time.
 SITE_RULES_NOT_DECLARED_REASON = "site_rules_not_declared"
 SITE_RULES_CUSTOM_MAP_REASON = "site_rules_custom_map"
+SITE_RULES_REQUIRE_DIFF_REASON = "site_rules_require_diff"
 
 QUERY_CONTRACT_VERSION = 1
 NORMALIZATION_VERSION = 1
@@ -815,19 +819,7 @@ def _model_contract_issue_rows(contract):
 
 def contract_reason_hint(reason_code) -> str:
     """Words an operator can act on for the reasons that need them, or an empty string."""
-    if reason_code == SITE_RULES_NOT_DECLARED_REASON:
-        return (
-            " The Forward source has site mapping rules, but this query does not take "
-            "them (it predates them). Publish the bundled queries to the organization "
-            "(Forward NQE Maps, Publish Bundled Queries) and refresh the query IDs, "
-            "or remove the site rules."
-        )
-    if reason_code == SITE_RULES_CUSTOM_MAP_REASON:
-        return (
-            " Enable the bundled map for this model instead of the custom one; or "
-            "make the custom query take the rules by declaring a `site_rules` "
-            "parameter in its @query line AND adding `site_rules` (value `[]`) to "
-            "the map's parameters (see the Site Mapping Rules reference); or remove "
-            "the site rules."
-        )
-    return ""
+    # Imported here, not at load: this module is also loaded on its own.
+    from .diagnostics import SITE_RULES_ADVICE
+
+    return SITE_RULES_ADVICE.get(reason_code, "")

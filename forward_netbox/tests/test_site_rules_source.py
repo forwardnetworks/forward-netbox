@@ -208,3 +208,42 @@ class WidgetTest(TestCase):
 
         self.assertIn('value="location"', html)
         self.assertIn('value="tag"', html)
+
+
+class LocationSuggestionsTest(TestCase):
+    def _html(self, source_id=None):
+        from forward_netbox.widgets import SiteRulesWidget
+
+        widget = SiteRulesWidget()
+        widget.source_id = source_id
+        return widget.render("site_rules", "", attrs={"id": "id_site_rules"})
+
+    def test_the_location_field_offers_a_list_of_forward_locations(self):
+        html = self._html(source_id=7)
+
+        self.assertIn(
+            'data-locations-url="/api/plugins/forward/source/available-locations/"',
+            html,
+        )
+        self.assertIn('list="id_site_rules_locations"', html)
+        self.assertIn('<datalist id="id_site_rules_locations"', html)
+
+    def test_the_field_still_takes_any_pattern_typed_by_hand(self):
+        # A datalist only suggests; the input stays a free text box, because a rule
+        # is a pattern (DC01*), not one location.
+        html = self._html(source_id=7)
+
+        self.assertIn("data-location", html)
+        self.assertNotIn('<select class="form-select" data-location', html)
+
+    def test_an_unsaved_source_has_the_list_but_nothing_to_load_it_with(self):
+        html = self._html(source_id=None)
+
+        self.assertIn('data-source-id=""', html)
+        self.assertIn('<datalist id="id_site_rules_locations"', html)
+
+    def test_the_script_loads_the_locations_for_a_saved_source(self):
+        html = self._html(source_id=7)
+
+        self.assertIn("data-locations-url", html)
+        self.assertIn("loadLocations", html)
