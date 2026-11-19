@@ -41,6 +41,11 @@ from .diagnostics import failure_classifier
 from .diagnostics import failure_reason
 from .diagnostics import safe_exception_summary
 from .diagnostics import safe_operation_failure
+from .diagnostics import safe_site_rules_message
+from .diagnostics import SITE_RULES_CUSTOM_MAP_REASON
+from .diagnostics import SITE_RULES_MODELS
+from .diagnostics import SITE_RULES_NOT_DECLARED_REASON
+from .diagnostics import SITE_RULES_REQUIRE_DIFF_REASON
 from .forward_api import build_device_tag_scope_where
 from .forward_api import build_endpoint_device_eligibility_where
 from .forward_api import build_endpoint_tag_scope_where
@@ -83,6 +88,7 @@ from .query_diagnostics import (
 )
 from .query_execution_contract import canonical_sha256
 from .query_execution_contract import compatible_baseline_evidence
+from .query_execution_contract import contract_reason_hint
 from .query_execution_contract import diff_artifact_key
 from .query_execution_contract import DiffArtifact
 from .query_execution_contract import DiffArtifactStore
@@ -91,6 +97,7 @@ from .query_execution_contract import resolve_model_execution_contract
 from .query_execution_contract import ResolvedExecutionContract
 from .query_execution_contract import scope_config_fingerprint
 from .query_execution_contract import scope_membership_fingerprint
+from .query_execution_contract import SITE_RULES_PARAMETER_NAME
 from .query_registry import ensure_unique_query_spec_executions
 from .query_registry import get_query_specs
 from .query_registry import missing_query_specs_message
@@ -98,8 +105,12 @@ from .query_registry import only_legacy_safe_default_parameters
 from .query_registry import QuerySpec
 from .query_registry import resolve_query_specs_for_client
 from .query_registry import SHARD_QUERY_PARAMETER_NAME
+from .site_tag import normalize_site_rules
+from .site_tag import query_site_rules
 from .site_tag import site_name_nqe
 from .site_tag import site_tag_nqe_let
+from .site_tag import SiteRuleError
+from .site_tag import with_site_rules
 from .sync import ForwardSyncRunner
 from .sync_contracts import validate_row_shape_for_model
 from .sync_facade import effective_scope_endpoints_by_include_tags
@@ -241,6 +252,40 @@ def _is_nqe_contract_rejection(exc: Exception) -> bool:
     return any(marker in haystack for marker in _NQE_CONTRACT_REJECTION_MARKERS)
 
 
+def _custom_maps_without_site_rules(model_string, specs, context):
+    """Names of the custom maps for a site-naming model that cannot take site rules.
+
+    Only when rules are set. A bundled map is checked by the execution contract; a
+    custom one (the operator's own query) takes just the parameters it was saved
+    with, unless the operator declared `site_rules` on it.
+    """
+    if (
+        not getattr(context, "site_rules", None)
+        or model_string not in SITE_RULES_MODELS
+    ):
+        return []
+    return [
+        str(getattr(spec, "query_name", "") or model_string)
+        for spec in specs
+        if not getattr(spec, "built_in", False)
+        and SITE_RULES_PARAMETER_NAME not in (getattr(spec, "parameters", None) or {})
+    ]
+
+
+def _without_site_rules(parameters):
+    return {
+        key: value
+        for key, value in parameters.items()
+        if key != SITE_RULES_PARAMETER_NAME
+    }
+
+
+def _is_site_rules_rejection(exc) -> bool:
+    """Forward refused the run because the query does not declare `site_rules`."""
+    haystack = str(exc or "").casefold()
+    return SITE_RULES_PARAMETER_NAME in haystack and "not a parameter" in haystack
+
+
 @dataclass(frozen=True)
 class ForwardQueryContext:
     network_id: str
@@ -271,6 +316,9 @@ class ForwardQueryContext:
     scoped_device_names: set[str] = field(default_factory=set)
     scoped_site_names: set[str] = field(default_factory=set)
     scoped_matched_tags: dict[str, list[str]] = field(default_factory=dict)
+    # The operator's site mapping rules from the Forward source, validated, in
+    # order (utilities/site_tag.py). Sent to the queries that declare `site_rules`.
+    site_rules: list[dict[str, str]] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -291,6 +339,7 @@ class ForwardQueryContext:
             "sync_endpoints": self.sync_endpoints,
             "sync_generic_endpoints": self.sync_generic_endpoints,
             "scope_endpoints_by_include_tags": self.scope_endpoints_by_include_tags,
+            "site_rules": self.site_rules,
             "scoped_device_count": len(self.scoped_device_names),
             "scoped_site_count": len(self.scoped_site_names),
             # Full per-device matched-tag map (not a count): the branch apply path
@@ -492,6 +541,12 @@ class ForwardQueryFetcher:
         self._incremental_baseline_cache: dict[tuple[Any, ...], Any] = {}
         self._query_path_resolution_cache: dict[str, dict[str, Any]] = {}
         self._resolved_context_cache: dict[tuple[Any, ...], ForwardQueryContext] = {}
+        # Maps whose bound query Forward rejected `site_rules` for in this run, so an
+        # empty rule list is not offered to them again.
+        self._queries_without_site_rules: set[tuple[Any, ...]] = set()
+        # Maps already warned about for a rejected site_rules, so a fetch split into
+        # parts logs it once.
+        self._site_rules_rejections_logged: set[tuple[Any, ...]] = set()
         self._snapshot_scope_context_cache: dict[
             tuple[Any, ...], ForwardQueryContext
         ] = {}
@@ -554,6 +609,13 @@ class ForwardQueryFetcher:
         scope_endpoints_by_include_tags = effective_scope_endpoints_by_include_tags(
             source_parameters
         )
+        try:
+            site_rules = normalize_site_rules(source_parameters.get("site_rules"))
+        except SiteRuleError as exc:
+            raise ForwardQueryError(
+                f"The site rules saved on the Forward source are not valid: {exc} "
+                "Edit the source and correct them."
+            ) from exc
         context_cache_key = (
             network_id,
             snapshot_selector,
@@ -567,6 +629,7 @@ class ForwardQueryFetcher:
             sync_endpoints,
             sync_generic_endpoints,
             scope_endpoints_by_include_tags,
+            tuple((rule["kind"], rule["pattern"], rule["site"]) for rule in site_rules),
         )
         cached_context = self._resolved_context_cache.get(context_cache_key)
         if cached_context is not None:
@@ -602,6 +665,7 @@ class ForwardQueryFetcher:
             sync_generic_endpoints=sync_generic_endpoints,
             scope_endpoints_by_include_tags=scope_endpoints_by_include_tags,
             refuse_empty=True,
+            site_rules=site_rules,
         )
         if endpoint_scope_failed:
             # The scoped set carries no endpoint names, so emitting endpoint
@@ -628,6 +692,7 @@ class ForwardQueryFetcher:
             scoped_device_names=scoped_device_names,
             scoped_site_names=scoped_site_names,
             scoped_matched_tags=scoped_matched_tags,
+            site_rules=site_rules,
         )
         self._resolved_context_cache[context_cache_key] = context
         return context
@@ -644,6 +709,7 @@ class ForwardQueryFetcher:
         sync_generic_endpoints: bool = False,
         scope_endpoints_by_include_tags: bool = False,
         refuse_empty: bool = False,
+        site_rules=(),
     ) -> tuple[set[str], set[str], dict[str, list[str]], bool]:
         if not include_tags and not exclude_tags:
             return set(), set(), {}, False
@@ -655,18 +721,37 @@ class ForwardQueryFetcher:
             "where device.platform.vendor != Vendor.FORWARD_CUSTOM",
             *scope_where,
         ]
-        query = "\n".join(
-            [
-                "foreach device in network.devices",
-                *where,
-                site_tag_nqe_let(),
-                "select {",
-                "  name: device.name,",
-                f"  site: {site_name_nqe()},",
-                "  tagNames: device.tagNames",
-                "}",
-            ]
-        )
+        if site_rules:
+            # With site mapping rules the site is named by the shared helpers, and
+            # the rules arrive as a declared parameter, never written into the text.
+            query = with_site_rules(
+                "\n".join(
+                    [
+                        "foreach device in network.devices",
+                        *where,
+                        "select {",
+                        "  name: device.name,",
+                        "  site: deviceSiteNameRules(device, site_rules),",
+                        "  tagNames: device.tagNames",
+                        "}",
+                    ]
+                )
+            )
+            query_parameters = {"site_rules": query_site_rules(site_rules)}
+        else:
+            query = "\n".join(
+                [
+                    "foreach device in network.devices",
+                    *where,
+                    site_tag_nqe_let(),
+                    "select {",
+                    "  name: device.name,",
+                    f"  site: {site_name_nqe()},",
+                    "  tagNames: device.tagNames",
+                    "}",
+                ]
+            )
+            query_parameters = None
         try:
             rows = run_nqe_query(
                 self.client,
@@ -674,6 +759,7 @@ class ForwardQueryFetcher:
                 network_id=network_id,
                 snapshot_id=snapshot_id,
                 fetch_all=True,
+                **({"parameters": query_parameters} if query_parameters else {}),
             )
         except (ForwardClientError, ForwardConnectivityError, ForwardQueryError) as exc:
             raise ForwardQueryError(
@@ -1060,6 +1146,11 @@ class ForwardQueryFetcher:
                 ensure_unique_query_spec_executions(
                     effective_specs,
                 )
+                uncovered = _custom_maps_without_site_rules(
+                    model_string, effective_specs, context
+                )
+                if uncovered:
+                    raise self._custom_map_site_rules_refusal(model_string, uncovered)
             except ForwardQueryError as exc:
                 self._record_model_failure(
                     context,
@@ -1449,6 +1540,27 @@ class ForwardQueryFetcher:
     def _require_diff_execution(self) -> bool:
         return self._diff_fallback_mode() == ForwardDiffFallbackModeChoices.REQUIRE_DIFF
 
+    def _custom_map_site_rules_refusal(self, model_string, uncovered):
+        """Log a custom map's refusal in full and value-free, and return the error.
+
+        The log keeps only the first words of an exception, so the whole message
+        (which map, and what to do) is logged here. The second line carries no map
+        name, so the plugin's Logs tab can show it.
+        """
+        message = (
+            "Site mapping rules are set on the Forward source, but "
+            f"the map {', '.join(sorted(uncovered))} for {model_string} "
+            "runs a custom query that does not take them, so its "
+            "devices would not be placed by the rules."
+            + contract_reason_hint(SITE_RULES_CUSTOM_MAP_REASON)
+        )
+        self.logger.log_warning(message, obj=self.sync)
+        self.logger.log_warning(
+            safe_site_rules_message(model_string, "site-rules-custom-map"),
+            obj=self.sync,
+        )
+        return ForwardQueryError(message)
+
     def _build_workload_jobs(
         self,
         context: ForwardQueryContext,
@@ -1507,6 +1619,42 @@ class ForwardQueryFetcher:
                     context,
                 )
                 ensure_unique_query_spec_executions(effective_specs)
+                uncovered = _custom_maps_without_site_rules(
+                    model_string, effective_specs, context
+                )
+                if uncovered:
+                    # A custom query takes only the parameters it was saved with,
+                    # so the rules would never reach it and its devices would be
+                    # placed by their Forward location. Stop the whole run, as an
+                    # unsafe contract does, so nothing is applied half-placed.
+                    contract_preflight_blocked = True
+                    raise self._custom_map_site_rules_refusal(model_string, uncovered)
+                if (
+                    getattr(context, "site_rules", None)
+                    and model_string in SITE_RULES_MODELS
+                    and any(
+                        SITE_RULES_PARAMETER_NAME in (spec.parameters or {})
+                        for spec in effective_specs
+                    )
+                    and self._require_diff_execution()
+                ):
+                    # The diff revisions cannot carry the rules, so rules need a full
+                    # fetch, and `Require diff` refuses one: both cannot be honoured.
+                    contract_preflight_blocked = True
+                    message = (
+                        "Site mapping rules are set and need a full fetch of "
+                        f"{model_string}, but this sync's diff fallback mode is "
+                        "`Require diff`."
+                        + contract_reason_hint(SITE_RULES_REQUIRE_DIFF_REASON)
+                    )
+                    self.logger.log_warning(message, obj=self.sync)
+                    self.logger.log_warning(
+                        safe_site_rules_message(
+                            model_string, "site-rules-require-diff"
+                        ),
+                        obj=self.sync,
+                    )
+                    raise ForwardQueryError(message)
                 contracts = [
                     resolve_execution_contract(
                         effective_spec,
@@ -1537,10 +1685,29 @@ class ForwardQueryFetcher:
                 )
                 if unsafe_full_contract is not None:
                     contract_preflight_blocked = True
+                    self.logger.log_warning(
+                        f"The map {unsafe_full_contract.query_name} "
+                        f"[{unsafe_full_contract.map_id}] for {model_string} "
+                        "cannot run: "
+                        f"{unsafe_full_contract.full_reason_code}."
+                        + contract_reason_hint(unsafe_full_contract.full_reason_code),
+                        obj=self.sync,
+                    )
+                    if (
+                        unsafe_full_contract.full_reason_code
+                        == SITE_RULES_NOT_DECLARED_REASON
+                    ):
+                        self.logger.log_warning(
+                            safe_site_rules_message(
+                                model_string, "site-rules-query-not-declared"
+                            ),
+                            obj=self.sync,
+                        )
                     raise ForwardQueryError(
                         "Execution contract preflight rejected an unsafe full "
                         f"contract for {model_string}: "
                         f"{unsafe_full_contract.full_reason_code}."
+                        + contract_reason_hint(unsafe_full_contract.full_reason_code)
                     )
                 self._register_expected_contributor_contracts(model_contract)
                 if self._require_diff_execution() and not model_contract.diff_eligible:
@@ -1600,8 +1767,9 @@ class ForwardQueryFetcher:
         if contract_preflight_blocked:
             self.logger.log_warning(
                 "Execution contract preflight blocked all Forward workload "
-                "execution because at least one enabled map has an unsafe full "
-                "contract. No NQE workload request was scheduled.",
+                "execution because at least one enabled map cannot run safely "
+                "(the warning above names it and says what to do). No NQE "
+                "workload request was scheduled.",
                 obj=self.sync,
             )
             return []
@@ -3517,6 +3685,13 @@ class ForwardQueryFetcher:
             sanitized_parameters["scope_endpoints_by_include_tags"] = bool(
                 getattr(context, "scope_endpoints_by_include_tags", False)
             )
+        # Forward needs every declared parameter, so a query that declares the site
+        # rules always gets them (an empty list when there are none), whatever the
+        # device-tag filter mode. A query that does not declare them is left alone.
+        if "site_rules" in spec_parameters:
+            sanitized_parameters["site_rules"] = query_site_rules(
+                getattr(context, "site_rules", None) or []
+            )
         if not accepts_device_tag_parameters:
             return sanitized_parameters
         tag_parameters = {
@@ -3567,6 +3742,10 @@ class ForwardQueryFetcher:
             context.sync_endpoints,
             context.sync_generic_endpoints,
             context.scope_endpoints_by_include_tags,
+            tuple(
+                (rule["kind"], rule["pattern"], rule["site"])
+                for rule in context.site_rules
+            ),
         )
         cached = self._snapshot_scope_context_cache.get(cache_key)
         if cached is not None:
@@ -3589,6 +3768,7 @@ class ForwardQueryFetcher:
                 scope_endpoints_by_include_tags=(
                     context.scope_endpoints_by_include_tags
                 ),
+                site_rules=context.site_rules,
             )
             if endpoint_scope_failed:
                 raise ForwardQueryError(
@@ -4003,7 +4183,19 @@ class ForwardQueryFetcher:
                 "Full execution is not allowed by the resolved contract for "
                 f"{getattr(spec, 'model_string', 'unknown model')}: "
                 f"{contract.full_reason_code}."
+                + contract_reason_hint(contract.full_reason_code)
             )
+        site_rules_key = (
+            getattr(spec, "map_id", None),
+            getattr(spec, "model_string", ""),
+            getattr(spec, "query_name", ""),
+        )
+        if (
+            SITE_RULES_PARAMETER_NAME in parameters
+            and not parameters[SITE_RULES_PARAMETER_NAME]
+            and site_rules_key in self._queries_without_site_rules
+        ):
+            parameters = _without_site_rules(parameters)
         full_revision = contract.full_revision if contract is not None else None
         call_kwargs = {
             "query": spec.query,
@@ -4029,6 +4221,46 @@ class ForwardQueryFetcher:
         except JobTimeoutException:
             raise
         except ForwardClientError as exc:
+            if SITE_RULES_PARAMETER_NAME in parameters and _is_site_rules_rejection(
+                exc
+            ):
+                # The query Forward ran predates the site rules. With none set the
+                # parameter is dropped and the query runs as it always did; with
+                # rules set it could not honour them, so stop and say how to fix it.
+                if parameters[SITE_RULES_PARAMETER_NAME]:
+                    message = (
+                        f"The query for {spec.model_string} ({spec.query_name}) "
+                        "rejected the site mapping rules (Forward: 'site_rules' is "
+                        "not a parameter)."
+                        + contract_reason_hint(SITE_RULES_NOT_DECLARED_REASON)
+                    )
+                    if site_rules_key not in self._site_rules_rejections_logged:
+                        self._site_rules_rejections_logged.add(site_rules_key)
+                        self.logger.log_warning(message, obj=self.sync)
+                        self.logger.log_warning(
+                            safe_site_rules_message(
+                                spec.model_string, "site-rules-query-rejected"
+                            ),
+                            obj=self.sync,
+                        )
+                    raise ForwardQueryError(message) from exc
+                self._queries_without_site_rules.add(site_rules_key)
+                self.logger.log_info(
+                    f"The query for {spec.model_string} predates the site mapping "
+                    "rules; running it without them (none are set).",
+                    obj=self.sync,
+                )
+                # Back through the normal path, not a bare call: an old copy that
+                # also lacks an older default parameter still gets its rescue.
+                return self._run_nqe_query(
+                    spec=spec,
+                    contract=contract,
+                    context=context,
+                    parameters=_without_site_rules(parameters),
+                    limit=limit,
+                    fetch_all=fetch_all,
+                    deadline=deadline,
+                )
             is_legacy_resolved_path = bool(spec.query_path and spec.run_query_id)
             is_parameter_error = "parameter" in str(exc).casefold()
             if not (

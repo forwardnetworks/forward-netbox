@@ -23,8 +23,13 @@ from .forward_api import get_configured_device_tags
 from .forward_api import run_nqe_query
 from .json_safe import json_safe_value
 from .post_sync import current_post_sync_snapshot
+from .site_tag import normalize_site_rules
+from .site_tag import query_site_rules
 from .site_tag import site_name_nqe
 from .site_tag import site_tag_nqe_let
+from .site_tag import SiteRuleError
+from .site_tag import summarize_site_rule_matches
+from .site_tag import with_site_rules
 from .sync_facade import device_tag_scope
 from .sync_facade import effective_scope_endpoints_by_include_tags
 
@@ -479,30 +484,66 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
 
     client = sync.source.get_client()
     snapshot_id = str(snapshot_id or "").strip() or sync.resolve_snapshot_id(client)
-    query = "\n".join(
-        [
-            "foreach device in network.devices",
-            "where device.platform.vendor != Vendor.FORWARD_CUSTOM",
-            *scope_where,
-            site_tag_nqe_let(),
-            "select {",
-            "  name: device.name,",
-            "  completed: device.snapshotInfo.result "
-            "== DeviceSnapshotResult.completed,",
-            "  reason: toString(device.snapshotInfo.result),",
-            "  collectionTime: device.snapshotInfo.collectionTime,",
-            "  backfillTime: device.snapshotInfo.backfillTime,",
-            "  tagNames: device.tagNames,",
-            f"  location: {site_name_nqe(fallback='\"\"')},",
-            "}",
-        ]
-    )
+    try:
+        site_rules = normalize_site_rules(
+            (sync.source.parameters or {}).get("site_rules")
+        )
+    except SiteRuleError as exc:
+        raise ValueError(
+            f"The site rules saved on the Forward source are not valid: {exc}"
+        ) from exc
+    select_lines = [
+        "select {",
+        "  name: device.name,",
+        "  completed: device.snapshotInfo.result == DeviceSnapshotResult.completed,",
+        "  reason: toString(device.snapshotInfo.result),",
+        "  collectionTime: device.snapshotInfo.collectionTime,",
+        "  backfillTime: device.snapshotInfo.backfillTime,",
+        "  tagNames: device.tagNames,",
+    ]
+    if site_rules:
+        # The site is named by the shared helpers and the rules arrive as a declared
+        # parameter, never written into the text.
+        query = with_site_rules(
+            "\n".join(
+                [
+                    "foreach device in network.devices",
+                    "where device.platform.vendor != Vendor.FORWARD_CUSTOM",
+                    *scope_where,
+                    # The lowest-ranked rule that matches, or 0: the Scope page
+                    # counts what each rule places from this, so a match is defined
+                    # once, by NQE.
+                    "let rule_rank = siteRuleRank(site_rules, device.tagNames, "
+                    'if isPresent(device.locationName) then device.locationName else "")',
+                    *select_lines,
+                    "  siteRuleRank: if isPresent(rule_rank) then rule_rank else 0,",
+                    "  location: siteNameForRulesElse(site_rules, device.tagNames, "
+                    'if isPresent(device.locationName) then device.locationName else "", "")',
+                    "}",
+                ]
+            )
+        )
+        query_parameters = {"site_rules": query_site_rules(site_rules)}
+    else:
+        query = "\n".join(
+            [
+                "foreach device in network.devices",
+                "where device.platform.vendor != Vendor.FORWARD_CUSTOM",
+                *scope_where,
+                site_tag_nqe_let(),
+                *select_lines,
+                f"  location: {site_name_nqe(fallback='\"\"')},",
+                "}",
+            ]
+        )
+        query_parameters = None
     rows = run_nqe_query(
         client,
         query=query,
         network_id=network_id,
         snapshot_id=snapshot_id,
         fetch_all=True,
+        **({"parameters": query_parameters} if query_parameters else {}),
     )
     endpoint_names, endpoint_matched_tags = _endpoint_scope_names(
         sync,
@@ -873,6 +914,8 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         # can read zero while hundreds of devices are untagged, because a device
         # this sync never claimed is not an orphan of it.
         "unmanaged": unmanaged,
+        # How many devices each site mapping rule places (utilities/site_tag.py).
+        "site_rules": summarize_site_rule_matches(site_rules, rows),
         "out_of_scope_sample": sorted(out_of_scope)[:SAMPLE_LIMIT],
         "empty_orphan_site_sample": empty_orphan_sites[:SAMPLE_LIMIT],
         "present_backfilled_sample": sorted(present_backfilled)[:SAMPLE_LIMIT],

@@ -1,5 +1,9 @@
 # Site Tag Override
 
+> To map locations or tags to sites from the Forward source settings, without tagging
+> devices in Forward, see [Site Mapping Rules](site-mapping-rules.md). The tag
+> convention below still works, and wins over a rule for the device that carries it.
+
 Forward knows a device by its **location**. NetBox sites are often coarser: one
 data centre can be dozens of Forward locations (halls, fabrics, zones). By default
 the sync creates one NetBox site per Forward location. Tag devices to group

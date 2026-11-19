@@ -175,6 +175,7 @@ export slugifyNetboxModel(value: String) =
     )
   );
 
+// BEGIN site naming helpers (embedded verbatim by utilities/site_tag.py)
 // The NetBox site a device belongs to. Forward knows a device by its location;
 // NetBox sites are usually coarser (many Forward locations make up one data
 // centre). A device tagged NetBox_Site_<name> is placed at the site <name>,
@@ -202,3 +203,83 @@ export deviceSiteName(device: Device) =
     device.tagNames,
     if isPresent(device.locationName) then device.locationName else ""
   );
+
+// Site mapping rules. The operator lists "devices at this Forward location, or
+// with this Forward tag, go to this NetBox site" on the Forward source; the plugin
+// sends the list with each rule's position as `rank`. A location pattern is a glob
+// matched against the lowercased location, a tag is matched exactly. The lowest
+// rank that matches wins. Precedence for a device: an explicit NetBox_Site_<name>
+// tag, then the first matching rule, then the Forward location. See
+// docs/02_Reference/site-tag-override.md.
+export siteRuleMatches(
+  rule: { kind: String, pattern: String, site: String, rank: Number },
+  tag_names: List<String>,
+  location_name: String
+) =
+  (rule.kind == "tag" && any(foreach tag in tag_names select tag == rule.pattern))
+  || (rule.kind == "location"
+    && length(location_name) > 0
+    && matches(toLowerCase(location_name), toLowerCase(rule.pattern)));
+
+export siteRuleRank(
+  rules: List<{ kind: String, pattern: String, site: String, rank: Number }>,
+  tag_names: List<String>,
+  location_name: String
+) =
+  min(
+    foreach rule in rules
+    where siteRuleMatches(rule, tag_names, location_name)
+    select rule.rank
+  );
+
+// The site of the lowest-ranked matching rule. A rule wins when it matches and no
+// lower-ranked rule does; only matching rules pay for that comparison, so the cost
+// follows how many rules match a device, not the square of how many are set.
+export siteRuleSite(
+  rules: List<{ kind: String, pattern: String, site: String, rank: Number }>,
+  tag_names: List<String>,
+  location_name: String
+) =
+  max(
+    foreach rule in rules
+    where siteRuleMatches(rule, tag_names, location_name)
+    where !any(
+      foreach other in rules
+      where other.rank < rule.rank
+      where siteRuleMatches(other, tag_names, location_name)
+      select true
+    )
+    select rule.site
+  );
+
+export siteNameForRulesElse(
+  rules: List<{ kind: String, pattern: String, site: String, rank: Number }>,
+  tag_names: List<String>,
+  location_name: String,
+  fallback: String
+) =
+  if isPresent(siteTagName(tag_names))
+  then toLowerCase(siteTagName(tag_names))
+  else if isPresent(siteRuleSite(rules, tag_names, location_name))
+  then toLowerCase(siteRuleSite(rules, tag_names, location_name))
+  else if length(location_name) > 0
+  then toLowerCase(location_name)
+  else fallback;
+
+export siteNameForRules(
+  rules: List<{ kind: String, pattern: String, site: String, rank: Number }>,
+  tag_names: List<String>,
+  location_name: String
+) =
+  siteNameForRulesElse(rules, tag_names, location_name, "unknown");
+
+export deviceSiteNameRules(
+  device: Device,
+  rules: List<{ kind: String, pattern: String, site: String, rank: Number }>
+) =
+  siteNameForRules(
+    rules,
+    device.tagNames,
+    if isPresent(device.locationName) then device.locationName else ""
+  );
+// END site naming helpers

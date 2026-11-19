@@ -17,6 +17,9 @@ from .forward_api import get_latest_processed_snapshot_id
 from .forward_api import LATEST_COLLECTED_SNAPSHOT
 from .forward_api import LATEST_PROCESSED_SNAPSHOT
 from .job_queue import enqueue_forward_job
+from .site_tag import normalize_site_rules
+from .site_tag import query_site_rules
+from .site_tag import SiteRuleError
 from .sync_state import (
     get_max_changes_per_staging_item as get_state_max_changes_per_staging_item,
 )
@@ -113,11 +116,24 @@ def get_query_parameters(sync):
     source_parameters = dict(
         getattr(getattr(sync, "source", None), "parameters", {}) or {}
     )
+    query_parameters = {}
+    # The site mapping rules go with the query parameters whatever the device-tag
+    # filter mode, so every contract preflight and the older single-stage path see
+    # them. With none set, nothing is added.
+    try:
+        site_rules = normalize_site_rules(source_parameters.get("site_rules"))
+    except SiteRuleError as exc:
+        raise SyncError(
+            f"The site rules saved on the Forward source are not valid: {exc} "
+            "Edit the source and correct them."
+        ) from exc
+    if site_rules:
+        query_parameters["site_rules"] = query_site_rules(site_rules)
     filter_mode = str(
         source_parameters.get("device_tag_filter_mode") or "local"
     ).strip()
     if filter_mode != "query_parameters":
-        return {}
+        return query_parameters
     include_tags = source_parameters.get("device_tag_include_tags") or []
     exclude_tags = source_parameters.get("device_tag_exclude_tags") or []
     include_tags = [str(tag).strip() for tag in include_tags if str(tag).strip()]
@@ -127,7 +143,6 @@ def get_query_parameters(sync):
     ).strip()
     if include_match not in {"any", "all"}:
         include_match = "any"
-    query_parameters = {}
     if include_tags:
         query_parameters["device_tag_include_tags"] = include_tags
         query_parameters["device_tag_include_match"] = include_match

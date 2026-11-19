@@ -517,6 +517,22 @@ def _bundle_safe_report(value):
     the quarantine state, the prune candidate count, the backfill reason
     breakdown - is counts and slugs and survives.
     """
+    # The site mapping rules' patterns and NetBox site names are the operator's own
+    # words (location names), so the bundle keeps each rule's position, kind and
+    # device count and not what it says, as it keeps tag counts and not tag names.
+    if isinstance(value, dict) and isinstance(value.get("site_rules"), dict):
+        value = dict(value)
+        summary = dict(value["site_rules"])
+        summary["rules"] = [
+            {
+                "rank": rule.get("rank"),
+                "kind": rule.get("kind"),
+                "devices": rule.get("devices"),
+            }
+            for rule in summary.get("rules") or ()
+        ]
+        summary["note"] = "count only; the patterns and site names are not exported"
+        value["site_rules"] = summary
     # One filter, not two: this used to carry its own copy of the suffix rules,
     # and a second copy is a second thing to forget to update.
     return export_safe_payload(value)
@@ -1806,6 +1822,12 @@ def _sync_support_bundle_payload(sync):
                 "sync_device_tag_count": len(sync_device_tags),
                 "include_tag_count": len(include_tags),
                 "exclude_tag_count": len(exclude_tags),
+                # How many site mapping rules are set; the rules' own words stay out.
+                "site_rule_count": (
+                    len(source_parameters["site_rules"])
+                    if isinstance(source_parameters.get("site_rules"), list)
+                    else 0
+                ),
                 "include_match": str(
                     source_parameters.get("device_tag_include_match") or "any"
                 ),
@@ -3466,6 +3488,34 @@ PLATFORM_RESTORE_SPLIT = (
 PLATFORM_RESTORE_CARD = "Platforms a Sync Run Blanked"
 
 
+SITE_RULES_CARD = "Site Mapping Rules"
+
+
+def _site_rules_card(payload):
+    """The Site Mapping Rules card: how many devices each rule places, read from the
+    stored scope report (the Refresh computes it; this view never calls Forward)."""
+    summary = (payload or {}).get("site_rules") or {}
+    if not summary.get("available"):
+        return {"available": False}
+    rules = [
+        {**rule, "matches_nothing": not rule.get("devices")}
+        for rule in summary.get("rules") or ()
+    ]
+    return {
+        "available": True,
+        "figures": [
+            ("Site rules", len(rules)),
+            ("Placed by a NetBox_Site_ tag", int(summary.get("pinned_by_tag") or 0)),
+            (
+                "Left at their Forward location",
+                int(summary.get("by_location") or 0),
+            ),
+        ],
+        "rules": rules,
+        "rules_matching_nothing": sum(1 for rule in rules if rule["matches_nothing"]),
+    }
+
+
 UNMANAGED_DELETE_CARD = "Unmanaged Delete: Last Result"
 # (card label, key in the payload's `values`); the card renders these labels and
 # the bundle repeats them in `ui_figures`.
@@ -4715,6 +4765,7 @@ class ForwardSyncScopeReconciliationView(BaseObjectView):
                 "stale_row_cleanup": _stale_row_cleanup_payload(sync),
                 "platform_restore": platform_restore,
                 "unmanaged_delete": unmanaged_delete,
+                "site_rules": _site_rules_card(payload),
             },
         )
 

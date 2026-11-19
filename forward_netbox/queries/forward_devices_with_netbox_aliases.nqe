@@ -16,7 +16,7 @@
 import "netbox_utilities";
 
 @query
-f(forward_netbox_shard_keys: List<String>, sync_endpoints: Bool, sync_generic_endpoints: Bool, scope_endpoints_by_include_tags: Bool, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
+f(forward_netbox_shard_keys: List<String>, sync_endpoints: Bool, sync_generic_endpoints: Bool, scope_endpoints_by_include_tags: Bool, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>, site_rules: List<{ kind: String, pattern: String, site: String, rank: Number }>) =
 foreach row in (
   (
     foreach device in network.devices
@@ -28,7 +28,7 @@ foreach row in (
     let raw_model = if isPresent(raw_model_opt) && raw_model_opt != "" then raw_model_opt else "Unknown"
     let raw_model_slug = slugifyNetboxModel(raw_model)
     let device_type = device.platform.deviceType
-    let site_name = deviceSiteName(device)
+    let site_name = deviceSiteNameRules(device, site_rules)
     let site_slug = slugify(site_name)
     let role_name = replace(toString(device_type), "DeviceType.", "")
     let role_slug = slugify(role_name)
@@ -199,7 +199,7 @@ foreach row in (
     let ep_model_slug_raw = substring(slugifyNetboxModel(ep_model), 0, 100)
     let ep_model_slug = if ep_model_slug_raw == "" then "unknown" else ep_model_slug_raw
     let ep_role = if isConsoleServer then "Console Server" else "SNMP Endpoint"
-    let ep_site = siteNameFor(endpoint.tagNames, if isPresent(endpoint.locationName) then endpoint.locationName else "")
+    let ep_site = siteNameForRules(site_rules, endpoint.tagNames, if isPresent(endpoint.locationName) then endpoint.locationName else "")
     select {
       name: endpoint.name,
       manufacturer: ep_manuf,

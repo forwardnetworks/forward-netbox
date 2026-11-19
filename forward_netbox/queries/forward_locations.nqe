@@ -2,16 +2,16 @@
  * @intent Forward Locations
  * @description It provides the NetBox sites for the devices Forward collected, to
  * be added in NetBox using POST requests to the /api/dcim/sites/ REST API
- * endpoint. A device is placed at its Forward location unless it carries a
- * NetBox_Site_<name> tag, in which case it is placed at the site <name>; several
- * Forward locations can therefore make up one site. A site's address is that of
+ * endpoint. A device is placed at its Forward location unless a site mapping rule
+ * (the site_rules parameter) or a NetBox_Site_<name> tag places it at another
+ * site; several Forward locations can therefore make up one site. A site's address is that of
  * the Forward location with the same name, or else of its first location by name.
  */
 
 import "netbox_utilities";
 
 @query
-f(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
+f(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>, site_rules: List<{ kind: String, pattern: String, site: String, rank: Number }>) =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -22,8 +22,10 @@ where isEmpty(device_tag_include_tags)
     && any(foreach tag in device_tag_include_tags select tag in device.tagNames))
 where isEmpty(device_tag_exclude_tags)
   || !any(foreach tag in device_tag_exclude_tags select tag in device.tagNames)
+let device_location = if isPresent(device.locationName) then device.locationName else ""
 let site_tag = siteTagName(device.tagNames)
-let site_name = deviceSiteName(device)
+let rule_site = siteRuleSite(site_rules, device.tagNames, device_location)
+let site_name = deviceSiteNameRules(device, site_rules)
 let site_slug = slugify(site_name)
 where isEmpty(forward_netbox_shard_keys)
   || site_slug in forward_netbox_shard_keys
@@ -32,6 +34,7 @@ where isEmpty(forward_netbox_shard_keys)
 // files it at "unknown" itself.
 where (isPresent(device.locationName) && length(device.locationName) > 0)
   || isPresent(site_tag)
+  || isPresent(rule_site)
 group device as devices by site_name as site_name
 let location_names = (
   foreach member in devices

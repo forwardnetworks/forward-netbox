@@ -611,5 +611,25 @@ class NoCustomerDataAnywhereTest(unittest.TestCase):
                     self.assertNotIn(token, output)
 
 
+class SiteRulesMessagesWorkStandaloneTest(unittest.TestCase):
+    """`diagnostics` is loaded on its own here, with no package around it, and must
+    stay so: the value-free site-rules warning has to work without importing a
+    sibling, or every failure path in the plugin breaks in this setting."""
+
+    def test_the_value_free_warning_is_built_and_passes_the_redaction(self):
+        message = diagnostics.safe_site_rules_message(
+            "dcim.site", "site-rules-custom-map"
+        )
+
+        self.assertIn("dcim.site", message)
+        self.assertEqual(diagnostics.safe_log_message(message, "warning"), message)
+
+    def test_a_warning_that_is_not_one_of_them_is_still_redacted(self):
+        self.assertEqual(
+            diagnostics.safe_log_message("a customer's own words", "warning"),
+            diagnostics.SAFE_WARNING_LOG_MESSAGE,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

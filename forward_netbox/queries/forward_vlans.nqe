@@ -11,7 +11,7 @@ import "netbox_utilities";
 // single device `foreach`).
 //
 // Source 1: networkInstance.vlans — interface-associated VLANs (historical source).
-ni_vlan_rows(device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
+ni_vlan_rows(device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>, site_rules: List<{ kind: String, pattern: String, site: String, rank: Number }>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -22,7 +22,7 @@ ni_vlan_rows(device_tag_include_tags: List<String>, device_tag_include_match: St
       && any(foreach tag in device_tag_include_tags select tag in device.tagNames))
   where isEmpty(device_tag_exclude_tags)
     || !any(foreach tag in device_tag_exclude_tags select tag in device.tagNames)
-  let site_name = deviceSiteName(device)
+  let site_name = deviceSiteNameRules(device, site_rules)
   let site_slug = slugify(site_name)
   foreach ni in device.networkInstances
   foreach vlan in ni.vlans
@@ -37,7 +37,7 @@ ni_vlan_rows(device_tag_include_tags: List<String>, device_tag_include_match: St
 // omit these, leaving an interface's untagged_vlan unresolvable. Mirrors
 // forward_interfaces.nqe's untagged_vlan logic. VID 1 is the implicit default
 // (NetBox treats an unset untagged_vlan as VLAN 1) and is skipped.
-iface_vlan_rows(device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
+iface_vlan_rows(device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>, site_rules: List<{ kind: String, pattern: String, site: String, rank: Number }>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -48,7 +48,7 @@ iface_vlan_rows(device_tag_include_tags: List<String>, device_tag_include_match:
       && any(foreach tag in device_tag_include_tags select tag in device.tagNames))
   where isEmpty(device_tag_exclude_tags)
     || !any(foreach tag in device_tag_exclude_tags select tag in device.tagNames)
-  let site_name = deviceSiteName(device)
+  let site_name = deviceSiteNameRules(device, site_rules)
   let site_slug = slugify(site_name)
   foreach interface in device.interfaces
   let vlan_mode =
@@ -72,10 +72,10 @@ iface_vlan_rows(device_tag_include_tags: List<String>, device_tag_include_match:
     name: join(" ", ["VLAN", toString(vid)])
   };
 
-candidateRows(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
+candidateRows(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>, site_rules: List<{ kind: String, pattern: String, site: String, rank: Number }>) =
   foreach vlan_row in (
-    ni_vlan_rows(device_tag_include_tags, device_tag_include_match, device_tag_exclude_tags)
-    + iface_vlan_rows(device_tag_include_tags, device_tag_include_match, device_tag_exclude_tags)
+    ni_vlan_rows(device_tag_include_tags, device_tag_include_match, device_tag_exclude_tags, site_rules)
+    + iface_vlan_rows(device_tag_include_tags, device_tag_include_match, device_tag_exclude_tags, site_rules)
   )
   where isEmpty(forward_netbox_shard_keys) || toString(vlan_row.vid) in forward_netbox_shard_keys
   select distinct {
@@ -87,9 +87,9 @@ candidateRows(forward_netbox_shard_keys: List<String>, device_tag_include_tags: 
   };
 
 @query
-f(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
+f(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>, site_rules: List<{ kind: String, pattern: String, site: String, rank: Number }>) =
 foreach grouped in (
-  foreach row in candidateRows(forward_netbox_shard_keys, device_tag_include_tags, device_tag_include_match, device_tag_exclude_tags)
+  foreach row in candidateRows(forward_netbox_shard_keys, device_tag_include_tags, device_tag_include_match, device_tag_exclude_tags, site_rules)
   group row as grouped_rows by {
     site: row.site,
     site_slug: row.site_slug,

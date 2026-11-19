@@ -18,6 +18,8 @@ from ..utilities.forward_api import MAX_QUERY_FETCH_CONCURRENCY
 from .apply_engine_decision import COPY_SQL_ALLOWED_MODELS
 from .branch_budget import MODEL_CHANGE_DENSITY_PARAMETER
 from .branch_budget import MODEL_CHANGE_DENSITY_PROFILE_PARAMETER
+from .site_tag import normalize_site_rules
+from .site_tag import SiteRuleError
 from .sync_contracts import normalize_coalesce_fields
 from .sync_contracts import validate_query_shape_for_model
 from .sync_facade import DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS
@@ -65,6 +67,7 @@ def clean_forward_source(source):
             "sync_endpoints",
             "sync_generic_endpoints",
             "scope_endpoints_by_include_tags",
+            "site_rules",
             "config_backup_data_source",
             "config_backup_include_unmanaged",
             "enable_predict",
@@ -126,6 +129,10 @@ def clean_forward_source(source):
         ):
             raise ValidationError(_(f"`{key}` must be a list of strings."))
     validate_scope_tag_names(parameters.get("device_tag_include_tags") or [])
+    try:
+        normalize_site_rules(parameters.get("site_rules"))
+    except SiteRuleError as exc:
+        raise ValidationError(_(f"`site_rules`: {exc}")) from exc
     include_match = parameters.get("device_tag_include_match")
     if include_match is not None:
         if not isinstance(include_match, str):

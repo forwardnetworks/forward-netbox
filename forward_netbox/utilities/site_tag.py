@@ -11,6 +11,8 @@
 # cannot import that module, so they embed the same rule from here, and
 # `test_site_tag_override` keeps the two spellings in step. `site_name_for` is the
 # plain-Python statement of the rule, used as the reference in tests and docs.
+import re
+from pathlib import Path
 
 SITE_TAG_PREFIX = "NetBox_Site_"
 
@@ -50,3 +52,231 @@ def site_name_nqe(variable="device", name="site_tag", fallback='"unknown"'):
         f"&& length({variable}.locationName) > 0 "
         f"then toLowerCase({variable}.locationName) else {fallback}"
     )
+
+
+# --- Site mapping rules -------------------------------------------------------
+#
+# An operator's list of "devices at this Forward location, or with this Forward
+# tag, go to this NetBox site". By default a device's site is its Forward
+# location; a rule is what changes that. One rule is {kind, pattern, site}:
+#
+#   kind     "location" (pattern is a glob as NQE `matches` evaluates it, matched
+#            case-insensitively) or "tag" (pattern is an exact Forward tag name)
+#   pattern  the glob, or the tag name
+#   site     the NetBox site name (lowercased like every site name the sync makes)
+#
+# The list is stored on the Forward source. The queries receive it as a record
+# list with a `rank` that is the rule's position, derived when it is sent and never
+# stored, so two rules can never tie. See docs/02_Reference/site-tag-override.md.
+
+SITE_RULE_KINDS = ("location", "tag")
+SITE_RULE_KEYS = frozenset({"kind", "pattern", "site"})
+MAX_SITE_RULES = 100
+SITE_RULE_ARROW = " -> "
+
+
+class SiteRuleError(ValueError):
+    """A site rule list the operator cannot save; the message says which rule."""
+
+
+def site_slug(value):
+    """The slug the shared NQE `slugify` makes: lowercase, `&` as "and", every run of
+    characters outside a-z and 0-9 as one dash, dashes at the ends trimmed."""
+    text = str(value or "").lower().replace("&", " and ")
+    return re.sub(r"[^a-z0-9]+", "-", text).strip("-")
+
+
+def normalize_site_rules(raw):
+    """Validate a stored or submitted rule list and return it cleaned, in order."""
+    if raw is None or raw == []:
+        return []
+    if not isinstance(raw, (list, tuple)):
+        raise SiteRuleError("Site rules must be a list of rules.")
+    if len(raw) > MAX_SITE_RULES:
+        raise SiteRuleError(f"At most {MAX_SITE_RULES} site rules are allowed.")
+    rules = []
+    seen = {}
+    slugs = {}
+    for number, item in enumerate(raw, start=1):
+        label = f"Rule {number}"
+        if not isinstance(item, dict):
+            raise SiteRuleError(
+                f"{label} must be an object with kind, pattern and site."
+            )
+        if set(item) != SITE_RULE_KEYS:
+            raise SiteRuleError(
+                f"{label} must have exactly the keys kind, pattern and site."
+            )
+        kind = str(item["kind"] or "").strip()
+        pattern = str(item["pattern"] or "").strip()
+        site = str(item["site"] or "").strip()
+        if kind not in SITE_RULE_KINDS:
+            raise SiteRuleError(f"{label}: the kind must be 'location' or 'tag'.")
+        if not pattern:
+            raise SiteRuleError(f"{label}: the {kind} is blank.")
+        if not site:
+            raise SiteRuleError(f"{label}: the NetBox site is blank.")
+        for word, text in (("location or tag", pattern), ("NetBox site", site)):
+            if SITE_RULE_ARROW in text or "\n" in text or "\r" in text:
+                raise SiteRuleError(
+                    f"{label}: the {word} cannot contain ' -> ' or a line break "
+                    "(a rule is written on one line)."
+                )
+        if kind == "location" and pattern == "*":
+            raise SiteRuleError(
+                f"{label}: a location of just '*' would put every device in one site."
+            )
+        slug = site_slug(site)
+        if not slug:
+            raise SiteRuleError(
+                f"{label}: '{site}' has no letters or digits to make a site slug from."
+            )
+        key = (kind, pattern.lower() if kind == "location" else pattern)
+        if key in seen:
+            raise SiteRuleError(
+                f"{label} repeats rule {seen[key]}: the same {kind} is matched twice."
+            )
+        seen[key] = number
+        previous = slugs.setdefault(slug, site.lower())
+        if previous != site.lower():
+            raise SiteRuleError(
+                f"{label}: '{site}' and '{previous}' make the same site slug '{slug}'."
+            )
+        entry = {"kind": kind, "pattern": pattern, "site": site}
+        # A rule is shown and saved as one line. One that reads back as something
+        # else (an arrow at the edge of a field) would be changed by the next save.
+        try:
+            reads_back = parse_site_rules_text(format_site_rules([entry])) == [entry]
+        except SiteRuleError:
+            reads_back = False
+        if not reads_back:
+            raise SiteRuleError(
+                f"{label}: it cannot be written on one line and read back the same "
+                "(check for ' ->' or leading or trailing spaces)."
+            )
+        rules.append(entry)
+    return rules
+
+
+def query_site_rules(rules):
+    """The rule list as the queries receive it: records with `rank` set to the
+    position, the site lowercased, and a location pattern lowercased (NQE matches
+    the lowercased location). A tag is left exact."""
+    sent = []
+    for rank, item in enumerate(rules or [], start=1):
+        kind = item["kind"]
+        pattern = item["pattern"]
+        sent.append(
+            {
+                "kind": kind,
+                "pattern": pattern.lower() if kind == "location" else pattern,
+                "site": item["site"].lower(),
+                "rank": rank,
+            }
+        )
+    return sent
+
+
+def format_site_rules(rules):
+    """One rule per line: `<kind> <pattern> -> <site>`."""
+    return "\n".join(
+        f"{item['kind']} {item['pattern']}{SITE_RULE_ARROW}{item['site']}"
+        for item in rules or []
+    )
+
+
+def parse_site_rules_text(text):
+    """The inverse of `format_site_rules`. A pattern may contain spaces (Forward
+    location names do), so the kind is the first word and the arrow splits the
+    rest."""
+    rules = []
+    for number, line in enumerate(str(text or "").splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+        kind, _, rest = line.partition(" ")
+        pattern, arrow, site = rest.partition(SITE_RULE_ARROW)
+        if not (kind and arrow and pattern.strip() and site.strip()):
+            raise SiteRuleError(
+                f"Line {number}: write '<location|tag> <pattern> -> <site>'."
+            )
+        rules.append({"kind": kind, "pattern": pattern.strip(), "site": site.strip()})
+    return rules
+
+
+SITE_RULES_NQE_TYPE = (
+    "List<{ kind: String, pattern: String, site: String, rank: Number }>"
+)
+_HELPERS_BEGIN = "// BEGIN site naming helpers"
+_HELPERS_END = "// END site naming helpers"
+
+
+def site_helper_nqe():
+    """The site naming helpers of `queries/netbox_utilities.nqe`, for a query built
+    in Python (which cannot import the module): the exact block between its markers,
+    with `export` removed. Read from the file so the two cannot drift apart."""
+    source = (
+        Path(__file__).resolve().parents[1] / "queries" / "netbox_utilities.nqe"
+    ).read_text(encoding="utf-8")
+    block = source[source.index(_HELPERS_BEGIN) : source.index(_HELPERS_END)]
+    return block.split("\n", 1)[1].replace("export ", "")
+
+
+def with_site_rules(query):
+    """A bare inline query wrapped so it can call the site helpers and receive the
+    rules as the declared `site_rules` parameter. The rules are sent as a parameter,
+    never written into the text."""
+    return (
+        f"{site_helper_nqe().rstrip()}\n\n@query\n"
+        f"f(site_rules: {SITE_RULES_NQE_TYPE}) =\n{query.rstrip()};\n"
+    )
+
+
+def summarize_site_rule_matches(rules, rows):
+    """How many devices each rule places, for the Scope page and the support bundle.
+
+    `rows` are the reconciliation rows: each has `tagNames` and `siteRuleRank`, the
+    lowest rank of a matching rule that NQE computed (0 when none matches). A rule
+    is credited with the devices it PLACES: matched by it, and not pinned by an
+    explicit `NetBox_Site_<name>` tag, which wins. Counting here and not
+    re-evaluating the patterns keeps one definition of a match, the one NQE uses.
+    """
+    rules = list(rules or [])
+    placed = {rank: 0 for rank in range(1, len(rules) + 1)}
+    pinned = 0
+    by_location = 0
+    total = 0
+    for row in rows or []:
+        total += 1
+        tags = row.get("tagNames") or []
+        if any(
+            str(tag).startswith(SITE_TAG_PREFIX)
+            and len(str(tag)) > len(SITE_TAG_PREFIX)
+            for tag in tags
+        ):
+            pinned += 1
+            continue
+        try:
+            rank = int(row.get("siteRuleRank") or 0)
+        except (TypeError, ValueError):
+            rank = 0
+        if rank in placed:
+            placed[rank] += 1
+        else:
+            by_location += 1
+    return {
+        "available": bool(rules),
+        "total": total,
+        "pinned_by_tag": pinned,
+        "by_location": by_location,
+        "rules": [
+            {
+                "rank": rank,
+                "kind": rule["kind"],
+                "pattern": rule["pattern"],
+                "site": rule["site"],
+                "devices": placed.get(rank, 0),
+            }
+            for rank, rule in enumerate(rules, start=1)
+        ],
+    }

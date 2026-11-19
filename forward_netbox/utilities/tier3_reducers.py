@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ..exceptions import ForwardQueryError
+from .query_execution_contract import _site_rules_state
 from .sync_contracts import row_coalesce_field_is_complete
 
 
@@ -110,6 +111,15 @@ def scope_side_from_payload(payload: dict[str, Any]) -> ScopeSide:
 
 
 def scope_state_from_context(context) -> dict[str, Any]:
+    state = _scope_state_from_context(context)
+    # Only when set, so a source with no rules keeps the scope state it always had.
+    site_rules = _site_rules_state(context)
+    if site_rules:
+        state["site_rules"] = site_rules
+    return state
+
+
+def _scope_state_from_context(context) -> dict[str, Any]:
     return {
         "include_tags": sorted(
             str(value)

@@ -45,6 +45,7 @@ from .query_binding import local_query_binding_drift
 from .query_binding_resolution import _QUERY_DRIFT_STATUS_LABELS
 from .query_binding_resolution import builtin_query_default_for_map
 from .query_registry import _default_query_parameters
+from .query_registry import SITE_NAMING_QUERY_FILES
 from .sync_facade import resolve_snapshot_id
 
 
@@ -198,6 +199,79 @@ def _optin_feature_map_state_check(sync):
         name="Opt-in feature maps",
         status="pass",
         message="Enabled opt-in features have an enabled query map that provides them.",
+    )
+
+
+# The models whose rows name a NetBox site, so the site mapping rules have to reach
+# their queries (see utilities/site_tag.py).
+_SITE_NAMING_MODELS = ("dcim.site", "dcim.device", "ipam.vlan")
+
+
+def _site_rules_map_state_check(sync):
+    """Warn when site rules are set but an enabled map cannot take them.
+
+    The rules are sent only to a query that declares them. A custom query saved
+    without the parameter would put its devices on the wrong sites, and a sync stops
+    rather than run it, so say so here first. This reads the maps; a published copy
+    of a bundled query that predates the rules shows in the query drift section.
+    None when no rules are set.
+    """
+    from .site_tag import SiteRuleError
+    from .site_tag import normalize_site_rules
+
+    source_parameters = getattr(getattr(sync, "source", None), "parameters", None) or {}
+    try:
+        rules = normalize_site_rules(source_parameters.get("site_rules"))
+    except SiteRuleError:
+        return _check(
+            name="Site rules",
+            status="warn",
+            message="The site rules saved on the source are not valid; edit the source.",
+        )
+    if not rules:
+        return None
+    problems = []
+    for query_map in sync.get_maps():
+        if not getattr(query_map, "enabled", True):
+            continue
+        model_string = getattr(query_map, "model_string", "")
+        if model_string not in _SITE_NAMING_MODELS:
+            continue
+        if not sync.is_model_enabled(model_string):
+            continue
+        query_default, _reason = builtin_query_default_for_map(query_map)
+        if not query_default:
+            # The sync accepts a custom query that is saved with the parameter (and
+            # declares it in its text), so only one without it is a problem.
+            if "site_rules" not in (getattr(query_map, "parameters", None) or {}):
+                problems.append(
+                    f"{model_string}: a custom query, which cannot take site rules"
+                )
+            continue
+        filename = query_default["filename"]
+        # A bundled query that names no site (the ACI inventory, for one) has
+        # nothing for the rules to do. One that does must take them.
+        if filename in SITE_NAMING_QUERY_FILES and "site_rules" not in (
+            _default_query_parameters(filename) or {}
+        ):
+            problems.append(
+                f"{model_string}: its bundled query ({filename}) does not take "
+                "site rules"
+            )
+    if problems:
+        return _check(
+            name="Site rules",
+            status="warn",
+            message=(
+                "Site rules are set, but these maps cannot apply them, so a sync "
+                "will stop: " + "; ".join(problems) + ". Enable the bundled map "
+                "for each model, or remove the rules."
+            ),
+        )
+    return _check(
+        name="Site rules",
+        status="pass",
+        message="Every enabled map that names a site takes the site rules.",
     )
 
 
@@ -1268,6 +1342,9 @@ def sync_health_summary(sync, *, include_evidence=False):
     optin_feature_check = _optin_feature_map_state_check(sync)
     if optin_feature_check is not None:
         checks.append(optin_feature_check)
+    site_rules_check = _site_rules_map_state_check(sync)
+    if site_rules_check is not None:
+        checks.append(site_rules_check)
     fast_path_check = _fast_path_runtime_check()
     if fast_path_check is not None:
         checks.append(fast_path_check)

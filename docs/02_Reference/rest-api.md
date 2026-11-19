@@ -39,6 +39,7 @@ these actions for subsequent edits.
 | --- | --- |
 | Available networks | `GET /api/plugins/forward/source/available-networks/` |
 | Available device tags | `GET /api/plugins/forward/source/available-tags/` |
+| Available locations | `GET /api/plugins/forward/source/available-locations/` |
 | Available query folders | `GET /api/plugins/forward/source/available-query-folders/` |
 | Available queries | `GET /api/plugins/forward/source/available-queries/` |
 | Available query commits | `GET /api/plugins/forward/source/available-query-commits/` |

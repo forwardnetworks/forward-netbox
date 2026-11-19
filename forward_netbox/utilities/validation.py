@@ -5,6 +5,10 @@ from ..choices import ForwardDriftPolicyBaselineChoices
 from ..choices import ForwardValidationStatusChoices
 from ..exceptions import ForwardSyncError
 from .diagnostics import safe_operation_failure
+from .diagnostics import SITE_RULES_CUSTOM_MAP_REASON
+from .diagnostics import SITE_RULES_NOT_DECLARED_REASON
+from .diagnostics import SITE_RULES_REQUIRE_DIFF_REASON
+from .query_execution_contract import contract_reason_hint
 from .query_fetch import ForwardQueryFetcher
 from .snapshot_collection_health import scope_collection_counts
 from .snapshot_collection_health import scope_collection_finding
@@ -634,10 +638,14 @@ class ForwardValidationRunner:
 
     def _required_query_failure_reasons(self, model_results):
         enabled_models = set(self.sync.get_model_strings())
+        # A model that failed because the site rules cannot be applied is reported as
+        # that, below: its query did not fail, so the device-coverage advice (and
+        # the `Require diff` recovery paragraph) would point at the wrong fix.
         failed_models = {
             str(result.get("model") or "")
             for result in model_results or []
             if int(result.get("failure_count") or 0) > 0
+            and "site-rules-" not in str(result.get("failure_reason") or "")
         }
         reasons = []
 
@@ -664,7 +672,50 @@ class ForwardValidationRunner:
                 + "."
             )
 
-        if reasons and self._diff_fallback_is_require_diff():
+        # A published query that rejected the site mapping rules failed only its own
+        # model's fetch, so the other models would still apply, putting devices on
+        # sites that were never created or at the wrong place. Block the run.
+        # Failures other than site rules: the `Require diff` recovery advice below is
+        # about these, so it is decided before the site-rules reasons are added.
+        other_failures = list(reasons)
+        site_rules_models = {"custom": set(), "published": set(), "require_diff": set()}
+        for result in model_results or []:
+            reason = str(result.get("failure_reason") or "")
+            if int(result.get("failure_count") or 0) > 0 and "site-rules-" in reason:
+                if "site-rules-custom-map" in reason:
+                    cause = "custom"
+                elif "site-rules-require-diff" in reason:
+                    cause = "require_diff"
+                else:
+                    cause = "published"
+                site_rules_models[cause].add(str(result.get("model") or ""))
+        # The advice differs by cause: publishing the bundled queries does nothing
+        # for a custom query, which is how an operator ran again into the same block.
+        if site_rules_models["custom"]:
+            reasons.append(
+                "Site mapping rules are set on the Forward source, but "
+                + ", ".join(sorted(site_rules_models["custom"]))
+                + " runs a custom query that does not take them, so its devices "
+                "would not be placed by the rules."
+                + contract_reason_hint(SITE_RULES_CUSTOM_MAP_REASON)
+            )
+        if site_rules_models["require_diff"]:
+            reasons.append(
+                "Site mapping rules are set and need a full fetch of "
+                + ", ".join(sorted(site_rules_models["require_diff"]))
+                + ", but this sync's diff fallback mode is `Require diff`."
+                + contract_reason_hint(SITE_RULES_REQUIRE_DIFF_REASON)
+            )
+        if site_rules_models["published"]:
+            reasons.append(
+                "Site mapping rules are set on the Forward source, but the query "
+                "for "
+                + ", ".join(sorted(site_rules_models["published"]))
+                + " cannot take them, so its devices would not be placed by the "
+                "rules." + contract_reason_hint(SITE_RULES_NOT_DECLARED_REASON)
+            )
+
+        if other_failures and self._diff_fallback_is_require_diff():
             reasons.append(
                 "These query failures blocked the sync because its diff fallback "
                 "mode is `Require diff`: a diff run that cannot fetch rows is treated "

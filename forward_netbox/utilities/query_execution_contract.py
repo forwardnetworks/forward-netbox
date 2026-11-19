@@ -12,6 +12,19 @@ from typing import Callable
 from typing import Mapping
 
 
+# The site mapping rules are a parameter only the queries that name a NetBox site
+# declare (utilities/site_tag.py). Forward rejects a parameter a query does not
+# declare, and silently ignoring rules an operator set would put devices on the wrong
+# sites, so the contract treats it specially: see `resolve_execution_contract`.
+SITE_RULES_PARAMETER_NAME = "site_rules"
+SITE_RULES_FULL_FETCH_REASON = "site_rules_full_fetch"
+# The reason codes. `diagnostics` holds the same three strings with the advice for
+# each (a test pins them equal): this module is also loaded on its own by the release
+# preflight, so it cannot import a sibling at load time.
+SITE_RULES_NOT_DECLARED_REASON = "site_rules_not_declared"
+SITE_RULES_CUSTOM_MAP_REASON = "site_rules_custom_map"
+SITE_RULES_REQUIRE_DIFF_REASON = "site_rules_require_diff"
+
 QUERY_CONTRACT_VERSION = 1
 NORMALIZATION_VERSION = 1
 IDENTITY_CONTRACT_VERSION = 1
@@ -351,6 +364,22 @@ def resolve_execution_contract(
         if full_declarations is not None
         else set()
     )
+    # The site rules. A query that predates the parameter (an older pinned commit,
+    # an org copy not republished) does not declare it. With no rules set the
+    # parameter is simply not sent, so such a query keeps running exactly as it did.
+    # With rules set it cannot honour them, so it is refused rather than run with
+    # the wrong sites.
+    site_rules_active = bool(parameters.get(SITE_RULES_PARAMETER_NAME))
+    site_rules_not_declared = False
+    if (
+        SITE_RULES_PARAMETER_NAME in parameters
+        and full_declarations is not None
+        and SITE_RULES_PARAMETER_NAME not in declared_names
+    ):
+        if site_rules_active:
+            site_rules_not_declared = True
+        else:
+            parameters.pop(SITE_RULES_PARAMETER_NAME)
     raw_required_data_files = getattr(spec, "required_data_files", ())
     if not isinstance(raw_required_data_files, (list, tuple, set, frozenset)):
         raw_required_data_files = ()
@@ -404,7 +433,9 @@ def resolve_execution_contract(
     # fills it in, because the committed source is read back for that revision.
     has_local_full_source = bool(normalize_query_source(full_source))
     full_reason_code = "eligible"
-    if is_raw_query:
+    if site_rules_not_declared:
+        full_reason_code = SITE_RULES_NOT_DECLARED_REASON
+    elif is_raw_query:
         if full_declarations is None:
             full_reason_code = "unverified_full_declarations"
         elif set(parameters) != declared_names:
@@ -437,7 +468,11 @@ def resolve_execution_contract(
         full_reason_code = "missing_variant_data_hash"
 
     diff_reason_code = "eligible"
-    if getattr(spec, "query", None) is not None and not getattr(
+    if site_rules_active:
+        # The diff revisions of a query take no parameters, so a diff run would
+        # name sites without the rules and move devices back to their location.
+        diff_reason_code = SITE_RULES_FULL_FETCH_REASON
+    elif getattr(spec, "query", None) is not None and not getattr(
         spec, "run_query_id", None
     ):
         diff_reason_code = "raw_query"
@@ -517,42 +552,58 @@ def resolve_execution_contract(
     )
 
 
-def scope_config_fingerprint(context) -> str:
-    return canonical_sha256(
+def _site_rules_state(context) -> list[dict[str, str]]:
+    """The context's site rules as plain dicts, in order, or an empty list."""
+    return [
         {
-            "network_id": str(getattr(context, "network_id", "") or ""),
-            "include_tags": sorted(
-                str(value)
-                for value in getattr(context, "device_tag_include_tags", ()) or ()
-            ),
-            "exclude_tags": sorted(
-                str(value)
-                for value in getattr(context, "device_tag_exclude_tags", ()) or ()
-            ),
-            "include_match": str(
-                getattr(context, "device_tag_include_match", "any") or "any"
-            ),
-            "prune_out_of_scope": bool(
-                getattr(context, "device_tag_prune_out_of_scope", False)
-            ),
-            "sync_device_tags": sorted(
-                str(value) for value in getattr(context, "sync_device_tags", ()) or ()
-            ),
-            "apply_device_scope_tags": bool(
-                getattr(context, "apply_device_scope_tags", False)
-            ),
-            "sync_endpoints": bool(getattr(context, "sync_endpoints", False)),
-            "sync_generic_endpoints": bool(
-                getattr(context, "sync_generic_endpoints", False)
-            ),
-            "scope_endpoints_by_include_tags": bool(
-                getattr(context, "scope_endpoints_by_include_tags", False)
-            ),
-            "endpoint_contract_version": 1,
-            "device_tag_contract_version": 1,
-            "prune_contract_version": 1,
+            "kind": str(rule.get("kind", "")),
+            "pattern": str(rule.get("pattern", "")),
+            "site": str(rule.get("site", "")),
         }
-    )
+        for rule in getattr(context, "site_rules", ()) or ()
+    ]
+
+
+def scope_config_fingerprint(context) -> str:
+    payload = {
+        "network_id": str(getattr(context, "network_id", "") or ""),
+        "include_tags": sorted(
+            str(value)
+            for value in getattr(context, "device_tag_include_tags", ()) or ()
+        ),
+        "exclude_tags": sorted(
+            str(value)
+            for value in getattr(context, "device_tag_exclude_tags", ()) or ()
+        ),
+        "include_match": str(
+            getattr(context, "device_tag_include_match", "any") or "any"
+        ),
+        "prune_out_of_scope": bool(
+            getattr(context, "device_tag_prune_out_of_scope", False)
+        ),
+        "sync_device_tags": sorted(
+            str(value) for value in getattr(context, "sync_device_tags", ()) or ()
+        ),
+        "apply_device_scope_tags": bool(
+            getattr(context, "apply_device_scope_tags", False)
+        ),
+        "sync_endpoints": bool(getattr(context, "sync_endpoints", False)),
+        "sync_generic_endpoints": bool(
+            getattr(context, "sync_generic_endpoints", False)
+        ),
+        "scope_endpoints_by_include_tags": bool(
+            getattr(context, "scope_endpoints_by_include_tags", False)
+        ),
+        "endpoint_contract_version": 1,
+        "device_tag_contract_version": 1,
+        "prune_contract_version": 1,
+    }
+    # Rules that are set are scope: the same devices land on different sites. A source
+    # with none fingerprints exactly as it did before the rules existed.
+    site_rules = _site_rules_state(context)
+    if site_rules:
+        payload["site_rules"] = site_rules
+    return canonical_sha256(payload)
 
 
 def scope_membership_fingerprint(context, *, snapshot_id: str | None = None) -> str:
@@ -764,3 +815,11 @@ def _model_contract_issue_rows(contract):
     if not getattr(contract, "diff_eligible", False):
         issues.append(f"diff:{contract.diff_reason_code}")
     return issues
+
+
+def contract_reason_hint(reason_code) -> str:
+    """Words an operator can act on for the reasons that need them, or an empty string."""
+    # Imported here, not at load: this module is also loaded on its own.
+    from .diagnostics import SITE_RULES_ADVICE
+
+    return SITE_RULES_ADVICE.get(reason_code, "")
