@@ -58,7 +58,10 @@ _SCRIPT = """
   var loaded = false;
   // A location rule is a pattern, so the field stays free text; the names Forward
   // has are only suggestions (a datalist), loaded once for a saved source.
+  var locationsLoaded = false;
   function loadLocations() {
+    if (locationsLoaded) { return; }
+    locationsLoaded = true;
     var id = builder.getAttribute('data-source-id');
     var options = builder.querySelector('[data-location-options]');
     if (!id || !options) { return; }
@@ -118,7 +121,9 @@ _SCRIPT = """
     tag = input;
   }
   kind.addEventListener('change', show);
-  loadLocations();
+  // Not on every form view: that would ask Forward twice before anyone had touched
+  // a location rule. The first time the field is used is soon enough.
+  loc.addEventListener('focus', loadLocations, {once: true});
   builder.querySelector('[data-add]').addEventListener('click', function () {
     var value = (kind.value === 'tag' ? tag.value : loc.value).trim();
     var name = site.value.trim();

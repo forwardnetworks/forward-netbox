@@ -247,3 +247,11 @@ class LocationSuggestionsTest(TestCase):
 
         self.assertIn("data-locations-url", html)
         self.assertIn("loadLocations", html)
+
+    def test_the_list_loads_when_the_field_is_first_used_not_on_every_form_view(self):
+        # Every edit of a saved source would otherwise ask Forward twice (a snapshot
+        # and a query) before anyone had touched a location rule.
+        html = self._html(source_id=7)
+
+        self.assertIn("addEventListener('focus', loadLocations", html)
+        self.assertNotIn("\n  loadLocations();", html)

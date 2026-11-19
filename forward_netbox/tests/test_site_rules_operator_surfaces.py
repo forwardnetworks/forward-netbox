@@ -429,3 +429,70 @@ class TheTwoStandaloneModulesAgreeTest(SimpleTestCase):
         )
 
         self.assertEqual(contract_reason_hint("unsafe_full_parameters"), "")
+
+
+class AdviceForTheRealCauseTest(SimpleTestCase):
+    """A custom device map refused for site rules also makes dcim.device fail, and
+    with a child model enabled that read as 'the device query failed' with advice
+    (Allow full fallback, Publish Bundled Queries) that fixes nothing here."""
+
+    def _reasons(self, reason):
+        runner = ForwardValidationRunner.__new__(ForwardValidationRunner)
+        runner.sync = SimpleNamespace(
+            get_model_strings=lambda: ["dcim.device", "dcim.interface"],
+            parameters={"diff_fallback_mode": "require_diff"},
+        )
+        return runner._required_query_failure_reasons(
+            [{"model": "dcim.device", "failure_count": 1, "failure_reason": reason}]
+        )
+
+    def test_a_site_rules_refusal_is_not_also_reported_as_the_device_query_failing(
+        self,
+    ):
+        reasons = self._reasons("site-rules-custom-map")
+
+        self.assertEqual(len(reasons), 1)
+        self.assertIn("Site mapping rules", reasons[0])
+        self.assertFalse([t for t in reasons if "depend on device coverage" in t])
+        self.assertFalse([t for t in reasons if "recover automatically" in t])
+
+    def test_a_real_device_query_failure_is_still_reported(self):
+        reasons = self._reasons("timeout")
+
+        self.assertTrue([t for t in reasons if "depend on device coverage" in t])
+        self.assertTrue([t for t in reasons if "recover automatically" in t])
+
+
+class RequireDiffPreflightIsAboutTheQueryTest(SimpleTestCase):
+    """The conflict is between Require diff and a query that takes the rules. A
+    device map that names no site (an ACI inventory) is not affected."""
+
+    helper = EachRefusalLogsTheValueFreeWarningTest()
+
+    def test_a_bundled_device_map_that_declares_no_rules_is_not_blocked(self):
+        spec = _eligible_spec(
+            model_string="dcim.device",
+            parameters={"scope": []},
+        )
+
+        logged = self.helper._fetcher(
+            spec, require_diff=True, rules=RULES, model="dcim.device"
+        )
+
+        self.assertFalse([text for text in logged if "need a full fetch" in text])
+
+    def test_a_bundled_map_that_declares_the_rules_is_blocked(self):
+        source = (
+            "@query\nf(scope: List<String>, site_rules: "
+            "List<{ kind: String, pattern: String, site: String, rank: Number }>) =\n"
+            "foreach value in scope\nselect {name: value, slug: value}\n"
+        )
+        spec = _eligible_spec(
+            parameters={"scope": [], "site_rules": []},
+            full_query_source=source,
+            full_source_sha256=query_source_sha256(source),
+        )
+
+        logged = self.helper._fetcher(spec, require_diff=True, rules=RULES)
+
+        self.assertTrue([text for text in logged if "need a full fetch" in text])

@@ -611,10 +611,6 @@ class NoCustomerDataAnywhereTest(unittest.TestCase):
                     self.assertNotIn(token, output)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class SiteRulesMessagesWorkStandaloneTest(unittest.TestCase):
     """`diagnostics` is loaded on its own here, with no package around it, and must
     stay so: the value-free site-rules warning has to work without importing a
@@ -633,3 +629,7 @@ class SiteRulesMessagesWorkStandaloneTest(unittest.TestCase):
             diagnostics.safe_log_message("a customer's own words", "warning"),
             diagnostics.SAFE_WARNING_LOG_MESSAGE,
         )
+
+
+if __name__ == "__main__":
+    unittest.main()

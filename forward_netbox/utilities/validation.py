@@ -638,10 +638,14 @@ class ForwardValidationRunner:
 
     def _required_query_failure_reasons(self, model_results):
         enabled_models = set(self.sync.get_model_strings())
+        # A model that failed because the site rules cannot be applied is reported as
+        # that, below: its query did not fail, so the device-coverage advice (and
+        # the `Require diff` recovery paragraph) would point at the wrong fix.
         failed_models = {
             str(result.get("model") or "")
             for result in model_results or []
             if int(result.get("failure_count") or 0) > 0
+            and "site-rules-" not in str(result.get("failure_reason") or "")
         }
         reasons = []
 

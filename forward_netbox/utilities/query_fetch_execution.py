@@ -1632,6 +1632,10 @@ class ForwardQueryFetcher:
                 if (
                     getattr(context, "site_rules", None)
                     and model_string in SITE_RULES_MODELS
+                    and any(
+                        SITE_RULES_PARAMETER_NAME in (spec.parameters or {})
+                        for spec in effective_specs
+                    )
                     and self._require_diff_execution()
                 ):
                     # The diff revisions cannot carry the rules, so rules need a full

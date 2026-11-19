@@ -444,8 +444,9 @@ def _declared_query_parameters_module():
 
     `forward_netbox/__init__.py` imports `netbox.plugins` at module level, so
     a normal `import forward_netbox...` fails in this Django-free script
-    environment. The module this needs has no relative imports of its own
-    (stdlib only), so loading the file directly - bypassing the package
+    environment. The module this needs has no relative imports at load time
+    (stdlib only; one function imports a sibling lazily and this script never
+    calls it), so loading the file directly - bypassing the package
     `__init__.py` entirely - is safe and avoids maintaining a second copy of
     the `@query` signature parser.
     """

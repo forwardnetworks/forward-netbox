@@ -193,6 +193,13 @@ virtual children (they carry a location), and is reviewed and edited in NetBox.
   check on the smoke-test fetch path; and Forward's location names are offered as
   suggestions in the builder (a new `available-locations` endpoint beside the tags
   one, sharing its code).
+- Audit of that final stage: release-with-notes, no blockers; its five notes were fixed
+  too: a site-rules refusal is no longer also reported as the device query failing
+  (with advice that fixes nothing here); the `Require diff` conflict is decided by
+  whether the map's query takes the rules, not by its model; the standalone tests sit
+  above the `__main__` guard; the REST API doc lists `available-locations` and the
+  release-preflight docstring says what is true; the location list loads when the field
+  is first used, not on every form view.
 - Not built, and why: a Scope-page warning for two sources that cover the same devices
   with different rules. Nothing in the data model says two sources cover the same
   devices, so the warning would guess; the reference page says to give a device one
