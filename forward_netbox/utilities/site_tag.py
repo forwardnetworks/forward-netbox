@@ -116,6 +116,12 @@ def normalize_site_rules(raw):
             raise SiteRuleError(f"{label}: the {kind} is blank.")
         if not site:
             raise SiteRuleError(f"{label}: the NetBox site is blank.")
+        for word, text in (("location or tag", pattern), ("NetBox site", site)):
+            if SITE_RULE_ARROW in text or "\n" in text or "\r" in text:
+                raise SiteRuleError(
+                    f"{label}: the {word} cannot contain ' -> ' or a line break "
+                    "(a rule is written on one line)."
+                )
         if kind == "location" and pattern == "*":
             raise SiteRuleError(
                 f"{label}: a location of just '*' would put every device in one site."

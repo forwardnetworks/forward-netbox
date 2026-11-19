@@ -211,6 +211,19 @@ class SiteRulesParameterTest(SimpleTestCase):
 
         self.assertIn("isPresent(rule_site)", text)
 
+    def test_the_rule_site_lookup_does_not_rank_every_rule_for_every_rule(self):
+        # Ranking inside the loop over the rules costs the square of the rule count
+        # for every device. Only a rule that matches may pay for the comparison.
+        helper = (QUERIES / "netbox_utilities.nqe").read_text()
+        body = helper[
+            helper.index("export siteRuleSite(") : helper.index(
+                "export siteNameForRulesElse("
+            )
+        ]
+
+        self.assertNotIn("siteRuleRank(", body)
+        self.assertIn("where siteRuleMatches(rule, tag_names, location_name)", body)
+
     def test_the_old_helpers_keep_their_shape_for_customers_own_queries(self):
         helper = (QUERIES / "netbox_utilities.nqe").read_text()
 

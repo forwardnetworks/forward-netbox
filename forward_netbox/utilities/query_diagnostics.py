@@ -196,6 +196,20 @@ def _ip_is_in_intervals(
     return index >= 0 and value <= intervals[index][1]
 
 
+def _diagnostic_parameters(context):
+    """The context's query parameters, less the site rules.
+
+    The diagnostics are raw NQE that declares no parameters, and Forward rejects one
+    a query does not declare. The rules ride in the context for the maps that name
+    a site; they mean nothing to a diagnostic.
+    """
+    return {
+        key: value
+        for key, value in (context.query_parameters or {}).items()
+        if key != "site_rules"
+    }
+
+
 def run_ipaddress_unassignable_diagnostic(fetcher, context):
     try:
         rows = run_nqe_query(
@@ -203,7 +217,7 @@ def run_ipaddress_unassignable_diagnostic(fetcher, context):
             query=ipaddress_unassignable_diagnostic_query(),
             network_id=context.network_id,
             snapshot_id=context.snapshot_id,
-            parameters=context.query_parameters,
+            parameters=_diagnostic_parameters(context),
             fetch_all=True,
         )
     except JobTimeoutException:
@@ -294,7 +308,7 @@ def run_routing_import_diagnostic(fetcher, context):
             query=routing_import_diagnostic_query(),
             network_id=context.network_id,
             snapshot_id=context.snapshot_id,
-            parameters=context.query_parameters,
+            parameters=_diagnostic_parameters(context),
             fetch_all=True,
         )
     except JobTimeoutException:
@@ -514,7 +528,7 @@ def run_aci_source_readiness(fetcher, context):
             query=aci_source_readiness_query(),
             network_id=context.network_id,
             snapshot_id=context.snapshot_id,
-            parameters=context.query_parameters,
+            parameters=_diagnostic_parameters(context),
             fetch_all=True,
         )
     except JobTimeoutException:

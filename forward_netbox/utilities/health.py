@@ -45,6 +45,7 @@ from .query_binding import local_query_binding_drift
 from .query_binding_resolution import _QUERY_DRIFT_STATUS_LABELS
 from .query_binding_resolution import builtin_query_default_for_map
 from .query_registry import _default_query_parameters
+from .query_registry import SITE_NAMING_QUERY_FILES
 from .sync_facade import resolve_snapshot_id
 
 
@@ -241,12 +242,16 @@ def _site_rules_map_state_check(sync):
             problems.append(
                 f"{model_string}: a custom query, which cannot take site rules"
             )
-        elif "site_rules" not in (
-            _default_query_parameters(query_default["filename"]) or {}
+            continue
+        filename = query_default["filename"]
+        # A bundled query that names no site (the ACI inventory, for one) has
+        # nothing for the rules to do. One that does must take them.
+        if filename in SITE_NAMING_QUERY_FILES and "site_rules" not in (
+            _default_query_parameters(filename) or {}
         ):
             problems.append(
-                f"{model_string}: its bundled query ({query_default['filename']}) "
-                "does not take site rules"
+                f"{model_string}: its bundled query ({filename}) does not take "
+                "site rules"
             )
     if problems:
         return _check(

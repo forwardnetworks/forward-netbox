@@ -50,7 +50,9 @@ class SiteRulesMapStateCheckTest(SimpleTestCase):
 
         self.assertEqual(result["status"], "pass")
 
-    def test_a_site_map_that_does_not_take_the_rules_is_named(self):
+    def test_a_bundled_map_that_names_no_site_is_ignored(self):
+        # The ACI inventory is a device map that names no site: the rules have
+        # nothing to do there, so it is not a problem.
         result = self._check(
             {"site_rules": RULES},
             [
@@ -59,9 +61,19 @@ class SiteRulesMapStateCheckTest(SimpleTestCase):
             ],
         )
 
+        self.assertEqual(result["status"], "pass")
+
+    def test_a_site_naming_bundled_query_that_lost_the_parameter_is_named(self):
+        with mock.patch.object(
+            health, "_default_query_parameters", return_value={"scope": []}
+        ):
+            result = self._check(
+                {"site_rules": RULES},
+                [self._map("dcim.device", "forward_devices.nqe")],
+            )
+
         self.assertEqual(result["status"], "warn")
-        self.assertIn("dcim.device", result["message"])
-        self.assertNotIn("dcim.site", result["message"])
+        self.assertIn("forward_devices.nqe", result["message"])
 
     def test_a_custom_query_cannot_take_the_rules(self):
         result = self._check({"site_rules": RULES}, [self._map("dcim.site")])

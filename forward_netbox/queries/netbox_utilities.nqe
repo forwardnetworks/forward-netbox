@@ -232,6 +232,9 @@ export siteRuleRank(
     select rule.rank
   );
 
+// The site of the lowest-ranked matching rule. A rule wins when it matches and no
+// lower-ranked rule does; only matching rules pay for that comparison, so the cost
+// follows how many rules match a device, not the square of how many are set.
 export siteRuleSite(
   rules: List<{ kind: String, pattern: String, site: String, rank: Number }>,
   tag_names: List<String>,
@@ -239,8 +242,13 @@ export siteRuleSite(
 ) =
   max(
     foreach rule in rules
-    where isPresent(siteRuleRank(rules, tag_names, location_name))
-    where rule.rank == siteRuleRank(rules, tag_names, location_name)
+    where siteRuleMatches(rule, tag_names, location_name)
+    where !any(
+      foreach other in rules
+      where other.rank < rule.rank
+      where siteRuleMatches(other, tag_names, location_name)
+      select true
+    )
     select rule.site
   );
 

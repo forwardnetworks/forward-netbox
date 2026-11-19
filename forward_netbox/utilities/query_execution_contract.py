@@ -19,6 +19,7 @@ from typing import Mapping
 SITE_RULES_PARAMETER_NAME = "site_rules"
 SITE_RULES_FULL_FETCH_REASON = "site_rules_full_fetch"
 SITE_RULES_NOT_DECLARED_REASON = "site_rules_not_declared"
+SITE_RULES_CUSTOM_MAP_REASON = "site_rules_custom_map"
 
 QUERY_CONTRACT_VERSION = 1
 NORMALIZATION_VERSION = 1
@@ -820,5 +821,11 @@ def contract_reason_hint(reason_code) -> str:
             "them (it predates them). Publish the bundled queries to the organization "
             "(Forward NQE Maps, Publish Bundled Queries) and refresh the query IDs, "
             "or remove the site rules."
+        )
+    if reason_code == SITE_RULES_CUSTOM_MAP_REASON:
+        return (
+            " Enable the bundled map for this model instead of the custom one, add "
+            "a `site_rules` parameter to the custom query (see the Site Mapping Rules "
+            "reference), or remove the site rules."
         )
     return ""

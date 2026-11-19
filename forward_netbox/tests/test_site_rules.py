@@ -13,8 +13,8 @@ from forward_netbox.utilities.site_tag import parse_site_rules_text
 from forward_netbox.utilities.site_tag import query_site_rules
 from forward_netbox.utilities.site_tag import site_helper_nqe
 from forward_netbox.utilities.site_tag import site_slug
-from forward_netbox.utilities.site_tag import summarize_site_rule_matches
 from forward_netbox.utilities.site_tag import SiteRuleError
+from forward_netbox.utilities.site_tag import summarize_site_rule_matches
 from forward_netbox.utilities.site_tag import with_site_rules
 
 QUERIES = Path(__file__).resolve().parents[1] / "queries"
@@ -95,6 +95,31 @@ class NormalizeTest(SimpleTestCase):
         many.append(rule(pattern="Extra*", site="s-extra"))
         with self.assertRaises(SiteRuleError):
             normalize_site_rules(many)
+
+    def test_text_that_cannot_survive_the_one_line_form_is_refused(self):
+        # A rule is shown and saved as one line `kind pattern -> site`: an arrow or a
+        # line break inside a pattern or a site name could not be read back.
+        for bad in (
+            rule(pattern="Hall -> A*"),
+            rule(pattern="Hall\nA*"),
+            rule(site="camp -> us"),
+            rule(site="camp\nus"),
+            rule(pattern="Hall\rA*"),
+        ):
+            with self.subTest(bad=bad), self.assertRaises(SiteRuleError):
+                normalize_site_rules([bad])
+
+    def test_every_rule_that_is_accepted_survives_the_text_round_trip(self):
+        rules = [
+            rule(pattern="Hall A*", site="Campus East"),
+            rule("tag", "Prod Core", "core"),
+            rule(pattern="a->b*", site="x"),
+        ]
+
+        self.assertEqual(
+            parse_site_rules_text(format_site_rules(normalize_site_rules(rules))),
+            normalize_site_rules(rules),
+        )
 
     def test_a_message_names_the_rule_number(self):
         with self.assertRaisesRegex(SiteRuleError, "Rule 2"):

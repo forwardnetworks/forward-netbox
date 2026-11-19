@@ -12,9 +12,9 @@ stays as an explicit per-device override and keeps working.
 Today, grouping many Forward locations into one NetBox site means tagging every
 device in Forward: it needs Forward write access, it cannot reach virtual children
 (firewall virtual systems, access points) without snapshot-scoped writes, and it took
-hours on a 2,960-device estate. A location rule such as `DC01*` -> `dc1` matched the
-same 1,480 devices exactly (probed live, read-only), covers virtual children (they
-carry a location), and is reviewed and edited in NetBox.
+hours on an estate of thousands of devices. A location rule such as `DC*` -> `dc`
+selects the same devices a per-device tag would (probed live, read-only), covers
+virtual children (they carry a location), and is reviewed and edited in NetBox.
 
 ## Constraints
 

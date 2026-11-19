@@ -264,6 +264,16 @@ DEVICE_TAG_PARAMETER_QUERY_FILES = {
 # @query signature, never by the text: netbox_utilities.nqe, which holds the helpers,
 # is copied into about thirty queries that do not declare the parameter.
 SITE_RULES_PARAMETER_DEFAULT = {SITE_RULES_PARAMETER_NAME: []}
+# The bundled queries that name a NetBox site, and so declare `site_rules`. A test
+# keeps this equal to the queries that declare it.
+SITE_NAMING_QUERY_FILES = frozenset(
+    {
+        "forward_locations.nqe",
+        "forward_devices.nqe",
+        "forward_devices_with_netbox_aliases.nqe",
+        "forward_vlans.nqe",
+    }
+)
 LEGACY_SAFE_PARAMETER_DEFAULTS = {
     **SITE_RULES_PARAMETER_DEFAULT,
     **SHARD_QUERY_PARAMETER_DEFAULT,

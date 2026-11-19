@@ -52,6 +52,17 @@ class RegistryDefaultsTest(SimpleTestCase):
                     "site_rules", query_registry._default_query_parameters(path.name)
                 )
 
+    def test_the_list_of_site_naming_queries_is_the_queries_that_declare_the_rules(
+        self,
+    ):
+        declared = {
+            path.name
+            for path in QUERIES.glob("*.nqe")
+            if "site_rules" in query_registry._default_query_parameters(path.name)
+        }
+
+        self.assertEqual(declared, set(query_registry.SITE_NAMING_QUERY_FILES))
+
     def test_the_default_is_one_the_old_query_retry_may_drop(self):
         self.assertEqual(
             query_registry.LEGACY_SAFE_PARAMETER_DEFAULTS["site_rules"], []
@@ -469,3 +480,51 @@ class ReconciliationReportTest(_SourceCase):
 
         self.assertFalse(report["site_rules"]["available"])
         self.assertNotIn("siteRuleRank", call["query"])
+
+
+class StaleLegacyQueryTest(_SourceCase):
+    """An old org copy bound by path that also lacks an older default parameter.
+
+    3.0.16 rescued it by retrying with no parameters. Dropping `site_rules` must lead
+    into that same rescue, not around it."""
+
+    def test_dropping_the_rules_then_still_gets_the_legacy_retry(self):
+        calls = []
+
+        def run(client, **kwargs):
+            calls.append(dict(kwargs["parameters"]))
+            if "site_rules" in kwargs["parameters"]:
+                raise ForwardClientError(
+                    "Provided argument, 'site_rules' is not a parameter to the given query."
+                )
+            if kwargs["parameters"]:
+                raise ForwardClientError(
+                    "Provided argument, 'forward_netbox_shard_keys' is not a parameter "
+                    "to the given query."
+                )
+            return [{"name": "campus"}]
+
+        spec = QuerySpec(
+            model_string="dcim.site",
+            query_name="Forward Locations",
+            query_path="/Root/forward_locations",
+            query_repository="org",
+            resolved_query_id="Q_locations",
+            parameters={"forward_netbox_shard_keys": [], "site_rules": []},
+        )
+        with patch("forward_netbox.utilities.query_fetch_execution.run_nqe_query", run):
+            rows = self.fetcher._run_nqe_query(
+                spec=spec,
+                context=self._context(),
+                parameters={"forward_netbox_shard_keys": [], "site_rules": []},
+            )
+
+        self.assertEqual(rows, [{"name": "campus"}])
+        self.assertEqual(
+            calls,
+            [
+                {"forward_netbox_shard_keys": [], "site_rules": []},
+                {"forward_netbox_shard_keys": []},
+                {},
+            ],
+        )

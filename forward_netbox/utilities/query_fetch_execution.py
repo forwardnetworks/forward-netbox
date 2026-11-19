@@ -92,6 +92,7 @@ from .query_execution_contract import resolve_model_execution_contract
 from .query_execution_contract import ResolvedExecutionContract
 from .query_execution_contract import scope_config_fingerprint
 from .query_execution_contract import scope_membership_fingerprint
+from .query_execution_contract import SITE_RULES_CUSTOM_MAP_REASON
 from .query_execution_contract import SITE_RULES_NOT_DECLARED_REASON
 from .query_execution_contract import SITE_RULES_PARAMETER_NAME
 from .query_registry import ensure_unique_query_spec_executions
@@ -246,6 +247,31 @@ _NQE_CONTRACT_REJECTION_MARKERS = (
 def _is_nqe_contract_rejection(exc: Exception) -> bool:
     haystack = str(exc or "").casefold()
     return any(marker in haystack for marker in _NQE_CONTRACT_REJECTION_MARKERS)
+
+
+# The models whose rows name a NetBox site: a map for one of them has to take the
+# site rules (see utilities/site_tag.py).
+SITE_RULES_MODELS = frozenset({"dcim.site", "dcim.device", "ipam.vlan"})
+
+
+def _custom_maps_without_site_rules(model_string, specs, context):
+    """Names of the custom maps for a site-naming model that cannot take site rules.
+
+    Only when rules are set. A bundled map is checked by the execution contract; a
+    custom one (the operator's own query) takes just the parameters it was saved
+    with, unless the operator declared `site_rules` on it.
+    """
+    if (
+        not getattr(context, "site_rules", None)
+        or model_string not in SITE_RULES_MODELS
+    ):
+        return []
+    return [
+        str(getattr(spec, "query_name", "") or model_string)
+        for spec in specs
+        if not getattr(spec, "built_in", False)
+        and SITE_RULES_PARAMETER_NAME not in (getattr(spec, "parameters", None) or {})
+    ]
 
 
 def _without_site_rules(parameters):
@@ -1566,6 +1592,22 @@ class ForwardQueryFetcher:
                     context,
                 )
                 ensure_unique_query_spec_executions(effective_specs)
+                uncovered = _custom_maps_without_site_rules(
+                    model_string, effective_specs, context
+                )
+                if uncovered:
+                    # A custom query takes only the parameters it was saved with,
+                    # so the rules would never reach it and its devices would be
+                    # placed by their Forward location. Stop the whole run, as an
+                    # unsafe contract does, so nothing is applied half-placed.
+                    contract_preflight_blocked = True
+                    raise ForwardQueryError(
+                        "Site mapping rules are set on the Forward source, but "
+                        f"the map {', '.join(sorted(uncovered))} for {model_string} "
+                        "runs a custom query that does not take them, so its "
+                        "devices would not be placed by the rules."
+                        + contract_reason_hint(SITE_RULES_CUSTOM_MAP_REASON)
+                    )
                 contracts = [
                     resolve_execution_contract(
                         effective_spec,
@@ -4131,9 +4173,16 @@ class ForwardQueryFetcher:
                     "rules; running it without them (none are set).",
                     obj=self.sync,
                 )
-                return run_nqe_query(
-                    self.client,
-                    **{**call_kwargs, "parameters": _without_site_rules(parameters)},
+                # Back through the normal path, not a bare call: an old copy that
+                # also lacks an older default parameter still gets its rescue.
+                return self._run_nqe_query(
+                    spec=spec,
+                    contract=contract,
+                    context=context,
+                    parameters=_without_site_rules(parameters),
+                    limit=limit,
+                    fetch_all=fetch_all,
+                    deadline=deadline,
                 )
             is_legacy_resolved_path = bool(spec.query_path and spec.run_query_id)
             is_parameter_error = "parameter" in str(exc).casefold()

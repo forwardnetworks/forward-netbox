@@ -232,14 +232,14 @@ export slugifyNetboxModel(value: String) =
 
 - `NetBox Model`: `dcim.site`
 - Expected fields: `name`, `slug`, `status`, `physical_address`, `comments`
-- Built-in behavior: one site per Forward location by default; a device tagged `NetBox_Site_<name>` is placed at the site `<name>` instead, so several locations can make one site. See [Site Tag Override](site-tag-override.md).
+- Built-in behavior: one site per Forward location by default. A site mapping rule (set on the Forward source) or a device tagged `NetBox_Site_<name>` places a device at another site instead, so several locations can make one site. See [Site Mapping Rules](site-mapping-rules.md) and [Site Tag Override](site-tag-override.md). The query takes the rules as its `site_rules` parameter.
 - Query file: [`forward_locations.nqe`](https://github.com/forwardnetworks/forward-netbox/blob/main/forward_netbox/queries/forward_locations.nqe)
 
 ```nqe
 import "netbox_utilities";
 
 @query
-f(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>) =
+f(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>, site_rules: List<{ kind: String, pattern: String, site: String, rank: Number }>) =
 foreach device in network.devices
 where device.snapshotInfo.result == DeviceSnapshotResult.completed
 where device.platform.vendor != Vendor.FORWARD_CUSTOM
@@ -250,8 +250,10 @@ where isEmpty(device_tag_include_tags)
     && any(foreach tag in device_tag_include_tags select tag in device.tagNames))
 where isEmpty(device_tag_exclude_tags)
   || !any(foreach tag in device_tag_exclude_tags select tag in device.tagNames)
+let device_location = if isPresent(device.locationName) then device.locationName else ""
 let site_tag = siteTagName(device.tagNames)
-let site_name = deviceSiteName(device)
+let rule_site = siteRuleSite(site_rules, device.tagNames, device_location)
+let site_name = deviceSiteNameRules(device, site_rules)
 let site_slug = slugify(site_name)
 where isEmpty(forward_netbox_shard_keys)
   || site_slug in forward_netbox_shard_keys
@@ -260,6 +262,7 @@ where isEmpty(forward_netbox_shard_keys)
 // files it at "unknown" itself.
 where (isPresent(device.locationName) && length(device.locationName) > 0)
   || isPresent(site_tag)
+  || isPresent(rule_site)
 group device as devices by site_name as site_name
 let location_names = (
   foreach member in devices
@@ -770,24 +773,91 @@ The shipped MAC query removes exact duplicate rows, filters the all-zero placeho
 ```nqe
 import "netbox_utilities";
 
-candidate_rows =
+// VLAN rows come from two sources, unioned at the candidate level (mirrors the
+// multi-source pattern in forward_ip_addresses_ipv4.nqe — list concatenation
+// must combine top-level function calls, not let-bound comprehensions inside a
+// single device `foreach`).
+//
+// Source 1: networkInstance.vlans — interface-associated VLANs (historical source).
+ni_vlan_rows(device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>, site_rules: List<{ kind: String, pattern: String, site: String, rank: Number }>) =
   foreach device in network.devices
   where device.snapshotInfo.result == DeviceSnapshotResult.completed
   where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(device_tag_include_tags)
+    || (device_tag_include_match == "all"
+      && all(foreach tag in device_tag_include_tags select tag in device.tagNames))
+    || (device_tag_include_match != "all"
+      && any(foreach tag in device_tag_include_tags select tag in device.tagNames))
+  where isEmpty(device_tag_exclude_tags)
+    || !any(foreach tag in device_tag_exclude_tags select tag in device.tagNames)
+  let site_name = deviceSiteNameRules(device, site_rules)
+  let site_slug = slugify(site_name)
   foreach ni in device.networkInstances
   foreach vlan in ni.vlans
-  let site_name = deviceSiteName(device)
-  let site_slug = slugify(site_name)
-  select distinct {
+  select {
     site: site_name,
     site_slug: site_slug,
     vid: vlan.vlanId,
-    name: if isPresent(vlan.name) then vlan.name else join(" ", ["VLAN", toString(vlan.vlanId)]),
+    name: if isPresent(vlan.name) then vlan.name else join(" ", ["VLAN", toString(vlan.vlanId)])
+  };
+
+// Source 2: interface access/native (untagged) VLANs. networkInstance.vlans can
+// omit these, leaving an interface's untagged_vlan unresolvable. Mirrors
+// forward_interfaces.nqe's untagged_vlan logic. VID 1 is the implicit default
+// (NetBox treats an unset untagged_vlan as VLAN 1) and is skipped.
+iface_vlan_rows(device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>, site_rules: List<{ kind: String, pattern: String, site: String, rank: Number }>) =
+  foreach device in network.devices
+  where device.snapshotInfo.result == DeviceSnapshotResult.completed
+  where device.platform.vendor != Vendor.FORWARD_CUSTOM
+  where isEmpty(device_tag_include_tags)
+    || (device_tag_include_match == "all"
+      && all(foreach tag in device_tag_include_tags select tag in device.tagNames))
+    || (device_tag_include_match != "all"
+      && any(foreach tag in device_tag_include_tags select tag in device.tagNames))
+  where isEmpty(device_tag_exclude_tags)
+    || !any(foreach tag in device_tag_exclude_tags select tag in device.tagNames)
+  let site_name = deviceSiteNameRules(device, site_rules)
+  let site_slug = slugify(site_name)
+  foreach interface in device.interfaces
+  let vlan_mode =
+    if isPresent(interface.ethernet?.switchedVlan?.interfaceMode)
+      then if interface.ethernet.switchedVlan.interfaceMode == VlanModeType.ACCESS then "access"
+      else if interface.ethernet.switchedVlan.interfaceMode == VlanModeType.TRUNK then "tagged"
+      else null : String
+    else null : String
+  let vid =
+    if vlan_mode == "access" && isPresent(interface.ethernet?.switchedVlan?.accessVlan)
+      then interface.ethernet.switchedVlan.accessVlan
+    else if vlan_mode == "tagged" && isPresent(interface.ethernet?.switchedVlan?.nativeVlan)
+      then interface.ethernet.switchedVlan.nativeVlan
+    else null : Integer
+  where isPresent(vid)
+  where vid != 1
+  select {
+    site: site_name,
+    site_slug: site_slug,
+    vid: vid,
+    name: join(" ", ["VLAN", toString(vid)])
+  };
+
+candidateRows(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>, site_rules: List<{ kind: String, pattern: String, site: String, rank: Number }>) =
+  foreach vlan_row in (
+    ni_vlan_rows(device_tag_include_tags, device_tag_include_match, device_tag_exclude_tags, site_rules)
+    + iface_vlan_rows(device_tag_include_tags, device_tag_include_match, device_tag_exclude_tags, site_rules)
+  )
+  where isEmpty(forward_netbox_shard_keys) || toString(vlan_row.vid) in forward_netbox_shard_keys
+  select distinct {
+    site: vlan_row.site,
+    site_slug: vlan_row.site_slug,
+    vid: vlan_row.vid,
+    name: vlan_row.name,
     status: "active"
   };
 
+@query
+f(forward_netbox_shard_keys: List<String>, device_tag_include_tags: List<String>, device_tag_include_match: String, device_tag_exclude_tags: List<String>, site_rules: List<{ kind: String, pattern: String, site: String, rank: Number }>) =
 foreach grouped in (
-  foreach row in candidate_rows
+  foreach row in candidateRows(forward_netbox_shard_keys, device_tag_include_tags, device_tag_include_match, device_tag_exclude_tags, site_rules)
   group row as grouped_rows by {
     site: row.site,
     site_slug: row.site_slug,
@@ -810,7 +880,7 @@ foreach grouped in (
     status: "active"
   }
 )
-select grouped
+select grouped;
 ```
 
 ## Forward VRFs

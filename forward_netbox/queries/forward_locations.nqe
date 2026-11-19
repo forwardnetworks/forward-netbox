@@ -2,9 +2,9 @@
  * @intent Forward Locations
  * @description It provides the NetBox sites for the devices Forward collected, to
  * be added in NetBox using POST requests to the /api/dcim/sites/ REST API
- * endpoint. A device is placed at its Forward location unless it carries a
- * NetBox_Site_<name> tag, in which case it is placed at the site <name>; several
- * Forward locations can therefore make up one site. A site's address is that of
+ * endpoint. A device is placed at its Forward location unless a site mapping rule
+ * (the site_rules parameter) or a NetBox_Site_<name> tag places it at another
+ * site; several Forward locations can therefore make up one site. A site's address is that of
  * the Forward location with the same name, or else of its first location by name.
  */
 

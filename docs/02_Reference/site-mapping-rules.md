@@ -51,8 +51,12 @@ follow the same order.
 this feature does not take them. With no rules set that does not matter: the sync
 runs it as it always did. With rules set, the sync stops before applying anything and
 says which map, rather than putting devices on the wrong sites. Forward NQE Maps ->
-**Publish Bundled Queries**, then refresh the query IDs. Health shows the same
-warning under **Site rules**.
+**Publish Bundled Queries**, then refresh the query IDs. Health's query drift section
+lists a published query that is missing the `site_rules` parameter.
+
+A map that runs your own query instead of the bundled one cannot take the rules unless
+that query declares a `site_rules` parameter of the same shape. With rules set the sync
+stops for such a map too, and Health's **Site rules** check names it.
 
 ## Check them on the Scope page
 
@@ -88,7 +92,7 @@ them.
 | --- | --- | --- |
 | "The site rules saved on the Forward source are not valid" | Rules saved by hand (the REST API) that the form would have refused | Edit the source and correct the named rule |
 | "...rejected the site mapping rules" or "this query does not take them" | A query in your Forward organization predates the rules | Publish Bundled Queries, refresh the query IDs, or remove the rules |
-| Health: "Site rules ... cannot apply them" | An enabled map for devices, sites or VLANs is a custom query, or a bundled one that predates the rules | Enable the bundled map for that model, or remove the rules |
+| "...runs a custom query that does not take them" (and Health: "Site rules ... cannot apply them") | An enabled map for devices, sites or VLANs is your own query, which cannot take the rules | Enable the bundled map for that model, declare `site_rules` on your query, or remove the rules |
 
 ## Upgrading
 
