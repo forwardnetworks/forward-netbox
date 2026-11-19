@@ -245,6 +245,20 @@ SCOPE_KEYS_PARAMETER = "forward_netbox_shard_keys"
 CARRIED_ROW_HASH = ""
 
 
+def _hashed_query_parameters(parameters):
+    """The query parameters as they enter a hash.
+
+    An empty site rule list is left out: a source that sets no rules must hash
+    exactly as it did before the parameter existed, or the first sync after an
+    upgrade would take a contract reset on every site, device and VLAN row. Rules
+    that are set are part of the contract, so changing them is a new one.
+    """
+    parameters = dict(parameters or {})
+    if "site_rules" in parameters and not parameters["site_rules"]:
+        parameters.pop("site_rules")
+    return parameters
+
+
 def _legacy_parameter_hash(workloads) -> str:
     """The hash releases before 3.0.14 stored: scope names included."""
     return _digest(
@@ -253,7 +267,7 @@ def _legacy_parameter_hash(workloads) -> str:
                 "execution_mode": workload.execution_mode,
                 "execution_value": workload.execution_value,
                 "query_name": workload.query_name,
-                "query_parameters": workload.query_parameters,
+                "query_parameters": _hashed_query_parameters(workload.query_parameters),
             }
             for workload in sorted(
                 workloads,
@@ -303,7 +317,9 @@ def _parameter_hash(workloads) -> str:
                 "query_name": workload.query_name,
                 "query_parameters": {
                     key: value
-                    for key, value in (workload.query_parameters or {}).items()
+                    for key, value in _hashed_query_parameters(
+                        workload.query_parameters
+                    ).items()
                     if key != SCOPE_KEYS_PARAMETER
                 },
             }

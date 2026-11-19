@@ -3,14 +3,20 @@
 # The rule list has to be stored, validated and sent to the queries the same way
 # everywhere, so the parsing and validation live in one place and the tests pin what
 # an operator can and cannot save.
+from pathlib import Path
+
 from django.test import SimpleTestCase
 
 from forward_netbox.utilities.site_tag import format_site_rules
 from forward_netbox.utilities.site_tag import normalize_site_rules
 from forward_netbox.utilities.site_tag import parse_site_rules_text
 from forward_netbox.utilities.site_tag import query_site_rules
+from forward_netbox.utilities.site_tag import site_helper_nqe
 from forward_netbox.utilities.site_tag import site_slug
+from forward_netbox.utilities.site_tag import with_site_rules
 from forward_netbox.utilities.site_tag import SiteRuleError
+
+QUERIES = Path(__file__).resolve().parents[1] / "queries"
 
 
 def rule(kind="location", pattern="Hall*", site="campus"):
@@ -167,3 +173,61 @@ class TextRoundTripTest(SimpleTestCase):
         self.assertEqual(parse_site_rules_text(""), [])
         self.assertEqual(parse_site_rules_text(None), [])
         self.assertEqual(format_site_rules(None), "")
+
+
+class InlineQueryTest(SimpleTestCase):
+    """The queries the plugin builds in Python cannot import netbox_utilities, so they
+    embed the same helper block. The rules reach them as a declared parameter, never
+    pasted into the text (operator text in NQE would be an injection)."""
+
+    NAMES = (
+        "siteTagName",
+        "siteNameFor",
+        "deviceSiteName",
+        "siteRuleMatches",
+        "siteRuleRank",
+        "siteRuleSite",
+        "siteNameForRulesElse",
+        "siteNameForRules",
+        "deviceSiteNameRules",
+    )
+
+    def test_the_embedded_helpers_are_the_ones_in_the_shared_module(self):
+        embedded = site_helper_nqe()
+
+        for name in self.NAMES:
+            with self.subTest(helper=name):
+                self.assertRegex(embedded, rf"(?m)^{name}\(")
+
+    def test_nothing_in_the_embedded_block_is_exported(self):
+        self.assertNotIn("export ", site_helper_nqe())
+
+    def test_the_block_is_the_text_of_the_shared_module_apart_from_export(self):
+        shared = (QUERIES / "netbox_utilities.nqe").read_text()
+        block = shared[
+            shared.index("// BEGIN site naming helpers") : shared.index(
+                "// END site naming helpers"
+            )
+        ]
+
+        self.assertEqual(
+            site_helper_nqe().strip(),
+            block.split("\n", 1)[1].replace("export ", "").strip(),
+        )
+
+    def test_a_query_is_wrapped_so_it_declares_the_rules_and_ends_with_a_semicolon(
+        self,
+    ):
+        wrapped = with_site_rules("foreach device in network.devices\nselect { n: 1 }")
+
+        self.assertIn(
+            "@query\nf(site_rules: List<{ kind: String, pattern: String, site: String, rank: Number }>) =",
+            wrapped,
+        )
+        self.assertTrue(wrapped.rstrip().endswith("select { n: 1 };"))
+        self.assertIn("siteNameForRulesElse(", wrapped)
+
+    def test_the_rules_are_never_pasted_into_the_text(self):
+        wrapped = with_site_rules("foreach device in network.devices\nselect { n: 1 }")
+
+        self.assertNotIn("Hall", wrapped)

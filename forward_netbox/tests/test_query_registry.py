@@ -58,11 +58,34 @@ def _declared_query_parameter_names(query: str) -> set[str]:
             continue
         match = re.match(r"^([A-Za-z_][\w]*)\((.*?)\)\s*=", stripped, flags=re.S)
         if match and (seen_query_marker or "@query" not in query):
-            return {
-                param_match.group(1)
-                for param_match in re.finditer(r"([A-Za-z_][\w]*)\s*:", match.group(2))
-            }
+            return _top_level_parameter_names(match.group(2))
     return set()
+
+
+def _top_level_parameter_names(declaration: str) -> set[str]:
+    """The names a signature declares: one per top-level comma-separated parameter.
+
+    A parameter's type can itself contain `name: Type` pairs (a record type such as
+    `List<{ kind: String, site: String }>`), and those are fields, not parameters.
+    """
+    names = set()
+    depth = 0
+    start = 0
+    parts = []
+    for index, character in enumerate(declaration):
+        if character in "<([{":
+            depth += 1
+        elif character in ">)]}":
+            depth = max(0, depth - 1)
+        elif character == "," and depth == 0:
+            parts.append(declaration[start:index])
+            start = index + 1
+    parts.append(declaration[start:])
+    for part in parts:
+        match = re.match(r"\s*([A-Za-z_][\w]*)\s*:", part)
+        if match:
+            names.add(match.group(1))
+    return names
 
 
 REQUIRED_FIELDS_BY_QUERY_NAME = {
@@ -1287,6 +1310,8 @@ class QueryRegistryTest(TestCase):
                 "device_tag_include_match": "any",
                 "device_tag_exclude_tags": [],
                 "forward_netbox_shard_keys": [],
+                # The site mapping rules, seeded empty (they name the site).
+                "site_rules": [],
             },
         )
 

@@ -175,6 +175,7 @@ export slugifyNetboxModel(value: String) =
     )
   );
 
+// BEGIN site naming helpers (embedded verbatim by utilities/site_tag.py)
 // The NetBox site a device belongs to. Forward knows a device by its location;
 // NetBox sites are usually coarser (many Forward locations make up one data
 // centre). A device tagged NetBox_Site_<name> is placed at the site <name>,
@@ -243,10 +244,11 @@ export siteRuleSite(
     select rule.site
   );
 
-export siteNameForRules(
+export siteNameForRulesElse(
   rules: List<{ kind: String, pattern: String, site: String, rank: Number }>,
   tag_names: List<String>,
-  location_name: String
+  location_name: String,
+  fallback: String
 ) =
   if isPresent(siteTagName(tag_names))
   then toLowerCase(siteTagName(tag_names))
@@ -254,7 +256,14 @@ export siteNameForRules(
   then toLowerCase(siteRuleSite(rules, tag_names, location_name))
   else if length(location_name) > 0
   then toLowerCase(location_name)
-  else "unknown";
+  else fallback;
+
+export siteNameForRules(
+  rules: List<{ kind: String, pattern: String, site: String, rank: Number }>,
+  tag_names: List<String>,
+  location_name: String
+) =
+  siteNameForRulesElse(rules, tag_names, location_name, "unknown");
 
 export deviceSiteNameRules(
   device: Device,
@@ -265,3 +274,4 @@ export deviceSiteNameRules(
     device.tagNames,
     if isPresent(device.locationName) then device.locationName else ""
   );
+// END site naming helpers

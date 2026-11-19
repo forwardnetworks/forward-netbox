@@ -12,6 +12,7 @@
 # `test_site_tag_override` keeps the two spellings in step. `site_name_for` is the
 # plain-Python statement of the rule, used as the reference in tests and docs.
 import re
+from pathlib import Path
 
 SITE_TAG_PREFIX = "NetBox_Site_"
 
@@ -183,3 +184,31 @@ def parse_site_rules_text(text):
             )
         rules.append({"kind": kind, "pattern": pattern.strip(), "site": site.strip()})
     return rules
+
+
+SITE_RULES_NQE_TYPE = (
+    "List<{ kind: String, pattern: String, site: String, rank: Number }>"
+)
+_HELPERS_BEGIN = "// BEGIN site naming helpers"
+_HELPERS_END = "// END site naming helpers"
+
+
+def site_helper_nqe():
+    """The site naming helpers of `queries/netbox_utilities.nqe`, for a query built
+    in Python (which cannot import the module): the exact block between its markers,
+    with `export` removed. Read from the file so the two cannot drift apart."""
+    source = (
+        Path(__file__).resolve().parents[1] / "queries" / "netbox_utilities.nqe"
+    ).read_text(encoding="utf-8")
+    block = source[source.index(_HELPERS_BEGIN) : source.index(_HELPERS_END)]
+    return block.split("\n", 1)[1].replace("export ", "")
+
+
+def with_site_rules(query):
+    """A bare inline query wrapped so it can call the site helpers and receive the
+    rules as the declared `site_rules` parameter. The rules are sent as a parameter,
+    never written into the text."""
+    return (
+        f"{site_helper_nqe().rstrip()}\n\n@query\n"
+        f"f(site_rules: {SITE_RULES_NQE_TYPE}) =\n{query.rstrip()};\n"
+    )

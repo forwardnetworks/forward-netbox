@@ -19,6 +19,7 @@ from .model_contracts import architecture_fetch_contract_for_model
 from .plugin_integrations.registry import OPTIONAL_PLUGIN_INTEGRATIONS
 from .query_execution_contract import declared_query_parameters
 from .query_execution_contract import query_source_sha256
+from .query_execution_contract import SITE_RULES_PARAMETER_NAME
 from .sync_contracts import normalize_coalesce_fields
 
 
@@ -258,7 +259,13 @@ DEVICE_TAG_PARAMETER_QUERY_FILES = {
     "forward_vlans.nqe",
     "forward_vrfs.nqe",
 }
+# The site mapping rules (utilities/site_tag.py) go to the queries that name a
+# NetBox site, and only to those. They are found by what a query DECLARES in its
+# @query signature, never by the text: netbox_utilities.nqe, which holds the helpers,
+# is copied into about thirty queries that do not declare the parameter.
+SITE_RULES_PARAMETER_DEFAULT = {SITE_RULES_PARAMETER_NAME: []}
 LEGACY_SAFE_PARAMETER_DEFAULTS = {
+    **SITE_RULES_PARAMETER_DEFAULT,
     **SHARD_QUERY_PARAMETER_DEFAULT,
     **SYNC_DEVICE_TAGS_PARAMETER_DEFAULT,
     **SYNC_ENDPOINTS_PARAMETER_DEFAULT,
@@ -309,6 +316,11 @@ def _default_query_parameters(filename: str) -> dict[str, Any]:
         parameters.update(SYNC_GENERIC_ENDPOINTS_PARAMETER_DEFAULT)
     if SCOPE_ENDPOINTS_BY_INCLUDE_TAGS_PARAMETER_NAME in source:
         parameters.update(SCOPE_ENDPOINTS_BY_INCLUDE_TAGS_PARAMETER_DEFAULT)
+    declared = declared_query_parameters(source)
+    if declared and any(
+        parameter.name == SITE_RULES_PARAMETER_NAME for parameter in declared
+    ):
+        parameters[SITE_RULES_PARAMETER_NAME] = []
     return parameters
 
 
