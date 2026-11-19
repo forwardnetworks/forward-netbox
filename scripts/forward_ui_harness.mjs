@@ -448,8 +448,41 @@ async function main() {
       assert(fields.length === 1, `source form is missing ${fieldLabel}`);
       assert(fields[0] === true, `source form hides ${fieldLabel}`);
     }
+    const siteRules = evaluate(
+      `(() => {` +
+        `const area = document.getElementById("id_site_rules");` +
+        `const builder = document.querySelector("[data-forward-site-rule-builder]");` +
+        `if (!area || !builder) { return {ok: false}; }` +
+        `builder.querySelector("[data-location]").value = "HQ_*";` +
+        `builder.querySelector("[data-site]").value = "hq-campus";` +
+        `builder.querySelector("[data-add]").click();` +
+        `const kind = builder.querySelector("[data-kind]");` +
+        `kind.value = "tag";` +
+        `kind.dispatchEvent(new Event("change"));` +
+        `return {` +
+          `ok: true,` +
+          `value: area.value,` +
+          `visible: area.getClientRects().length > 0,` +
+          `help: document.body.innerText.includes("unless a mapping applies"),` +
+          `tagControl: !!builder.querySelector("[data-tag]"),` +
+          `status: builder.querySelector("[data-status]").textContent.trim(),` +
+        `};` +
+      `})()`,
+    );
+    assert(siteRules.ok, "source form has no site mapping rules field and builder");
+    assert(siteRules.visible, "source form hides the site mapping rules field");
+    assert(siteRules.help, "source form does not say the Forward location is the default");
+    assert(
+      siteRules.value.includes("location HQ_* -> hq-campus"),
+      `the rule builder did not add a line (field: ${siteRules.value})`,
+    );
+    assert(siteRules.tagControl, "the rule builder has no tag control for a tag rule");
+    assert(siteRules.status.length > 0, "the rule builder said nothing about loading tags");
     assertNoHorizontalOverflow("desktop source form");
     evidence.screenshots.push(screenshot("desktop-source-form.jpg"));
+    evidence.checks.push(
+      "source form shows the site mapping rules field, says the Forward location is the default, and its builder adds a rule and asks Forward for tags",
+    );
     evidence.checks.push(
       "source form exposes scope tags, console-server import, generic endpoint opt-in, and endpoint include scope",
     );

@@ -71,9 +71,14 @@ from .utilities.runtime_guidance import (
 )
 from .utilities.scope_reconciliation import DEFAULT_PRUNE_ABSENCE_HOURS
 from .utilities.scope_reconciliation import DEFAULT_PRUNE_ABSENCE_RUNS
+from .utilities.site_tag import format_site_rules
+from .utilities.site_tag import normalize_site_rules
+from .utilities.site_tag import parse_site_rules_text
+from .utilities.site_tag import SiteRuleError
 from .utilities.sync_facade import DEFAULT_ENABLE_BULK_ORM_FOR_NEW_SYNCS
 from .utilities.sync_facade import DEFAULT_ENABLE_COPY_SQL_FOR_NEW_SYNCS
 from .utilities.sync_facade import effective_scope_endpoints_by_include_tags
+from .widgets import SiteRulesWidget
 
 
 def _configure_api_select(widget, query_params=None):
@@ -515,6 +520,20 @@ class ForwardSourceForm(NetBoxModelForm):
                 "always apply)."
             ),
         )
+        self.fields["site_rules"] = forms.CharField(
+            required=False,
+            label="Site mapping rules",
+            widget=SiteRulesWidget(),
+            help_text=(
+                "The Forward location is the NetBox site unless a mapping applies. "
+                "A mapping puts devices at a NetBox site of your choosing: one rule "
+                "per line, `location <pattern> -> <site>` (a Forward location, with "
+                "* as a wildcard) or `tag <Forward tag> -> <site>`. For each device "
+                "the first match wins: a NetBox_Site_<name> tag on the device, then "
+                "the first rule that matches, top to bottom, then the Forward "
+                "location. Publish the bundled queries before saving rules."
+            ),
+        )
         self.fields["config_backup_data_source"] = forms.ModelChoiceField(
             required=False,
             queryset=_git_data_source_queryset(),
@@ -705,6 +724,10 @@ class ForwardSourceForm(NetBoxModelForm):
         self.fields["sync_generic_endpoints"].initial = bool(
             parameters.get("sync_generic_endpoints")
         )
+        self.fields["site_rules"].initial = format_site_rules(
+            parameters.get("site_rules")
+        )
+        self.fields["site_rules"].widget.source_id = self.instance.pk
         self.fields["scope_endpoints_by_include_tags"].initial = (
             effective_scope_endpoints_by_include_tags(parameters)
             if self.instance.pk
@@ -778,6 +801,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "sync_endpoints",
                     "sync_generic_endpoints",
                     "scope_endpoints_by_include_tags",
+                    "site_rules",
                     "config_backup_data_source",
                     "config_backup_include_unmanaged",
                     "enable_predict",
@@ -816,6 +840,7 @@ class ForwardSourceForm(NetBoxModelForm):
                     "sync_endpoints",
                     "sync_generic_endpoints",
                     "scope_endpoints_by_include_tags",
+                    "site_rules",
                     "config_backup_data_source",
                     "config_backup_include_unmanaged",
                     "enable_predict",
@@ -825,6 +850,25 @@ class ForwardSourceForm(NetBoxModelForm):
             )
 
         self.fieldsets.append(FieldSet("description", "owner", name="Metadata"))
+
+    def clean_site_rules(self):
+        try:
+            return normalize_site_rules(
+                parse_site_rules_text(self.cleaned_data.get("site_rules"))
+            )
+        except SiteRuleError as exc:
+            raise forms.ValidationError(str(exc)) from exc
+
+    def _site_rules_to_save(self, cleaned, existing_parameters):
+        """The rules to store: what the field posted, or what is saved when the
+        field was not posted at all (this form rebuilds every parameter from
+        scratch, so a key it does not carry over is lost)."""
+        if "site_rules" in self.data:
+            return cleaned.get("site_rules") or []
+        try:
+            return normalize_site_rules(existing_parameters.get("site_rules"))
+        except SiteRuleError:
+            return []
 
     def clean_config_backup_path_prefix(self):
         try:
@@ -998,6 +1042,9 @@ class ForwardSourceForm(NetBoxModelForm):
                 cleaned.get("scope_endpoints_by_include_tags")
             ),
         }
+        site_rules = self._site_rules_to_save(cleaned, existing_parameters)
+        if site_rules:
+            candidate_parameters["site_rules"] = site_rules
         self.instance.type = source_type
         self.instance.url = (
             "https://fwd.app"
@@ -1215,7 +1262,13 @@ class ForwardSourceForm(NetBoxModelForm):
             "scope_endpoints_by_include_tags": bool(
                 self.cleaned_data.get("scope_endpoints_by_include_tags")
             ),
+            # This dict replaces the saved parameters, so a key left out is lost:
+            # `enable_predict` was missing, which turned the option off on every save.
+            "enable_predict": bool(self.cleaned_data.get("enable_predict")),
         }
+        site_rules = self._site_rules_to_save(self.cleaned_data, existing_parameters)
+        if site_rules:
+            self.instance.parameters["site_rules"] = site_rules
         self.instance.status = ForwardSourceStatusChoices.NEW
         return super().save(*args, **kwargs)
 

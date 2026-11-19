@@ -614,6 +614,47 @@
   </div>
 </div>
 {% endif %}
+{% if site_rules.available %}
+<div class="row mt-3">
+  <div class="col col-md-12">
+    <div class="card" id="site-rules">
+      <h5 class="card-header">{% trans "Site Mapping Rules" %}</h5>
+      <div class="card-body">
+        <p class="text-muted mt-0 small">
+          {% trans "The Forward location is the NetBox site unless a mapping applies. For each device the first match wins: a NetBox_Site_<name> tag on the device, then the first rule below that matches (top to bottom), then the Forward location. The counts are devices in this sync's scope, from the last Refresh; a rule is credited with the devices it places." %}
+        </p>
+        <table class="table table-sm table-hover mb-2 w-auto">
+          <tbody>
+            {% for label, value in site_rules.figures %}
+              <tr><th scope="row" class="fw-normal">{% trans label %}</th><td>{{ value }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% if site_rules.rules_matching_nothing %}
+          <div class="alert alert-warning py-2">
+            {% trans "A rule that matches no device is usually a misspelt location pattern or a Forward tag that no device carries. It does nothing until it matches." %}
+          </div>
+        {% endif %}
+        <div class="table-responsive">
+          <table class="table table-sm mb-0">
+            <thead><tr><th>{% trans "Rule" %}</th><th>{% trans "Match" %}</th><th>{% trans "NetBox site" %}</th><th>{% trans "Devices" %}</th></tr></thead>
+            <tbody>
+              {% for rule in site_rules.rules %}
+                <tr>
+                  <td>{{ rule.rank }}</td>
+                  <td>{{ rule.kind }} <code>{{ rule.pattern }}</code></td>
+                  <td><code>{{ rule.site }}</code></td>
+                  <td>{{ rule.devices }}{% if rule.matches_nothing %} <span class="badge text-bg-warning">{% trans "matches no device" %}</span>{% endif %}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
 <div class="row mt-3">
   <div class="col col-md-12">
     <div class="card" id="platform-restore">

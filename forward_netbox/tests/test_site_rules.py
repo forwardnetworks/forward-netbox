@@ -13,8 +13,9 @@ from forward_netbox.utilities.site_tag import parse_site_rules_text
 from forward_netbox.utilities.site_tag import query_site_rules
 from forward_netbox.utilities.site_tag import site_helper_nqe
 from forward_netbox.utilities.site_tag import site_slug
-from forward_netbox.utilities.site_tag import with_site_rules
+from forward_netbox.utilities.site_tag import summarize_site_rule_matches
 from forward_netbox.utilities.site_tag import SiteRuleError
+from forward_netbox.utilities.site_tag import with_site_rules
 
 QUERIES = Path(__file__).resolve().parents[1] / "queries"
 
@@ -231,3 +232,73 @@ class InlineQueryTest(SimpleTestCase):
         wrapped = with_site_rules("foreach device in network.devices\nselect { n: 1 }")
 
         self.assertNotIn("Hall", wrapped)
+
+
+class SummaryTest(SimpleTestCase):
+    """What the Scope page shows before a sync: how many devices each rule places."""
+
+    RULES = [
+        rule(pattern="Hall*", site="campus"),
+        rule("tag", "Prod", "core"),
+        rule(pattern="Annex*", site="annex"),
+    ]
+
+    def _rows(self, *specs):
+        return [{"siteRuleRank": rank, "tagNames": tags} for rank, tags in specs]
+
+    def test_each_rule_counts_the_devices_it_places(self):
+        rows = self._rows((1, []), (1, []), (2, ["Prod"]), (3, []))
+
+        summary = summarize_site_rule_matches(self.RULES, rows)
+
+        self.assertEqual([r["devices"] for r in summary["rules"]], [2, 1, 1])
+        self.assertEqual([r["rank"] for r in summary["rules"]], [1, 2, 3])
+
+    def test_devices_no_rule_matches_stay_at_their_location(self):
+        rows = self._rows((0, []), (0, []), (1, []))
+
+        summary = summarize_site_rule_matches(self.RULES, rows)
+
+        self.assertEqual(summary["by_location"], 2)
+        self.assertEqual(summary["total"], 3)
+
+    def test_an_explicit_site_tag_wins_over_a_rule_and_is_counted_apart(self):
+        rows = self._rows((1, ["NetBox_Site_pinned"]), (1, []))
+
+        summary = summarize_site_rule_matches(self.RULES, rows)
+
+        self.assertEqual(summary["pinned_by_tag"], 1)
+        self.assertEqual(summary["rules"][0]["devices"], 1)
+        self.assertEqual(summary["by_location"], 0)
+
+    def test_a_tag_with_nothing_after_the_prefix_does_not_pin_a_device(self):
+        rows = self._rows((1, ["NetBox_Site_"]))
+
+        summary = summarize_site_rule_matches(self.RULES, rows)
+
+        self.assertEqual(summary["pinned_by_tag"], 0)
+        self.assertEqual(summary["rules"][0]["devices"], 1)
+
+    def test_a_rule_that_places_no_device_says_so(self):
+        summary = summarize_site_rule_matches(self.RULES, self._rows((1, [])))
+
+        self.assertEqual([r["devices"] for r in summary["rules"]], [1, 0, 0])
+
+    def test_the_rules_are_reported_as_saved(self):
+        summary = summarize_site_rule_matches(self.RULES, [])
+
+        self.assertEqual(
+            summary["rules"][1],
+            {"rank": 2, "kind": "tag", "pattern": "Prod", "site": "core", "devices": 0},
+        )
+
+    def test_no_rules_is_not_available(self):
+        self.assertFalse(
+            summarize_site_rule_matches([], self._rows((0, [])))["available"]
+        )
+        self.assertTrue(summarize_site_rule_matches(self.RULES, [])["available"])
+
+    def test_a_row_with_no_rank_counts_as_matching_nothing(self):
+        summary = summarize_site_rule_matches(self.RULES, [{"tagNames": []}])
+
+        self.assertEqual(summary["by_location"], 1)

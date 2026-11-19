@@ -127,8 +127,9 @@ carry a location), and is reviewed and edited in NetBox.
    longer exists in Forward shows "matches 0 devices". The bundle carries the same
    figures under the UI's labels.
 10. **Two sources.** Two sources covering the same devices with different rules would
-    move them back and forth every run: documented, and the Scope page warns when
-    another source in the same NetBox maps any of the same sites differently.
+    move them back and forth every run. Documented in the reference page; a Scope
+    page warning is not built (nothing in the data model says two sources cover the
+    same devices, so a warning would guess).
 
 ## Validation
 

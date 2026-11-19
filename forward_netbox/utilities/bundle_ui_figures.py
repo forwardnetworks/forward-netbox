@@ -77,6 +77,47 @@ def scope_figures(report):
                 if _walk(report, part_path) is not None
             ]
         rows.append(row)
+    rows.extend(_site_rule_figures(report))
+    return rows
+
+
+def _site_rule_figures(report):
+    """The Site Mapping Rules card's figures: counts and each rule's position and
+    kind, never the pattern or the site name (the operator's own words)."""
+    summary = report.get("site_rules")
+    if not isinstance(summary, dict) or not summary.get("available"):
+        return []
+    rules = summary.get("rules") or []
+    rows = [
+        {
+            "page": PAGE,
+            "card": "Site Mapping Rules",
+            "label": "Site rules",
+            "value": len(rules),
+            "note": "count only; the patterns and site names are not exported",
+        },
+        {
+            "page": PAGE,
+            "card": "Site Mapping Rules",
+            "label": "Placed by a NetBox_Site_ tag",
+            "value": summary.get("pinned_by_tag"),
+        },
+        {
+            "page": PAGE,
+            "card": "Site Mapping Rules",
+            "label": "Left at their Forward location",
+            "value": summary.get("by_location"),
+        },
+    ]
+    for rule in rules:
+        rows.append(
+            {
+                "page": PAGE,
+                "card": "Site Mapping Rules",
+                "label": f"Site rule {rule.get('rank')} ({rule.get('kind')})",
+                "value": rule.get("devices"),
+            }
+        )
     return rows
 
 

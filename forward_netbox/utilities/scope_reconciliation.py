@@ -28,6 +28,7 @@ from .site_tag import query_site_rules
 from .site_tag import site_name_nqe
 from .site_tag import site_tag_nqe_let
 from .site_tag import SiteRuleError
+from .site_tag import summarize_site_rule_matches
 from .site_tag import with_site_rules
 from .sync_facade import device_tag_scope
 from .sync_facade import effective_scope_endpoints_by_include_tags
@@ -509,7 +510,13 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
                     "foreach device in network.devices",
                     "where device.platform.vendor != Vendor.FORWARD_CUSTOM",
                     *scope_where,
+                    # The lowest-ranked rule that matches, or 0: the Scope page
+                    # counts what each rule places from this, so a match is defined
+                    # once, by NQE.
+                    "let rule_rank = siteRuleRank(site_rules, device.tagNames, "
+                    'if isPresent(device.locationName) then device.locationName else "")',
                     *select_lines,
+                    "  siteRuleRank: if isPresent(rule_rank) then rule_rank else 0,",
                     "  location: siteNameForRulesElse(site_rules, device.tagNames, "
                     'if isPresent(device.locationName) then device.locationName else "", "")',
                     "}",
@@ -907,6 +914,8 @@ def compute_scope_reconciliation(sync, *, snapshot_id=None) -> dict:
         # can read zero while hundreds of devices are untagged, because a device
         # this sync never claimed is not an orphan of it.
         "unmanaged": unmanaged,
+        # How many devices each site mapping rule places (utilities/site_tag.py).
+        "site_rules": summarize_site_rule_matches(site_rules, rows),
         "out_of_scope_sample": sorted(out_of_scope)[:SAMPLE_LIMIT],
         "empty_orphan_site_sample": empty_orphan_sites[:SAMPLE_LIMIT],
         "present_backfilled_sample": sorted(present_backfilled)[:SAMPLE_LIMIT],

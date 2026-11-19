@@ -309,6 +309,13 @@ PAGE_CARD_PATHS = {
             "scope_reconciliation.unmanaged_delete.ui_figures",
             "operator_action_jobs.prune_unmanaged",
         ],
+        # The rule list's counts: each rule's position, kind and device count in the
+        # report, and the same figures under the card's labels in `ui_figures`. The
+        # patterns and site names are the operator's words and stay out.
+        "Site Mapping Rules": [
+            "scope_reconciliation.report.site_rules",
+            "scope_reconciliation.ui_figures",
+        ],
         "What to do": "diagnostics.cleanup_checklist",
         "Site-Relabel Duplicates": "diagnostics.site_relabel_pairs",
         "Uncovered, Created by This Sync": [

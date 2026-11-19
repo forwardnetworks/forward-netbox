@@ -673,6 +673,7 @@ class ForwardIngestionLogExportViewTest(TestCase):
                 "sync_device_tag_count": 1,
                 "include_tag_count": 1,
                 "exclude_tag_count": 1,
+                "site_rule_count": 0,
                 "include_match": "all",
                 "filter_mode": "local",
                 "prune_out_of_scope": True,
@@ -682,6 +683,45 @@ class ForwardIngestionLogExportViewTest(TestCase):
         self.assertNotIn("private-feature-tag", rendered)
         self.assertNotIn("private-include-tag", rendered)
         self.assertNotIn("private-exclude-tag", rendered)
+
+    def test_sync_support_bundle_counts_site_rules_without_their_words(self):
+        self.source.parameters = {
+            **self.source.parameters,
+            "site_rules": [
+                {
+                    "kind": "location",
+                    "pattern": "private-hall*",
+                    "site": "private-site",
+                },
+                {"kind": "tag", "pattern": "private-rule-tag", "site": "private-core"},
+            ],
+        }
+        self.source.save(update_fields=["parameters"])
+        standalone_sync = ForwardSync.objects.create(
+            name="sync-support-bundle-site-rules",
+            source=self.source,
+            parameters={"snapshot_id": "latestProcessed"},
+        )
+        self.client.force_login(self.user)
+
+        response = self.client.get(
+            reverse(
+                "plugins:forward_netbox:forwardsync_support_bundle",
+                kwargs={"pk": standalone_sync.pk},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = json.loads(response.content)
+        self.assertEqual(payload["sync"]["scope_configuration"]["site_rule_count"], 2)
+        rendered = response.content.decode()
+        for private in (
+            "private-hall",
+            "private-site",
+            "private-rule-tag",
+            "private-core",
+        ):
+            self.assertNotIn(private, rendered)
 
     def test_sync_support_bundle_includes_dependency_preview_convergence_evidence(self):
         standalone_sync = ForwardSync.objects.create(

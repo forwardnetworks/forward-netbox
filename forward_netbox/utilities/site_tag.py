@@ -212,3 +212,53 @@ def with_site_rules(query):
         f"{site_helper_nqe().rstrip()}\n\n@query\n"
         f"f(site_rules: {SITE_RULES_NQE_TYPE}) =\n{query.rstrip()};\n"
     )
+
+
+def summarize_site_rule_matches(rules, rows):
+    """How many devices each rule places, for the Scope page and the support bundle.
+
+    `rows` are the reconciliation rows: each has `tagNames` and `siteRuleRank`, the
+    lowest rank of a matching rule that NQE computed (0 when none matches). A rule
+    is credited with the devices it PLACES: matched by it, and not pinned by an
+    explicit `NetBox_Site_<name>` tag, which wins. Counting here and not
+    re-evaluating the patterns keeps one definition of a match, the one NQE uses.
+    """
+    rules = list(rules or [])
+    placed = {rank: 0 for rank in range(1, len(rules) + 1)}
+    pinned = 0
+    by_location = 0
+    total = 0
+    for row in rows or []:
+        total += 1
+        tags = row.get("tagNames") or []
+        if any(
+            str(tag).startswith(SITE_TAG_PREFIX)
+            and len(str(tag)) > len(SITE_TAG_PREFIX)
+            for tag in tags
+        ):
+            pinned += 1
+            continue
+        try:
+            rank = int(row.get("siteRuleRank") or 0)
+        except (TypeError, ValueError):
+            rank = 0
+        if rank in placed:
+            placed[rank] += 1
+        else:
+            by_location += 1
+    return {
+        "available": bool(rules),
+        "total": total,
+        "pinned_by_tag": pinned,
+        "by_location": by_location,
+        "rules": [
+            {
+                "rank": rank,
+                "kind": rule["kind"],
+                "pattern": rule["pattern"],
+                "site": rule["site"],
+                "devices": placed.get(rank, 0),
+            }
+            for rank, rule in enumerate(rules, start=1)
+        ],
+    }

@@ -406,3 +406,66 @@ class InlineQueriesTest(_SourceCase):
             ForwardSource, "get_client", Mock(return_value=Mock())
         ), self.assertRaisesRegex(ValueError, "site rules.*Rule 1"):
             scope_reconciliation.compute_scope_reconciliation(self.sync)
+
+
+class ReconciliationReportTest(_SourceCase):
+    """The Scope page reads how many devices each rule places from the report."""
+
+    def _report(self, rules, rows):
+        from forward_netbox.utilities import scope_reconciliation
+
+        calls = []
+
+        def run(client, **kwargs):
+            calls.append(kwargs)
+            return list(rows) if len(calls) == 1 else []
+
+        if rules:
+            self.source.parameters["site_rules"] = rules
+        self.source.parameters["device_tag_include_tags"] = ["Prod"]
+        self.source.save(update_fields=["parameters"])
+        self.sync.get_network_id = Mock(return_value="n")
+        self.sync.resolve_snapshot_id = Mock(return_value="s")
+        with patch.object(scope_reconciliation, "run_nqe_query", run), patch.object(
+            ForwardSource, "get_client", Mock(return_value=Mock())
+        ):
+            report = scope_reconciliation.compute_scope_reconciliation(self.sync)
+        return report, calls[0]
+
+    def _row(self, name, rank, tags=("Prod",)):
+        return {
+            "name": name,
+            "completed": True,
+            "reason": "completed",
+            "tagNames": list(tags),
+            "location": "somewhere",
+            "siteRuleRank": rank,
+        }
+
+    def test_the_report_counts_the_devices_each_rule_places(self):
+        report, _call = self._report(
+            RULES,
+            [
+                self._row("a", 1),
+                self._row("b", 1),
+                self._row("c", 2),
+                self._row("d", 0),
+            ],
+        )
+
+        summary = report["site_rules"]
+        self.assertTrue(summary["available"])
+        self.assertEqual([r["devices"] for r in summary["rules"]], [2, 1])
+        self.assertEqual(summary["by_location"], 1)
+
+    def test_the_rules_query_asks_for_each_devices_matching_rank(self):
+        _report, call = self._report(RULES, [self._row("a", 1)])
+
+        self.assertIn("let rule_rank = siteRuleRank(site_rules", call["query"])
+        self.assertIn("siteRuleRank: if isPresent(rule_rank)", call["query"])
+
+    def test_with_no_rules_the_report_says_so_and_the_query_is_the_old_one(self):
+        report, call = self._report([], [self._row("a", 0)])
+
+        self.assertFalse(report["site_rules"]["available"])
+        self.assertNotIn("siteRuleRank", call["query"])

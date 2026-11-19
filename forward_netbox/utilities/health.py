@@ -201,6 +201,70 @@ def _optin_feature_map_state_check(sync):
     )
 
 
+# The models whose rows name a NetBox site, so the site mapping rules have to reach
+# their queries (see utilities/site_tag.py).
+_SITE_NAMING_MODELS = ("dcim.site", "dcim.device", "ipam.vlan")
+
+
+def _site_rules_map_state_check(sync):
+    """Warn when site rules are set but an enabled map cannot take them.
+
+    The rules are sent only to a query that declares them. A custom query, or a
+    bundled one that predates them, would put its devices on the wrong sites, and a
+    sync stops rather than run it, so say so here first. None when no rules are set.
+    """
+    from .site_tag import SiteRuleError
+    from .site_tag import normalize_site_rules
+
+    source_parameters = getattr(getattr(sync, "source", None), "parameters", None) or {}
+    try:
+        rules = normalize_site_rules(source_parameters.get("site_rules"))
+    except SiteRuleError:
+        return _check(
+            name="Site rules",
+            status="warn",
+            message="The site rules saved on the source are not valid; edit the source.",
+        )
+    if not rules:
+        return None
+    problems = []
+    for query_map in sync.get_maps():
+        if not getattr(query_map, "enabled", True):
+            continue
+        model_string = getattr(query_map, "model_string", "")
+        if model_string not in _SITE_NAMING_MODELS:
+            continue
+        if not sync.is_model_enabled(model_string):
+            continue
+        query_default, _reason = builtin_query_default_for_map(query_map)
+        if not query_default:
+            problems.append(
+                f"{model_string}: a custom query, which cannot take site rules"
+            )
+        elif "site_rules" not in (
+            _default_query_parameters(query_default["filename"]) or {}
+        ):
+            problems.append(
+                f"{model_string}: its bundled query ({query_default['filename']}) "
+                "does not take site rules"
+            )
+    if problems:
+        return _check(
+            name="Site rules",
+            status="warn",
+            message=(
+                "Site rules are set, but these maps cannot apply them, so a sync "
+                "will stop: " + "; ".join(problems) + ". Enable the bundled map "
+                "for each model, or remove the rules."
+            ),
+        )
+    return _check(
+        name="Site rules",
+        status="pass",
+        message="Every enabled map that names a site takes the site rules.",
+    )
+
+
 # Base builtin query <-> its opt-in data-file variant. The variant REPLACES the
 # base for the same model (device-type aliasing / feature-tag rules); enabling
 # both makes two maps emit rows for the same model, which double-applies and
@@ -1268,6 +1332,9 @@ def sync_health_summary(sync, *, include_evidence=False):
     optin_feature_check = _optin_feature_map_state_check(sync)
     if optin_feature_check is not None:
         checks.append(optin_feature_check)
+    site_rules_check = _site_rules_map_state_check(sync)
+    if site_rules_check is not None:
+        checks.append(site_rules_check)
     fast_path_check = _fast_path_runtime_check()
     if fast_path_check is not None:
         checks.append(fast_path_check)
