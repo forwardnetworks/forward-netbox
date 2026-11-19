@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v3.0.17
+
+Release candidate; Site mapping rules: map Forward locations or tags to NetBox sites from the source settings; run Publish Bundled Queries after upgrading, before setting rules
+
 ## v3.0.16
 
 Change counts for completed runs, held unmanaged deletes, NetBox_Site_ device tag, safe site moves
