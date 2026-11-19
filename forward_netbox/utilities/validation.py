@@ -5,6 +5,9 @@ from ..choices import ForwardDriftPolicyBaselineChoices
 from ..choices import ForwardValidationStatusChoices
 from ..exceptions import ForwardSyncError
 from .diagnostics import safe_operation_failure
+from .query_execution_contract import contract_reason_hint
+from .query_execution_contract import SITE_RULES_CUSTOM_MAP_REASON
+from .query_execution_contract import SITE_RULES_NOT_DECLARED_REASON
 from .query_fetch import ForwardQueryFetcher
 from .snapshot_collection_health import scope_collection_counts
 from .snapshot_collection_health import scope_collection_finding
@@ -667,21 +670,29 @@ class ForwardValidationRunner:
         # A published query that rejected the site mapping rules failed only its own
         # model's fetch, so the other models would still apply, putting devices on
         # sites that were never created or at the wrong place. Block the run.
-        site_rules_models = sorted(
-            {
-                str(result.get("model") or "")
-                for result in model_results or []
-                if int(result.get("failure_count") or 0) > 0
-                and "site-rules-" in str(result.get("failure_reason") or "")
-            }
-        )
-        if site_rules_models:
+        site_rules_models = {"custom": set(), "published": set()}
+        for result in model_results or []:
+            reason = str(result.get("failure_reason") or "")
+            if int(result.get("failure_count") or 0) > 0 and "site-rules-" in reason:
+                cause = "custom" if "site-rules-custom-map" in reason else "published"
+                site_rules_models[cause].add(str(result.get("model") or ""))
+        # The advice differs by cause: publishing the bundled queries does nothing
+        # for a custom query, which is how an operator ran again into the same block.
+        if site_rules_models["custom"]:
             reasons.append(
-                "Site mapping rules are set on the Forward source, but the query for "
-                + ", ".join(site_rules_models)
-                + " cannot take them, so devices would not be placed by the rules. "
-                "Use Publish Bundled Queries on the Health page and refresh the "
-                "query IDs, or remove the site rules."
+                "Site mapping rules are set on the Forward source, but "
+                + ", ".join(sorted(site_rules_models["custom"]))
+                + " runs a custom query that does not take them, so its devices "
+                "would not be placed by the rules."
+                + contract_reason_hint(SITE_RULES_CUSTOM_MAP_REASON)
+            )
+        if site_rules_models["published"]:
+            reasons.append(
+                "Site mapping rules are set on the Forward source, but the query "
+                "for "
+                + ", ".join(sorted(site_rules_models["published"]))
+                + " cannot take them, so its devices would not be placed by the "
+                "rules." + contract_reason_hint(SITE_RULES_NOT_DECLARED_REASON)
             )
 
         if reasons and self._diff_fallback_is_require_diff():

@@ -60,7 +60,7 @@ parameter.
 A map that runs your own query instead of the bundled one takes the rules only if
 the query declares a `site_rules` parameter in its `@query` line **and** the map is
 saved with a `site_rules` parameter (value `[]`; the plugin fills it in). Without both,
-the sync stops before fetching and Health's **Site rules** check names the map.
+the sync stops before fetching, and Health's **Site rules** check names the model.
 
 ## Check them on the Scope page
 
@@ -92,11 +92,17 @@ them.
 
 ## If a sync stops
 
-| Message | Meaning | Fix |
+The full message, with the map's name and what to do, is on the sync **job's page** in
+NetBox (the job's log). The plugin's own Logs tab and the support bundle redact
+warning text, as they do everywhere, so there they show only the reason label.
+
+| Message or reason label | Meaning | Fix |
 | --- | --- | --- |
 | "The site rules saved on the Forward source are not valid" | Rules saved by hand (the REST API) that the form would have refused | Edit the source and correct the named rule |
-| "...rejected the site mapping rules" or "this query does not take them" | A query in your Forward organization predates the rules | Publish Bundled Queries, refresh the query IDs, or remove the rules |
-| "...runs a custom query that does not take them" (and Health: "Site rules ... cannot apply them") | An enabled map for devices, sites or VLANs is your own query, which cannot take the rules | Enable the bundled map for that model, declare `site_rules` on your query and in the map's parameters, or remove the rules |
+| `site-rules-query-rejected`, `site-rules-query-not-declared`: "...rejected the site mapping rules" or "this query does not take them" | A query in your Forward organization predates the rules | Publish Bundled Queries, refresh the query IDs, or remove the rules |
+| `site-rules-custom-map`: "...runs a custom query that does not take them" (and Health: "Site rules ... cannot apply them") | An enabled map for devices, sites or VLANs is your own query, which cannot take the rules | Enable the bundled map for that model, declare `site_rules` on your query and in the map's parameters, or remove the rules |
+
+The validation page for the run gives the same advice for the cause it found.
 
 ## Upgrading
 

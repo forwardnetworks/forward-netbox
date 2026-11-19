@@ -200,3 +200,68 @@ class WhatTheOperatorSeesTest(SimpleTestCase):
                 self.assertIn(
                     label, failure_reason(ForwardQueryError(message)).split("+")
                 )
+
+
+class LabelsAreNotPushedOutTest(SimpleTestCase):
+    """A reason label list is capped, and the validation block reads the site-rules
+    label from it, so a map whose name holds words matched earlier must not push the
+    label out and let the run through."""
+
+    def test_the_site_rules_label_survives_other_matching_words(self):
+        from forward_netbox.utilities.diagnostics import failure_reason
+
+        message = (
+            "Site mapping rules are set on the Forward source, but the map "
+            "license-timeout-forbidden-unauthorized for dcim.site runs a custom query "
+            "that does not take them."
+        )
+
+        self.assertIn(
+            "site-rules-custom-map",
+            failure_reason(ForwardQueryError(message)).split("+"),
+        )
+
+
+class RuntimeWarningIsLoggedOnceTest(SimpleTestCase):
+    def test_a_map_rejected_by_every_part_of_a_split_fetch_is_logged_once(self):
+        from unittest.mock import patch
+
+        from forward_netbox.exceptions import ForwardClientError
+        from forward_netbox.utilities.query_registry import QuerySpec
+
+        sync = SimpleNamespace(
+            pk=1, parameters={}, source=SimpleNamespace(parameters={})
+        )
+        logger = Mock()
+        fetcher = ForwardQueryFetcher(sync=sync, client=Mock(), logger_=logger)
+        spec = QuerySpec(
+            model_string="dcim.site",
+            query_name="Forward Locations",
+            query="@query f() = []",
+            parameters={"site_rules": []},
+        )
+
+        def reject(client, **kwargs):
+            raise ForwardClientError(
+                "Provided argument, 'site_rules' is not a parameter to the given query."
+            )
+
+        with patch(
+            "forward_netbox.utilities.query_fetch_execution.run_nqe_query", reject
+        ):
+            for _part in range(3):
+                try:
+                    fetcher._run_nqe_query(
+                        spec=spec,
+                        context=_context(site_rules=RULES),
+                        parameters={"site_rules": [{"kind": "tag"}]},
+                    )
+                except ForwardQueryError:
+                    pass
+
+        warnings = [
+            call.args[0]
+            for call in logger.log_warning.call_args_list
+            if "site mapping rules" in str(call.args[0])
+        ]
+        self.assertEqual(len(warnings), 1)

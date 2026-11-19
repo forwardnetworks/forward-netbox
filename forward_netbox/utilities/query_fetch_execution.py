@@ -546,6 +546,9 @@ class ForwardQueryFetcher:
         # Maps whose bound query Forward rejected `site_rules` for in this run, so an
         # empty rule list is not offered to them again.
         self._queries_without_site_rules: set[tuple[Any, ...]] = set()
+        # Maps already warned about for a rejected site_rules, so a fetch split into
+        # parts logs it once.
+        self._site_rules_rejections_logged: set[tuple[Any, ...]] = set()
         self._snapshot_scope_context_cache: dict[
             tuple[Any, ...], ForwardQueryContext
         ] = {}
@@ -4181,7 +4184,9 @@ class ForwardQueryFetcher:
                         "not a parameter)."
                         + contract_reason_hint(SITE_RULES_NOT_DECLARED_REASON)
                     )
-                    self.logger.log_warning(message, obj=self.sync)
+                    if site_rules_key not in self._site_rules_rejections_logged:
+                        self._site_rules_rejections_logged.add(site_rules_key)
+                        self.logger.log_warning(message, obj=self.sync)
                     raise ForwardQueryError(message) from exc
                 self._queries_without_site_rules.add(site_rules_key)
                 self.logger.log_info(

@@ -175,6 +175,15 @@ virtual children (they carry a location), and is reviewed and edited in NetBox.
   rejection by a published copy now blocks the run in validation, so no model applies
   while another failed. Also: a rule must read back the same from its one-line form;
   Health accepts a custom map saved with the parameter.
+- Audit of those fixes: block, one defect. The validation page gave one sentence for
+  every cause, so an operator with a custom query was told to publish the bundled
+  queries and hit the same block again. Fixed: advice by cause. Also fixed: the
+  site-rules reason labels are checked first, so the label cap cannot push one out
+  and skip the block; the runtime warning is logged once per map, not once per part
+  of a split fetch. Consciously left: the support bundle redacts a multi-label reason
+  (`+` is not in its token set; true of every multi-label reason, not new), and the
+  plugin's Logs tab redacts warning text by design (the full text is on the core job
+  page; the docs say where to look).
 - Not built, on purpose: location-name suggestions in the builder, a two-sources
   warning, and the check on the smoke-test fetch path and the older single-stage path
   (no production caller found).

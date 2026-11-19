@@ -123,6 +123,13 @@ def ownership_conflict_reason(exc) -> str:
 # Ordering is significant only in that the ownership rules stay first, so
 # `ownership_conflict_reason` and `failure_reason` agree on the same message.
 _FAILURE_REASON_RULES = (
+    # First, because the list of labels is capped and a validation block reads these:
+    # a map named with words that match a rule below must not push one of them out.
+    # The site mapping rules (utilities/site_tag.py) reached a map that cannot take
+    # them. Plugin-authored sentences, so the slugs disclose nothing.
+    ("site-rules-custom-map", "runs a custom query that does not take"),
+    ("site-rules-query-rejected", "rejected the site mapping rules"),
+    ("site-rules-query-not-declared", "site_rules_not_declared"),
     # Transport and protocol: which of timeout / auth / shape / parse failed is
     # the first question asked of any Forward call, and none of these needles
     # can match a device name, address or tenant label.
@@ -163,11 +170,6 @@ _FAILURE_REASON_RULES = (
     ("full-execution-not-contractually-safe", "not contractually safe"),
     ("full-execution-rejected-by-contract", "full execution is not allowed"),
     ("diff-execution-rejected-by-contract", "diff execution is not allowed"),
-    # The site mapping rules (utilities/site_tag.py) reached a map that cannot take
-    # them. Plugin-authored sentences, so the slugs disclose nothing.
-    ("site-rules-custom-map", "runs a custom query that does not take"),
-    ("site-rules-query-rejected", "rejected the site mapping rules"),
-    ("site-rules-query-not-declared", "site_rules_not_declared"),
     ("unsafe-full-contract", "rejected an unsafe full contract"),
     ("no-enabled-query-maps", "no enabled nqe maps were resolved"),
     ("no-resolved-query-maps", "no enabled built-in or custom query maps"),

@@ -64,3 +64,43 @@ class SiteRulesFailureBlocksTest(SimpleTestCase):
         )
 
         self.assertEqual(reasons, [])
+
+
+class AdviceMatchesTheCauseTest(SimpleTestCase):
+    """The same sentence for every cause sent an operator with a custom query to
+    Publish Bundled Queries, which does nothing for a custom query: they ran again
+    and hit the same block."""
+
+    MODELS = ["dcim.site", "dcim.device", "ipam.vlan"]
+
+    def _reasons(self, *results):
+        return _runner(self.MODELS)._required_query_failure_reasons(list(results))
+
+    def test_a_custom_map_is_told_to_use_the_bundled_map_or_declare_the_parameter(self):
+        text = self._reasons(_result("dcim.device", "site-rules-custom-map"))[0]
+
+        self.assertIn("dcim.device", text)
+        self.assertIn("custom", text)
+        self.assertIn("Enable the bundled map", text)
+        self.assertIn("map's parameters", text)
+        self.assertNotIn("Publish Bundled Queries", text)
+
+    def test_a_published_query_that_predates_the_rules_is_told_to_publish(self):
+        for reason in ("site-rules-query-rejected", "site-rules-query-not-declared"):
+            with self.subTest(reason=reason):
+                text = self._reasons(_result("dcim.site", reason))[0]
+
+                self.assertIn("Publish Bundled Queries", text)
+                self.assertNotIn("Enable the bundled map", text)
+
+    def test_both_causes_at_once_each_get_their_own_advice(self):
+        reasons = self._reasons(
+            _result("dcim.device", "site-rules-custom-map"),
+            _result("dcim.site", "site-rules-query-rejected"),
+        )
+        text = " ".join(reasons)
+
+        self.assertIn("Enable the bundled map", text)
+        self.assertIn("Publish Bundled Queries", text)
+        self.assertIn("dcim.device", text)
+        self.assertIn("dcim.site", text)
