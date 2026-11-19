@@ -210,9 +210,11 @@ _SITE_NAMING_MODELS = ("dcim.site", "dcim.device", "ipam.vlan")
 def _site_rules_map_state_check(sync):
     """Warn when site rules are set but an enabled map cannot take them.
 
-    The rules are sent only to a query that declares them. A custom query, or a
-    bundled one that predates them, would put its devices on the wrong sites, and a
-    sync stops rather than run it, so say so here first. None when no rules are set.
+    The rules are sent only to a query that declares them. A custom query saved
+    without the parameter would put its devices on the wrong sites, and a sync stops
+    rather than run it, so say so here first. This reads the maps; a published copy
+    of a bundled query that predates the rules shows in the query drift section.
+    None when no rules are set.
     """
     from .site_tag import SiteRuleError
     from .site_tag import normalize_site_rules
@@ -239,9 +241,12 @@ def _site_rules_map_state_check(sync):
             continue
         query_default, _reason = builtin_query_default_for_map(query_map)
         if not query_default:
-            problems.append(
-                f"{model_string}: a custom query, which cannot take site rules"
-            )
+            # The sync accepts a custom query that is saved with the parameter (and
+            # declares it in its text), so only one without it is a problem.
+            if "site_rules" not in (getattr(query_map, "parameters", None) or {}):
+                problems.append(
+                    f"{model_string}: a custom query, which cannot take site rules"
+                )
             continue
         filename = query_default["filename"]
         # A bundled query that names no site (the ACI inventory, for one) has

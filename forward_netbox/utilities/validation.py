@@ -664,6 +664,26 @@ class ForwardValidationRunner:
                 + "."
             )
 
+        # A published query that rejected the site mapping rules failed only its own
+        # model's fetch, so the other models would still apply, putting devices on
+        # sites that were never created or at the wrong place. Block the run.
+        site_rules_models = sorted(
+            {
+                str(result.get("model") or "")
+                for result in model_results or []
+                if int(result.get("failure_count") or 0) > 0
+                and "site-rules-" in str(result.get("failure_reason") or "")
+            }
+        )
+        if site_rules_models:
+            reasons.append(
+                "Site mapping rules are set on the Forward source, but the query for "
+                + ", ".join(site_rules_models)
+                + " cannot take them, so devices would not be placed by the rules. "
+                "Use Publish Bundled Queries on the Health page and refresh the "
+                "query IDs, or remove the site rules."
+            )
+
         if reasons and self._diff_fallback_is_require_diff():
             reasons.append(
                 "These query failures blocked the sync because its diff fallback "

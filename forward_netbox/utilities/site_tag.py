@@ -142,7 +142,19 @@ def normalize_site_rules(raw):
             raise SiteRuleError(
                 f"{label}: '{site}' and '{previous}' make the same site slug '{slug}'."
             )
-        rules.append({"kind": kind, "pattern": pattern, "site": site})
+        entry = {"kind": kind, "pattern": pattern, "site": site}
+        # A rule is shown and saved as one line. One that reads back as something
+        # else (an arrow at the edge of a field) would be changed by the next save.
+        try:
+            reads_back = parse_site_rules_text(format_site_rules([entry])) == [entry]
+        except SiteRuleError:
+            reads_back = False
+        if not reads_back:
+            raise SiteRuleError(
+                f"{label}: it cannot be written on one line and read back the same "
+                "(check for ' ->' or leading or trailing spaces)."
+            )
+        rules.append(entry)
     return rules
 
 

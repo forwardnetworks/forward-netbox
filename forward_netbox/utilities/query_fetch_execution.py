@@ -1601,13 +1601,17 @@ class ForwardQueryFetcher:
                     # placed by their Forward location. Stop the whole run, as an
                     # unsafe contract does, so nothing is applied half-placed.
                     contract_preflight_blocked = True
-                    raise ForwardQueryError(
+                    message = (
                         "Site mapping rules are set on the Forward source, but "
                         f"the map {', '.join(sorted(uncovered))} for {model_string} "
                         "runs a custom query that does not take them, so its "
                         "devices would not be placed by the rules."
                         + contract_reason_hint(SITE_RULES_CUSTOM_MAP_REASON)
                     )
+                    # The log keeps only the first words of an exception, so say
+                    # the whole of it here: which map, and what to do.
+                    self.logger.log_warning(message, obj=self.sync)
+                    raise ForwardQueryError(message)
                 contracts = [
                     resolve_execution_contract(
                         effective_spec,
@@ -1638,6 +1642,14 @@ class ForwardQueryFetcher:
                 )
                 if unsafe_full_contract is not None:
                     contract_preflight_blocked = True
+                    self.logger.log_warning(
+                        f"The map {unsafe_full_contract.query_name} "
+                        f"[{unsafe_full_contract.map_id}] for {model_string} "
+                        "cannot run: "
+                        f"{unsafe_full_contract.full_reason_code}."
+                        + contract_reason_hint(unsafe_full_contract.full_reason_code),
+                        obj=self.sync,
+                    )
                     raise ForwardQueryError(
                         "Execution contract preflight rejected an unsafe full "
                         f"contract for {model_string}: "
@@ -1702,8 +1714,9 @@ class ForwardQueryFetcher:
         if contract_preflight_blocked:
             self.logger.log_warning(
                 "Execution contract preflight blocked all Forward workload "
-                "execution because at least one enabled map has an unsafe full "
-                "contract. No NQE workload request was scheduled.",
+                "execution because at least one enabled map cannot run safely "
+                "(the warning above names it and says what to do). No NQE "
+                "workload request was scheduled.",
                 obj=self.sync,
             )
             return []
@@ -4162,11 +4175,14 @@ class ForwardQueryFetcher:
                 # parameter is dropped and the query runs as it always did; with
                 # rules set it could not honour them, so stop and say how to fix it.
                 if parameters[SITE_RULES_PARAMETER_NAME]:
-                    raise ForwardQueryError(
-                        f"The query for {spec.model_string} rejected the site "
-                        "mapping rules (Forward: 'site_rules' is not a parameter)."
+                    message = (
+                        f"The query for {spec.model_string} ({spec.query_name}) "
+                        "rejected the site mapping rules (Forward: 'site_rules' is "
+                        "not a parameter)."
                         + contract_reason_hint(SITE_RULES_NOT_DECLARED_REASON)
-                    ) from exc
+                    )
+                    self.logger.log_warning(message, obj=self.sync)
+                    raise ForwardQueryError(message) from exc
                 self._queries_without_site_rules.add(site_rules_key)
                 self.logger.log_info(
                     f"The query for {spec.model_string} predates the site mapping "

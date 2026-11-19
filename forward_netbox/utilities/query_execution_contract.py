@@ -824,8 +824,10 @@ def contract_reason_hint(reason_code) -> str:
         )
     if reason_code == SITE_RULES_CUSTOM_MAP_REASON:
         return (
-            " Enable the bundled map for this model instead of the custom one, add "
-            "a `site_rules` parameter to the custom query (see the Site Mapping Rules "
-            "reference), or remove the site rules."
+            " Enable the bundled map for this model instead of the custom one; or "
+            "make the custom query take the rules by declaring a `site_rules` "
+            "parameter in its @query line AND adding `site_rules` (value `[]`) to "
+            "the map's parameters (see the Site Mapping Rules reference); or remove "
+            "the site rules."
         )
     return ""

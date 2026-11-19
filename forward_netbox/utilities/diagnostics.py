@@ -163,6 +163,11 @@ _FAILURE_REASON_RULES = (
     ("full-execution-not-contractually-safe", "not contractually safe"),
     ("full-execution-rejected-by-contract", "full execution is not allowed"),
     ("diff-execution-rejected-by-contract", "diff execution is not allowed"),
+    # The site mapping rules (utilities/site_tag.py) reached a map that cannot take
+    # them. Plugin-authored sentences, so the slugs disclose nothing.
+    ("site-rules-custom-map", "runs a custom query that does not take"),
+    ("site-rules-query-rejected", "rejected the site mapping rules"),
+    ("site-rules-query-not-declared", "site_rules_not_declared"),
     ("unsafe-full-contract", "rejected an unsafe full contract"),
     ("no-enabled-query-maps", "no enabled nqe maps were resolved"),
     ("no-resolved-query-maps", "no enabled built-in or custom query maps"),

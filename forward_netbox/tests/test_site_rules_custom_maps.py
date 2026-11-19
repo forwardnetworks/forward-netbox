@@ -10,10 +10,12 @@ from unittest.mock import Mock
 
 from django.test import SimpleTestCase
 
+from forward_netbox.exceptions import ForwardQueryError
 from forward_netbox.tests.test_query_execution_contract import _context
 from forward_netbox.tests.test_query_execution_contract import _eligible_spec
 from forward_netbox.utilities.query_execution_contract import query_source_sha256
 from forward_netbox.utilities.query_fetch_execution import ForwardQueryFetcher
+from forward_netbox.utilities.site_tag import query_site_rules
 
 RULES = [{"kind": "location", "pattern": "hall*", "site": "campus"}]
 
@@ -112,3 +114,89 @@ class CustomMapsAndSiteRulesTest(SimpleTestCase):
 
         fetcher._record_model_failure.assert_not_called()
         self.assertEqual(len(jobs), 1)
+
+
+class WhatTheOperatorSeesTest(SimpleTestCase):
+    """The refusal is only useful if the map's name and the fix reach the operator:
+    the log keeps the first words of an exception and the model result keeps a
+    reason label, so both are asserted, not just the raw exception."""
+
+    def _logged(self, spec, rules=RULES):
+        sync = SimpleNamespace(
+            pk=1, parameters={}, source=SimpleNamespace(parameters={})
+        )
+        logger = Mock()
+        fetcher = ForwardQueryFetcher(sync=sync, client=Mock(), logger_=logger)
+        fetcher._drop_unavailable_integration_models = Mock(return_value=["dcim.site"])
+        fetcher._resolve_specs_for_models = Mock(
+            return_value=({"dcim.site": [spec]}, {})
+        )
+        fetcher._scope_for_spec = Mock(return_value=None)
+        fetcher._incremental_baseline_for_specs = Mock(return_value=None)
+
+        def parameters_for(spec, context, scope):
+            # Like the real one: the map's own parameters, with the context's
+            # rules injected into a query that declares them.
+            parameters = dict(spec.parameters)
+            if "site_rules" in parameters:
+                parameters["site_rules"] = query_site_rules(context.site_rules)
+            return parameters
+
+        fetcher._query_parameters_for_scope = Mock(side_effect=parameters_for)
+        fetcher._build_workload_jobs(
+            _context(maps=[], site_rules=rules), model_strings=["dcim.site"]
+        )
+        return " ".join(str(call.args[0]) for call in logger.log_warning.call_args_list)
+
+    def test_the_log_names_the_custom_map_and_says_what_to_do(self):
+        logged = self._logged(_custom())
+
+        self.assertIn("Operator Sites", logged)
+        self.assertIn("custom query", logged)
+        self.assertIn("Enable the bundled map", logged)
+
+    def test_the_log_names_the_bundled_map_that_predates_the_rules(self):
+        old_source = (
+            "@query\nf(scope: List<String>) =\nforeach value in scope\n"
+            "select {name: value, slug: value}\n"
+        )
+        spec = _eligible_spec(
+            parameters={"scope": [], "site_rules": []},
+            full_query_source=old_source,
+            full_source_sha256=query_source_sha256(old_source),
+        )
+
+        logged = self._logged(spec)
+
+        self.assertIn("Forward Sites", logged)
+        self.assertIn("Publish Bundled Queries", logged)
+
+    def test_the_summary_does_not_blame_an_unsafe_contract_for_a_custom_map(self):
+        logged = self._logged(_custom())
+
+        self.assertNotIn("has an unsafe full contract", logged)
+
+    def test_each_site_rules_refusal_has_its_own_reason_label(self):
+        from forward_netbox.utilities.diagnostics import failure_reason
+
+        for message, label in (
+            (
+                "Site mapping rules are set on the Forward source, but the map X for "
+                "dcim.site runs a custom query that does not take them.",
+                "site-rules-custom-map",
+            ),
+            (
+                "The query for dcim.site rejected the site mapping rules (Forward: "
+                "'site_rules' is not a parameter).",
+                "site-rules-query-rejected",
+            ),
+            (
+                "Execution contract preflight rejected an unsafe full contract for "
+                "dcim.site: site_rules_not_declared.",
+                "site-rules-query-not-declared",
+            ),
+        ):
+            with self.subTest(label=label):
+                self.assertIn(
+                    label, failure_reason(ForwardQueryError(message)).split("+")
+                )

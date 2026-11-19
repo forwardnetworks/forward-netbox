@@ -28,9 +28,12 @@ class SiteRulesMapStateCheckTest(SimpleTestCase):
         ):
             return health._site_rules_map_state_check(sync)
 
-    def _map(self, model_string, filename=None, enabled=True):
+    def _map(self, model_string, filename=None, enabled=True, parameters=None):
         return types.SimpleNamespace(
-            enabled=enabled, model_string=model_string, _file=filename
+            enabled=enabled,
+            model_string=model_string,
+            _file=filename,
+            parameters=parameters or {},
         )
 
     def test_no_rules_adds_no_check(self):
@@ -80,6 +83,16 @@ class SiteRulesMapStateCheckTest(SimpleTestCase):
 
         self.assertEqual(result["status"], "warn")
         self.assertIn("custom", result["message"].lower())
+
+    def test_a_custom_query_saved_with_the_parameter_can_take_the_rules(self):
+        # The sync accepts a custom map whose saved parameters include site_rules,
+        # so Health must not say a sync will stop for it.
+        result = self._check(
+            {"site_rules": RULES},
+            [self._map("dcim.site", parameters={"site_rules": []})],
+        )
+
+        self.assertEqual(result["status"], "pass")
 
     def test_a_disabled_map_is_ignored(self):
         result = self._check(

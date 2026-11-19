@@ -49,14 +49,18 @@ follow the same order.
 **Publish the bundled queries first.** The rules reach the queries that name a site
 (devices, VLANs and locations). A query published to your Forward organization before
 this feature does not take them. With no rules set that does not matter: the sync
-runs it as it always did. With rules set, the sync stops before applying anything and
-says which map, rather than putting devices on the wrong sites. Forward NQE Maps ->
-**Publish Bundled Queries**, then refresh the query IDs. Health's query drift section
-lists a published query that is missing the `site_rules` parameter.
+runs it as it always did. With rules set, nothing is applied for that run, and the
+sync says which map: if the plugin can see the query is out of date it stops before
+fetching, and if only Forward's own rejection shows it, the run is blocked from
+merging. The devices are never quietly placed by their Forward location instead.
+Forward NQE Maps -> **Publish Bundled Queries**, then refresh the query IDs. Health's
+query drift section lists a published query that is missing the `site_rules`
+parameter.
 
-A map that runs your own query instead of the bundled one cannot take the rules unless
-that query declares a `site_rules` parameter of the same shape. With rules set the sync
-stops for such a map too, and Health's **Site rules** check names it.
+A map that runs your own query instead of the bundled one takes the rules only if
+the query declares a `site_rules` parameter in its `@query` line **and** the map is
+saved with a `site_rules` parameter (value `[]`; the plugin fills it in). Without both,
+the sync stops before fetching and Health's **Site rules** check names the map.
 
 ## Check them on the Scope page
 
@@ -92,7 +96,7 @@ them.
 | --- | --- | --- |
 | "The site rules saved on the Forward source are not valid" | Rules saved by hand (the REST API) that the form would have refused | Edit the source and correct the named rule |
 | "...rejected the site mapping rules" or "this query does not take them" | A query in your Forward organization predates the rules | Publish Bundled Queries, refresh the query IDs, or remove the rules |
-| "...runs a custom query that does not take them" (and Health: "Site rules ... cannot apply them") | An enabled map for devices, sites or VLANs is your own query, which cannot take the rules | Enable the bundled map for that model, declare `site_rules` on your query, or remove the rules |
+| "...runs a custom query that does not take them" (and Health: "Site rules ... cannot apply them") | An enabled map for devices, sites or VLANs is your own query, which cannot take the rules | Enable the bundled map for that model, declare `site_rules` on your query and in the map's parameters, or remove the rules |
 
 ## Upgrading
 

@@ -154,6 +154,31 @@ virtual children (they carry a location), and is reviewed and edited in NetBox.
 - Gates: `invoke harness-check`, scripts tests, pre-commit, full `invoke test`, then the
   release gate; a code-reviewer audit on the exact commit before merge.
 
+## Review Record
+
+- Design review (before code): build with changes. Eight findings, all reflected in
+  Approach above (legacy retry does not cover the common bindings; detection by
+  declared signature; injection point; diff path; form save rebuilds parameters; hash
+  and fingerprint; inline queries; stale-query stop).
+- Audit of the first complete build: block, one requirement unmet. A custom map takes
+  only its saved parameters, so set rules never reached it and its devices were
+  silently placed by their location. Fixed: the preflight stops the whole run for a
+  custom map for devices, sites or VLANs that is not saved with `site_rules`. Notes
+  fixed: diagnostics were handed the rules; the runtime fallback did not re-enter the
+  normal retry path; rule matching grew with the square of the rule count (now one
+  pass plus a pass per matching rule; 100 rules over 10,788 devices run in 12 s live);
+  Health flagged a map that names no site.
+- Audit of those fixes: block, one gap. The refusal was correct but its wording was cut
+  to the first words in the log and the model result was labelled unrecognised. Fixed:
+  the full message (map, model, what to do) is logged before each refusal, each has its
+  own reason label, and the summary no longer blames "an unsafe contract". A runtime
+  rejection by a published copy now blocks the run in validation, so no model applies
+  while another failed. Also: a rule must read back the same from its one-line form;
+  Health accepts a custom map saved with the parameter.
+- Not built, on purpose: location-name suggestions in the builder, a two-sources
+  warning, and the check on the smoke-test fetch path and the older single-stage path
+  (no production caller found).
+
 ## Rollback
 
 Remove the rules (or revert the release): sites fall back to the tag convention and then

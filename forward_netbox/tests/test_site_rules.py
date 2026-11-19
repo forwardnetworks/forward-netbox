@@ -109,6 +109,13 @@ class NormalizeTest(SimpleTestCase):
             with self.subTest(bad=bad), self.assertRaises(SiteRuleError):
                 normalize_site_rules([bad])
 
+    def test_a_rule_that_does_not_read_back_the_same_is_refused(self):
+        # `foo ->` has no space after the arrow, so the arrow check lets it through,
+        # but it is written `location foo -> -> s`, which reads back as pattern
+        # `foo` and site `-> s`: another rule.
+        with self.assertRaises(SiteRuleError):
+            normalize_site_rules([rule(pattern="foo ->", site="s")])
+
     def test_every_rule_that_is_accepted_survives_the_text_round_trip(self):
         rules = [
             rule(pattern="Hall A*", site="Campus East"),
