@@ -320,7 +320,11 @@ class RulesTableTest(TestCase):
 
     def test_loading_tags_never_rewrites_the_text_the_operator_is_editing(self):
         html = self._html()
-        fill = html[html.index("var fill = function") : html.index("control.addEventListener('focus', fill")]
+        fill = html[
+            html.index("var fill = function") : html.index(
+                "control.addEventListener('focus', fill"
+            )
+        ]
 
         self.assertNotIn("writeBack()", fill)
 
@@ -341,6 +345,4 @@ class RulesTableTest(TestCase):
         self.assertIn("Finish or remove the half-filled row", self._html())
 
     def test_the_box_is_not_restored_by_the_browser(self):
-        import re
-
         self.assertRegex(self._html(), r'<textarea[^>]*autocomplete="off"')

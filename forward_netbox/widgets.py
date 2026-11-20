@@ -378,9 +378,7 @@ class SiteRulesWidget(forms.Textarea):
             status = ""
         else:
             status = "Save the source to pick tags from Forward."
-        table = format_html(
-            _TABLE, field_id=field_id, site_options=_site_options()
-        )
+        table = format_html(_TABLE, field_id=field_id, site_options=_site_options())
         builder = format_html(
             _BUILDER,
             field_id=field_id,
