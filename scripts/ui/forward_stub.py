@@ -4,14 +4,14 @@ It answers just the calls the UI makes (network list, snapshots, NQE runs for th
 tag and location pickers) from generated fixtures: no customer data, no network.
 Unknown requests get a 404 that names the path, so a missing route fails loudly.
 
-Run inside the NetBox container: `python forward_stub.py 9999`.
+Run inside the NetBox container: `python forward_stub.py 9999 <network id>`.
 """
 
 import json
 import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
-NETWORK_ID = "uat-network"
+NETWORK_ID = sys.argv[2] if len(sys.argv) > 2 else "uat-network"
 SNAPSHOT_ID = "uat-snapshot-1"
 TAGS = [f"Tag-{number:03d}" for number in range(1, 301)]
 LOCATIONS = [f"Location-{number:03d}" for number in range(1, 401)] + [
@@ -61,7 +61,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(401, {"message": "unauthorized"})
         path = self.path.split("?")[0]
         if path == "/api/networks":
-            return self._send(200, [{"id": NETWORK_ID, "name": "UAT network"}])
+            return self._send(
+                200, [{"id": NETWORK_ID, "name": "UAT network", "orgId": "uat-org"}]
+            )
         base = f"/api/networks/{NETWORK_ID}"
         if path == f"{base}/snapshots":
             return self._send(200, {"snapshots": [snapshot()]})

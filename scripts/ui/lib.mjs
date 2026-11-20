@@ -74,6 +74,30 @@ function runDockerManage(command) {
   );
 }
 
+// The Forward stand-in the pickers and the source save talk to. It runs inside the
+// NetBox container (so 127.0.0.1 there is the stub) and lives as long as the stack.
+function startStub(port = 9999, network = process.env.FORWARD_UI_HARNESS_NETWORK || "ui-harness-network") {
+  execFileSync(
+    "docker",
+    [
+      "compose",
+      "--project-name",
+      dockerProjectName,
+      "--project-directory",
+      dockerProjectDirectory,
+      "exec",
+      "-d",
+      "--env",
+      "FORWARD_UI_HARNESS_ISOLATED=true",
+      "netbox",
+      "bash",
+      "-lc",
+      `python /source/scripts/ui/forward_stub.py ${port} ${network} > /tmp/forward_stub.log 2>&1`,
+    ],
+    { cwd: repoRoot, stdio: "inherit" },
+  );
+}
+
 function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
@@ -257,5 +281,5 @@ export const h = {
   repoRoot, artifactDir, baseURL, username, password, assert, sleep, browser,
   evaluate, waitFor, js, expectVisible, countExactText, assertNoHorizontalOverflow,
   currentURL, open, clickLink, clickLinkMatching, clickHref, login, screenshot,
-  waitForWebReady, runDockerManage, sessionName,
+  waitForWebReady, runDockerManage, startStub, sessionName,
 };

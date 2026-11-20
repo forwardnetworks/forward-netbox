@@ -32,6 +32,7 @@ async function main() {
   if (process.env.FORWARD_UI_SKIP_MIGRATE !== "true") {
     h.runDockerManage("migrate --noinput");
   }
+  h.startStub();
   h.runDockerManage("forward_seed_ui_harness");
   await h.waitForWebReady(`${h.baseURL}/login/`);
 
