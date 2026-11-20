@@ -4,7 +4,7 @@ Generated from the README compatibility table by `scripts/gen_changelog.py`. Do 
 
 ## v3.0.18
 
-Release candidate; Site mapping rules as an editable table with Forward tag and NetBox site pickers
+Site mapping rules as an editable table with Forward tag and NetBox site pickers
 
 ## v3.0.17
 
