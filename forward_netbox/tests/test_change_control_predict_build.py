@@ -54,7 +54,13 @@ class PredictApi:
     """Stands in for Forward's change sets: records calls, answers from a script."""
 
     def __init__(
-        self, *, snapshots=None, predicted=None, command_errors=0, fail_at=None, error=None
+        self,
+        *,
+        snapshots=None,
+        predicted=None,
+        command_errors=0,
+        fail_at=None,
+        error=None,
     ):
         self.calls = []
         self.deleted = []

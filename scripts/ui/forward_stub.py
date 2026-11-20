@@ -9,7 +9,8 @@ Run inside the NetBox container: `python forward_stub.py 9999 <network id>`.
 
 import json
 import sys
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler
+from http.server import HTTPServer
 
 NETWORK_ID = sys.argv[2] if len(sys.argv) > 2 else "uat-network"
 SNAPSHOT_ID = "uat-snapshot-1"
@@ -104,7 +105,9 @@ class Handler(BaseHTTPRequestHandler):
                     "resultKey": key,
                 },
             )
-        return self._send(404, {"message": f"stub has no route for {self.command} {path}"})
+        return self._send(
+            404, {"message": f"stub has no route for {self.command} {path}"}
+        )
 
     do_GET = do_POST = do_PUT = do_DELETE = _handle
 
