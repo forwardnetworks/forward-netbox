@@ -1,11 +1,10 @@
-"""A tiny stand-in for the Forward API, for the browser UAT only.
-
-It answers just the calls the UI makes (network list, snapshots, NQE runs for the
-tag and location pickers) from generated fixtures: no customer data, no network.
-Unknown requests get a 404 that names the path, so a missing route fails loudly.
-
-Run inside the NetBox container: `python forward_stub.py 9999 <network id>`.
-"""
+# A tiny stand-in for the Forward API, for the browser UAT only.
+#
+# It answers just the calls the UI makes (network list, snapshots, NQE runs for the
+# tag and location pickers) from generated fixtures: no customer data, no network.
+# Unknown requests get a 404 that names the path, so a missing route fails loudly.
+#
+# Run inside the NetBox container: `python forward_stub.py 9999 <network id>`.
 
 import json
 import sys
