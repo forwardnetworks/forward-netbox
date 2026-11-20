@@ -5,7 +5,6 @@
 # Unknown requests get a 404 that names the path, so a missing route fails loudly.
 #
 # Run inside the NetBox container: `python forward_stub.py 9999 <network id>`.
-
 import json
 import sys
 from http.server import BaseHTTPRequestHandler
