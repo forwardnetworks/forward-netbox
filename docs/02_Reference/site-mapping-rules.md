@@ -8,7 +8,11 @@ source settings, without writing anything in Forward.
 
 ## The rules
 
-On the Forward source, the **Site mapping rules** field takes one rule per line:
+On the Forward source, the **Site mapping rules** field is a table: one row per rule, with a
+kind (location or tag), a Forward tag dropdown or a location field, and a NetBox site field
+that suggests the sites you already have. **Add row** adds one; the order is the precedence.
+**Edit as text** switches to the plain box, one rule per line, which is also what a browser
+without scripts shows:
 
 ```text
 location HQ_* -> hq-campus

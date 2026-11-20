@@ -456,13 +456,42 @@ async function main() {
         `builder.querySelector("[data-location]").value = "HQ_*";` +
         `builder.querySelector("[data-site]").value = "hq-campus";` +
         `builder.querySelector("[data-add]").click();` +
+        `const table = document.querySelector("[data-forward-site-rule-table]");` +
+        `const rows = table ? table.querySelectorAll("tr[data-rule]").length : -1;` +
+        `const rowSite = table && table.querySelector("tr[data-rule] [data-rule-site]");` +
+        `if (rowSite) { rowSite.value = "hq-renamed"; rowSite.dispatchEvent(new Event("input")); }` +
+        `const afterEdit = area.value;` +
+        `const removeBtn = table && table.querySelector("tr[data-rule] [data-remove]");` +
+        `if (removeBtn) { removeBtn.click(); }` +
+        `const afterRemove = area.value;` +
+        `const tableVisible = !!table && table.getClientRects().length > 0;` +
+        `builder.querySelector("[data-location]").value = "HQ_*";` +
+        `builder.querySelector("[data-site]").value = "hq-campus";` +
+        `builder.querySelector("[data-add]").click();` +
+        `table.querySelector("[data-add-row]").click();` +
+        `const rowCount = table.querySelectorAll("tr[data-rule]").length;` +
+        `const half = table.querySelectorAll("tr[data-rule]")[table.querySelectorAll("tr[data-rule]").length - 1];` +
+        `half.querySelector("[data-rule-site]").value = "only-a-site";` +
+        `half.querySelector("[data-rule-site]").dispatchEvent(new Event("input"));` +
+        `const submit = new Event("submit", {cancelable: true, bubbles: true});` +
+        `area.form.dispatchEvent(submit);` +
+        `const blocked = submit.defaultPrevented;` +
+        `table.querySelector("[data-edit-text]").click();` +
+        `const stayedInTable = !table.hidden;` +
+        `half.querySelector("[data-remove]").click();` +
+        `table.querySelector("[data-edit-text]").click();` +
+        `const inText = table.hidden && !area.hidden;` +
+        `const back = document.querySelector("[data-show-table]");` +
+        `if (back) { back.click(); }` +
+        `const backInTable = !table.hidden && !document.querySelector("[data-show-table]");` +
         `const kind = builder.querySelector("[data-kind]");` +
         `kind.value = "tag";` +
         `kind.dispatchEvent(new Event("change"));` +
         `return {` +
           `ok: true,` +
           `value: area.value,` +
-          `visible: area.getClientRects().length > 0,` +
+          `rows, afterEdit, afterRemove, tableVisible, rowCount, blocked, stayedInTable, inText, backInTable,` +
+          `visible: tableVisible || area.getClientRects().length > 0,` +
           `help: document.body.innerText.includes("unless a mapping applies"),` +
           `tagControl: !!builder.querySelector("[data-tag]"),` +
           `locationList: builder.querySelector("[data-location]").getAttribute("list"),` +
@@ -479,6 +508,17 @@ async function main() {
       siteRules.value.includes("location HQ_* -> hq-campus"),
       `the rule builder did not add a line (field: ${siteRules.value})`,
     );
+    assert(siteRules.tableVisible, "the site mapping rules are not shown as a table");
+    assert(siteRules.rows === 1, `the table did not show the added rule as a row (${siteRules.rows})`);
+    assert(
+      siteRules.afterEdit.includes("location HQ_* -> hq-renamed"),
+      `editing a row did not rewrite the field (${siteRules.afterEdit})`,
+    );
+    assert(siteRules.afterRemove.trim() === "", "removing the row did not clear the field");
+    assert(siteRules.rowCount === 2, "Add row did not add a row");
+    assert(siteRules.blocked, "a half-filled rule row did not stop the form from submitting");
+    assert(siteRules.stayedInTable, "Edit as text discarded a half-filled row");
+    assert(siteRules.inText && siteRules.backInTable, "Edit as text / Show as table did not round-trip");
     assert(siteRules.tagControl, "the rule builder has no tag control for a tag rule");
     assert(
       siteRules.locationList && siteRules.locationOptions,

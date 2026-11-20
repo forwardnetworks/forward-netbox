@@ -255,3 +255,94 @@ class LocationSuggestionsTest(TestCase):
 
         self.assertIn("addEventListener('focus', loadLocations", html)
         self.assertNotIn("\n  loadLocations();", html)
+
+
+class RulesTableTest(TestCase):
+    """The rules as a table of rows with pickers; the textarea stays the field."""
+
+    def _html(self, source_id=7):
+        from forward_netbox.widgets import SiteRulesWidget
+
+        widget = SiteRulesWidget()
+        widget.source_id = source_id
+        return widget.render("site_rules", RULES_TEXT, attrs={"id": "id_site_rules"})
+
+    def test_the_table_and_its_site_list_are_rendered(self):
+        html = self._html()
+
+        self.assertIn('data-forward-site-rule-table="id_site_rules"', html)
+        self.assertIn('<datalist id="id_site_rules_sites">', html)
+        self.assertIn("data-rule-kind", html)
+        self.assertIn("data-rule-site", html)
+
+    def test_existing_netbox_sites_are_offered_as_suggestions(self):
+        from dcim.models import Site
+
+        Site.objects.create(name="Campus East", slug="campus-east")
+
+        self.assertIn('<option value="Campus East">', self._html())
+
+    def test_a_site_name_cannot_inject_markup(self):
+        from dcim.models import Site
+
+        Site.objects.create(name='x"><script>alert(1)</script>', slug="evil")
+
+        self.assertNotIn("<script>alert(1)</script>", self._html())
+
+    def test_the_textarea_is_still_the_posted_field(self):
+        html = self._html()
+
+        self.assertIn('<textarea name="site_rules"', html)
+        self.assertIn("function writeBack", html)
+        # Lines the table cannot show leave the text editor in charge.
+        self.assertIn("if (!rules) { table.hidden = true; area.hidden = false;", html)
+
+    def test_the_table_has_an_add_row_button_and_a_way_back_from_text(self):
+        html = self._html()
+
+        self.assertIn("data-add-row", html)
+        self.assertIn("data-show-table", html)
+
+    def test_a_half_filled_row_blocks_the_save_instead_of_being_dropped(self):
+        html = self._html()
+
+        self.assertIn("addEventListener('submit'", html)
+        self.assertIn("event.preventDefault()", html)
+
+    def test_tags_are_asked_for_once_and_only_when_a_tag_control_is_used(self):
+        html = self._html()
+
+        # No call at load: the only callers are inside handlers.
+        self.assertNotIn("\n    tagsOnce();", html)
+        self.assertNotIn("\n  tagsOnce();", html)
+        self.assertEqual(html.count("fetch(builder.getAttribute('data-tags-url')"), 1)
+        self.assertIn("addEventListener('focus', fill, {once: true})", html)
+
+    def test_loading_tags_never_rewrites_the_text_the_operator_is_editing(self):
+        html = self._html()
+        fill = html[
+            html.index("var fill = function") : html.index(
+                "control.addEventListener('focus', fill"
+            )
+        ]
+
+        self.assertNotIn("writeBack()", fill)
+
+    def test_the_table_reads_a_line_the_way_the_server_does(self):
+        # The kind is the first word and the first ' -> ' splits the rest, so a
+        # pattern with spaces or tabs round-trips as the server stores it.
+        html = self._html()
+
+        self.assertIn("line.indexOf(' ')", html)
+        self.assertIn("rest.indexOf(' -> ')", html)
+        self.assertNotIn("\\s+(.+?)\\s+->", html)
+
+    def test_each_tag_control_fills_its_list_once(self):
+        # A click fires mousedown and focus; both ran the fill and doubled the tags.
+        self.assertIn("if (filled) { return; }", self._html())
+
+    def test_edit_as_text_refuses_while_a_row_is_half_filled(self):
+        self.assertIn("Finish or remove the half-filled row", self._html())
+
+    def test_the_box_is_not_restored_by_the_browser(self):
+        self.assertRegex(self._html(), r'<textarea[^>]*autocomplete="off"')
