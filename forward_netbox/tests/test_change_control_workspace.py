@@ -36,7 +36,7 @@ class FakeApi:
         self.networks[new_id] = {"id": new_id, "name": name, "parent_id": parent_id}
         return new_id
 
-    def snapshots(self, network_id):
+    def snapshots(self, network_id, *, include_predicted=False):
         return list(self.snapshots_by_network.get(network_id, []))
 
 
