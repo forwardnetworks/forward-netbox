@@ -341,4 +341,6 @@ class RulesTableTest(TestCase):
         self.assertIn("Finish or remove the half-filled row", self._html())
 
     def test_the_box_is_not_restored_by_the_browser(self):
-        self.assertIn('autocomplete="off"', self._html())
+        import re
+
+        self.assertRegex(self._html(), r'<textarea[^>]*autocomplete="off"')
