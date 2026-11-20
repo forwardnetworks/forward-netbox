@@ -255,3 +255,44 @@ class LocationSuggestionsTest(TestCase):
 
         self.assertIn("addEventListener('focus', loadLocations", html)
         self.assertNotIn("\n  loadLocations();", html)
+
+
+class RulesTableTest(TestCase):
+    """The rules as a table of rows with pickers; the textarea stays the field."""
+
+    def _html(self, source_id=7):
+        from forward_netbox.widgets import SiteRulesWidget
+
+        widget = SiteRulesWidget()
+        widget.source_id = source_id
+        return widget.render("site_rules", RULES_TEXT, attrs={"id": "id_site_rules"})
+
+    def test_the_table_and_its_site_list_are_rendered(self):
+        html = self._html()
+
+        self.assertIn('data-forward-site-rule-table="id_site_rules"', html)
+        self.assertIn('<datalist id="id_site_rules_sites">', html)
+        self.assertIn("data-rule-kind", html)
+        self.assertIn("data-rule-site", html)
+
+    def test_existing_netbox_sites_are_offered_as_suggestions(self):
+        from dcim.models import Site
+
+        Site.objects.create(name="Campus East", slug="campus-east")
+
+        self.assertIn('<option value="Campus East">', self._html())
+
+    def test_a_site_name_cannot_inject_markup(self):
+        from dcim.models import Site
+
+        Site.objects.create(name='x"><script>alert(1)</script>', slug="evil")
+
+        self.assertNotIn("<script>alert(1)</script>", self._html())
+
+    def test_the_textarea_is_still_the_posted_field(self):
+        html = self._html()
+
+        self.assertIn('<textarea name="site_rules"', html)
+        self.assertIn("function writeBack", html)
+        # Lines the table cannot show leave the text editor in charge.
+        self.assertIn("if (!rules) { table.hidden = true; area.hidden = false;", html)

@@ -1,12 +1,28 @@
 from django import forms
 from django.utils.html import escapejs
 from django.utils.html import format_html
+from django.utils.html import format_html_join
 from django.utils.safestring import mark_safe
 
 # The endpoint the device-tag filters already use to list the tags Forward has.
 AVAILABLE_TAGS_URL = "/api/plugins/forward/source/available-tags/"
 # And the one that lists its locations, offered as suggestions for a location rule.
 AVAILABLE_LOCATIONS_URL = "/api/plugins/forward/source/available-locations/"
+
+_TABLE = """
+<div class="mt-2" data-forward-site-rule-table="{field_id}" hidden>
+  <table class="table table-sm align-middle mb-1">
+    <thead><tr>
+      <th>Match a device by its</th><th>Forward location or tag</th>
+      <th>NetBox site</th><th></th>
+    </tr></thead>
+    <tbody data-rows></tbody>
+  </table>
+  <datalist id="{field_id}_sites">{site_options}</datalist>
+  <button type="button" class="btn btn-sm btn-outline-secondary" data-edit-text>Edit as text</button>
+  <span class="form-text">Rules apply top to bottom; the first match wins. A NetBox_Site_ tag on a device beats every rule.</span>
+</div>
+"""
 
 _BUILDER = """
 <div class="border rounded p-2 mt-2" data-forward-site-rule-builder="{field_id}"
@@ -132,11 +148,120 @@ _SCRIPT = """
     area.value = (area.value.trim() ? area.value.replace(/\\s+$/, '') + '\\n' : '') + line + '\\n';
     loc.value = ''; site.value = '';
     status.textContent = 'Added: ' + line + '. Save the source to apply it.';
+    if (typeof renderTable === 'function' && table) { renderTable(); }
   });
   show();
+
+  // The rules as a table: a row per rule, with the same pickers as the builder. The
+  // textarea stays the field that is posted, rewritten from the rows on every change,
+  // and stays the only editor when a line is not one the table can show.
+  var table = document.querySelector('[data-forward-site-rule-table="__ID__"]');
+  var tagList = null;
+  function tagsOnce() {
+    var id = builder.getAttribute('data-source-id');
+    if (tagList) { return tagList; }
+    tagList = !id ? Promise.resolve([]) : fetch(builder.getAttribute('data-tags-url') + '?source_id=' + encodeURIComponent(id), {
+      credentials: 'same-origin', headers: {'Accept': 'application/json'}
+    }).then(function (r) { return r.json(); }).then(function (b) {
+      return (b.results || []).map(function (t) { return t.id; });
+    }).catch(function () { return []; });
+    return tagList;
+  }
+  function parseLines(text) {
+    var rules = [];
+    var lines = text.split('\\n');
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim();
+      if (!line) { continue; }
+      var m = /^(location|tag)\\s+(.+?)\\s+->\\s+(.+)$/.exec(line);
+      if (!m) { return null; }
+      rules.push({kind: m[1], value: m[2].trim(), site: m[3].trim()});
+    }
+    return rules;
+  }
+  function writeBack() {
+    var lines = [];
+    table.querySelectorAll('tr[data-rule]').forEach(function (tr) {
+      var v = tr.querySelector('[data-value]').value.trim();
+      var s = tr.querySelector('[data-rule-site]').value.trim();
+      if (v && s) { lines.push(tr.querySelector('[data-rule-kind]').value + ' ' + v + ' -> ' + s); }
+    });
+    area.value = lines.length ? lines.join('\\n') + '\\n' : '';
+  }
+  function valueControl(tr, kindValue, current) {
+    var cell = tr.querySelector('[data-value-cell]');
+    cell.innerHTML = '';
+    var control;
+    if (kindValue === 'tag') {
+      control = document.createElement('select');
+      control.className = 'form-select form-select-sm';
+      var add = function (v) {
+        var o = document.createElement('option'); o.value = v; o.textContent = v; control.appendChild(o);
+      };
+      if (current) { add(current); }
+      tagsOnce().then(function (tags) {
+        tags.forEach(function (t) { if (t !== current) { add(t); } });
+        control.value = current || control.value;
+        writeBack();
+      });
+    } else {
+      control = document.createElement('input');
+      control.type = 'text'; control.className = 'form-control form-control-sm';
+      control.setAttribute('list', '__ID___locations'); control.autocomplete = 'off';
+      control.placeholder = 'DC01*'; control.value = current || '';
+      control.addEventListener('focus', loadLocations, {once: true});
+    }
+    control.setAttribute('data-value', '');
+    control.addEventListener('input', writeBack);
+    control.addEventListener('change', writeBack);
+    cell.appendChild(control);
+  }
+  function addRow(rule) {
+    var tr = document.createElement('tr');
+    tr.setAttribute('data-rule', '');
+    tr.innerHTML = '<td><select class="form-select form-select-sm" data-rule-kind>' +
+      '<option value="location">Forward location</option><option value="tag">Forward tag</option></select></td>' +
+      '<td data-value-cell></td>' +
+      '<td><input type="text" class="form-control form-control-sm" data-rule-site list="__ID___sites" placeholder="dc1" autocomplete="off"></td>' +
+      '<td><button type="button" class="btn btn-sm btn-outline-danger" data-remove title="Remove rule">&times;</button></td>';
+    var k = tr.querySelector('[data-rule-kind]');
+    k.value = rule.kind;
+    tr.querySelector('[data-rule-site]').value = rule.site;
+    valueControl(tr, rule.kind, rule.value);
+    k.addEventListener('change', function () { valueControl(tr, k.value, ''); writeBack(); });
+    tr.querySelector('[data-rule-site]').addEventListener('input', writeBack);
+    tr.querySelector('[data-remove]').addEventListener('click', function () { tr.remove(); writeBack(); });
+    table.querySelector('[data-rows]').appendChild(tr);
+  }
+  function renderTable() {
+    var rules = parseLines(area.value);
+    if (!rules) { table.hidden = true; area.hidden = false; return; }
+    table.querySelector('[data-rows]').innerHTML = '';
+    rules.forEach(addRow);
+    table.hidden = false; area.hidden = true;
+  }
+  if (table) {
+    renderTable();
+    table.querySelector('[data-edit-text]').addEventListener('click', function () {
+      table.hidden = true; area.hidden = false;
+    });
+    area.addEventListener('change', renderTable);
+  }
 })();
 </script>
 """
+
+
+def _site_options():
+    """The NetBox sites that exist, as suggestions. A rule may name a site that does
+    not exist yet (the sync creates it), so the field stays free text."""
+    from dcim.models import Site
+
+    try:
+        names = Site.objects.order_by("name").values_list("name", flat=True)[:2000]
+        return format_html_join("", '<option value="{}">', ((n,) for n in names))
+    except Exception:  # suggestions are optional
+        return ""
 
 
 class SiteRulesWidget(forms.Textarea):
@@ -162,6 +287,9 @@ class SiteRulesWidget(forms.Textarea):
             status = ""
         else:
             status = "Save the source to pick tags from Forward."
+        table = format_html(
+            _TABLE, field_id=field_id, site_options=_site_options()
+        )
         builder = format_html(
             _BUILDER,
             field_id=field_id,
@@ -171,4 +299,4 @@ class SiteRulesWidget(forms.Textarea):
             status=status,
         )
         script = mark_safe(_SCRIPT.replace("__ID__", escapejs(str(field_id))))
-        return mark_safe(f"{area}{builder}{script}")
+        return mark_safe(f"{area}{table}{builder}{script}")
