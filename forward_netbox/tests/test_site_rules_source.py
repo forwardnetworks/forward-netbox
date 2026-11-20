@@ -296,3 +296,39 @@ class RulesTableTest(TestCase):
         self.assertIn("function writeBack", html)
         # Lines the table cannot show leave the text editor in charge.
         self.assertIn("if (!rules) { table.hidden = true; area.hidden = false;", html)
+
+    def test_the_table_has_an_add_row_button_and_a_way_back_from_text(self):
+        html = self._html()
+
+        self.assertIn("data-add-row", html)
+        self.assertIn("data-show-table", html)
+
+    def test_a_half_filled_row_blocks_the_save_instead_of_being_dropped(self):
+        html = self._html()
+
+        self.assertIn("addEventListener('submit'", html)
+        self.assertIn("event.preventDefault()", html)
+
+    def test_tags_are_asked_for_once_and_only_when_a_tag_control_is_used(self):
+        html = self._html()
+
+        # No call at load: the only callers are inside handlers.
+        self.assertNotIn("\n    tagsOnce();", html)
+        self.assertNotIn("\n  tagsOnce();", html)
+        self.assertEqual(html.count("fetch(builder.getAttribute('data-tags-url')"), 1)
+        self.assertIn("addEventListener('focus', fill, {once: true})", html)
+
+    def test_loading_tags_never_rewrites_the_text_the_operator_is_editing(self):
+        html = self._html()
+        fill = html[html.index("var fill = function") : html.index("control.addEventListener('focus', fill")]
+
+        self.assertNotIn("writeBack()", fill)
+
+    def test_the_table_reads_a_line_the_way_the_server_does(self):
+        # The kind is the first word and the first ' -> ' splits the rest, so a
+        # pattern with spaces or tabs round-trips as the server stores it.
+        html = self._html()
+
+        self.assertIn("line.indexOf(' ')", html)
+        self.assertIn("rest.indexOf(' -> ')", html)
+        self.assertNotIn("\\s+(.+?)\\s+->", html)

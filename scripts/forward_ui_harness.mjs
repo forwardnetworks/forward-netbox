@@ -468,13 +468,22 @@ async function main() {
         `builder.querySelector("[data-location]").value = "HQ_*";` +
         `builder.querySelector("[data-site]").value = "hq-campus";` +
         `builder.querySelector("[data-add]").click();` +
+        `table.querySelector("[data-add-row]").click();` +
+        `const rowCount = table.querySelectorAll("tr[data-rule]").length;` +
+        `const half = table.querySelectorAll("tr[data-rule]")[table.querySelectorAll("tr[data-rule]").length - 1];` +
+        `half.querySelector("[data-rule-site]").value = "only-a-site";` +
+        `half.querySelector("[data-rule-site]").dispatchEvent(new Event("input"));` +
+        `const submit = new Event("submit", {cancelable: true, bubbles: true});` +
+        `area.form.dispatchEvent(submit);` +
+        `const blocked = submit.defaultPrevented;` +
+        `half.querySelector("[data-remove]").click();` +
         `const kind = builder.querySelector("[data-kind]");` +
         `kind.value = "tag";` +
         `kind.dispatchEvent(new Event("change"));` +
         `return {` +
           `ok: true,` +
           `value: area.value,` +
-          `rows, afterEdit, afterRemove, tableVisible,` +
+          `rows, afterEdit, afterRemove, tableVisible, rowCount, blocked,` +
           `visible: tableVisible || area.getClientRects().length > 0,` +
           `help: document.body.innerText.includes("unless a mapping applies"),` +
           `tagControl: !!builder.querySelector("[data-tag]"),` +
@@ -499,6 +508,8 @@ async function main() {
       `editing a row did not rewrite the field (${siteRules.afterEdit})`,
     );
     assert(siteRules.afterRemove.trim() === "", "removing the row did not clear the field");
+    assert(siteRules.rowCount === 2, "Add row did not add a row");
+    assert(siteRules.blocked, "a half-filled rule row did not stop the form from submitting");
     assert(siteRules.tagControl, "the rule builder has no tag control for a tag rule");
     assert(
       siteRules.locationList && siteRules.locationOptions,
