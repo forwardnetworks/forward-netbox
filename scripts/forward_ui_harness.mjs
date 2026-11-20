@@ -469,6 +469,7 @@ async function main() {
         `builder.querySelector("[data-site]").value = "hq-campus";` +
         `builder.querySelector("[data-add]").click();` +
         `table.querySelector("[data-add-row]").click();` +
+        `const wrapped = document.querySelectorAll('[data-forward-site-rule-table] .ts-wrapper, [data-forward-site-rule-builder] .ts-wrapper').length;` +
         `const rowCount = table.querySelectorAll("tr[data-rule]").length;` +
         `const half = table.querySelectorAll("tr[data-rule]")[table.querySelectorAll("tr[data-rule]").length - 1];` +
         `half.querySelector("[data-rule-site]").value = "only-a-site";` +
@@ -490,7 +491,7 @@ async function main() {
         `return {` +
           `ok: true,` +
           `value: area.value,` +
-          `rows, afterEdit, afterRemove, tableVisible, rowCount, blocked, stayedInTable, inText, backInTable,` +
+          `rows, afterEdit, afterRemove, tableVisible, rowCount, wrapped, blocked, stayedInTable, inText, backInTable,` +
           `visible: tableVisible || area.getClientRects().length > 0,` +
           `help: document.body.innerText.includes("unless a mapping applies"),` +
           `tagControl: !!builder.querySelector("[data-tag]"),` +
@@ -515,6 +516,10 @@ async function main() {
       `editing a row did not rewrite the field (${siteRules.afterEdit})`,
     );
     assert(siteRules.afterRemove.trim() === "", "removing the row did not clear the field");
+    assert(
+      siteRules.wrapped === 0,
+      `NetBox wrapped ${siteRules.wrapped} of the rule selects in its own dropdown, so Forward's tags cannot reach them`,
+    );
     assert(siteRules.rowCount === 2, "Add row did not add a row");
     assert(siteRules.blocked, "a half-filled rule row did not stop the form from submitting");
     assert(siteRules.stayedInTable, "Edit as text discarded a half-filled row");

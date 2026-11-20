@@ -34,7 +34,7 @@ _BUILDER = """
   <div class="row g-2 align-items-end">
     <div class="col-12 col-md-3">
       <label class="form-label mb-0">Match a device by its</label>
-      <select class="form-select" data-kind>
+      <select class="form-select no-ts" style="min-width:11rem" data-kind>
         <option value="location">Forward location</option>
         <option value="tag">Forward tag</option>
       </select>
@@ -44,7 +44,7 @@ _BUILDER = """
       <input type="text" class="form-control" data-location placeholder="DC01*"
              list="{field_id}_locations" autocomplete="off">
       <datalist id="{field_id}_locations" data-location-options></datalist>
-      <select class="form-select" data-tag hidden></select>
+      <select class="form-select no-ts" data-tag hidden></select>
     </div>
     <div class="col-12 col-md-3">
       <label class="form-label mb-0">NetBox site</label>
@@ -238,7 +238,7 @@ _SCRIPT = """
     var control;
     if (kindValue === 'tag' && builder.getAttribute('data-source-id')) {
       control = document.createElement('select');
-      control.className = 'form-select form-select-sm';
+      control.className = 'form-select form-select-sm no-ts';
       var blank = document.createElement('option');
       blank.value = ''; blank.textContent = 'Choose a tag'; control.appendChild(blank);
       if (current) {
@@ -281,7 +281,7 @@ _SCRIPT = """
   function addRow(rule) {
     var tr = document.createElement('tr');
     tr.setAttribute('data-rule', '');
-    tr.innerHTML = '<td><select class="form-select form-select-sm" data-rule-kind>' +
+    tr.innerHTML = '<td><select class="form-select form-select-sm no-ts" style="min-width:11rem" data-rule-kind>' +
       '<option value="location">Forward location</option><option value="tag">Forward tag</option></select></td>' +
       '<td data-value-cell></td>' +
       '<td><input type="text" class="form-control form-control-sm" data-rule-site list="__ID___sites" placeholder="dc1" autocomplete="off"></td>' +

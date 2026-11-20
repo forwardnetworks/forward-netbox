@@ -4,6 +4,7 @@
 # every parameter from scratch, so a key it forgets is silently lost), and the form
 # has to tell the operator what the default is: the Forward location is the NetBox
 # site unless a mapping applies.
+import re
 from unittest.mock import patch
 
 from django.core.exceptions import ValidationError
@@ -346,3 +347,28 @@ class RulesTableTest(TestCase):
 
     def test_the_box_is_not_restored_by_the_browser(self):
         self.assertRegex(self._html(), r'<textarea[^>]*autocomplete="off"')
+
+
+class NetBoxSelectEnhancerTest(TestCase):
+    """NetBox wraps every plain <select> in its own dropdown widget when the page
+    loads. The wrapper copies the options it finds then, so the Forward tags added
+    later never appear in it, and its hidden twin of a hidden select stays visible."""
+
+    def _html(self):
+        from forward_netbox.widgets import SiteRulesWidget
+
+        widget = SiteRulesWidget()
+        widget.source_id = 7
+        return widget.render("site_rules", RULES_TEXT, attrs={"id": "id_site_rules"})
+
+    def test_every_select_the_widget_renders_opts_out_of_the_enhancer(self):
+        html = self._html()
+
+        for tag in re.findall(r"<select[^>]*>", html):
+            self.assertIn("no-ts", tag, tag)
+
+    def test_every_select_the_script_creates_opts_out_of_the_enhancer(self):
+        html = self._html()
+
+        self.assertIn("form-select form-select-sm no-ts", html)
+        self.assertNotIn('class="form-select form-select-sm" data-rule-kind', html)
