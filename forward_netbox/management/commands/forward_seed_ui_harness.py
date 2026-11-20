@@ -22,6 +22,7 @@ from forward_netbox.models import ForwardOwnershipReconciliation
 from forward_netbox.models import ForwardSource
 from forward_netbox.models import ForwardSync
 from forward_netbox.models import ForwardValidationRun
+from forward_netbox.utilities.crypto import encrypt_secret
 from forward_netbox.utilities.forward_api import LATEST_PROCESSED_SNAPSHOT
 from forward_netbox.utilities.ownership import required_ownership_domains
 
@@ -119,12 +120,14 @@ class Command(BaseCommand):
             name=source_name,
             defaults={
                 "type": ForwardSourceDeploymentChoices.CUSTOM,
-                "url": "https://forward-ui-harness.example.test",
+                # The harness runs scripts/ui/forward_stub.py in the container, so the
+                # pickers and a source save reach a real client talking to a stub.
+                "url": os.getenv("FORWARD_UI_STUB_URL", "http://127.0.0.1:9999"),
                 "status": ForwardSourceStatusChoices.READY,
                 "parameters": {
                     "username": "ui-harness@example.test",
-                    "password": "synthetic-secret",
-                    "verify": True,
+                    "password": encrypt_secret("synthetic-secret"),
+                    "verify": False,
                     "timeout": 1200,
                     "network_id": network_id,
                 },

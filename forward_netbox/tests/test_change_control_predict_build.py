@@ -10,6 +10,7 @@ from django.utils import timezone
 from extras.models import JournalEntry
 from forward_sdk._sync.services.change_sets import ChangeSetHandle
 from forward_sdk._sync.services.change_sets import ChangeSetsService
+from forward_sdk._sync.services.snapshots import SnapshotsService
 from forward_sdk.errors import ForwardAPIError
 from forward_sdk.errors import ForwardPermissionError
 from forward_sdk.errors import ForwardServerError
@@ -52,12 +53,22 @@ def _denied(text):
 class PredictApi:
     """Stands in for Forward's change sets: records calls, answers from a script."""
 
-    def __init__(self, *, snapshots=None, command_errors=0, fail_at=None, error=None):
+    def __init__(
+        self,
+        *,
+        snapshots=None,
+        predicted=None,
+        command_errors=0,
+        fail_at=None,
+        error=None,
+    ):
         self.calls = []
         self.deleted = []
         self.snapshot_rows = (
             [{"id": "base-1", "state": "PROCESSED"}] if snapshots is None else snapshots
         )
+        self.predicted_rows = predicted or []
+        self.snapshot_calls = []
         self.command_errors = command_errors
         self.fail_at = fail_at
         self.error = error or RuntimeError("boom " + SECRET)
@@ -98,8 +109,13 @@ class PredictApi:
             raise RuntimeError("cannot delete")
         self.deleted.append(change_set_id)
 
-    def snapshots(self, network_id):
-        return list(self.snapshot_rows)
+    def snapshots(self, network_id, *, include_predicted=False):
+        self.snapshot_calls.append(include_predicted)
+        rows = list(self.snapshot_rows)
+        # Forward 26.11 lists a predicted snapshot only when it is asked for.
+        if include_predicted:
+            rows += list(self.predicted_rows)
+        return rows
 
 
 class PredictFixture(ChangeFixture):
@@ -512,6 +528,29 @@ class RefreshPredictionTest(PredictFixture):
         self.assertEqual(self.change_.state, State.STAGED)
         self.assertIn("snap-p", self.change_.predict_reason)
 
+    def test_a_predicted_snapshot_forward_only_lists_on_request_is_an_answer(self):
+        # Forward 26.11 leaves predicted snapshots out of the snapshot list unless
+        # asked; without the request a finished prediction was recorded as failed.
+        self.pending()
+        api = PredictApi(predicted=[{"id": "snap-p", "state": "PROCESSED"}])
+
+        outcome = refresh_prediction(self.change_, self.requester, api=api)
+        self.change_.refresh_from_db()
+
+        self.assertTrue(outcome.ok)
+        self.assertEqual(self.change_.predict_status, PredictOutcome.ANSWERED)
+        self.assertEqual(api.snapshot_calls, [True])
+
+    def test_the_baseline_check_never_asks_for_predicted_snapshots(self):
+        # A predicted snapshot must not be able to become a before or after pin.
+        self.propose()
+        api = PredictApi()
+
+        start_prediction(self.change_, self.requester, confirmed=True, api=api)
+
+        self.assertTrue(api.snapshot_calls)
+        self.assertNotIn(True, api.snapshot_calls)
+
     def test_a_failed_snapshot_is_a_failure_that_names_the_state(self):
         self.pending()
 
@@ -833,6 +872,20 @@ class WorkspaceApiTest(ChangeFixture):
             _sdk_client=SimpleNamespace(change_sets=service),
         )
         return api, service, handle
+
+    def test_snapshots_pass_the_predicted_flag_only_when_asked(self):
+        # Forward 26.11 lists predicted snapshots only on request. The flag must reach
+        # the SDK (its real signature, via autospec) and must not be sent otherwise.
+        api, _service, _handle = self.api()
+        snapshots = create_autospec(SnapshotsService, instance=True)
+        snapshots.list.return_value = []
+        api.client._sdk_client.snapshots = snapshots
+
+        api.snapshots("ws-1")
+        snapshots.list.assert_called_with("ws-1")
+        api.snapshots("ws-1", include_predicted=True)
+
+        snapshots.list.assert_called_with("ws-1", include_predicted=True)
 
     def test_every_call_matches_the_sdk_signatures(self):
         api, service, handle = self.api()

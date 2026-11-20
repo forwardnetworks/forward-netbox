@@ -690,14 +690,16 @@ def refresh_prediction(change, user=None, *, api=None):
     if error:
         return _refuse(error)
     try:
-        snapshots = api.snapshots(change.workspace_network_id)
+        # The predicted snapshot is only in the list when it is asked for (Forward
+        # 26.11 and later); without it a finished prediction would sit unlisted
+        # and be recorded as failed.
+        snapshots = api.snapshots(change.workspace_network_id, include_predicted=True)
     except Exception as exc:  # noqa: BLE001
         return _refuse(classify_refusal(exc) or _failure_reason(exc))
     found = next((s for s in snapshots if s["id"] == change.predict_snapshot_id), None)
     if found is None:
-        # The workspace's snapshot list showed the predicted snapshot in a live
-        # check, but an unlisted one is still pending, not failed, until it has
-        # been missing for a long time.
+        # An unlisted predicted snapshot is still pending, not failed, until it
+        # has been missing for a long time.
         started = change.predict_started_at
         waited = (timezone.now() - started).total_seconds() if started else 0
         if waited < UNLISTED_FAILS_AFTER_SECONDS:

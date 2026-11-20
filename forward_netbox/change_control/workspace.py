@@ -67,9 +67,19 @@ class ForwardWorkspaceApi:
         )
         return str(created.id)
 
-    def snapshots(self, network_id):
+    def snapshots(self, network_id, *, include_predicted=False):
+        """The workspace's snapshots.
+
+        Forward 26.11 leaves predicted snapshots out of the list unless asked for
+        them (26.10 ignores the flag). Only the prediction status check asks: the
+        baseline and the before/after pins must never be a predicted snapshot.
+        """
+        kwargs = {"include_predicted": True} if include_predicted else {}
         rows = []
-        for item in self._sdk(self.client._sdk_client.snapshots.list, network_id) or []:
+        for item in (
+            self._sdk(self.client._sdk_client.snapshots.list, network_id, **kwargs)
+            or []
+        ):
             rows.append(
                 {
                     "id": str(item.id),
