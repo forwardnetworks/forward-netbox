@@ -2,6 +2,10 @@
 
 Generated from the README compatibility table by `scripts/gen_changelog.py`. Do not edit by hand.
 
+## v3.0.19
+
+Release candidate; Site rules tag dropdown works in NetBox, Predict status on Forward 26.11, browser UAT release gate
+
 ## v3.0.18
 
 Site mapping rules as an editable table with Forward tag and NetBox site pickers
