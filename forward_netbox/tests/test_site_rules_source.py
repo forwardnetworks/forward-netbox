@@ -332,3 +332,13 @@ class RulesTableTest(TestCase):
         self.assertIn("line.indexOf(' ')", html)
         self.assertIn("rest.indexOf(' -> ')", html)
         self.assertNotIn("\\s+(.+?)\\s+->", html)
+
+    def test_each_tag_control_fills_its_list_once(self):
+        # A click fires mousedown and focus; both ran the fill and doubled the tags.
+        self.assertIn("if (filled) { return; }", self._html())
+
+    def test_edit_as_text_refuses_while_a_row_is_half_filled(self):
+        self.assertIn("Finish or remove the half-filled row", self._html())
+
+    def test_the_box_is_not_restored_by_the_browser(self):
+        self.assertIn('autocomplete="off"', self._html())

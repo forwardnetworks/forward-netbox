@@ -246,7 +246,10 @@ _SCRIPT = """
         cur.value = current; cur.textContent = current; control.appendChild(cur);
         control.value = current;
       }
+      var filled = false;
       var fill = function () {
+        if (filled) { return; }
+        filled = true;
         tagsOnce().then(function (res) {
           if (!res.tags.length) {
             // Nothing to pick from: type the tag, as the builder does.
@@ -306,6 +309,10 @@ _SCRIPT = """
       addRow({kind: 'location', value: '', site: ''});
     });
     table.querySelector('[data-edit-text]').addEventListener('click', function () {
+      if (incomplete().length) {
+        tableStatus.textContent = 'Finish or remove the half-filled row before switching to text.';
+        return;
+      }
       writeBack();
       table.hidden = true; area.hidden = false;
       var back = document.createElement('button');
@@ -356,6 +363,9 @@ class SiteRulesWidget(forms.Textarea):
         defaults = {
             "rows": 5,
             "spellcheck": "false",
+            # The table is built from the value the server rendered; a browser that
+            # restores older text into the box would leave the two disagreeing.
+            "autocomplete": "off",
             "class": "form-control font-monospace",
         }
         super().__init__({**defaults, **(attrs or {})})
