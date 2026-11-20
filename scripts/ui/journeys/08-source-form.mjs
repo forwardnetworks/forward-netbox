@@ -38,6 +38,8 @@ export default {
       assert(fields.length === 1, `source form is missing ${fieldLabel}`);
       assert(fields[0] === true, `source form hides ${fieldLabel}`);
     }
+    assertNoHorizontalOverflow("desktop source form");
+    evidence.screenshots.push(screenshot("desktop-source-form.jpg"));
     evidence.checks.push(
       "source form exposes scope tags, console-server import, generic endpoint opt-in, and endpoint include scope",
     );

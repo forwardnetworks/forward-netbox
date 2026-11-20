@@ -22,9 +22,11 @@ const requiredJourneys = readFileSync(requiredFile, "utf8")
 
 // Uncaught errors the page threw while a journey ran. A page that works for the
 // assertions can still be throwing underneath.
-function pageErrors() {
-  const out = h.browser(["errors"]).trim();
-  return /^$|^no (page )?errors/i.test(out) ? "" : out;
+function pageErrorList() {
+  const parsed = JSON.parse(h.browser(["errors"], { json: true }));
+  return ((parsed.data && parsed.data.errors) || []).map((error) =>
+    String(error.text || error.message || error),
+  );
 }
 
 async function loadJourneys() {
@@ -60,14 +62,22 @@ async function main() {
       const entry = { id: journey.id, title: journey.title, file: journey.file };
       const started = Date.now();
       try {
-        h.browser(["errors", "--clear"]);
+        // The list may keep earlier errors whatever --clear does, so judge only what
+        // the journey added to it.
+        const before = pageErrorList().length;
         await journey.run({ evidence });
-        const errors = pageErrors();
+        const errors = pageErrorList().slice(before).join(" | ");
         if (errors) throw new Error(`the page threw errors during the journey: ${errors.slice(0, 600)}`);
+        if (!evidence.checks.length) throw new Error("the journey recorded no check, so it proved nothing");
         entry.status = "passed";
       } catch (error) {
         entry.status = "failed";
         entry.error = error && error.message ? error.message : String(error);
+        try {
+          console.error(h.stubLog());
+        } catch (_) {
+          /* the log is a courtesy */
+        }
         try {
           h.browser(["screenshot", path.join(h.artifactDir, `failed-${journey.id}.jpg`)]);
         } catch (_) {

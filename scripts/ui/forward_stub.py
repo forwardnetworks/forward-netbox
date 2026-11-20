@@ -18,7 +18,7 @@ LOCATIONS = [f"Location-{number:03d}" for number in range(1, 401)] + [
     "DC01-East",
     "DC01-West",
     "DC02-Main",
-    "Roseland-Campus",
+    "Campus-North",
 ]
 
 

@@ -10,6 +10,7 @@ from django.utils import timezone
 from extras.models import JournalEntry
 from forward_sdk._sync.services.change_sets import ChangeSetHandle
 from forward_sdk._sync.services.change_sets import ChangeSetsService
+from forward_sdk._sync.services.snapshots import SnapshotsService
 from forward_sdk.errors import ForwardAPIError
 from forward_sdk.errors import ForwardPermissionError
 from forward_sdk.errors import ForwardServerError
@@ -865,6 +866,20 @@ class WorkspaceApiTest(ChangeFixture):
             _sdk_client=SimpleNamespace(change_sets=service),
         )
         return api, service, handle
+
+    def test_snapshots_pass_the_predicted_flag_only_when_asked(self):
+        # Forward 26.11 lists predicted snapshots only on request. The flag must reach
+        # the SDK (its real signature, via autospec) and must not be sent otherwise.
+        api, _service, _handle = self.api()
+        snapshots = create_autospec(SnapshotsService, instance=True)
+        snapshots.list.return_value = []
+        api.client._sdk_client.snapshots = snapshots
+
+        api.snapshots("ws-1")
+        snapshots.list.assert_called_with("ws-1")
+        api.snapshots("ws-1", include_predicted=True)
+
+        snapshots.list.assert_called_with("ws-1", include_predicted=True)
 
     def test_every_call_matches_the_sdk_signatures(self):
         api, service, handle = self.api()

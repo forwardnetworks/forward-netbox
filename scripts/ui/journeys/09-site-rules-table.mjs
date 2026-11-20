@@ -101,12 +101,12 @@ export default {
     // Edit as text and back: the same rules, in the one-per-line form.
     browser(["click", "[data-forward-site-rule-table] [data-edit-text]"]);
     await waitFor(`document.getElementById('id_site_rules').hidden === false`, "the text editor");
-    browser(["fill", "#id_site_rules", "location DC02* -> dc2\nlocation *roseland* -> roseland\n"]);
+    browser(["fill", "#id_site_rules", "location DC02* -> dc2\nlocation *campus-north* -> campus-north\n"]);
     browser(["click", "[data-show-table]"]);
     await waitFor(`document.querySelectorAll('tr[data-rule]').length === 2`, "two rows from the text");
     assert(
       JSON.stringify(await rowsOf()) ===
-        JSON.stringify(["location|DC02*|dc2", "location|*roseland*|roseland"]),
+        JSON.stringify(["location|DC02*|dc2", "location|*campus-north*|campus-north"]),
       "text did not become the same rows",
     );
     evidence.checks.push("rules table: Edit as text and Show as table round-trip");

@@ -76,7 +76,8 @@ function runDockerManage(command) {
 
 // The Forward stand-in the pickers and the source save talk to. It runs inside the
 // NetBox container (so 127.0.0.1 there is the stub) and lives as long as the stack.
-function startStub(port = 9999, network = process.env.FORWARD_UI_HARNESS_NETWORK || "ui-harness-network") {
+// The network id is the seed command's default; both sides use the same constant.
+function startStub(port = 9999, network = "ui-harness-network") {
   execFileSync(
     "docker",
     [
@@ -95,6 +96,18 @@ function startStub(port = 9999, network = process.env.FORWARD_UI_HARNESS_NETWORK
       `python /source/scripts/ui/forward_stub.py ${port} ${network} > /tmp/forward_stub.log 2>&1`,
     ],
     { cwd: repoRoot, stdio: "inherit" },
+  );
+}
+
+// What the Forward stand-in saw and said, for a failed journey's report.
+function stubLog() {
+  return execFileSync(
+    "docker",
+    [
+      "compose", "--project-name", dockerProjectName, "--project-directory", dockerProjectDirectory,
+      "exec", "-T", "netbox", "bash", "-lc", "tail -n 40 /tmp/forward_stub.log",
+    ],
+    { cwd: repoRoot, encoding: "utf8" },
   );
 }
 
@@ -281,5 +294,5 @@ export const h = {
   repoRoot, artifactDir, baseURL, username, password, assert, sleep, browser,
   evaluate, waitFor, js, expectVisible, countExactText, assertNoHorizontalOverflow,
   currentURL, open, clickLink, clickLinkMatching, clickHref, login, screenshot,
-  waitForWebReady, runDockerManage, startStub, sessionName,
+  waitForWebReady, runDockerManage, startStub, stubLog, sessionName,
 };
