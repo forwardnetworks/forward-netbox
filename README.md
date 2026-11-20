@@ -64,15 +64,15 @@ See the
 
 ## Release Compatibility
 
-The `3.0.18` release candidate requires NetBox `4.7.x` (tested on `4.7.4`) and `netbox-branching` `1.2.x` (tested on `1.2.3`). Expand for the published release history and candidate notes.
+The `3.0.18` release requires NetBox `4.7.x` (tested on `4.7.4`) and `netbox-branching` `1.2.x` (tested on `1.2.3`). Expand for the published release history and release notes.
 
 <details>
 <summary>Release compatibility history</summary>
 
 | Plugin Release | NetBox Version | Status |
 | --- | --- | --- |
-| `v3.0.18` | NetBox `4.7.x` supported, tested on `4.7.4`; needs netbox-branching `1.2.x`, tested on `1.2.3` | Release candidate; Site mapping rules as an editable table with Forward tag and NetBox site pickers |
-| `v3.0.17` | NetBox `4.7.x` supported, tested on `4.7.4`; needs netbox-branching `1.2.x`, tested on `1.2.3` | Current release; Site mapping rules: map Forward locations or tags to NetBox sites from the source settings; run Publish Bundled Queries after upgrading, before setting rules |
+| `v3.0.18` | NetBox `4.7.x` supported, tested on `4.7.4`; needs netbox-branching `1.2.x`, tested on `1.2.3` | Current release; Site mapping rules as an editable table with Forward tag and NetBox site pickers |
+| `v3.0.17` | NetBox `4.7.x` supported, tested on `4.7.4`; needs netbox-branching `1.2.x`, tested on `1.2.3` | Superseded by `v3.0.18`; Site mapping rules: map Forward locations or tags to NetBox sites from the source settings; run Publish Bundled Queries after upgrading, before setting rules |
 | `v3.0.16` | NetBox `4.7.x` supported, tested on `4.7.4`; needs netbox-branching `1.2.x`, tested on `1.2.3` | Superseded by `v3.0.17`; Change counts for completed runs, held unmanaged deletes, NetBox_Site_ device tag, safe site moves |
 | `v3.0.15` | NetBox `4.7.x` supported, tested on `4.7.4`; needs netbox-branching `1.2.x`, tested on `1.2.3` | Superseded by `v3.0.16`; 3.0.15: Scope page splits uncovered from not-managed; platform restore covers VMs and config contexts; dependency bumps (paramiko 5.1, forward-sdk 0.1.36) |
 | `v3.0.14` | NetBox `4.7.x` supported, tested on `4.7.4`; needs netbox-branching `1.2.x`, tested on `1.2.3` | Superseded by `v3.0.15`; Stale rows are deleted when the scope changes, with a preview-first cleanup; empty include tags stop the run; platform restore; time-limit split fetch |
