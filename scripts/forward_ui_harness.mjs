@@ -5,13 +5,27 @@
 // file order in one logged-in browser session, and writes one report with an
 // entry per journey. A failing journey fails the run (`invoke ui-test`, and so
 // the release gate), but the rest still run so one report shows everything.
-import { readdirSync, mkdirSync, writeFileSync } from "node:fs";
+import { readdirSync, readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import process from "node:process";
 
 import { h } from "./ui/lib.mjs";
 
 const journeysDir = path.join(import.meta.dirname, "ui", "journeys");
+// Journeys the release gate requires. Deleting or renaming one is a change to the
+// gate itself: it must be called out in the commit and reviewed on its own.
+const requiredFile = path.join(import.meta.dirname, "ui", "required-journeys.txt");
+const requiredJourneys = readFileSync(requiredFile, "utf8")
+  .split("\n")
+  .map((line) => line.trim())
+  .filter((line) => line && !line.startsWith("#"));
+
+// Uncaught errors the page threw while a journey ran. A page that works for the
+// assertions can still be throwing underneath.
+function pageErrors() {
+  const out = h.browser(["errors"]).trim();
+  return /^$|^no (page )?errors/i.test(out) ? "" : out;
+}
 
 async function loadJourneys() {
   const files = readdirSync(journeysDir)
@@ -46,7 +60,10 @@ async function main() {
       const entry = { id: journey.id, title: journey.title, file: journey.file };
       const started = Date.now();
       try {
+        h.browser(["errors", "--clear"]);
         await journey.run({ evidence });
+        const errors = pageErrors();
+        if (errors) throw new Error(`the page threw errors during the journey: ${errors.slice(0, 600)}`);
         entry.status = "passed";
       } catch (error) {
         entry.status = "failed";
@@ -91,6 +108,12 @@ async function main() {
     );
   }
   h.assert(report.passed > 0, "no UI journey ran");
+  const passedIds = new Set(report.journeys.filter((e) => e.status === "passed").map((e) => e.id));
+  const missing = requiredJourneys.filter((id) => !passedIds.has(id));
+  h.assert(
+    missing.length === 0,
+    `required UI journeys did not run and pass: ${missing.join(", ")}`,
+  );
 }
 
 main().catch((error) => {

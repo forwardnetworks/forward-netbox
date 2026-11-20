@@ -1,0 +1,16 @@
+# One id per line. The UI harness (and so `invoke ui-test`, and `invoke ci`, the
+# release gate) fails if any of these did not run and pass. Removing a line
+# loosens the gate: say so in the commit and get that change reviewed separately.
+authentication
+sync-list-and-detail
+drift-report
+sync-health
+validation
+ingestion-detail
+sync-form
+source-form
+site-rules-table
+site-rules-save
+nqe-map-forms
+mobile
+support-bundle
