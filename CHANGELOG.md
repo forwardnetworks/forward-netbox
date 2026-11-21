@@ -8,7 +8,7 @@ Site rules tag dropdown works in NetBox, Predict status on Forward 26.11, browse
 
 ## v3.0.18
 
-Site mapping rules as an editable table with Forward tag and NetBox site pickers
+WITHDRAWN, never use it (the tag dropdown did not load Forward tags; PyPI and GitHub releases removed); Site mapping rules as an editable table with Forward tag and NetBox site pickers
 
 ## v3.0.17
 
